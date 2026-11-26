@@ -1188,9 +1188,18 @@ pub(super) fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine 
 
 /// An offline session (DAPI and peers unreachable) with an imported wallet.
 pub(super) fn session(engine: &Engine, no_platform: bool) -> (Arc<NetworkSession>, WalletId) {
+    session_on(engine, DashNetwork::Regtest, no_platform)
+}
+
+/// [`session`] on `network`.
+pub(super) fn session_on(
+    engine: &Engine,
+    network: DashNetwork,
+    no_platform: bool,
+) -> (Arc<NetworkSession>, WalletId) {
     let s = engine
         .block_on(engine.open_network(
-            DashNetwork::Regtest,
+            network,
             SessionOptions {
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),

@@ -36,7 +36,7 @@ function setup(lock = { encrypted: false }) {
     ),
     unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string, _confirm: boolean) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
     unshieldToPlatform: vi.fn(async (_w: string, c: string, to: string | null, grant: string, confirm: boolean) => (calls.push(`toPlatform ${c} ${to} ${grant} ${confirm}`), SPEND)),
-    platformAddressesSync: vi.fn(async (_w: string) => (calls.push("platformSync"), { credits: "0", movableCredits: "0", duffs: 0, addresses: [], syncedAt: null, syncing: false, sendsActive: true })),
+    platformAddressesSync: vi.fn(async (_w: string) => (calls.push("platformSync"), { credits: "0", movableCredits: "0", duffs: 0, addresses: [], syncedAt: null, syncing: false, sendsActive: true, sendsOff: null })),
   };
   const flow = new ShieldedFlow(api, WALLET_A);
   return { flow, api, vault, calls, answer: (o: ShieldedSpendOutcome) => answer!(o) };
@@ -45,6 +45,37 @@ function setup(lock = { encrypted: false }) {
 afterEach(() => resetShielded());
 
 describe("the shielded flow", () => {
+  it("says it is preparing once a shield's call has been pending for a second, and only for a shield", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { flow, api, answer } = setup();
+      let shielded: ((o: ShieldOutcome) => void) | null = null;
+      api.shieldFromCore.mockImplementation(() => new Promise<ShieldOutcome>((resolve) => (shielded = resolve)));
+      flow.begin("add");
+      flow.next({ kind: "add", duffs: 100_000 });
+      const going = flow.run({ maxDuffs: 101_000, maxCredits: "0" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(flow.step).toBe("running");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(flow.preparing.shown).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(flow.preparing.shown).toBe(true);
+      shielded!(APPLIED);
+      await going;
+      expect([flow.step, flow.preparing.shown]).toEqual(["done", false]);
+
+      flow.begin("send");
+      flow.next({ kind: "send", credits: "10000000000", to: TO, memo: null });
+      const sending = flow.run(GRANT);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect([flow.step, flow.preparing.shown]).toEqual(["running", false]);
+      answer(SPEND);
+      await sending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("adds to Shielded under a duffs grant and reads again", async () => {
     const { flow, vault, calls } = setup();
     const settled = vi.fn();
@@ -58,6 +89,47 @@ describe("the shielded flow", () => {
     await Promise.resolve();
     expect(settled).toHaveBeenCalledTimes(1);
     stop();
+  });
+
+  it("a Core Max (Max from the Dash wallet) is sent as {kind: all}, never as an amount with the fee on top", async () => {
+    const { flow, api } = setup();
+    flow.begin("add");
+    flow.next({ kind: "add", duffs: 199_998_956, all: true });
+    await flow.run({ maxDuffs: 200_000_000, maxCredits: "0" });
+    expect(api.shieldFromCore.mock.calls).toEqual([[WALLET_A, { kind: "all" }, "grant-1"]]);
+  });
+
+  it("a Core Max's refusals say what Max needs; an amount's keep their own words", () => {
+    const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
+    const locked = appError("shielded.coins_locked");
+    expect(text(locked, true)).toBe("Max can't run: some coins in your Dash wallet are locked. Enter an amount instead.");
+    expect(text(locked, false)).not.toContain("Max");
+    expect(text(appError("shielded.too_many_inputs", { kind: "number", value: 61 }), true)).toBe("Max needs at most 50 coins; this wallet has 61. Enter an amount instead.");
+    expect(text(appError("shielded.mixing_active"), true)).toBe("Max can't run while mixing. Stop mixing first, or enter an amount.");
+    expect(text(appError("shielded.move_running"), true)).toBe("Another move of your coins is running. Try Max again when it's done.");
+    expect(text(appError("shielded.coins_changed"), true)).toBe("Your Dash wallet changed since this was worked out. Review the amount again.");
+    expect(shieldedCanChange(appError("shielded.coins_changed"))).toBe(true);
+  });
+
+  it("a Core Max below the smallest amount says what Max can move, and what it leaves out only when something is", () => {
+    const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
+    const below = (leftDuffs: number) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 3_852, leftDuffs, arrivingDuffs: 0, arrivingClears: false });
+    expect(text(below(10_000_100), true)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00010001 tDASH. Max doesn't include mixed coins, payments from contacts or coins in other accounts.");
+    expect(text(below(0), true)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00010001 tDASH.");
+    const typed = appError("shielded.below_minimum", { kind: "number", value: 10_001 });
+    expect(text(typed, false)).toBe("Too small to add: the smallest amount is 0.00010001 tDASH.");
+    expect(text(typed, true)).toBe(text(typed, false));
+    expect(shieldedCanChange(below(0))).toBe(true);
+  });
+
+  it("a Core Max of nothing says the coins are arriving (and whether Max can move them once they've confirmed), that Max leaves them all out, or that the wallet has nothing to move, never 0.00000000 or the minimum", () => {
+    const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
+    const zero = (leftDuffs: number, arrivingDuffs: number, arrivingClears = arrivingDuffs > 0) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 0, leftDuffs, arrivingDuffs, arrivingClears });
+    expect(text(zero(7_000, 200_000), true)).toBe("Your Dash wallet's coins are still arriving (0.002 tDASH). Max can move them once they've confirmed.");
+    expect(text(zero(7_000, 5_000, false), true)).toBe("Your Dash wallet's coins are still arriving (0.00005 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.");
+    expect(text(zero(200_000, 0), true)).toBe("Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.");
+    expect(text(zero(0, 0), true)).toBe("There's nothing in your Dash wallet to move.");
+    for (const e of [zero(7_000, 200_000), zero(7_000, 5_000, false), zero(200_000, 0), zero(0, 0)]) expect(text(e, true)).not.toMatch(/0\.00000000|Too small/);
   });
 
   it("sends with its memo and moves out to the wallet's own address (null)", async () => {
@@ -268,7 +340,7 @@ describe("shielded refusal copy", () => {
 
   it("DEC1058_syncingNeverReadsAsPlatformDown", () => {
     const syncing = (code: string, on: boolean) => shieldedErrorText(appError(code as never, null as never), credits, duffs, "add", on);
-    const SAID = "Shielded is still syncing; try again when it finishes.";
+    const SAID = "Shielded is still syncing. Try again when it finishes.";
     expect(syncing("shielded.not_synced", false)).toBe(SAID);
     for (const code of ["platform.unavailable", "platform.timeout", "platform.context_unavailable"]) expect(syncing(code, true)).toBe(SAID);
     // Not syncing: a real Platform outage keeps its own words.

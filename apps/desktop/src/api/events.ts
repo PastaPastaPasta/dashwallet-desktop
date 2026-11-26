@@ -59,11 +59,14 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7). The
       // masternode overview lists collateral-shaped coins, which Show Masternodes' Auto counts.
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId)];
+      // A dropped payment's coins coming back, or the scan that brings them stopping, moves what
+      // its details and notice say; the engine sends no history change for it.
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId), keys.droppedNotices(event.walletId), keys.txDetailAll(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
         keys.txDetailAll(event.walletId),
+        keys.droppedNotices(event.walletId),
         keys.receiveAll(event.walletId),
         keys.coinsAll(event.walletId),
         keys.contactsAll(event.walletId),
@@ -79,7 +82,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       // A lock drops the wallet's queries (lockGate.ts): only the lock screen's are read again.
       if (event.state === "locked") return [keys.lockStatus, keys.lockReconcile];
       // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
+      // A full unlock lets Shielded bind its viewing key: its status and address are read again.
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll, keys.shieldedAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];

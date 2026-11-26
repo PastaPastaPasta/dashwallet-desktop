@@ -9,7 +9,7 @@ import { DashButton } from "../components/basics";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveOutcomeCopy, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -105,7 +105,7 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   // Activity's final answer replaces what the move returned: done, replaced, or failed and unable to land.
   const final = row && (row.state === "done" || row.state === "replaced" || (row.state === "failed" && !row.mayLand));
   const { step } = flow;
-  const outcome = final && flow.outcome ? { ...flow.outcome, state: row.state, credits: row.credits, expectedDuffs: row.expectedDuffs, feeCredits: row.feeCredits } : flow.outcome;
+  const outcome = final && flow.outcome ? { ...flow.outcome, state: row.state, credits: row.credits, expectedDuffs: row.expectedDuffs, feeCredits: row.feeCredits, winnerKnown: row.winnerKnown } : flow.outcome;
   // A failed move that may still execute is shown as not confirmed; one that cannot found its credits used.
   const failed = outcome?.state === "failed" && !row?.mayLand;
   return (
@@ -123,20 +123,10 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
       {step === "done" && outcome && (
         <div role="status">
           <p className="topup-title" data-testid="platform-move-outcome-title">
-            {outcome.state === "done" ? C.done.title : outcome.state === "replaced" ? C.replaced.title : failed ? C.failed.title : C.pending.title}
+            {moveOutcomeCopy(outcome, failed, credits, amount).title}
           </p>
           <p className="sheet-text" data-testid="platform-move-outcome-text">
-            {outcome.state === "replaced"
-              ? C.replaced.text
-              : failed
-              ? C.failed.text
-              : outcome.state === "done"
-              ? outcome.expectedDuffs === null
-                ? C.done.debitOnly(credits(outcome.credits))
-                : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits))
-              : outcome.expectedDuffs === null
-                ? C.pending.debitOnly(credits(outcome.credits))
-                : C.pending.text(amount(outcome.expectedDuffs))}
+            {moveOutcomeCopy(outcome, failed, credits, amount).text}
           </p>
           <div className="sheet-actions">
             <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>
@@ -148,7 +138,7 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
       {step === "refused" && (
         <>
           <p className="form-problem" role="alert" data-testid="platform-move-refusal">
-            {moveErrorText(flow.error, credits, activity.data)}
+            {moveErrorText(flow.error, credits, activity.data, flow.exitOf)}
           </p>
           <div className="sheet-actions">
             {moveCanRetry(flow.error) && (

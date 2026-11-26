@@ -980,12 +980,14 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        CreditsError::BelowMinimum { min } => json!({"min": min}),
+        CreditsError::BelowMinimum { min, .. } => json!({"min": min}),
         CreditsError::CoinsLocked
         | CreditsError::QuoteChanged
         | CreditsError::CoinsChanged
         | CreditsError::MixingActive
-        | CreditsError::MoveRunning => json!({}),
+        | CreditsError::MoveRunning
+        | CreditsError::PreflightRefused
+        | CreditsError::RulesUnsupported => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
@@ -1021,7 +1023,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         | ShieldedError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::BelowMinimum { min, .. } => json!({"min": min}),
         ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
         ShieldedError::PoolTooSmall { notes, required } => {
             json!({"notes": notes, "required": required})
@@ -2729,7 +2731,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true,"sends_off":null}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
@@ -2909,36 +2911,25 @@ mod tests {
         ),
         // 0.1 E1: regtest's floor (13) is past the activation; the new
         // wallet's account binds from the vault, and is not ready: no pass
-        // has scanned it this session (Platform is not started here). The
-        // address is the random wallet's (see the run below).
+        // has scanned it this session (Platform is not started here).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":false,"account":"bound","scan":null,"last_pass_failed":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
-        (
-            "shielded address",
-            r#"{"ok":true,"result":{"address":"tdash1z…","account":0}}"#,
-        ),
-        (
-            "shielded shield --duffs 100000",
-            r#"{"ok":false,"error":{"code":"shielded.below_minimum","message":"below the minimum of 212852","params":{"min":212852}}}"#,
-        ),
+        // This build cannot spend from Shielded: no receive address is
+        // issued and no way into or out of the pool is quoted.
+        ("shielded address", NO_PLATFORM),
+        ("shielded shield --duffs 100000", NO_PLATFORM),
         (
             "shielded shield-resume ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
         ),
-        (
-            "shielded send --to tZ --credits 5 --memo hi",
-            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a shielded address of this network","params":{"detail":"not a shielded address of this network"}}}"#,
-        ),
-        (
-            "shielded unshield --credits 5 --to yA",
-            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
-        ),
+        ("shielded send --to tZ --credits 5 --memo hi", NO_PLATFORM),
+        ("shielded unshield --credits 5 --to yA", NO_PLATFORM),
         (
             "shielded unshield-to-platform --credits 5 --to yA",
-            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Platform address of this network","params":{"detail":"not a Platform address of this network"}}}"#,
+            NO_PLATFORM,
         ),
         (
             "shielded history --offset 1 --limit 5",
@@ -2962,7 +2953,7 @@ mod tests {
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).
-    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
+    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted","platform_enabled":true,"addresses":"pending"}}"#;
 
     /// `I` and `C` are not identity ids.
     const NOT_BASE58: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a Base58 identity id","params":{"detail":"not a Base58 identity id"}}}"#;
@@ -3832,11 +3823,6 @@ mod tests {
         }
         for (args, call) in TABLE {
             let mut line = envelope(&run(&engine, &session, args));
-            if *args == "shielded address" {
-                let address = &mut line["result"]["address"];
-                assert!(address.as_str().unwrap().starts_with("tdash1z"), "{line}");
-                *address = json!("tdash1z…");
-            }
             // Whether the prover is built by now depends on the machine (CI
             // runners finish it before this row); only its type is checked.
             let result = line.get_mut("result");
@@ -3976,7 +3962,10 @@ mod tests {
         }));
         assert_eq!(e["code"], "platform.will_be_sent");
         assert_eq!(e["params"], json!({"artifact": "topup/1/funding"}));
-        let e = error_json(CreditsError::BelowMinimum { min: 100 });
+        let e = error_json(CreditsError::BelowMinimum {
+            min: 100,
+            max: None,
+        });
         assert_eq!(
             (e["code"].clone(), e["params"].clone()),
             (json!("credits.below_minimum"), json!({"min": 100}))

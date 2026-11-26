@@ -407,6 +407,15 @@ function withMixedCoins(w: World, n: number, split = false): World {
   return w;
 }
 
+/** Mixing stopped with three mixed coins, and Shielded's account not established for `account`. */
+function withShieldedAccount(w: World, account: "locked" | "mixingOnly" | "watchOnly"): World {
+  const m = withMixedCoins(mixing(w, { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+  m.pending.shielded!.ready = false;
+  m.pending.shielded!.balance = "0";
+  m.pending.shielded!.account = account;
+  return m;
+}
+
 export function coinjoinScenarios(base: Base) {
   return {
     /** S7: 42 %, one session waiting in a masternode's queue. Mixed coins are on the CoinJoin
@@ -465,6 +474,32 @@ export function coinjoinScenarios(base: Base) {
       w.pending.shielded = null;
       return w;
     },
+    /** "Move mixed coins" where this build cannot spend from Shielded: the move to Shielded says what it means. */
+    "coinjoin-move-spends-off": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.pending.shielded!.spendsAvailable = false;
+      return w;
+    },
+    /** Tools ▸ Repair where this build cannot spend from Shielded: a possibly sent move of mixed coins
+     * Repair sends back, and a shield it can never settle. Neither line points to moving into Shielded again. */
+    "repair-shield-spends-off": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.pending.shielded!.spendsAvailable = false;
+      w.pending.shielded!.shieldUnknown = "blocked";
+      w.coinjoin.drainUnknown = "stuck";
+      return w;
+    },
+    /** "Move mixed coins" while Shielded's account waits for an unlock (the vault reads unlocked, as
+     * in shielded-locked): the card's Move to Shielded waits and offers Unlock. */
+    "coinjoin-move-shielded-locked": (t: ThemeName | null) => withShieldedAccount(base(t), "locked"),
+    /** The same with the wallet unlocked for mixing only: Unlock fully. */
+    "coinjoin-move-shielded-mixing-only": (t: ThemeName | null) => {
+      const w = withShieldedAccount(base(t), "mixingOnly");
+      w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+      return w;
+    },
+    /** The same in a watch-only wallet: no unlock helps. */
+    "coinjoin-move-shielded-watch-only": (t: ThemeName | null) => withShieldedAccount(base(t), "watchOnly"),
     /** The only chunk's broadcast outcome is unknown. */
     "coinjoin-move-unknown": (t: ThemeName | null) => {
       const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);

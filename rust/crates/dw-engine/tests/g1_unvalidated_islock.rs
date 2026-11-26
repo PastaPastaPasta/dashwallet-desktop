@@ -238,6 +238,7 @@ fn assert_not_final(view: &View, what: &str) {
         instant_locked: false,
         chain_locked: false,
         matures_in: None,
+        dropped: None,
     };
     let violations: Vec<&str> = [
         (view.status != pending, "the transaction status"),
@@ -271,6 +272,7 @@ fn assert_final(view: &View, what: &str) {
         instant_locked: true,
         chain_locked: false,
         matures_in: None,
+        dropped: None,
     };
     assert_eq!(view.status, locked, "{what}: the transaction status");
     assert_eq!(view.activity, [(locked, true)], "{what}: the activity row");

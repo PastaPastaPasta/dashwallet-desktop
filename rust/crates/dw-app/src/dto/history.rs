@@ -3,8 +3,9 @@
 
 use dw_engine::platform::Counterparty;
 use dw_engine::{
-    HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail, TxInputDetail,
-    TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
+    DropCause, DropState, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory,
+    TxDetail, TxDrop, TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType,
+    WatchOnlyFilter,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -82,6 +83,71 @@ pub struct TxStatusInfo {
     pub instant_locked: bool,
     pub chain_locked: bool,
     pub matures_in: Option<u32>,
+    /// Set on an `abandoned` row Dash Wallet dropped itself, as one that
+    /// can never confirm; absent when the user abandoned it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub dropped: Option<TxDropInfo>,
+}
+
+/// Why Dash Wallet dropped a transaction itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum DropCauseName {
+    /// It spends what a transaction that was never valid paid.
+    InvalidSource,
+    /// It is that never-valid transaction.
+    InvalidClaim,
+    /// It spends what a payment another transaction beat paid.
+    Replaced,
+}
+
+mirror_enum!(DropCause => DropCauseName { InvalidSource, InvalidClaim, Replaced });
+
+/// Where the wallet's own coins a dropped transaction spent are, as the
+/// engine decides; the row shows the line for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum DropStateInfo {
+    Released,
+    Releasing,
+    RescanNeeded,
+    /// The wallet's birth must be lowered to `height` or below.
+    RescanFromHeight {
+        height: u32,
+    },
+    AwaitingFunding,
+    Held,
+}
+
+impl From<DropState> for DropStateInfo {
+    fn from(s: DropState) -> Self {
+        match s {
+            DropState::Released => Self::Released,
+            DropState::Releasing => Self::Releasing,
+            DropState::RescanNeeded => Self::RescanNeeded,
+            DropState::RescanFromHeight { height } => Self::RescanFromHeight { height },
+            DropState::AwaitingFunding => Self::AwaitingFunding,
+            DropState::Held => Self::Held,
+        }
+    }
+}
+
+/// A transaction Dash Wallet dropped itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TxDropInfo {
+    pub cause: DropCauseName,
+    pub state: DropStateInfo,
+}
+
+impl From<TxDrop> for TxDropInfo {
+    fn from(d: TxDrop) -> Self {
+        TxDropInfo {
+            cause: d.cause.into(),
+            state: d.state.into(),
+        }
+    }
 }
 
 impl From<TxStatus> for TxStatusInfo {
@@ -92,6 +158,7 @@ impl From<TxStatus> for TxStatusInfo {
             instant_locked,
             chain_locked,
             matures_in,
+            dropped,
         } = s;
         TxStatusInfo {
             kind: kind.into(),
@@ -99,6 +166,7 @@ impl From<TxStatus> for TxStatusInfo {
             instant_locked,
             chain_locked,
             matures_in,
+            dropped: dropped.map(Into::into),
         }
     }
 }

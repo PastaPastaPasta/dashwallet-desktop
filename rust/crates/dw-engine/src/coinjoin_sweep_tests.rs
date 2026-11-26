@@ -2484,7 +2484,7 @@ fn dropped_records(f: &Fixture) -> std::collections::BTreeSet<Txid> {
     let (dropped, read) =
         crate::tx_actions::load_dropped(&f.session.live().unwrap().appdb, f.wallet);
     assert!(read, "the dropped records read");
-    dropped
+    dropped.into_keys().collect()
 }
 
 /// The coins a move takes now, moved in chunks the stand-in broadcast sends.

@@ -2,7 +2,8 @@
 # forward fix on top or a revert, before anything else merges (docs/ci.md, "Pull request checks"). While the
 # newest finished run of that workflow is red, one open issue labelled nightly-failure names its
 # failed jobs and the pull requests merged since that workflow's last green run on main. The next
-# green run closes it. A cancelled run (a pending main run replaced by a newer one) reports nothing.
+# green run closes it. A newer push cancels a running main CI run; a cancelled run counts as red when one of
+# its jobs had already failed or timed out, and otherwise reports nothing.
 name: Main result
 
 on:
@@ -24,7 +25,8 @@ jobs:
       ${{ github.event.workflow_run.head_branch == 'main'
       && github.event.workflow_run.head_repository.full_name == github.repository
       && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')
-      && (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') }}
+      && (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure'
+      || github.event.workflow_run.conclusion == 'timed_out' || github.event.workflow_run.conclusion == 'cancelled') }}
     # On the job, not the workflow: a pull request's completion is skipped by `if` before it can
     # take the group and replace a pending main report.
     concurrency:
@@ -56,16 +58,29 @@ jobs:
         run: |
           finished=$(gh api --paginate "repos/$GH_REPO/actions/workflows/$WORKFLOW/runs?branch=main&status=completed&per_page=100" \
             --jq '.workflow_runs[] | select((.event == "push" or .event == "schedule")
-              and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out"))' | jq -s 'sort_by(.created_at) | reverse')
-          [[ $(jq length <<<"$finished") -gt 0 ]] || { echo "::error::no finished $NAME run on main found" >&2; exit 1; }
-          read -r run attempt sha conclusion url < <(jq -r '.[0] | "\(.id) \(.run_attempt) \(.head_sha) \(.conclusion) \(.html_url)"' <<<"$finished")
+              and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled"))' | jq -s 'sort_by(.created_at) | reverse')
+          # The newest run with a result: a cancelled run counts as failed if a job had already failed or
+          # timed out, and is skipped if not (it was cancelled before finding anything).
+          run=
+          while read -r r a s c u; do
+            if [[ $c == cancelled ]]; then
+              bad=$(gh api "repos/$GH_REPO/actions/runs/$r/attempts/$a/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")] | length') ||
+                { echo "::error::could not list the jobs of $NAME run $r" >&2; exit 1; }
+              [[ $bad -gt 0 ]] || continue
+              c=failure
+            fi
+            run=$r attempt=$a sha=$s conclusion=$c url=$u
+            break
+          done < <(jq -r '.[:30][] | "\(.id) \(.run_attempt) \(.head_sha) \(.conclusion) \(.html_url)"' <<<"$finished")
+          [[ -n $run ]] || { echo "::error::no finished $NAME run with a result on main among the newest 30" >&2; exit 1; }
           what="$NAME on main at ${sha:0:8}"
           if [[ $conclusion == success ]]; then
             ci/github/nightly-issue.sh green "$NAME on main" "$what passed: $url"
             exit 0
           fi
           failed=$(gh api "repos/$GH_REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))"') ||
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url))"') ||
             failed="(the failed jobs could not be listed)"
           green=$(jq -r '[.[] | select(.conclusion == "success")][0].head_sha // empty' <<<"$finished")
           if [[ -z $green ]]; then

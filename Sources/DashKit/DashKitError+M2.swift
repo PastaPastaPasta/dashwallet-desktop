@@ -143,6 +143,7 @@ extension DashWalletCore.TxActionRefusal {
         case .rescanFirst: 6
         case .settledDescendant: 7
         case .recordUnreadable: 8
+        case .platformFunding: 9
         }
     }
 }

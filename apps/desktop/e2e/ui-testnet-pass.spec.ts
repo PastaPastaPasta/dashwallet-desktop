@@ -122,7 +122,7 @@ for (const theme of ["light", "dark"] as const) {
       f.emit({ kind: "platform", network: "testnet", walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
     });
     await shielded.press("Space");
-    await expect(page.getByTestId("shielded-receive-why")).toBeVisible();
+    await expect(page.getByTestId("shielded-receive-progress")).toBeVisible();
     await expect(shielded).toBeFocused();
     await page.evaluate(() => {
       const f = window.__dwFixture!;

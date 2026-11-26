@@ -3,17 +3,18 @@
 // CoinJoin cards (DP1-08, U-06), the frequent contacts
 // (DP3-07), then the recent history in day-group cards.
 
-import { Fragment, useEffect, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useState, type ReactNode } from "react";
 import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { errorMessage } from "../api/backend";
-import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, useWallets, type HistoryFilter, type ShieldedHold } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
+import { Sheet } from "../components/sheet";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
@@ -21,17 +22,19 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
+import { heldLine, heldWayOutText } from "../format/heldUnfinished";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, shieldedSubtitle, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
-import { buyCredits } from "./dashpay/MyProfile";
+import { identityCardAction } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { RestoredBanner } from "./RestoredBanner";
 import { UpgradeNoticeBanner } from "./UpgradeNoticeBanner";
+import { DroppedNoticeBanner } from "./DroppedNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
 import { ShieldedClosedNotice } from "./ShieldedClosedNotice";
@@ -69,7 +72,39 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
   );
 }
 
-function BalanceHero({ balances, shielded, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
+/** The coins a dropped payment holds back, and a link to how to get them back. Shown whenever any
+ * coin is held, in discreet mode too (with the amount masked). */
+function HeldLine({ text, walletId, awaiting }: { text: string; walletId: string; awaiting: boolean }) {
+  const tr = useT();
+  const wallets = useWallets();
+  const [open, setOpen] = useState(false);
+  const textId = useId();
+  // The variant depends on how many wallets are open: none is chosen before the list is read.
+  const wayOut = wallets.isPending ? null : heldWayOutText(walletId, wallets.data ?? [], awaiting);
+  return (
+    <>
+      <p className="hero-held" data-testid="hero-held">
+        <span className="hero-held-text" id={textId} data-testid="hero-held-text">
+          {text}
+        </span>
+        <button type="button" className="hero-held-link" aria-describedby={textId} data-testid="hero-held-way-out" onClick={() => setOpen(true)}>
+          {tr("home.core.heldWhatCanIDo")}
+        </button>
+      </p>
+      {open && (
+        <Sheet title={tr("home.core.heldWhatCanIDo")} width="small" testId="held-way-out" onClose={() => setOpen(false)}>
+          {wayOut && (
+            <p className="sheet-text" data-testid="held-way-out-text">
+              {wayOut}
+            </p>
+          )}
+        </Sheet>
+      )}
+    </>
+  );
+}
+
+function BalanceHero({ walletId, balances, shielded, shieldedHold, platform, network, hero }: { walletId: string; balances: Balances | null; shielded: PoolReading; shieldedHold: ShieldedHold | null; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
   const tr = useT();
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
@@ -78,9 +113,10 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
   const home = balances && homeBalance(balances, shielded, platform);
-  const rows = home ? breakdownRows(home.pools, discreet) : [];
+  const rows = home ? breakdownRows(home.pools, discreet, shieldedHold !== null) : [];
   // Without a breakdown, what Core still has arriving or held goes under the hero (not in discreet mode).
   const coreNote = balances && rows.length === 0 && !discreet ? coreSubtitle(balances, fmt, "") : "";
+  const held = balances ? heldLine(balances, fmt) : "";
   const digits = home ? heroDigits(fmt(home.total)) : null;
   const fiat = useFiat();
   return (
@@ -115,8 +151,8 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
         <div className="hero-breakdown" data-testid="hero-breakdown">
           {POOL_ROWS.filter((row) => rows.includes(row.pool)).map((row, i) => {
             const reading = home.pools[row.pool];
-            // Core names what is still arriving or held; discreet mode keeps that to itself.
-            const subtitle = row.pool === "core" && !discreet ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
+            // Core and Shielded name what is still arriving or held; discreet mode keeps that to itself.
+            const subtitle = discreet ? row.subtitle : row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.pool === "shielded" ? shieldedSubtitle(shieldedHold, fmt, row.subtitle) : row.subtitle;
             return (
               <Fragment key={row.pool}>
                 {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
@@ -133,6 +169,7 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
           })}
         </div>
       )}
+      {held && balances && <HeldLine text={held} walletId={walletId} awaiting={balances.heldAwaiting} />}
     </section>
   );
 }
@@ -155,21 +192,13 @@ function HeroFiat({ fiat, duffs, hidden }: { fiat: Fiat; duffs: number; hidden: 
   );
 }
 
-/** Pay ▸ To an address, a fresh form (as a link would open it). */
-function openPay(focusAddress: boolean) {
-  openPayForm();
-  if (focusAddress) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="pay-address"]')?.focus());
-}
-
-// U-03 D16: the mobile shortcut bar. The desktop has no camera, so Scan QR opens the address
-// field to paste into, as U-01 routes a scanQr link; Back up comes with the recovery phrase (U-02).
+// U-03 D16: the Home shortcut bar; Back up comes with the recovery phrase (U-02).
 // Transfer opens the sheet at Dash wallet → Shielded, or → Platform when Shielded is not active.
 // Titles are read at render, so a language change shows at once.
 const SHORTCUTS: { id: string; icon: UsedIcon; title: () => string; run: ((transfer: () => void) => void) | null; why?: () => string }[] = [
   { id: "receive", icon: "shortcutReceive", title: () => t("home.shortcuts.receive"), run: () => navigate("receive") },
-  { id: "send", icon: "shortcutSend", title: () => t("home.shortcuts.send"), run: () => openPay(false) },
+  { id: "send", icon: "shortcutSend", title: () => t("home.shortcuts.send"), run: () => openPayForm() },
   { id: "transfer", icon: "transfer", title: () => t("transfer.shortcut"), run: (transfer) => transfer() },
-  { id: "scan", icon: "shortcutScanQR", title: () => t("home.shortcuts.scan"), run: () => openPay(true) },
   { id: "backup", icon: "shortcutBackup", title: () => t("home.shortcuts.backup"), run: null, why: () => t("home.shortcuts.backupWhy") },
 ];
 
@@ -200,8 +229,11 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   const b = useBackend();
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
-  // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
-  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId)));
+  // DP1-10 D8: "Buy credits" (and the voting card's Top up) opens My Profile with the top-up sheet.
+  const onAction = (kind: CardActionKind) => {
+    if (identityCardAction(b, walletId, inputs.main, kind, card)) return;
+    return defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId));
+  };
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 
@@ -278,7 +310,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
     <main className="page page-overview" data-testid="page-home">
       <h1 className="sr-only">{tr("home.title")}</h1>
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
+        <BalanceHero walletId={walletId} balances={balance.data ?? null} shielded={pools.shielded} shieldedHold={pools.shieldedHold} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
@@ -288,6 +320,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShieldedClosedNotice walletId={walletId} />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
+        <DroppedNoticeBanner walletId={walletId} network={network} />
         <ExportStagingBanner />
         <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />

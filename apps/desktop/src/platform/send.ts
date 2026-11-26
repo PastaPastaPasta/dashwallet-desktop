@@ -15,7 +15,8 @@ import { CREDITS_PER_DUFF } from "../api/pending";
 import { failureText, Model } from "../onboarding/model";
 import { t } from "../i18n";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify } from "./move";
+import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify, preflightText, stillHeld } from "./move";
+import { isAddressSendsOff } from "./mainnetOff";
 
 export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "authorizePlatformSend" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -122,6 +123,15 @@ export const SEND_COPY = {
       return t("pay.platform.replaced.text");
     },
   },
+  /** The payment's group settled with no evidence of which member went through: never "Sent". */
+  settledUnknown: {
+    get title() {
+      return t("pay.status.settledUnknown.title");
+    },
+    get text() {
+      return t("pay.status.settledUnknown.text");
+    },
+  },
   /** How an unsettled payment ended, by Activity or by the send's own answer. */
   settled: {
     went: {
@@ -219,10 +229,14 @@ export function recipientText(reason: string | undefined): string {
   }
 }
 
-/** A send's refusal, by code; the move's texts for the codes both share. */
-export function sendErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
+/** A send's refusal, by code; the move's texts for the codes both share. `retryOf`: the held send this
+ * one retried; while it still holds, a pre-check refusal says it may still land. */
+export function sendErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, retryOf?: string | null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
+    case "credits.rules_unsupported":
+    case "credits.preflight_refused":
+      return preflightText(e.code, stillHeld(activity, retryOf) ? "send" : null);
     case "credits.recipient_invalid":
       return recipientText(e.data?.kind === "reason" ? e.data.reason : undefined);
     case "credits.send_out_of_range":
@@ -254,8 +268,8 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
 
 /** The refusal of `platformSend` itself: an unknown or used operation (`invalid_argument`) means the
  * quote it came from is no good any more; the rest as a quote's. */
-export function sendRefusalText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
-  return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits, activity);
+export function sendRefusalText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, retryOf?: string | null): string {
+  return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits, activity, retryOf);
 }
 
 /** Back is offered when a new quote may pass (as for a move), after an expired operation, and when
@@ -296,14 +310,42 @@ export function staleConfirm(quote: Pick<PlatformSendQuote, "retryOf">, opened: 
 }
 
 /** What Activity says of an unsettled outcome (pending, or failed by height) the result sheet shows:
- * `went` when its row is done or replaced, `refused` when it failed for good; `null` while it may still land. */
-export type Settled = "went" | "refused";
+ * `went` when its row is done or replaced, `refused` when it failed for good, `unknown` when its group
+ * settled with no evidence of which member went through; `null` while it may still land. */
+export type Settled = "went" | "refused" | "unknown";
 export function settledBy(outcome: Pick<PlatformSendOutcome, "id" | "mayLand"> | null, activity: readonly PlatformActivity[] | null | undefined): Settled | null {
   if (!outcome || !outcome.mayLand || !activity) return null;
   const row = activity.find((a) => a.id === outcome.id);
   if (!row) return null;
+  if (row.winnerKnown === false) return "unknown";
   if (row.state === "done" || row.state === "replaced") return "went";
   return row.state === "failed" && !row.mayLand ? "refused" : null;
+}
+
+/** The send went through: done, or settled as went, and never when its group names no winner. */
+export const sendWent = (outcome: Pick<PlatformSendOutcome, "state" | "winnerKnown"> | null | undefined, settled: Settled | null): boolean =>
+  settled !== "unknown" && outcome?.winnerKnown !== false && (outcome?.state === "done" || settled === "went");
+
+/** What the result sheet says: the outcome's own state, unless Activity has since settled it (`settled`).
+ * `retried`: the send answered a retry, which may be the earlier payment's own outcome. */
+export function sendOutcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => string, settled: Settled | null, retried: boolean): { title: string; text: string } {
+  if (settled === "unknown" || outcome.winnerKnown === false) return SEND_COPY.settledUnknown;
+  if (settled === "went") return SEND_COPY.settled.went;
+  if (settled === "refused") return SEND_COPY.settled.refused;
+  switch (outcome.state) {
+    case "done": {
+      // The balances' figure: a deposit to the fee source while it settled hides part of the fee. Max's inputs gave
+      // exactly their balances (the output paid the fee), so its debit is exact.
+      const text = SEND_COPY.done.text(credits(outcome.credits), !outcome.feeFromAmount);
+      return { title: SEND_COPY.done.title, text: retried ? `${SEND_COPY.went} ${text}` : text };
+    }
+    case "pending":
+      return SEND_COPY.pending;
+    case "failed":
+      return outcome.mayLand ? SEND_COPY.failed : SEND_COPY.settled.refused;
+    case "replaced":
+      return SEND_COPY.replaced;
+  }
 }
 
 /** An earlier send of the wallet that failed by height and may still go through (the one Retry applies to). */
@@ -407,8 +449,9 @@ export class PlatformSendFlow extends Model {
           else this.noRetry = true;
           break;
         } catch (e) {
-          // Activity cannot tell Max from an exact amount: the next ask is Max.
-          if (i < asks.length - 1 && hasCode(e, "invalid_argument")) continue;
+          // Activity cannot tell Max from an exact amount: the next ask is Max. On mainnet the flag
+          // answers an ask that is not the held send's exact terms.
+          if (i < asks.length - 1 && (hasCode(e, "invalid_argument") || isAddressSendsOff(e))) continue;
           throw e;
         }
       }

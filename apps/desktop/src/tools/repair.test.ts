@@ -14,7 +14,7 @@ import { DEFAULT_PREFS, ui } from "../app/ui";
 import { appError, summary, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
-import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
+import { RepairModel, repairErrorText, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
 
 const reg = (draft: string, waiting: RegistrationStatus["waiting"]): RegistrationStatus => ({
   draft,
@@ -111,6 +111,22 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(model.state).toEqual({ kind: "failed", text: "Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait." });
   });
 
+  it("says Remove Unconfirmed refused while the wallet catches up after a fork can be tried once it has", async () => {
+    const { model, api } = setup();
+    api.dropUnconfirmed.mockRejectedValueOnce(appError("rescan_in_progress"));
+    model.ask("dropUnconfirmed");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "The wallet is catching up with the network. You can remove unconfirmed transactions once it has finished.",
+    });
+  });
+
+  it("keeps Rescan's own text when a rescan is refused while one runs", () => {
+    expect(repairErrorText(appError("rescan_in_progress"))).toBe("Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait.");
+    expect(repairErrorText(appError("rescan_in_progress"), "resetChainData")).toBe("Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait.");
+  });
+
   it("QT148_resetChainDataAsksFirst", async () => {
     const { model, calls } = setup();
     model.ask("resetChainData");
@@ -191,7 +207,7 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
     expect(RepairText.dropUnconfirmedQuestion).toBe(
-      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
     );
   });
 
@@ -263,7 +279,13 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     await model.resolveStuck(reg("r1", "fundingUnknown"));
     expect(model.state).toEqual({ kind: "failed", text: "The funding is still being sent. Try again later." });
     expect(vault.calls.revoked).toEqual(["grant-1"]);
-    expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The funding's coins were already spent by transaction cd.");
+    expect(stuckFundingText({ kind: "spendUnsettled", txid: "ab" }, true)).toBe(
+      "Transaction ab, which this transfer depends on, isn't final on the network yet. Try again once it is.",
+    );
+    expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The coins for this transfer have already been spent, so there's nothing to send back. If its payment (transaction cd) went through, finish the transfer from Tools ▸ Repair ▸ Finish transfers.");
+    expect(stuckFundingText({ kind: "lockAbandoned", txid: "cd" }, true)).toBe(
+      "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
+    );
   });
 
   it("IOS113_C9: Resolve asks first; Cancel sends nothing, OK sends", async () => {
@@ -351,6 +373,44 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
       "Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back. New moves into Shielded stay paused while this move is open.",
     );
     expect(text).not.toMatch(/\byet\b|registration/);
+  });
+
+  it("where this build cannot send from Shielded, a sent-back or unsettleable move names no move into Shielded again", async () => {
+    expect(shieldBlockedText({ reason: "noKnownLock", retryLater: false }, true)).toBe(
+      "Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back.",
+    );
+    const retry = { reason: "spendUnsettled", retryLater: true } as const;
+    expect(shieldBlockedText(retry, true)).toBe(shieldBlockedText(retry));
+    expect(RepairText.resolvedShield("ab".repeat(32), true)).toBe(`The coins were sent back to your wallet (transaction ${"ab".repeat(32)}).`);
+    expect(RepairText.stuckShieldsHint(true)).toBe(
+      "Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    );
+    expect(RepairText.stuckShieldsHint()).toBe(
+      "Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    );
+    expect(RepairText.shieldRepair(true, 2, "1.1 DASH", "0.0000034 DASH", true)).toBe(
+      "Repair sends the move's 2 mixed coins (1.1 DASH) back to your wallet's main balance, at a network fee of 0.0000034 DASH.",
+    );
+    expect(RepairText.shieldRepair(false, 1, "1.1 DASH", "0.0000034 DASH", true)).toBe(
+      "Repair sends the one spendable coin of your main balance (1.1 DASH) back to your wallet, at a network fee of 0.0000034 DASH.",
+    );
+    for (const [mixed, n] of [[true, 1], [true, 2], [false, 1], [false, 2]] as const) {
+      const on = RepairText.shieldRepair(mixed, n, "1.1 DASH", "0.0000034 DASH");
+      expect(on).toMatch(/ You can move Dash into Shielded again once that payment is confirmed\.$/);
+      expect(RepairText.shieldRepair(mixed, n, "1.1 DASH", "0.0000034 DASH", true)).toBe(on.replace(" You can move Dash into Shielded again once that payment is confirmed.", ""));
+    }
+
+    const { api, vault } = setup({ encrypted: false });
+    let spendsOff = false;
+    const model = new RepairModel(api, new GrantModel(vault.api), WALLET_A, () => spendsOff);
+    const stuck: StuckShieldFunding = { step: "shield/0/funding", state: "maybeSent", repair: { mixed: true, inputs: 2, totalDuffs: 110_001_100, feeDuffs: 340 }, blocked: null };
+    api.stuckShieldFundings.mockResolvedValue([stuck]);
+    await model.refresh();
+    model.ask("resolveStuck", model.stuckShields[0]);
+    api.stuckShieldFundings.mockResolvedValue([]);
+    spendsOff = true;
+    await model.confirm();
+    expect(model.state).toEqual({ kind: "done", text: RepairText.resolvedShield("ab".repeat(32), true) });
   });
 
   it("a failed read of the stuck moves into Shielded is said, not hidden", async () => {

@@ -81,6 +81,11 @@ export interface UiState {
   /** The invitation the claim screen shows (DP5-03 D3): its stash id, and whether onboarding's
    * replayed link (`welcome`) or a link opened in a wallet (`join`) opened it; `null`: none. */
   invitation: { linkId: string; entry: "welcome" | "join" } | null;
+  /** The App Connect request "Sign in to an app" shows: its inbox id, and the host its return
+   * link opens (`null`: none, or a request typed, pasted or scanned); `null`: none. */
+  appConnect: { linkId: string; returnsTo: string | null } | null;
+  /** Requests that arrived while one was shown, in order: never swapped in under the user. */
+  appConnectQueue: { linkId: string; returnsTo: string | null }[];
   /** The wallet the window shows; `null` = the first. */
   walletId: string | null;
   /** Txid whose detail sheet is open. */
@@ -153,6 +158,8 @@ let state: UiState = {
   psbtPrefill: null,
   settingsTab: "general",
   invitation: null,
+  appConnect: null,
+  appConnectQueue: [],
   walletId: null,
   detail: null,
   dialog: null,

@@ -49,8 +49,9 @@ pub(super) fn edited_claim_on_a_held_coin(
 /// holding the claim. The record keeps the twin's input details, so with
 /// a repeated input their indices are the twin's; the repair reads only
 /// the transaction. Returns the session reopened on that store with the
-/// repair skipped, as a build without it opened it
-/// ([`a_seeded_claim_is_stored_as_a_relayed_one`]).
+/// repair skipped and nothing withheld, as a build without either opened
+/// it ([`a_seeded_claim_is_stored_as_a_relayed_one`]): such a build paid
+/// from the claim's change.
 pub(super) fn seed_claim(
     engine: &Engine,
     session: Arc<NetworkSession>,
@@ -83,6 +84,7 @@ pub(super) fn seed_claim(
     swap_in(&dir, &twin, claim);
     arm(&dir, Stop::Skip);
     let session = open(engine);
+    (session.hub.skip_withhold).store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(stored(session.data_dir(), id, claim.txid()), "seeded");
     session
 }

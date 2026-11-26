@@ -189,6 +189,16 @@ test.describe("Repair", () => {
     );
   });
 
+  test("Remove Unconfirmed refused while the wallet catches up after a fork says to wait", async ({ page }) => {
+    await open(page, "abandon-catching-up");
+    await tools(page, "repair");
+    await page.getByTestId("repair-drop-unconfirmed").click();
+    await page.getByTestId("repair-confirm-ok").click();
+    await expect(page.getByTestId("repair-outcome")).toHaveText(
+      "The wallet is catching up with the network. You can remove unconfirmed transactions once it has finished.",
+    );
+  });
+
   test("IOS034: the birth height saves and shows", async ({ page }) => {
     await open(page);
     await tools(page, "repair");

@@ -89,6 +89,11 @@ pub enum FlowKind {
     /// `PlatformOp` grant (C-funding P15), with the one key class its source
     /// needs; never a `ContactPayment` lease, nor the reverse.
     ContactPayFromBalance,
+    /// One App Connect login under an `AppConnect` grant: the MASTER-signed
+    /// IdentityUpdate adding the app's keys, then the response document,
+    /// each under its own call permit. Its signers are `PlatformIdentity`
+    /// and an `AppConnect` one bound to the grant's request.
+    AppConnect,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -251,6 +256,9 @@ impl NetworkSession {
         crate::coinjoin::test_pause(crate::coinjoin::sweep_hooks(self).flow_admitted).await;
         self.require_wallet(&wallet_id).map_err(engine)?;
         match (flow, source) {
+            // An approval begins its own lease, under the grant its quote
+            // bound (app_connect.rs): never a host's.
+            (FlowKind::AppConnect, _) => return Err(PlatformError::GrantInvalid),
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
             (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded))
                 if super::shielded_payout::enabled_on(&self.network) => {}

@@ -847,6 +847,16 @@ impl CallPermit {
             .map_err(|_| LeaseError::Vault("platform address signer scope"))
     }
 
+    /// The lease's App Connect keys, counting into this permit as
+    /// [`Self::identity_signer`]'s signatures do.
+    pub(crate) fn app_connect_keys(
+        &self,
+    ) -> Result<crate::platform::app_connect::AppKeys, LeaseError> {
+        let signer = self.lease.call_app_connect_signer()?;
+        crate::platform::app_connect::AppKeys::new(signer, self.signatures())
+            .map_err(|_| LeaseError::Vault("app connect signer scope"))
+    }
+
     /// The Orchard key set of the lease's shielded spend key (0.1 E1),
     /// counted into this permit as one released signature: the library's
     /// spend proves and signs with the key set itself, so once it is out

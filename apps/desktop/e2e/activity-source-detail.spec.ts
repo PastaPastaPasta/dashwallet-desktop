@@ -76,6 +76,40 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     await expect(page.getByTestId("source-detail-amount")).toHaveCount(0);
   });
 
+  for (const theme of THEMES) {
+    test(`a group that names no winner says so on every row, its debit on the newest only (${theme})`, async ({ page }) => {
+      const errors = await activity(page, "platform-settled-unknown", theme);
+      const settled = "Settled with another payment or move";
+      const text = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.";
+      await expect(page.locator('button[data-txid$=":unknown"]')).toHaveCount(4);
+      for (const id of ["pm-exit2", "pm-exit1", "pm-move", "pm-old"]) {
+        const row = page.locator(`button[data-txid="platform:moveToCore:${id}:unknown"]`);
+        await expect(row).toContainText(settled);
+        await expect(row).not.toContainText("Replaced by a retry");
+        await expect(row).not.toContainText("Not accepted");
+      }
+      for (const [id, shown] of [["pm-exit2", 1], ["pm-exit1", 0], ["pm-move", 1], ["pm-old", 0]] as const)
+        await expect(page.locator(`button[data-txid="platform:moveToCore:${id}:unknown"] .tx-row-amount`)).toHaveCount(shown);
+      // The top-up that did not land is not part of the doubt.
+      await expect(page.locator('button[data-txid="platform:toIdentity:pt-topup"]')).toContainText("Credit top-up from Platform");
+      await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown.png`), animations: "disabled", caret: "hide" });
+
+      await page.locator('button[data-txid="platform:moveToCore:pm-old:unknown"]').click();
+      await expect(page.getByTestId("source-detail-title")).toHaveText(settled);
+      await expect(page.getByTestId("source-detail-status")).toHaveText(text);
+      await expect(page.getByTestId("source-detail-status")).not.toHaveClass(/is-problem/);
+      await expect(page.getByTestId("source-detail-amount")).toHaveCount(0);
+      await page.screenshot({ path: test.info().outputPath(`${theme}-activity-settled-unknown-older.png`), animations: "disabled", caret: "hide" });
+      await page.keyboard.press("Escape");
+
+      await page.locator('button[data-txid="platform:moveToCore:pm-move:unknown"]').click();
+      await expect(page.getByTestId("source-detail-status")).toHaveText(text);
+      await expect(page.getByTestId("source-detail-amount")).toContainText("0.3");
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("a failed Shielded payment reads the same word in its details as on its row", async ({ page }) => {
     await activity(page);
     await page.evaluate(() => {
@@ -90,6 +124,46 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     await expect(page.getByTestId("source-detail-status")).toHaveText("Not accepted");
     await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
   });
+
+  for (const theme of THEMES) {
+    test(`a refused Shielded payment whose funds stay held may still go through, and offers no retry (${theme})`, async ({ page }) => {
+      const errors = await activity(page, "funded", theme);
+      const refuse = (status: "pending" | "failed", refusal: "held" | "released") =>
+        page.evaluate(
+          ([status, refusal]) => {
+            const f = window.__dwFixture!;
+            const s = f.world.pending.shielded!;
+            s.activity = s.activity.map((a) => (a.id === "sh-2" ? { ...a, blockHeight: null, status, refusal } : a));
+            f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } } as never);
+          },
+          [status, refusal] as const,
+        );
+      await refuse("pending", "held");
+      const held = page.locator('button[data-txid="shielded:sent:sh-2:mayland"]');
+      await expect(held).toContainText("May still go through");
+      await expect(held).not.toContainText("Not accepted");
+      await expect(held).toContainText("-0.1");
+      await held.click();
+      const sheet = page.getByTestId("source-detail");
+      await expect(page.getByTestId("source-detail-status")).toHaveText("May still go through");
+      await expect(page.getByTestId("source-detail-status")).not.toHaveClass(/is-problem/);
+      await expect(page.getByTestId("source-detail-amount")).toContainText("-0.1");
+      await expect(page.getByTestId("source-detail-refusal")).toContainText("may still accept it later");
+      await expect(page.getByTestId("source-detail-refusal")).toContainText("Don't send this payment again");
+      await expect(page.getByTestId("source-detail-refusal")).toContainText("(0.10000000 tDASH)");
+      await expect(sheet.getByRole("button", { name: /retry|try again|send again|pay again/i })).toHaveCount(0);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+
+      // Released while its details are open: the same record, now not accepted.
+      await refuse("failed", "released");
+      await expect(page.getByTestId("source-detail-status")).toHaveText("Not accepted");
+      await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
+      await expect(page.getByTestId("source-detail-refusal")).toHaveText("Dash Platform didn't accept this payment, and it can no longer go through, so Dash Wallet has stopped holding the Shielded funds it used. Any of those funds that another payment hasn't spent are spendable again.");
+      await page.keyboard.press("Escape");
+      await expect(page.locator('button[data-txid="shielded:sent:sh-2"]')).toContainText("Not accepted");
+      expect(errors).toEqual([]);
+    });
+  }
 
   test("says so when the record leaves the list while its details are open", async ({ page }) => {
     await activity(page);

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { contrast } from "./contrast";
 import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
+import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 
 // Receive's Dash / Platform / Shielded tabs switch the address only: the request column keeps its
 // place and size on every tab, and on Platform and Shielded it says requests are for Dash addresses.
@@ -99,3 +100,38 @@ for (const pool of ["platform", "shielded"] as const) {
     await expect(page.getByTestId("request-create")).toBeEnabled();
   });
 }
+
+// Receive in Shielded while the first scan runs shows the address with the scan's progress; while the
+// viewing key waits for a full unlock it says so with no address, and its Unlock binds the key.
+test("Shielded shows its address while the first scan runs", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-syncing", "light"));
+  await page.getByTestId("sidebar-receive").click();
+  await page.getByTestId("shielded-receive-open").click();
+  await expect(page.getByTestId("shielded-receive-address")).toBeVisible();
+  await expect(page.getByTestId("shielded-receive-scan")).toContainText("Syncing Shielded… 42.0%");
+  await expect(page.getByTestId("shielded-receive-scan")).toContainText("You can receive now.");
+});
+
+test("Shielded waiting for an unlock says so and shows no address", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-locked", "light"));
+  await page.getByTestId("sidebar-receive").click();
+  await page.getByTestId("shielded-receive-open").click();
+  await expect(page.getByTestId("shielded-receive-locked")).toContainText("Unlock the wallet to show your Shielded address.");
+  await expect(page.getByTestId("shielded-receive-unlock")).toHaveText("Unlock");
+  await expect(page.getByTestId("shielded-receive-address")).toHaveCount(0);
+});
+
+test("Shielded unlocked for mixing only shows no address, and its Unlock fully shows it", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-mixing-only", "light"));
+  await page.getByTestId("sidebar-receive").click();
+  await page.getByTestId("shielded-receive-open").click();
+  await expect(page.getByTestId("shielded-receive-locked")).toContainText("The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.");
+  await expect(page.getByTestId("shielded-receive-unlock")).toHaveText("Unlock fully");
+  await expect(page.getByTestId("shielded-receive-address")).toHaveCount(0);
+  await expect(page.getByTestId("shielded-receive-progress")).toHaveCount(0);
+  await page.getByTestId("shielded-receive-unlock").click();
+  await page.getByTestId("unlock-sheet-field").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("unlock-sheet-submit").click();
+  await expect(page.getByTestId("shielded-receive-address")).toBeVisible();
+  await expect(page.getByTestId("shielded-receive-locked")).toHaveCount(0);
+});

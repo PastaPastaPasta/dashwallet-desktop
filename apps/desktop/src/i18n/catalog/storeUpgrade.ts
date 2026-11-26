@@ -21,10 +21,10 @@ export const storeUpgrade = {
       confirm: "Restart and set up",
       cancel: "Cancel",
     },
-    /** PLACEHOLDER until MG's copy: the Restore screen's line once Restore earlier data was refused for a
-     * shielded hold and the screen offers Set up from recovery phrase. */
+    /** The Restore screen's way out once Restore earlier data was refused for a shielded hold and the
+     * screen offers Set up from recovery phrase; it replaces `refused.wayOut.restore` there. */
     restoreHeld:
-      "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+      "Dash Wallet can't restore your earlier wallet data, because it doesn't know yet whether a Shielded payment from one of your wallets went through. To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first. If you restart Dash Wallet, choose Restore earlier data again to get this choice back.",
   },
   notPrivate: {
     title: "Dash Wallet can't use this data folder",

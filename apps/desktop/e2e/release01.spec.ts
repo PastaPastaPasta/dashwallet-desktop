@@ -415,7 +415,11 @@ test.describe("network choice", () => {
     await setKnobs(page, { closeRefused: "shielded_spend_unresolved" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
-    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A shielded payment is still being confirmed. Switch networks once it is.");
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    await setKnobs(page, { closeRefused: "transfer_preparing" });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A transfer in one of your wallets is still being prepared. Try again when it's done.");
     expect(await activeNetwork(page)).toBe("testnet");
   });
 
@@ -1070,7 +1074,7 @@ test.describe("Shielded", () => {
         for (const id of ids) {
           const b = page.getByTestId(id);
           await expect(b).toBeDisabled();
-          await expect(b).toHaveAttribute("title", "Shielded is still syncing; try again when it finishes.");
+          await expect(b).toHaveAttribute("title", "Shielded is still syncing. Try again when it finishes.");
           // Disabled is dimmed, not hidden: its text still has at least 3:1 against what is behind it.
           expect(await contrast(b)).toBeGreaterThanOrEqual(3);
         }
@@ -1078,7 +1082,7 @@ test.describe("Shielded", () => {
       // Both of its Transfer routes wait and say why.
       for (const route of ["coreToShielded", "shieldedToCore"] as const) {
         await openTransfer(page, route);
-        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
         await expect(page.getByTestId("transfer-amount")).toBeDisabled();
         await waits(["transfer-max", "transfer-continue"]);
         if (route === "shieldedToCore") await shot(page, `${theme}-shielded-syncing-disabled`);
@@ -1086,7 +1090,9 @@ test.describe("Shielded", () => {
       }
       await page.getByTestId("sidebar-receive").click();
       await page.getByTestId("shielded-receive-open").click();
-      await expect(page.getByTestId("shielded-receive-why")).toHaveText("Shielded is still syncing; try again when it finishes.");
+      // Receive does not wait: the address shows with the first scan's progress.
+      await expect(page.getByTestId("shielded-receive-progress")).toHaveText("Syncing Shielded… 42.0%");
+      await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
       await page.getByTestId("sidebar-pay").click();
       await waits(["shielded-send"]);
       expect(errors).toEqual([]);

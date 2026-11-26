@@ -64,6 +64,8 @@ pub enum CloseRefused<B> {
     Busy(B),
     /// The session's operations did not finish within the drain.
     Draining,
+    /// A transfer waits on its wallet's start-up to go on.
+    Preparing,
 }
 
 #[derive(Debug, Clone)]
@@ -434,7 +436,9 @@ impl Engine {
             Ok(closed) => Ok(closed),
             Err(CloseRefused::Engine(e)) => Err(e),
             Err(CloseRefused::Busy(never)) => match never {},
-            Err(CloseRefused::Draining) => unreachable!("no drain without a pause"),
+            Err(CloseRefused::Draining | CloseRefused::Preparing) => {
+                unreachable!("no drain or wait refusal without a pause")
+            }
         }
     }
 
@@ -476,6 +480,13 @@ impl Engine {
             // failing; a refusal releases the load fence before it resumes
             // the gate.
             let mut hold = session.gate.hold(pause.is_some());
+            let unresolved = || {
+                if pause.is_some() && session.platform.preparing() {
+                    CloseRefused::Preparing
+                } else {
+                    CloseRefused::Engine(EngineError::ShieldedSpendUnresolved)
+                }
+            };
             // From the check to the commit no wallet loads and no
             // signing shielded call starts (E1 r2 R2-3). A load in
             // flight is waited for, briefly, without the sessions lock,
@@ -494,7 +505,6 @@ impl Engine {
                 // A signing shielded call holds this to read, and an
                 // operation guard, for its whole run: named, not drained.
                 let shielded = || session.platform.close_preflight.try_write().is_err();
-                let unresolved = || CloseRefused::Engine(EngineError::ShieldedSpendUnresolved);
                 if shielded() {
                     return Err(unresolved());
                 }
@@ -518,7 +528,7 @@ impl Engine {
                 return Ok(false);
             }
             let Ok(_preflight) = session.platform.close_preflight.try_write() else {
-                return Err(CloseRefused::Engine(EngineError::ShieldedSpendUnresolved));
+                return Err(unresolved());
             };
             if session.holds_shielded_spends().await {
                 return Err(CloseRefused::Engine(EngineError::ShieldedSpendUnresolved));

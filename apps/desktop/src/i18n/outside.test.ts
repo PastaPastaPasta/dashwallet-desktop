@@ -21,7 +21,7 @@ const english = () => [
 describe("copy outside the screens", () => {
   it("reads as before in English", async () => {
     expect(english()).toEqual([
-      "Shielded is still syncing; try again when it finishes.",
+      "Shielded is still syncing. Try again when it finishes.",
       "Scanning…",
       "Last checked 3 hours ago",
       "The link was not opened: close “Delete all wallet data?” first",

@@ -77,7 +77,7 @@ pub(super) fn launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
 pub(super) fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
     engine
         .block_on(on_pool(session, wallet, |_, lib| async move {
-            Ok(pool::ShieldedLib::bind(&lib).await?)
+            Ok(pool::ShieldedLib::bind(&lib).await?.is_bound())
         }))
         .unwrap()
 }

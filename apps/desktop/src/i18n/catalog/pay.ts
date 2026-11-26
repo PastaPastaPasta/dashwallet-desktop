@@ -337,6 +337,15 @@ export const pay = {
       belowMinimum: "The smallest payment from here is {min}. Pay a smaller amount from your Dash wallet.",
       movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
       shieldedPending: "An earlier shielded payment is still being checked. Try again when it is settled.",
+      /** `shieldedPending` while what holds the payment back is a hold: no "Try again". */
+      shieldedHeld: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
+    },
+  },
+  /** As `transfer.status`, for a payment from the Platform addresses. */
+  status: {
+    settledUnknown: {
+      title: "Settled with another payment or move",
+      text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
     },
   },
   platform: {

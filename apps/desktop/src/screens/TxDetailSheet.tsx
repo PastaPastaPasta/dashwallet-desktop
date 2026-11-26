@@ -4,7 +4,7 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { errorMessage, isAppError } from "../api/backend";
+import { errorMessage, hasCode, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -21,14 +21,14 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
 import { findContact, subtitle } from "../contacts/model";
+import { droppedLine, invalidSourceDetail, recipientOf } from "../history/dropped";
 import { recordUnreadableText, unreadableWallet } from "../history/recordUnreadable";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
-import { useT } from "../i18n";
+import { t, useT } from "../i18n";
 import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
-import { t } from "../i18n";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, detailWhat, detailWho, isProblem, rowDate, shownAmount, txIcon } from "../format/tx";
 
@@ -39,6 +39,7 @@ const confirmationsText = (n: number) => `${n} ${n === 1 ? "confirmation" : "con
  * row reads as InstantSend (the activity row's word for it). A count of confirmations is technical
  * and stays in the folded details. */
 export function statusText(s: TxStatusInfo): string {
+  if (s.dropped) return t("activity.status.droppedLabel");
   switch (s.kind) {
     case "abandoned":
       return "Abandoned";
@@ -173,16 +174,64 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
 }
 
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
- * refusal, why a `settledDescendant` one can't be abandoned, and which open wallet (of `wallets`)
- * a `recordUnreadable` one names from the catalog. */
-export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []): string {
+ * refusal, why a `settledDescendant` or `platformFunding` one can't be abandoned, which open wallet (of `wallets`)
+ * a `recordUnreadable` one names, and that an Abandon refused while the wallet catches up can be
+ * tried once it has, from the catalog. */
+export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = [], what: "abandon" | "resend" = "abandon"): string {
   const unreadable = unreadableWallet(e);
   if (unreadable !== undefined) return recordUnreadableText(unreadable, wallets);
+  if (what === "abandon" && hasCode(e, "rescan_in_progress")) return t("activity.abandon.catchingUp");
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+    if (e.data.refusal === "platformFunding") return t("activity.abandon.platformFunding");
   }
   return errorMessage(e);
+}
+
+/** Whether the engine withholds an output of this transaction: it, or a payment it was built on,
+ * may never confirm, so its coin is pending (`coins.pendingUnproven`). */
+export const withholds = (x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined): boolean => (x?.withheldOutputs.length ?? 0) > 0;
+
+/** The pending coin's line, under the status, while the engine withholds it. */
+export function PendingUnprovenLine({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined }) {
+  if (!withholds(x)) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-pending-unproven">
+      {t("coins.pendingUnproven")}
+    </p>
+  );
+}
+
+/** Abandon's hint on a payment whose coin is pending, while Abandon is offered. */
+export function UnprovenAbandonHint({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs" | "canAbandon"> }) {
+  if (!x.canAbandon || !withholds(x)) return null;
+  return (
+    <p className="tx-actions-question" data-testid="tx-abandon-unproven-hint">
+      {t("activity.abandon.unprovenParentHint")}
+    </p>
+  );
+}
+
+/** An abandoned payment's line while the engine's rescan checks a coin it spent before giving it
+ * back; it goes when the engine reports the check done. */
+export function CheckingSpentCoinsLine({ x }: { x: Pick<TxDetailExtrasInfo, "abandoned" | "checkingSpentCoins"> | undefined }) {
+  if (!x?.abandoned || !x.checkingSpentCoins) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-checking-spent-coins">
+      {t("activity.abandon.checkingSpentCoins")}
+    </p>
+  );
+}
+
+function CoinLines({ walletId, txid }: { walletId: string; txid: string }) {
+  const x = useTxDetailExtras(walletId, txid).data;
+  return (
+    <>
+      <PendingUnprovenLine x={x} />
+      <CheckingSpentCoinsLine x={x} />
+    </>
+  );
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
@@ -209,7 +258,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
       const wallets = await b.listWallets().catch(() => []);
-      setNote({ text: actionProblem(e, wallets), problem: true });
+      setNote({ text: actionProblem(e, wallets, what), problem: true });
     } finally {
       setBusy(false);
     }
@@ -246,6 +295,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
           </span>
         )
       )}
+      {!confirming && <UnprovenAbandonHint x={x} />}
       {note && (
         <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">
           {note.text}
@@ -350,6 +400,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   // A stamp is history, shown while prices are on, today's price or not; off hides every value.
   const stamp = !discreet && fiat.view && fiat.view.state.kind !== "off" ? row?.fiatThen : undefined;
   const confirmations = confirmationDetail(d.status);
+  const recipient = row ? recipientOf({ ...row, address: counterparty }) : null;
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
@@ -373,6 +424,14 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             {statusText(d.status)}
           </span>
         </div>
+        {d.status.dropped && (
+          <p className="tx-detail-dropped" data-testid="tx-detail-dropped">
+            {invalidSourceDetail(d.status.dropped) && recipient && amount < 0
+              ? t("activity.invalidSource.detail", { recipient })
+              : droppedLine(d.status.dropped)}
+          </p>
+        )}
+        <CoinLines walletId={walletId} txid={d.txid} />
         <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">

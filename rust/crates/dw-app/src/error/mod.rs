@@ -38,8 +38,9 @@ pub use nested::{
     SendCode, SignerCode, UriCode,
 };
 pub use platform::{
-    AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    ProfileCode, RegistrationCode, ShieldedCode,
+    AvatarCode, ConnectCode, ConnectFailureName, ConnectNetworkName, ContactCode, CreditsCode,
+    IdentityCode, InvitationCode, NameCode, PlatformCode, ProfileCode, RegistrationCode,
+    ShieldedCode,
 };
 pub use rates::RatesCode;
 
@@ -79,6 +80,7 @@ pub enum ErrorCode {
     Name(NameCode),
     Contact(ContactCode),
     Invitation(InvitationCode),
+    Connect(ConnectCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
     Shielded(ShieldedCode),
@@ -198,6 +200,10 @@ codes! {
         /// Install or Restart would close the engine while something runs
         /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
         UpdateBusy = "app.update_busy",
+        /// A network switch's close waited on a transfer that is still
+        /// being prepared ([`ErrorData::NetworkCloseRefused`]). Nothing
+        /// changed.
+        TransferPreparing = "app.transfer_preparing",
         /// A shared-masternode send on a network this release doesn't send
         /// them on ([`ErrorData::SharedSendNetwork`]): mainnet. Nothing was
         /// signed or sent.
@@ -217,6 +223,8 @@ pub enum CloseRefusalReason {
     WalletOpening,
     /// A shielded spend's result is not known yet.
     ShieldedSpendUnresolved,
+    /// A transfer waits on its wallet's start-up to go on.
+    TransferPreparing,
 }
 
 /// Why a wallet's removal is refused ([`ErrorData::ShieldedHold`]).
@@ -334,6 +342,10 @@ pub enum ErrorData {
     /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,
     /// `send.insufficient_mixed_funds`, …).
     Duffs { needed: Option<u64>, available: u64 },
+    /// `connect.failed`: where an approved login stopped.
+    ConnectFailure { failure: ConnectFailureName },
+    /// `connect.network`: the network the request is for.
+    ConnectNetwork { requested: ConnectNetworkName },
     /// `platform.insufficient_credits`: a credit shortfall.
     Credits {
         #[ts(type = "string")]
@@ -372,6 +384,18 @@ pub enum ErrorData {
     /// `psbt.grant_exceeded` (the grant's cap), `coinjoin.insufficient_funds`
     /// (the mixing minimum): a limit in duffs.
     Limit { duffs: u64 },
+    /// `credits.below_minimum` and `shielded.below_minimum` of a Core Max:
+    /// the floor, what Max would move (the figure held against it), the
+    /// spendable coins of the wallet's other accounts and the account's coins
+    /// not final yet, all in duffs, and whether Max would clear the floor
+    /// once those coins are final.
+    MaxMinimum {
+        min: u64,
+        duffs: u64,
+        left_duffs: u64,
+        arriving_duffs: u64,
+        arriving_clears: bool,
+    },
     /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },
     /// `send.grant_exceeded`: the payment's outflow against the grant's cap, in duffs.
@@ -720,6 +744,12 @@ pub enum StuckFundingRefusalName {
     LockInputsSpent {
         txid: String,
     },
+    /// Repair abandoned this asset lock, which the wallet recorded as a
+    /// payment that never settled: its coins come back after the rescan,
+    /// then Resolve again.
+    LockAbandoned {
+        txid: String,
+    },
     /// The self-spend spends no input of this signed asset lock.
     MissesSignedLock {
         txid: String,
@@ -747,6 +777,7 @@ impl From<dw_engine::platform::lease::StuckFundingRefusal> for StuckFundingRefus
             R::JournalUnavailable => Self::JournalUnavailable,
             R::SpendUnsettled(t) => Self::SpendUnsettled { txid: txid(t) },
             R::LockInputsSpent(t) => Self::LockInputsSpent { txid: txid(t) },
+            R::LockAbandoned(t) => Self::LockAbandoned { txid: txid(t) },
             R::MissesSignedLock(t) => Self::MissesSignedLock { txid: txid(t) },
             R::UnattributedLock(t) => Self::UnattributedLock { txid: txid(t) },
             R::NoKnownLock => Self::NoKnownLock,
@@ -773,6 +804,9 @@ pub enum TxActionRefusalName {
     /// A saved transaction of the loaded wallet `walletId` names didn't
     /// read at its load, so what descends from this one is unknown.
     RecordUnreadable,
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer that hasn't finished, which Dash Wallet sends again.
+    PlatformFunding,
 }
 
 impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
@@ -788,6 +822,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
             R::RescanFirst => Self::RescanFirst,
             R::SettledDescendant => Self::SettledDescendant,
             R::RecordUnreadable(_) => Self::RecordUnreadable,
+            R::PlatformFunding => Self::PlatformFunding,
         }
     }
 }
@@ -867,6 +902,7 @@ into_code!(
     Name(NameCode),
     Contact(ContactCode),
     Invitation(InvitationCode),
+    Connect(ConnectCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
     Shielded(ShieldedCode),

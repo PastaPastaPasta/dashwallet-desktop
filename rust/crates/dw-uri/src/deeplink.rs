@@ -2,10 +2,15 @@
 //! way the iOS wallet routes it (`DWURLParser.m`, `DashConnectDeepLink.swift`,
 //! `DashPayUserLink.swift`, `DWInvitationLinkNormalizer.swift`).
 //!
-//! Routing order, as on iOS: DashConnect (`dash-key:` / `dash-st:`), then
-//! anything mentioning `uphold`, then `dashwallet:` actions, then payment
-//! URIs. After that come the DashPay user QR, invitation links and BIP73
-//! `http(s)` payment-request URLs, which iOS routes from the scanner.
+//! Routing order, as on iOS: DashConnect (`dash-key:` / `dash-st:` /
+//! `dashpay://connect`), then anything mentioning `uphold`, then
+//! `dashwallet:` actions, then payment URIs. After that come the DashPay
+//! user QR, invitation links and BIP73 `http(s)` payment-request URLs, which
+//! iOS routes from the scanner. A `dashpay://` link nothing else took, with
+//! a verb this wallet does not know, needs a newer wallet. That check comes
+//! last on purpose: iOS makes it only once `DWURLParser` has declined the
+//! link, so an Uphold or invitation link with an odd authority keeps its
+//! route.
 //!
 //! Differences from iOS, all deliberate:
 //! - Scheme comparison is case-insensitive (RFC 3986); iOS compares
@@ -17,15 +22,24 @@
 
 use zeroize::Zeroizing;
 
+use crate::connect;
 use crate::ext::{self, PaymentRequest};
 
 /// Where a link should go.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeepLink {
-    /// `dash-key:` DashConnect login-key request (whole URI).
+    /// `dash-key:` DashConnect login-key request (whole URI), version 1 or
+    /// 2. Version 2 is an App Connect request: [`crate::connect::is_connect_link`]
+    /// tells them apart and [`crate::connect::parse`] reads it.
     DashConnectKey(String),
     /// `dash-st:` DashConnect state-transition request (whole URI).
     DashConnectSt(String),
+    /// `dashpay://connect` App Connect request (whole URI); see
+    /// [`crate::connect::parse`].
+    DashConnect(String),
+    /// A `dashpay://` link whose verb this wallet does not know, such as
+    /// `sign`: it needs a newer wallet.
+    NeedsNewerWallet,
     /// A link for the Uphold integration (contains `uphold`).
     Integration(String),
     /// `dashwallet://scanqr`: open the QR scanner.
@@ -128,6 +142,9 @@ pub fn classify_link(input: &str) -> DeepLink {
     if trimmed.starts_with("dash-st:") {
         return DeepLink::DashConnectSt(trimmed.to_owned());
     }
+    if connect::is_connect_link(trimmed) {
+        return DeepLink::DashConnect(trimmed.to_owned());
+    }
     if trimmed.contains("uphold") {
         return DeepLink::Integration(trimmed.to_owned());
     }
@@ -151,6 +168,9 @@ pub fn classify_link(input: &str) -> DeepLink {
     }
     if parts.scheme == "http" || parts.scheme == "https" {
         return ext::parse_payment_string(trimmed).map_or(DeepLink::Unknown, DeepLink::Payment);
+    }
+    if connect::needs_newer_wallet(trimmed) {
+        return DeepLink::NeedsNewerWallet;
     }
     DeepLink::Unknown
 }
@@ -300,7 +320,7 @@ const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghij
 
 /// Plain Base58 (Bitcoin alphabet, no checksum), as Platform writes
 /// identifiers.
-fn base58(bytes: &[u8]) -> String {
+pub(crate) fn base58(bytes: &[u8]) -> String {
     let zeros = bytes.iter().take_while(|b| **b == 0).count();
     // Little-endian base-58 digits.
     let mut digits: Vec<u8> = Vec::new();

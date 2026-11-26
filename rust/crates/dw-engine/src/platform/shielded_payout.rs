@@ -80,11 +80,13 @@ fn address_went_elsewhere() -> ContactError {
 }
 
 /// `contact_pay_quote` from the Shielded balance past the payee and the
-/// pair's lock: the unshield's withdrawal range and fee (P13, P14).
+/// pair's lock: the unshield's withdrawal range and fee (P13, P14), refused
+/// first while the library cannot spend from the key set.
 pub(crate) async fn quote(
     lib: &impl ShieldedLib,
     credits: u64,
 ) -> Result<ContactPayQuote, ContactError> {
+    pool::keyset_closed(lib)?;
     let quote = pool::unshield_plan(lib, credits).await?;
     Ok(ContactPayQuote {
         source: PaymentSource::Shielded,
@@ -336,12 +338,7 @@ impl NetworkSession {
         let Ok(artifacts) = self.leases.shielded_artifacts(wallet).await else {
             return PayoutEvidence::Unknown;
         };
-        let executed = |a: &dw_appdb::dispatch::ShieldedArtifact| {
-            a.status == ArtifactStatus::Executed
-                && a.disposition
-                    .as_ref()
-                    .is_some_and(|(kind, _)| kind == "executed")
-        };
+        let executed = super::shielded_release::proves_execution;
         match artifacts.iter().find(|a| a.st_hash == Some(st_hash)) {
             None => {
                 let scope = dw_appdb::local_scope(&wallet.to_string());

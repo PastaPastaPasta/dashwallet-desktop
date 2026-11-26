@@ -14,11 +14,10 @@ export interface TransferState {
   go: (page: Page) => Promise<void>;
 }
 
-const SYNCING = "Shielded is still syncing; try again when it finishes.";
+const SYNCING = "Shielded is still syncing. Try again when it finishes.";
 /** Dash wallet → Platform reads its quote only on Continue (and Max): its fee line while typing. */
 export const FEE_ON_NEXT_STEP = "Fee shown on the next step";
 const FEE = /^Fee about .* · You receive about /;
-const CONSOLIDATE = /Consolidate your coins first/;
 
 /** The fixture's calls of `command` so far. */
 export const callsOf = (page: Page, command: string) => page.evaluate((c) => window.__dwFixture!.calls.filter((x) => x === c).length, command);
@@ -76,15 +75,94 @@ async function noMoveQuote(page: Page) {
   expect(await callsOf(page, "platform_move_to_core_quote")).toBe(0);
 }
 
-/** Max: the field filled from a second quote, the fee line read for that amount (`fee`). */
-async function maxFills(page: Page, quote: string, value: RegExp, fee: RegExp | string = FEE) {
+/** Max: the field filled, the fee line read for that amount (`fee`), from `calls` quotes: from Shielded,
+ * the whole balance then the most it leaves room for; from the Dash wallet, one quote of the whole
+ * account (`{kind: "all"}`). */
+async function maxFills(page: Page, quote: string, value: RegExp, fee: RegExp | string = FEE, calls = 2) {
   const before = await callsOf(page, quote);
   await page.getByTestId("transfer-max").click();
   await expect(page.getByTestId("transfer-amount")).toHaveValue(value);
   await expect(page.getByTestId("transfer-fee")).toHaveText(fee);
   await expect(page.getByTestId("transfer-continue")).toBeEnabled();
-  // The whole balance, then the most it leaves room for: one re-quote, no more.
-  expect((await callsOf(page, quote)) - before).toBe(2);
+  expect((await callsOf(page, quote)) - before).toBe(calls);
+}
+
+/** Max refused because the account has more than 50 coins. */
+const MAX_TOO_MANY = /^Max needs at most 50 coins; this wallet has \d+\. Enter an amount instead\.$/;
+
+/** A Dash wallet Max through Continue: the confirmation names everything it moves and its fee, and
+ * each amount it leaves behind (`notes`), none at 0. */
+async function maxConfirm(page: Page, route: "coreToShielded" | "coreToPlatform", notes: RegExp[]) {
+  await openTransfer(page, route);
+  await page.getByTestId("transfer-max").click();
+  await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+  await page.getByTestId("transfer-continue").click();
+  await view(page, route, "steps");
+  const to = route === "coreToShielded" ? "Shielded" : "your Platform address";
+  await expect(page.getByTestId("core-max-confirm").locator(".sheet-text")).toHaveText(new RegExp(`^Move .+ from your Dash wallet to ${to}\\? That's everything Max can move\\. The network fee \\(about .+\\) comes out of it\\.$`));
+  await expect(page.getByTestId("core-max-note")).toHaveText(notes);
+  await expect(page.getByTestId(GO[route])).toBeEnabled();
+}
+
+const LEFT = /^.+ stays in your Dash wallet, because Max doesn't include mixed coins, payments from contacts or coins in other accounts\.$/;
+const ARRIVING = /^.+ still arriving stays in your Dash wallet\. Move it once it confirms\.$/;
+
+/** Max from the Dash wallet below the route's smallest amount (`min`): it names what Max can move (the
+ * one coin of 0.00005000 less the lock's fee bound of 0.00001148), and only when a coin stays in the
+ * wallet's other accounts (`left`), what Max leaves out. No line of what stays shows beside it. */
+async function maxBelowMinimum(page: Page, route: "coreToShielded" | "coreToPlatform", min: string, left: boolean) {
+  await openTransfer(page, route);
+  const below = `Max can move only 0.00003852 tDASH, which is less than the smallest amount, ${min} tDASH.`;
+  await maxRefused(page, left ? `${below} Max doesn't include mixed coins, payments from contacts or coins in other accounts.` : below);
+  await expect(page.getByTestId("transfer-sheet").getByText(/stays in your Dash wallet|Enter an amount instead/)).toHaveCount(0);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
+}
+
+/** Max from the Dash wallet with nothing to move (`text`): its coins still arriving, every coin one Max
+ * leaves out, or, with neither, nothing to move at all. The refusal never says 0.00000000 or the
+ * smallest amount, and no line of what stays shows beside it. */
+async function maxZero(page: Page, route: "coreToShielded" | "coreToPlatform", text: string) {
+  await openTransfer(page, route);
+  await maxRefused(page, text);
+  await expect(page.getByTestId("transfer-fee")).not.toContainText(/0\.00000000|Too small/);
+  await expect(page.getByTestId("transfer-sheet").getByText(/stays in your Dash wallet|Enter an amount instead/)).toHaveCount(0);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
+}
+
+/** Dash wallet → Platform with only a payment still arriving: an amount typed first is more than can
+ * be spent, then Max's refusal says why it moved nothing, ahead of that, until the amount is edited.
+ * Continue stays off throughout. */
+async function maxAfterTyped(page: Page) {
+  await openTransfer(page, "coreToPlatform");
+  await page.getByTestId("transfer-amount").fill("0.001");
+  await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough spendable Dash: /);
+  await page.getByTestId("transfer-max").click();
+  await expect(page.getByTestId("transfer-fee")).toHaveText(MAX_ALL_ARRIVING);
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/form-problem/);
+  await expect(page.getByTestId("transfer-amount")).toHaveValue("0.001");
+  await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+  await page.getByTestId("transfer-amount").fill("0.002");
+  await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough spendable Dash: /);
+  await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+}
+
+const MAX_ALL_ARRIVING = "Your Dash wallet's coins are still arriving (0.00200000 tDASH). Max can move them once they've confirmed.";
+const MAX_ARRIVING_TOO_SMALL = "Your Dash wallet's coins are still arriving (0.00005000 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.";
+const MAX_NOTHING = "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.";
+const MAX_EMPTY = "There's nothing in your Dash wallet to move.";
+const NO_CORE_BALANCE = "Nothing in your Dash wallet to move yet.";
+
+/** No coin a Max could take in the Dash wallet: Max is disabled, the line under the amount (not beside
+ * Max, where it squeezed the field) says there is nothing to move, nothing is quoted, no refusal. */
+async function maxNone(page: Page, route: "coreToShielded" | "coreToPlatform") {
+  await openTransfer(page, route);
+  await expect(page.getByTestId("transfer-max")).toBeDisabled();
+  await expect(page.getByTestId("transfer-sheet").locator(".transfer-amount-row .dash-button-why")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-amount")).toBeEnabled();
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/field-hint/);
+  await expect(page.getByTestId("transfer-fee")).toHaveText(NO_CORE_BALANCE);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(0);
 }
 
 /** Max refused: the refusal shown, the field left as it was. */
@@ -142,7 +220,9 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("transfer-continue")).toBeDisabled();
     },
   },
-  { id: "coreToShielded-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToShielded"), await maxFills(page, "shield_quote", /^\d+\.\d+$/)) },
+  { id: "coreToShielded-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToShielded"), await maxFills(page, "shield_quote", /^\d+\.\d+$/, FEE, 1)) },
+  { id: "coreToShielded-max-confirm", scenario: "funded", go: (page) => maxConfirm(page, "coreToShielded", [ARRIVING]) },
+  { id: "coreToShielded-max-confirm-left", scenario: "coinjoin-move", go: (page) => maxConfirm(page, "coreToShielded", [LEFT, ARRIVING]) },
   {
     id: "coreToShielded-max-refused",
     scenario: "transfer-shield-pending",
@@ -157,10 +237,20 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "transfer-many-coins",
     go: async (page) => {
       await openTransfer(page, "coreToShielded");
-      await maxRefused(page, CONSOLIDATE);
-      expect(await callsOf(page, "shield_quote")).toBe(2);
+      await maxRefused(page, MAX_TOO_MANY);
+      expect(await callsOf(page, "shield_quote")).toBe(1);
     },
   },
+  { id: "coreToShielded-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", false) },
+  { id: "coreToShielded-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", true) },
+  { id: "coreToShielded-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToShielded", MAX_ALL_ARRIVING) },
+  { id: "coreToShielded-max-arriving-too-small", scenario: "transfer-max-arriving-small", go: (page) => maxZero(page, "coreToShielded", MAX_ARRIVING_TOO_SMALL) },
+  { id: "coreToShielded-max-incoming", scenario: "transfer-max-incoming", go: (page) => maxZero(page, "coreToShielded", MAX_ALL_ARRIVING) },
+  { id: "coreToShielded-max-mixed-only", scenario: "transfer-max-mixed-only", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
+  { id: "coreToShielded-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
+  { id: "coreToShielded-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToShielded", MAX_EMPTY) },
+  { id: "coreToShielded-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToShielded") },
+  { id: "coreToShielded-max-locked-only", scenario: "transfer-max-locked-only", go: (page) => maxNone(page, "coreToShielded") },
   {
     id: "coreToShielded-confirm",
     scenario: "funded",
@@ -170,7 +260,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("shielded-quote-total")).toContainText("0.00101");
     },
   },
-  { id: "coreToShielded-progress", scenario: "funded", go: (page) => inProgress(page, "coreToShielded", "shield_from_core", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible()) },
+  { id: "coreToShielded-progress", scenario: "funded", go: (page) => inProgress(page, "coreToShielded", "shield_from_core", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible().then(() => expect(p.getByTestId("transfer-preparing")).toBeVisible())) },
   {
     id: "coreToShielded-done",
     scenario: "funded",
@@ -230,7 +320,9 @@ export const TRANSFER_STATES: TransferState[] = [
       expect(await callsOf(page, "platform_fund_quote")).toBe(0);
     },
   },
-  { id: "coreToPlatform-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToPlatform"), await maxFills(page, "platform_fund_quote", /^\d+\.\d+$/, FEE_ON_NEXT_STEP)) },
+  { id: "coreToPlatform-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToPlatform"), await maxFills(page, "platform_fund_quote", /^\d+\.\d+$/, FEE_ON_NEXT_STEP, 1)) },
+  { id: "coreToPlatform-max-confirm", scenario: "funded", go: (page) => maxConfirm(page, "coreToPlatform", [ARRIVING]) },
+  { id: "coreToPlatform-max-confirm-left", scenario: "coinjoin-move", go: (page) => maxConfirm(page, "coreToPlatform", [LEFT, ARRIVING]) },
   {
     id: "coreToPlatform-max-refused",
     scenario: "paddr-fund-proof-waiting",
@@ -245,10 +337,21 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "transfer-many-coins",
     go: async (page) => {
       await openTransfer(page, "coreToPlatform");
-      await maxRefused(page, CONSOLIDATE);
-      expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+      await maxRefused(page, MAX_TOO_MANY);
+      expect(await callsOf(page, "platform_fund_quote")).toBe(1);
     },
   },
+  { id: "coreToPlatform-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", false) },
+  { id: "coreToPlatform-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", true) },
+  { id: "coreToPlatform-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToPlatform", MAX_ALL_ARRIVING) },
+  { id: "coreToPlatform-max-arriving-too-small", scenario: "transfer-max-arriving-small", go: (page) => maxZero(page, "coreToPlatform", MAX_ARRIVING_TOO_SMALL) },
+  { id: "coreToPlatform-max-incoming", scenario: "transfer-max-incoming", go: (page) => maxZero(page, "coreToPlatform", MAX_ALL_ARRIVING) },
+  { id: "coreToPlatform-max-incoming-typed", scenario: "transfer-max-incoming", go: (page) => maxAfterTyped(page) },
+  { id: "coreToPlatform-max-mixed-only", scenario: "transfer-max-mixed-only", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
+  { id: "coreToPlatform-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
+  { id: "coreToPlatform-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToPlatform", MAX_EMPTY) },
+  { id: "coreToPlatform-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToPlatform") },
+  { id: "coreToPlatform-max-locked-only", scenario: "transfer-max-locked-only", go: (page) => maxNone(page, "coreToPlatform") },
   {
     id: "coreToPlatform-confirm",
     scenario: "funded",
@@ -257,7 +360,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
     },
   },
-  { id: "coreToPlatform-progress", scenario: "funded", go: (page) => inProgress(page, "coreToPlatform", "platform_fund", (p) => expect(p.getByTestId("platform-fund-progress")).toBeVisible()) },
+  { id: "coreToPlatform-progress", scenario: "funded", go: (page) => inProgress(page, "coreToPlatform", "platform_fund", (p) => expect(p.getByTestId("platform-fund-progress")).toBeVisible().then(() => expect(p.getByTestId("transfer-preparing")).toBeVisible())) },
   {
     id: "coreToPlatform-done",
     scenario: "funded",
@@ -459,7 +562,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await page.getByTestId("transfer-to").click();
       await page.getByTestId("transfer-picker-platform").click();
       await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "unsupported");
-      await expect(page.getByTestId("transfer-unavailable")).toHaveText("Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.");
+      await expect(page.getByTestId("transfer-unavailable")).toHaveText("This version can move from Shielded to Platform on test networks only.");
       await expect(page.getByTestId("transfer-unavailable")).toHaveClass("field-hint");
       await expect(page.getByTestId("transfer-continue")).toHaveCount(0);
       expect(await callsOf(page, "unshield_to_platform_quote")).toBe(0);
@@ -568,6 +671,23 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await run(page, "platformToCore");
       await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    },
+  },
+
+  {
+    id: "platformShielded-mainnet",
+    scenario: "transfer-mainnet",
+    go: async (page) => {
+      await page.getByTestId("shortcut-transfer").click();
+      await page.getByTestId("transfer-from").click();
+      await page.getByTestId("transfer-picker-platform").click();
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId("transfer-picker-shielded").click();
+      await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "unsupported");
+      // No detour through the Dash wallet: Platform to Dash wallet is off on mainnet too.
+      await expect(page.getByTestId("transfer-unavailable")).toHaveText("Moving from Platform to Shielded isn't available in this version.");
+      await expect(page.getByTestId("transfer-unavailable")).toHaveClass("field-hint");
+      await expect(page.getByTestId("transfer-continue")).toHaveCount(0);
     },
   },
 

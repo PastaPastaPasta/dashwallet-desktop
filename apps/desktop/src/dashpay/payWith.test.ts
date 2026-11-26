@@ -5,11 +5,14 @@ import { describe, expect, it } from "vitest";
 import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
-import { costs, SHIELDED_DENOMINATION, shieldedQuote, shieldedReadiness } from "../fixture/registration";
+import { appError } from "../onboarding/testWorld";
+import { costs, platformQuote, SHIELDED_DENOMINATION, shieldedQuote, shieldedReadiness } from "../fixture/registration";
+import { noIdentity } from "../fixture/dashpay";
+import { newPlatformWorld } from "../fixture/pending";
 import { newShieldedWorld, type ShieldedWorld } from "../fixture/shielded";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
-import { dashpayKeys } from "./queries";
-import { LIVE_SOURCES, PAY_WITH_COPY, payWithRows, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
+import { dashpayKeys, platformSourceOf } from "./queries";
+import { LIVE_SOURCES, PAY_WITH_COPY, payWithRows, platformReason, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
 
 const amount = (duffs: number) => `${duffs / 1e8} Dash`;
 const clock = (secs: number) => `T${secs}`;
@@ -25,6 +28,7 @@ const readiness = (failed: ShieldedCheckName | null, readyAt: number | null = nu
 const inputs = (i: Partial<PayWithInputs> = {}): PayWithInputs => ({
   core: { availableDuffs: 10e8, totalDuffs: 3_002_260 },
   platformDuffs: 5e8,
+  platform: { quote: platformQuote("alice-77", newPlatformWorld(), false, noIdentity()) },
   shieldedDuffs: 2e8,
   readiness: readiness(null),
   amount,
@@ -50,11 +54,32 @@ describe("Pay with rows (F19)", () => {
     expect(payWithRows(inputs({ core: null, platformDuffs: null, shieldedDuffs: null })).map((r) => r.balance)).toEqual([null, null, null]);
   });
 
-  it("Platform and Shielded are not offered until this build can start them", () => {
-    expect(LIVE_SOURCES).toEqual(new Set(["core"]));
-    expect(reasons(inputs())).toEqual({ core: null, platform: PAY_WITH_COPY.notOffered, shielded: PAY_WITH_COPY.notOffered });
+  it("Dash wallet and Platform are offered; Shielded is not until this build can start it", () => {
+    expect(LIVE_SOURCES).toEqual(new Set(["core", "platform"]));
+    expect(reasons(inputs())).toEqual({ core: null, platform: null, shielded: PAY_WITH_COPY.notOffered });
+    expect(reasons(inputs({ live: new Set<PaySource>(["core"]) })).platform).toBe(PAY_WITH_COPY.notOffered);
     const live = new Set<PaySource>(["core", "platform", "shielded"]);
     expect(reasons(inputs({ live }))).toEqual({ core: null, platform: null, shielded: null });
+  });
+
+  it("F9: Platform's reason is its quote's refusal", () => {
+    const refused = (code: Parameters<typeof appError>[0], data: Parameters<typeof appError>[1] = null) => reasons(inputs({ platform: { error: appError(code, data) } })).platform;
+    // The planned debit, rounded up to a duff.
+    expect(refused("platform.insufficient_credits", { kind: "credits", needed: "2126000001", available: "5" })).toBe(PAY_WITH_COPY.short("0.02126001 Dash"));
+    expect(refused("credits.move_pending", { kind: "artifact", artifact: "m1" })).toBe(PAY_WITH_COPY.movePending);
+    // Mainnet's flag, and a network without Platform.
+    expect(refused("platform.feature_off", { kind: "feature", feature: "platform_registration" })).toBe(PAY_WITH_COPY.notOffered);
+    expect(refused("platform.unavailable")).toBe("Dash Platform did not answer. Try again.");
+    expect(platformReason(undefined, amount)).toBe("Reading your balances…");
+  });
+
+  it("a refused read of the Platform quote is the row's reason even with an earlier quote kept", () => {
+    const quote = platformQuote("alice-77", newPlatformWorld(), false, noIdentity());
+    const error = appError("credits.move_pending", { kind: "artifact", artifact: "m1" });
+    expect(platformSourceOf({ data: quote, isError: false, error: null })).toEqual({ quote });
+    expect(platformSourceOf({ data: quote, isError: true, error })).toEqual({ error });
+    expect(platformSourceOf({ data: undefined, isError: false, error: null })).toBeUndefined();
+    expect(reasons(inputs({ platform: platformSourceOf({ data: quote, isError: true, error }) })).platform).toBe(PAY_WITH_COPY.movePending);
   });
 
   it("Dash wallet short of the quote names the least it needs", () => {
@@ -87,6 +112,34 @@ describe("Shielded readiness reasons (F16, F17)", () => {
   it("notes not rested with no time read (clock unknown, first scan running) say syncing", () => {
     expect(reason(readiness("rested", null))).toBe(PAY_WITH_COPY.syncing);
   });
+
+  it("an unsettled spend that is a hold says so and offers no Try again", () => {
+    const hold = { count: 1, credits: "30000000000", duffs: 30_000_000 };
+    const held = shieldedReason(readiness("noUnsettledSpend"), amount, clock, hold);
+    expect(held).toBe(PAY_WITH_COPY.held);
+    expect(held).toBe("An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.");
+    expect(held).not.toMatch(/try again/i);
+    // A listed spend that holds nothing (a scan saw its notes spent) is still settling.
+    expect(shieldedReason(readiness("noUnsettledSpend"), amount, clock, null)).toBe(PAY_WITH_COPY.unsettled);
+    // The row says the same once Shielded is offered, and only for that check.
+    const live = new Set<PaySource>(["core", "shielded"]);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHold: hold, live })).shielded).toBe(PAY_WITH_COPY.held);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHold: null, live })).shielded).toBe(PAY_WITH_COPY.unsettled);
+    expect(reasons(inputs({ readiness: readiness("synced"), shieldedHold: hold, live })).shielded).toBe(PAY_WITH_COPY.syncing);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHold: hold })).shielded).toBe(PAY_WITH_COPY.notOffered);
+  });
+
+  it("a balance short only because of a hold says the hold, not Not enough", () => {
+    // The denomination is 3000000000 credits (3,000,000 duffs).
+    const hold = (credits: string) => ({ count: 1, credits, duffs: Number(BigInt(credits) / 1000n) });
+    const short = PAY_WITH_COPY.short("0.03 Dash");
+    expect(shieldedReason(readiness("balance"), amount, clock, hold("2000000000"), 1_000_000)).toBe(PAY_WITH_COPY.held);
+    expect(shieldedReason(readiness("balance"), amount, clock, hold("1999999999"), 1_000_000)).toBe(short);
+    expect(shieldedReason(readiness("balance"), amount, clock, null, 1_000_000)).toBe(short);
+    expect(shieldedReason(readiness("balance"), amount, clock, hold("2000000000"), null)).toBe(short);
+    const live = new Set<PaySource>(["core", "shielded"]);
+    expect(reasons(inputs({ readiness: readiness("balance"), shieldedDuffs: 1_000_000, shieldedHold: hold("2000000000"), live })).shielded).toBe(PAY_WITH_COPY.held);
+  });
 });
 
 describe("the fixture's Shielded quote", () => {
@@ -106,6 +159,7 @@ describe("the fixture's Shielded quote", () => {
     expect(failed(world({ restingUntil: secs(FIXTURE_NOW) - 1 }))).toBeNull();
     expect(failed(world({ active: false }))).toBe("poolActive");
     expect(failed(world({ unrecorded: [{} as UnrecordedSpend] }))).toBe("noUnsettledSpend");
+    expect(failed(world({ held: [{ activityId: "sh-held-1", transition: "00", credits: "0" }] }))).toBe("noUnsettledSpend");
   });
 
   it("asks nothing in duffs and a grant for the denomination and the name", () => {

@@ -309,6 +309,12 @@ describe("fixture send engine", () => {
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
     clearMocks();
+    installFixture({ scenario: "abandon-catching-up" });
+    const catching = "5b".repeat(32);
+    expect(await cmd.txDetailExtras(W, catching)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, catching)).rejects.toMatchObject({ code: "rescan_in_progress" });
+    await expect(cmd.dropUnconfirmed(null)).rejects.toMatchObject({ code: "rescan_in_progress" });
+    clearMocks();
     installFixture({ scenario: "abandon-settled-child-hidden" });
     expect(await cmd.txDetailExtras(W, "5d".repeat(32))).toMatchObject({ canAbandon: false, abandoned: false });
     clearMocks();
@@ -319,6 +325,19 @@ describe("fixture send engine", () => {
       code: "tx_action_refused",
       message: "transaction action refused: SettledDescendant",
       data: { kind: "txAction", refusal: "settledDescendant" },
+    });
+    clearMocks();
+    installFixture({ scenario: "abandon-platform-funding-hidden" });
+    const funding = "57".repeat(32);
+    expect(await cmd.txDetailExtras(W, funding)).toMatchObject({ canAbandon: false, canResend: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, funding)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "platformFunding" } });
+    clearMocks();
+    installFixture({ scenario: "abandon-platform-funding" });
+    const stale = "58".repeat(32);
+    expect(await cmd.txDetailExtras(W, stale)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, stale)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      data: { kind: "txAction", refusal: "platformFunding" },
     });
     clearMocks();
     installFixture({ scenario: "abandon-record-unreadable-two-wallets" });

@@ -66,7 +66,10 @@ fn unshield_to_platform_quote_follows_platforms_unshield_rules() {
         ]
     });
     let refused: Vec<_> = refused.into_iter().map(Result::unwrap_err).collect();
-    assert_eq!(refused[0], ShieldedError::BelowMinimum { min: 1 });
+    assert_eq!(
+        refused[0],
+        ShieldedError::BelowMinimum { min: 1, max: None }
+    );
     assert_eq!(
         refused[1],
         ShieldedError::InvalidAddress {
@@ -224,6 +227,24 @@ fn unshield_to_platform_refused_without_hook() {
         code(unshield(&fx, &lib, NOTE, None, &grant, false)),
         "platform.unavailable"
     );
+    assert!(fx.unused(&grant));
+    assert!(lib.spent().is_empty(), "no key left the vault");
+}
+
+/// A library that cannot spend from the key set refuses a move to Platform
+/// as it refuses one without the hook: nothing quoted, the grant kept, no
+/// key out of the vault.
+#[test]
+fn unshield_to_platform_refused_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let grant = fx.grant(10 * NOTE);
+    assert_eq!(
+        code(unshield(&fx, &lib, NOTE, None, &grant, false)),
+        "platform.unavailable"
+    );
+    assert_eq!(lib.refreshes.load(Ordering::SeqCst), 0, "nothing quoted");
     assert!(fx.unused(&grant));
     assert!(lib.spent().is_empty(), "no key left the vault");
 }
