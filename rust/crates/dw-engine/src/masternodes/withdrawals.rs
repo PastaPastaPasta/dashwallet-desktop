@@ -149,6 +149,9 @@ impl Masternodes {
     ) -> Result<CreditWithdrawal, MasternodesError> {
         check_id(&id)?;
         self.protx_op(move |s| async move {
+            if s.platform.enabled() && s.any_platform_held() {
+                return Err(crate::platform::PlatformError::Restored.into());
+            }
             let before = s.mn_withdrawal(&id).await?;
             let row = s.mn_recheck_withdrawal(&id).await?;
             if row != before {

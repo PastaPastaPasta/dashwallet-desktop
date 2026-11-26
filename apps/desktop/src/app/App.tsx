@@ -6,7 +6,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
-import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useRestoreStatus, useSyncStatus, useWallets } from "../api/queries";
 import { useSyncItems } from "../api/syncItems";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
@@ -304,6 +304,8 @@ function Shell() {
   }, [client, locked]);
   // Read once the vault is not locked; the shell holds no wallet until then.
   const wallets = useWallets(!locked);
+  // Platform's refusals read the session's platformOff from it, on whatever page (api/platformHold.ts).
+  useRestoreStatus(!locked);
   const wallet = locked ? undefined : (wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0]);
   // Back from the lock screen, once the page is there again, focus lands on its title, as a link
   // or a menu leaves it.

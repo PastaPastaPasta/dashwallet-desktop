@@ -21,6 +21,7 @@ import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing
 import { spendsOffRefusal, spendsOffText } from "./spends";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
+import { platformHoldText } from "../api/platformHold";
 
 export type ShieldedApi = Pick<
   Backend,
@@ -348,6 +349,8 @@ export function shieldedClosedReason(e: unknown): ShieldedClosedReason | null {
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. `max`:
  * the refusal of a Core Max. */
 export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false, max = false, spendsOff = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;

@@ -344,6 +344,17 @@ impl NetworkSession {
         wallet_id: WalletId,
         floor: u32,
     ) -> Result<u32, EngineError> {
+        self.refuse_while_restored()?;
+        self.replay_wait(wallet_id, floor).await
+    }
+
+    /// [`Self::replay_guard`] without the money gate: what waits for a
+    /// replay and moves no funds (the recovery scan).
+    pub(crate) async fn replay_wait(
+        &self,
+        wallet_id: WalletId,
+        floor: u32,
+    ) -> Result<u32, EngineError> {
         let wallet = self.wallet(&wallet_id).await?;
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.

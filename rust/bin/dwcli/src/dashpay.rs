@@ -862,6 +862,7 @@ fn platform_params(e: &PlatformError) -> Value {
         | P::SeedMismatch
         | P::GrantInvalid
         | P::Cancelled
+        | P::Restored
         | P::LeaseExpired
         | P::NetworkNotOpen
         | P::WalletNotFound

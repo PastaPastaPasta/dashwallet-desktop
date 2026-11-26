@@ -728,6 +728,9 @@ where
     let session = Arc::clone(session);
     let rt = session.rt.clone();
     rt.spawn(async move {
+        if signing {
+            session.refuse_platform_funds(wallet)?;
+        }
         let _admitted = session
             .signing_preflight(signing)
             .await

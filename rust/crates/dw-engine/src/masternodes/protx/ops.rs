@@ -102,6 +102,7 @@ pub(crate) fn error_code(e: &EngineError) -> String {
         F::TxTooLarge => "tx_too_large",
         F::InvalidChangeAddress => "invalid_change_address",
         F::WatchOnly => "watch_only",
+        F::Restored => "restored",
         F::VaultLocked => "vault_locked",
         F::GrantInvalid => "grant_invalid",
         F::GrantExceeded { .. } => "grant_exceeded",

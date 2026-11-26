@@ -85,6 +85,7 @@ pub mod mix_shield_test;
 #[doc(hidden)]
 pub struct TestSupportProbe;
 
+mod restore_gate;
 mod tools;
 mod tx_actions;
 mod wallet_read;
@@ -123,6 +124,7 @@ pub use platform::{
     SpvState, StartupStatus, SyncLoop, SyncLoopStatus,
 };
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
+pub use restore_gate::{RestoreStatus, RestoreWait};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};
 pub use send::{
     BroadcastOutcome, ChangePolicy, CoinSource, ContactRecipient, FeeMode, MAX_TX_FEE,

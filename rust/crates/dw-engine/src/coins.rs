@@ -736,6 +736,10 @@ pub struct CoinInfo {
     /// Kept out of spending and every balance, and why
     /// ([`crate::withhold`]).
     pub excluded: Option<crate::ExclusionReason>,
+    /// An output or input of a payment the restore holds while it is
+    /// unproven (`restore_gate`, H1): neither offered nor counted as
+    /// spendable until it is mined, dropped or abandoned.
+    pub pending_unproven: bool,
 }
 
 /// `(txid display hex, vout)`, the dw-appdb key of an outpoint.
@@ -1151,9 +1155,13 @@ impl NetworkSession {
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
             .max(self.hub.best_chainlock().map(|(h, _)| h));
-        let spent = (self.hub.history).read(&wallet_id, |txs| {
-            crate::history::spent_outpoints(txs, chainlock)
-        });
+        let (spent, (restore_outputs, restore_inputs)) =
+            (self.hub.history).read_wallet(&wallet_id, |h| {
+                (
+                    crate::history::spent_outpoints(&h.txs, chainlock),
+                    h.restore_held_coins(),
+                )
+            });
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
@@ -1166,7 +1174,9 @@ impl NetworkSession {
             let spend_reserved = reserved.contains(&o)
                 || swept.contains(&o)
                 || (spent.contains(&o) && !lock_held)
-                || unseen.contains(&o);
+                || unseen.contains(&o)
+                || restore_outputs.contains(&o.txid)
+                || restore_inputs.contains(&o);
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
@@ -1202,6 +1212,8 @@ impl NetworkSession {
                 .appdb_op(move |db| Ok(db.labels(&id, LabelKind::Address)?.into_iter().collect()))
                 .await?;
             let height = view.height;
+            let (restore_outputs, restore_inputs) =
+                (this.hub.history).read_wallet(&wallet_id, |h| h.restore_held_coins());
             let mut rows: Vec<CoinInfo> = view
                 .coins
                 .iter()
@@ -1230,6 +1242,8 @@ impl NetworkSession {
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
                         excluded: c.excluded,
+                        pending_unproven: restore_outputs.contains(&u.outpoint.txid)
+                            || restore_inputs.contains(&u.outpoint),
                     }
                 })
                 .filter(|row| {

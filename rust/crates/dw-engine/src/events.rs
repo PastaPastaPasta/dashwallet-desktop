@@ -355,6 +355,9 @@ pub(crate) struct WalletState {
     /// it or below replays those blocks (`note_rewind`). Its replay record
     /// keeps the hold across a restart (`crate::replay_record`).
     pub replay_cancelled: Option<u32>,
+    /// What the restore holds keep out of the spendable balance
+    /// (`restore_gate`, H1): shown pending instead.
+    pub restore_held: u64,
     /// The wallet is being opened and its stored replay not yet resumed:
     /// spends wait (`NetworkSession::load_wallet`).
     pub loading: bool,
@@ -403,6 +406,7 @@ impl WalletState {
             fully_mixed: self.fully_mixed,
             detected: self.detected,
             held: self.held,
+            restore_held: self.restore_held,
             ..read
         };
     }
@@ -429,9 +433,10 @@ impl WalletState {
                 .map(|b| b.confirmed().saturating_add(b.unconfirmed()))
                 .sum()
         });
+        let held = self.restore_held.min(b.confirmed());
         WalletBalances {
-            confirmed: b.confirmed(),
-            unconfirmed: b.unconfirmed(),
+            confirmed: b.confirmed() - held,
+            unconfirmed: b.unconfirmed().saturating_add(held),
             immature: b.immature(),
             locked: b.locked(),
             total: b.total(),
@@ -658,6 +663,8 @@ pub(crate) struct SessionHub {
     /// Held through each drop of dead transactions
     /// (`NetworkSession::drop_dead`).
     pub(crate) drop_gate: tokio::sync::Mutex<()>,
+    /// The restored mark's money gate and its holds (`restore_gate`).
+    pub(crate) restore: crate::restore_gate::RestoreGate,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -789,6 +796,13 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon's write of its abandoned marks fails.
     #[cfg(test)]
     pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
+    /// Tests: key-wallet refuses the next abandon's root (abandons
+    /// nothing), as it does a root it holds as settled.
+    #[cfg(test)]
+    pub(crate) refuse_next_abandon: std::sync::atomic::AtomicBool,
+    /// Tests: abandons key-wallet refused after their marks were written.
+    #[cfg(test)]
+    pub(crate) refused_abandon_undos: std::sync::atomic::AtomicUsize,
     /// Tests: the next abandon's store of its sweep fails.
     #[cfg(test)]
     pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
@@ -1032,6 +1046,7 @@ impl SessionHub {
             held_locks: Mutex::new(HashMap::new()),
             held_forks: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
+            restore: Default::default(),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             #[cfg(test)]
@@ -1109,6 +1124,10 @@ impl SessionHub {
             pause_release: Mutex::new(None),
             #[cfg(test)]
             fail_abandon_mark: Default::default(),
+            #[cfg(test)]
+            refuse_next_abandon: Default::default(),
+            #[cfg(test)]
+            refused_abandon_undos: Default::default(),
             #[cfg(test)]
             fail_abandon_sweep: Default::default(),
             #[cfg(test)]
@@ -1608,8 +1627,9 @@ impl SessionHub {
     /// the excluded coins' share, and announces them when they differ.
     pub(crate) fn publish_core_balance(&self, id: WalletId, core: &ManagedWalletInfo) {
         let excluded = self.excluded_share(id, core);
+        let held = self.restore_held_in(id, core, &excluded);
         let (balance, accounts) = (core.balance(), core.account_balances());
-        self.publish_balances(id, &balance, &accounts, Some(excluded));
+        self.publish_balances(id, &balance, &accounts, Some(excluded), Some(held));
     }
 
     fn publish_balances(
@@ -1618,8 +1638,9 @@ impl SessionHub {
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
         excluded: Option<crate::withhold::Excluded>,
+        restore_held: Option<u64>,
     ) {
-        let changed = self.write_balances(id, balance, accounts, excluded);
+        let changed = self.write_balances(id, balance, accounts, excluded, restore_held);
         self.reread_if_locked(id, balance, accounts);
         if changed {
             self.pump.mark_balances(id);
@@ -1851,6 +1872,7 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
+                self.restore.forget_wallet_checks(id, true);
                 self.history.with_wallet(id, |h| {
                     h.session_held.clear();
                     h.held_here.clear();
@@ -1863,6 +1885,7 @@ impl SessionHub {
     pub(crate) fn forget_wallet(&self, id: &WalletId) {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         unloaded.insert(*id);
+        self.restore.forget_wallet_checks(*id, false);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1912,20 +1935,23 @@ impl SessionHub {
             reread(id);
             return false;
         }
-        let changed = self.write_balances(id, balance, accounts, None);
+        let changed = self.write_balances(id, balance, accounts, None, None);
         self.reread_if_locked(id, balance, accounts);
         changed
     }
 
     /// Balances with locked coins were read while a funding held its
-    /// temporary locks: they are read again once it may have released them.
+    /// temporary locks, or while the restore holds are in effect (their
+    /// exact figure is read from the manager's coins): they are read
+    /// again.
     fn reread_if_locked(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) {
-        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+        let held = (self.history).read_wallet(&id, |h| !h.restore_holds_in_effect().is_empty());
+        if (held || balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
             && let Some(reread) = self.balance_reread.get()
         {
             reread(id);
@@ -1933,16 +1959,18 @@ impl SessionHub {
     }
 
     /// Applies the balances of `core`, read from the manager under its
-    /// lock, with the excluded coins' share, unless the wallet is
-    /// unloaded; announces them when they changed.
+    /// lock, with the excluded coins' share and what of it the restore
+    /// holds keep back, unless the wallet is unloaded; announces them when
+    /// they changed.
     pub(crate) fn apply_balance_read(&self, id: WalletId, core: &ManagedWalletInfo) {
         let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         if unloaded.contains(&id) {
             return;
         }
         let excluded = self.excluded_share(id, core);
+        let held = self.restore_held_in(id, core, &excluded);
         let (balance, accounts) = (core.balance(), core.account_balances());
-        if self.write_balances(id, &balance, &accounts, Some(excluded)) {
+        if self.write_balances(id, &balance, &accounts, Some(excluded), Some(held)) {
             self.pump.mark_balances(id);
         }
     }
@@ -1963,19 +1991,29 @@ impl SessionHub {
     }
 
     /// `excluded`: the excluded coins' share read with the balances;
-    /// `None` keeps the last one (an event's snapshot).
+    /// `None` keeps the last one (an event's snapshot). `restore_held`:
+    /// what the restore holds keep out of the confirmed bucket, read from
+    /// the manager's coins; `None` (an event's snapshot) keeps the last
+    /// reading, raised to the history's bound until the coins are read
+    /// again.
     fn write_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
         excluded: Option<crate::withhold::Excluded>,
+        restore_held: Option<u64>,
     ) -> bool {
         let waiting = (excluded.as_ref()).map_or_else(BTreeSet::new, |e| e.waiting());
+        let bound = match restore_held {
+            Some(_) => 0,
+            None => self.history.read_wallet(&id, |h| h.restore_held_value()),
+        };
         let changed = {
             let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
             let state = map.entry(id).or_default();
             let before = state.balances();
+            state.restore_held = restore_held.unwrap_or(state.restore_held.max(bound));
             state.balance = *balance;
             for (t, b) in accounts {
                 state.accounts.insert(*t, *b);
@@ -1987,6 +2025,41 @@ impl SessionHub {
         };
         self.release_settled(id, waiting);
         changed
+    }
+
+    /// After the restore holds changed: the history's bound on what they
+    /// keep out of the spendable balance at once, and the manager's coins
+    /// read again for the exact figure. Announces the balance when it
+    /// changed.
+    pub(crate) fn refresh_restore_held(&self, id: WalletId) {
+        let (held, in_effect) = (self.history).read_wallet(&id, |h| {
+            (
+                h.restore_held_value(),
+                !h.restore_holds_in_effect().is_empty(),
+            )
+        });
+        let changed = {
+            let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+            let Some(state) = map.get_mut(&id) else {
+                return;
+            };
+            if !in_effect && state.restore_held == 0 {
+                return;
+            }
+            let before = state.balances();
+            state.restore_held = if in_effect {
+                state.restore_held.max(held)
+            } else {
+                held
+            };
+            before != state.balances()
+        };
+        if changed {
+            self.pump.mark_balances(id);
+        }
+        if let Some(reread) = self.balance_reread.get() {
+            reread(id);
+        }
     }
 
     /// Records the fully mixed balance the CoinJoin view computed and
@@ -2172,6 +2245,7 @@ impl SessionHub {
         let changed = self
             .history
             .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
+        self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
         let rescan_moved = self
@@ -2545,7 +2619,10 @@ impl SessionHub {
                         Some(&sweep),
                     );
                     match forgotten {
-                        Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
+                        Ok(()) => {
+                            self.history.drop_claims(&id, txids.iter().copied());
+                            self.forget_restore_holds(id, txids);
+                        }
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
                         }
@@ -2623,6 +2700,7 @@ impl SessionHub {
                 if !new.is_empty() {
                     self.pump.mark_new_txs(id, &new);
                 }
+                self.settle_mined_restore_holds(id);
                 let flipped = self.update_heights(id, None, Some(*height));
                 if !changed.is_empty() {
                     self.pump.mark_history(id, Some(&changed));
@@ -2807,6 +2885,7 @@ impl EventHandler for SessionHub {
         }
         if changed {
             self.pump.mark_sync();
+            self.restore.wake.notify_one();
         }
         if tip.is_some_and(|tip| self.header_tip_dropped(tip)) {
             let wallets: Vec<WalletId> = (self.wallets.read().unwrap_or_else(|p| p.into_inner()))
@@ -2859,6 +2938,15 @@ impl PlatformEventHandler for SessionHub {
         &self,
         summary: &platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary,
     ) {
+        if !summary.wallet_results.is_empty() && summary.wallet_results.values().all(|o| o.is_ok())
+        {
+            self.restore.note_platform_pass();
+        }
+        (self.restore).note_wallet_platform_pass(
+            (summary.wallet_results.iter())
+                .filter(|(_, o)| o.is_ok())
+                .map(|(id, _)| WalletId(*id)),
+        );
         use crate::platform::AddressSync;
         let mut last = lock(&self.platform_addresses);
         for (id, outcome) in &summary.wallet_results {
@@ -2886,6 +2974,21 @@ impl PlatformEventHandler for SessionHub {
     /// (`ShieldedStatus::ready`) whatever it found. A cooldown skip ran no
     /// pass: it is neither a wallet's first nor a recovery.
     fn on_shielded_sync_completed(&self, summary: &ShieldedSyncPassSummary) {
+        let results = || summary.wallet_results.values();
+        if !results().any(|o| matches!(o, WalletShieldedOutcome::Err(_)))
+            && results().any(|o| matches!(o, WalletShieldedOutcome::Ok(p) if !p.is_cooldown_skip))
+        {
+            self.restore.note_shielded_pass();
+        }
+        (self.restore).note_wallet_shielded_pass(
+            (summary.wallet_results.iter())
+                .filter(|(_, o)| match o {
+                    WalletShieldedOutcome::Ok(pass) => !pass.is_cooldown_skip,
+                    WalletShieldedOutcome::Skipped => true,
+                    WalletShieldedOutcome::Err(_) => false,
+                })
+                .map(|(id, _)| WalletId(*id)),
+        );
         *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let mut synced = self
             .shielded_synced
@@ -3701,6 +3804,7 @@ mod tests {
             &WalletCoreBalance::new(1_000, 0, 0, 0),
             &BTreeMap::new(),
             None,
+            None,
         );
         assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, 1_000);
         assert!(hub.pump.take_wallet_marks().0.contains(&W));
@@ -3708,6 +3812,7 @@ mod tests {
             W,
             &WalletCoreBalance::new(1_000, 0, 0, 0),
             &BTreeMap::new(),
+            None,
             None,
         );
         assert!(

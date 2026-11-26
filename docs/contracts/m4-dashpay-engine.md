@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 105
+Contract-Version: 106
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1058,7 +1058,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: be11331cf5344055ae5c63f33f71ac63e3715a6f0e218673c34da1489937f264 version: 105 -->
+<!-- surface-sha256: b1cf94211d6a97cd66fc4d711edc97c38a7011743326597807124766e3107e86 version: 106 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1502,6 +1502,7 @@ pub enum PlatformError {
     BroadcastUnknown { artifact: String },
     WillBeSent { artifact: String },
     Cancelled,
+    Restored,
     NeedsGrant { purpose: BudgetPurpose },
     LeaseRevoked { cause: RevokeCause },
     LeaseExpired,
@@ -3037,7 +3038,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 
 | Error enum | Codes |
 |---|---|
-| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
+| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.restored`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed`, `registration.refunded`, `registration.payment_consumed` |
@@ -3054,6 +3055,27 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   host's code table (`ServiceErrorCode`) needs both. It also carries the engine's `rescan_interrupted` (Contract-Version 49,
   0.1.x-bal §1): asset-lock funding after a rescan the user stopped part way, refused until a rescan runs again. A
   replay that runs is `platform.context_unavailable`, a wait for sync.
+- `platform.restored` (Contract-Version 106, the R3 restore's money gate): while the network's restored mark is set,
+  every lease whose flow moves funds is refused before it begins, its grants unused. The mark clears at the first full
+  sync after the restore; profile, contact, DashPay-key and voting flows are not refused.
+  Contract-Version 106: a mark cleared in a session without Platform leaves a Platform residue
+  (`upgrade-backups/PLATFORM_PENDING`, written before the mark goes). While it is present, or does not read, every
+  flow that moves Platform funds (identity, name, Platform-address, shield, shielded, evonode credit and balance-paid
+  contact flows) is refused the same way, at its lease and at each call that signs without one; the evonode
+  withdrawal's calls are refused (as while the mark is present, mn-engine version 32), and the asset-lock resume and
+  the background withdrawal recheck wait. Core funds are not, nor is accepting a contact request and paying it from
+  Core. It clears in a session with Platform once the masternode list has synced, a clean Platform-address pass and
+  the shielded pass have completed and that session's drop-dead pass has run. When the gate opens in a session with
+  Platform, every wallet of the network's wallet list that Platform has not checked since its load (closed, or loaded
+  after the passes) keeps a row `restore_platform_pending`, written before the mark or the residue goes: while it is
+  present, or does not read, that wallet's Platform funds are refused the same way, until a session with Platform has
+  checked the wallet after its load and run its drop-dead pass; `restore_status` then reads `platformOnly` with
+  `platformPass` while a loaded wallet has it.
+- `platform.unavailable` (Contract-Version 106) in a session without Platform: every funds flow that needs Platform is
+  refused with it before any grant is redeemed or any lease, record or signature made (`LeaseError::PlatformUnavailable`
+  at its lease), whatever the restore's state; it takes precedence over `platform.restored`. The evonode credit
+  withdrawal's calls answer `masternodes.platform_unavailable` (mn-engine), as before. Core sends, CoinJoin and Core
+  transaction actions are not refused.
 - During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
   backfill), the balance, the coin list and Activity can include a coin spent above the rewound checkpoint until its
   spend replays. Spends of the wallet's coins are refused until the replay is back (`rescan_in_progress`, or
@@ -3117,6 +3139,8 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   | `LeaseError::Parked` or `NeedsGrant`: the flow needs a fresh grant (its own key passed `key_until`, an unlock, a scope or passphrase change, a budget at 0, or a lease without the call's purpose) | `platform.needs_grant{purpose}` |
   | a budget refusal: the charge does not fit | `platform.grant_exceeded{purpose, needed, remaining}` |
   | an unknown, used or other-wallet grant or lease id | `platform.grant_invalid` |
+  | `LeaseError::Restored`: a funds flow while the restore's mark, or for a flow that moves Platform funds its Platform residue, is present | `platform.restored` |
+  | `LeaseError::PlatformUnavailable`: a funds flow that needs Platform in a session without Platform | `platform.unavailable` |
   | the dispatch journal is unavailable, or its schema is newer (E0-04 §6.4) | `storage`, with `Notice{DispatchJournalUnavailable}` |
 
   `purpose` is the budget (`Funding`, `Credits`, `Spend`, `Crypto`, `Masternode`, `Voting`); `needed` and `remaining`

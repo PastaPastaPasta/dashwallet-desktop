@@ -159,10 +159,14 @@ pub struct AppState {
     /// no public DAPI or quorum service).
     #[cfg(test)]
     pub(crate) test_endpoints: StdMutex<Option<crate::api::network::SessionSettings>>,
-    /// Test seam: `switch_network` runs it after a failed open, before it
-    /// reopens the network it left.
+    /// Test seam: `switch_network` and `finish_without_platform` run it
+    /// after a failed open, before they reopen the network they left.
     #[cfg(test)]
     pub(crate) before_rollback: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test seam: `finish_without_platform` runs it after the close, before
+    /// it opens the network without Platform.
+    #[cfg(test)]
+    pub(crate) before_platform_off_open: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Test seam: the networks the window started SPV on, in order.
     #[cfg(test)]
     pub(crate) spv_started: StdMutex<Vec<dw_engine::DashNetwork>>,
@@ -656,6 +660,8 @@ impl AppState {
             test_endpoints: StdMutex::default(),
             #[cfg(test)]
             before_rollback: StdMutex::default(),
+            #[cfg(test)]
+            before_platform_off_open: StdMutex::default(),
             #[cfg(test)]
             spv_started: StdMutex::default(),
         })

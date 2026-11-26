@@ -66,6 +66,9 @@ pub enum TxActionRefusal {
     /// transfer, top-up or registration whose asset lock is still tracked
     /// and unsent or unproved: the catch-up resumes it, sending it again.
     PlatformFunding,
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    Restored,
 }
 
 impl TxActionRefusal {
@@ -113,6 +116,8 @@ pub struct TxDetailExtras {
     /// the rescan that checks it (Q100 E2, `crate::rescan_hold`).
     pub checking_spent_coins: bool,
     pub last_announced_at: Option<u64>,
+    /// A restore hold exists for it (`restore_gate`).
+    pub restore_held: bool,
 }
 
 /// One notification row (one per dash-qt record).
@@ -758,7 +763,15 @@ pub(crate) fn forget_swept(
             .map_or(&none, |(.., i)| i)
     };
     let keys: Vec<String> = (gone.iter())
-        .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
+        .flat_map(|t| {
+            [
+                SENT_PREFIX,
+                SENT_TX_PREFIX,
+                SENT_IN_PREFIX,
+                crate::restore_gate::RESTORE_HOLD_PREFIX,
+            ]
+            .map(|p| format!("{p}{t}"))
+        })
         .collect();
     let dropped: Vec<(String, String)> = (dead.iter())
         .map(|(t, cause)| {
@@ -2293,6 +2306,8 @@ impl NetworkSession {
                     (entry.tx.input.iter()).any(|i| held.contains(&i.previous_output))
                 },
                 last_announced_at: this.hub.announced_at(&txid),
+                restore_held: (this.hub.history)
+                    .read_wallet(&wallet, |h| h.restore_holds_in_effect().contains_key(&txid)),
             })
         })
         .await
@@ -2315,6 +2330,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             // Not while a wallet loads: its spend claims are read before
             // they are restored.
             let _lifecycle = this.wallet_lifecycle.hold().await;
@@ -2592,16 +2608,39 @@ impl NetworkSession {
                 }
             }
             marks.extend(hold_marks(&holds));
+            let restore_held = (self.hub.history).read_wallet(&wallet, |h| {
+                (planned.iter())
+                    .filter_map(|t| Some((*t, h.restore_holds.get(t)?.clone())))
+                    .collect::<BTreeMap<Txid, BTreeSet<OutPoint>>>()
+            });
+            marks.extend(
+                crate::restore_gate::hold_keys(&planned)
+                    .into_iter()
+                    .map(|k| (k, None)),
+            );
             self.write_abandoned_marks(wallet, marks).await?;
             let previous = (self.hub.history).with_wallet(wallet, |h| {
                 crate::rescan_hold::take_over(&mut h.rescan_holds, &holds)
             });
-            let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
+            self.hub.forget_restore_holds(wallet, &planned);
+            #[cfg(test)]
+            let refuse =
+                (self.hub.refuse_next_abandon).swap(false, std::sync::atomic::Ordering::SeqCst);
+            #[cfg(not(test))]
+            let refuse = false;
+            let abandoned = match refuse {
+                true => BTreeSet::new(),
+                false => abandon_with(&mut info.core_wallet, root, &descendants),
+            };
             if abandoned.is_empty() {
+                #[cfg(test)]
+                (self.hub.refused_abandon_undos).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.hub.history.with_wallet(wallet, |h| {
                     crate::rescan_hold::put_back(&mut h.rescan_holds, &holds, &previous)
                 });
-                let undo = crate::rescan_hold::undo_marks(&holds, &previous);
+                let mut undo = crate::rescan_hold::undo_marks(&holds, &previous);
+                undo.extend(crate::restore_gate::hold_rows(&restore_held));
+                self.hub.put_back_restore_holds(wallet, restore_held);
                 if let Err(e) = self.write_marks(wallet, undo).await {
                     tracing::warn!(%wallet, error = %e, "could not drop the hold marks of a refused abandon");
                 }
@@ -4406,6 +4445,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             let manager = this.manager()?;
             let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
             let peers = this.hub.tracker().snapshot().connected_peers;
@@ -4483,6 +4523,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             if let Some(id) = &wallet {
@@ -4852,9 +4893,21 @@ impl NetworkSession {
         }));
     }
 
+    /// The money gate of Abandon, Resend and Remove Unconfirmed
+    /// (`restore_gate`).
+    fn refuse_tx_action_while_restored(&self) -> Result<(), EngineError> {
+        match self.hub.restore.is_restored() {
+            true => Err(EngineError::TxActionRefused(TxActionRefusal::Restored)),
+            false => Ok(()),
+        }
+    }
+
     /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
-    /// [`Self::abandon_unsigned_claims`] to its new transactions.
+    /// [`Self::abandon_unsigned_claims`] to its new transactions; reads the
+    /// restored mark and starts what clears it (`restore_gate`), before the
+    /// history loads.
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
+        self.attach_restore_gate();
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_swept_dead(Box::new(move |id, dead| {
             let weak = weak.clone();

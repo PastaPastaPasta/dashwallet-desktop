@@ -1030,6 +1030,7 @@ fn error_codes_match_the_contract() {
             PlatformError::BroadcastUnknown { artifact: s() },
             PlatformError::WillBeSent { artifact: s() },
             PlatformError::Cancelled,
+            PlatformError::Restored,
             PlatformError::NeedsGrant {
                 purpose: BudgetPurpose::Funding,
             },

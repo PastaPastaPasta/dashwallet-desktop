@@ -10,6 +10,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { startErrorText } from "./registration";
 import { messageTable, t } from "../i18n";
 import { CLAIM_REFUSAL, withTable } from "./status";
+import { platformHoldText } from "../api/platformHold";
 
 /** Where the claim screen was opened from (D2, D3): onboarding's replayed link, or a link opened
  * in a wallet. */
@@ -136,7 +137,7 @@ export function claimModel(i: ClaimInputs): ClaimModel {
     ...rest,
   });
   if (i.hasIdentity) return base("hasIdentity", [CLAIM_COPY.hasIdentity], [act("dismiss"), act("notNow")]);
-  if (i.statusError) return base("checkFailed", [CLAIM_COPY.checkFailed, startErrorText(i.statusError, String)], [act("retry"), act("notNow")]);
+  if (i.statusError) return base("checkFailed", [CLAIM_COPY.checkFailed, platformHoldText(i.statusError, false) ?? startErrorText(i.statusError, String)], [act("retry"), act("notNow")]);
   const s = i.status;
   if (!s) return base("checking", [CLAIM_COPY.checking], [act("notNow")], { busy: true });
   switch (s.kind) {
