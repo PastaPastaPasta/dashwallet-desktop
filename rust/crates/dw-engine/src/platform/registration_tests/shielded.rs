@@ -831,7 +831,7 @@ fn the_keyset_create_is_the_engines_only_call_of_the_library_create() {
         .collect();
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(
-        calls[0].0.ends_with("platform/shielded_pool.rs"),
+        std::path::Path::new(&calls[0].0).ends_with("platform/shielded_pool.rs"),
         "{calls:?}"
     );
     assert!(
