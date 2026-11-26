@@ -954,6 +954,8 @@ fn ep_conflict_height_preserves_key_change_follower_release() {
     conflict.lock_time += 1;
     conflict.special_transaction_payload = None;
     f.mine(conflict, 60);
+    let stage = f.session_of(0, &id).stage;
+    assert_eq!(stage, SharedStage::Sent, "a block no ChainLock covers");
     f.chainlock(60);
     assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
     f.tip(64);

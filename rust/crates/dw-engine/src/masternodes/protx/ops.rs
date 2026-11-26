@@ -27,9 +27,10 @@ use super::super::protx_records::{
 };
 use super::super::shared::list_settled;
 use crate::coins::{CoinFence, WalletCoin, now_secs, read_coins};
-use crate::history::{Finality, TxEntry, chain_locked, instant_locked, spender_heights};
+use crate::history::{Finality, TxEntry, instant_locked, spender_heights};
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
+use key_wallet::transaction_checking::BlockInfo;
 
 /// Discard's refusal while the history lists its payment pending.
 const DISCARD_LISTED: &str = "discarding the operation: its payment is still listed in History; abandon it there first, then discard again";
@@ -165,9 +166,10 @@ impl OpView {
 pub(crate) struct Beats {
     /// The history's [`crate::history::conflicted`] blocks, of those
     /// `finality` proves.
-    pub conflicted: HashMap<Txid, (u32, dashcore::BlockHash)>,
-    pub finality: Finality,
-    pub chainlock: Option<u32>,
+    conflicted: HashMap<Txid, (u32, dashcore::BlockHash)>,
+    /// None for [`Beats::seen`].
+    finality: Option<Finality>,
+    chainlock: Option<u32>,
 }
 
 impl Beats {
@@ -176,7 +178,22 @@ impl Beats {
         chainlock: Option<u32>,
         finality: Finality,
     ) -> Self {
-        let conflicted = crate::history::conflicted(history, chainlock, |b| finality.proves(b));
+        Self::new(history, chainlock, Some(finality))
+    }
+
+    /// What a block beats whether or not it is final, in the same
+    /// InstantSend order: what a progress display reads, never a release.
+    pub(crate) fn seen(history: &HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> Self {
+        Self::new(history, chainlock, None)
+    }
+
+    fn new(
+        history: &HashMap<Txid, TxEntry>,
+        chainlock: Option<u32>,
+        finality: Option<Finality>,
+    ) -> Self {
+        let counts = |b: &BlockInfo| finality.as_ref().is_none_or(|f| f.proves(b));
+        let conflicted = crate::history::conflicted(history, chainlock, counts);
         Self {
             conflicted,
             finality,
@@ -188,11 +205,12 @@ impl Beats {
     /// history holds InstantSend-locked (`locked`) or not.
     fn height(&self, rival: &TxEntry, locked: bool) -> Option<u32> {
         let block = rival.context.block_info()?;
-        (self.finality.proves(block) && (!locked || chain_locked(&rival.context, self.chainlock)))
+        let counts = |b: &BlockInfo| self.finality.as_ref().is_none_or(|f| f.proves(b));
+        crate::history::block_beats(&rival.context, locked, self.chainlock, counts)
             .then(|| block.height())
     }
 
-    fn parent(&self, txid: &Txid) -> Option<u32> {
+    fn conflicted_height(&self, txid: &Txid) -> Option<u32> {
         self.conflicted.get(txid).map(|(height, _)| *height)
     }
 
@@ -293,9 +311,9 @@ pub(crate) fn beaten_height(
     let locked = locked_in(history, txid);
     let parents = (inputs.iter())
         .filter(|_| !locked)
-        .filter_map(|o| beats.parent(&o.txid));
+        .filter_map(|o| beats.conflicted_height(&o.txid));
     (conflict_height(history, inputs, txid, beats).into_iter())
-        .chain(txid.and_then(|t| beats.parent(t)))
+        .chain(txid.and_then(|t| beats.conflicted_height(t)))
         .chain(parents)
         .min()
 }
@@ -628,7 +646,7 @@ impl NetworkSession {
             .max(self.hub.best_chainlock().map(|(h, _)| h));
         let history = self.hub.history.read(&wallet, |h| h.clone());
         let finality = self
-            .finality(|at_most| spender_heights([&history], at_most))
+            .finality(|at_most| spender_heights(&[&history], at_most))
             .await;
         Ok(OpView {
             history,
@@ -1509,7 +1527,7 @@ mod tests {
         assert_eq!(read(&history, None), sent, "no ChainLock");
         assert_eq!(read(&history, Some(8)), sent, "above the ChainLock");
         assert_eq!(read(&history, cl), beaten(9), "K not in the history");
-        let mut stale = Beats::on_chain(&history, cl).finality;
+        let mut stale = Beats::on_chain(&history, cl).finality.unwrap();
         stale
             .active
             .insert(9, dashcore::BlockHash::from_byte_array([9; 32]));

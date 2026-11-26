@@ -185,8 +185,9 @@ impl NetworkSession {
             chainlock,
             finality,
         } = self.op_view(wallet).await?;
+        // The registrations the test seam mines are read with the rest.
         #[cfg(test)]
-        let history = {
+        let (history, finality) = {
             use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
             let mut history = history;
             let (mined, locked) = (self.masternodes.protx_seam())
@@ -214,20 +215,19 @@ impl NetworkSession {
                     },
                 );
             }
-            history
-        };
-        // The registrations the test seam mines are read with the rest.
-        #[cfg(test)]
-        let finality = {
             drop(finality);
-            (self.finality(|at_most| crate::history::spender_heights([&history], at_most))).await
+            let heights = |at_most| crate::history::spender_heights(&[&history], at_most);
+            let finality = self.finality(heights).await;
+            (history, finality)
         };
+        let seen = Beats::seen(&history, chainlock);
         let beats = Beats::of(&history, chainlock, finality);
         let pending = self.spends.snapshot(&wallet);
         Ok(ChainView {
             history,
             unspent,
             beats,
+            seen,
             pending,
         })
     }

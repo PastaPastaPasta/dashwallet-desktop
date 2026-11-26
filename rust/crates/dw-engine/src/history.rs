@@ -542,6 +542,19 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
+/// Whether `rival`, in a block `counts` accepts, beats a transaction it
+/// double-spends: one InstantSend-locked (`locked`) only when a ChainLock
+/// covers that block (DIP-10, key-wallet's order). A final block is
+/// ChainLocked already, but the ChainLock may be read before its proof.
+pub(crate) fn block_beats(
+    rival: &TransactionContext,
+    locked: bool,
+    chainlock: Option<u32>,
+    counts: impl FnOnce(&BlockInfo) -> bool,
+) -> bool {
+    rival.block_info().is_some_and(counts) && (!locked || chain_locked(rival, chainlock))
+}
+
 /// Whether another transaction in a block the SPV header chain proves
 /// final ([`proven_final`] under the wallet's own `chainlock`, `active`
 /// the chain's block hash at each height it has) spends one of `txid`'s
@@ -636,9 +649,8 @@ pub(crate) fn conflicted(
             }
             let beaten = (in_block.get(&i.previous_output).into_iter().flatten())
                 .filter(|(b, be)| {
-                    b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
+                    b != t && block_beats(&be.context, instant_locked(e), chainlock, &counts)
                 })
-                .filter(|(_, be)| be.context.block_info().is_some_and(&counts))
                 .filter_map(|(_, be)| block(be))
                 .min();
             todo.extend(beaten.map(|b| (*t, b)));
@@ -678,11 +690,7 @@ impl Finality {
 /// another of `txs` spends too: every block that can beat one of them or
 /// a transaction that spends the wallet's coins, the headers a
 /// [`Finality`] reads.
-pub(crate) fn spender_heights<'a>(
-    txs: impl IntoIterator<Item = &'a HashMap<Txid, TxEntry>>,
-    at_most: u32,
-) -> BTreeSet<u32> {
-    let txs: Vec<&HashMap<Txid, TxEntry>> = txs.into_iter().collect();
+pub(crate) fn spender_heights(txs: &[&HashMap<Txid, TxEntry>], at_most: u32) -> BTreeSet<u32> {
     let mut spent: HashMap<OutPoint, usize> = HashMap::new();
     for e in txs.iter().flat_map(|h| h.values()) {
         for i in &e.tx.input {
@@ -5174,8 +5182,8 @@ mod tests {
         let all = conflicted(&txs, None, |_| true);
         assert_eq!(all.get(&k.txid()), Some(&(20, hash(1))), "through P");
         assert!(conflicted(&txs, None, |b| b.height() != 20).is_empty());
-        assert_eq!(spender_heights([&txs], 30), BTreeSet::from([20]));
-        assert!(spender_heights([&txs], 19).is_empty(), "above the bound");
+        assert_eq!(spender_heights(&[&txs], 30), BTreeSet::from([20]));
+        assert!(spender_heights(&[&txs], 19).is_empty(), "above the bound");
 
         let block = BlockInfo::new(20, hash(1), 0);
         let fin = |cl: Option<(u32, u8)>, active: &[(u32, u8)]| Finality {

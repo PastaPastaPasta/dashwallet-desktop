@@ -31,7 +31,7 @@ use super::{
     Alarm, Authorize, Chain, Env, HeldKey, Hold, PayoutChange, Waits, WalletKeys, WithdrawalError,
     WithdrawalRuntime, load, on_db,
 };
-use crate::history::{Finality, TxEntry, chain_locked, instant_locked};
+use crate::history::{Finality, TxEntry, block_beats, instant_locked};
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::masternodes::{MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::trust::Rule5;
@@ -134,8 +134,7 @@ fn payout_changes_in(
                 .collect();
             let beaten = all().any(|(id, w)| {
                 *id != txid
-                    && w.context.block_info().is_some_and(|b| finality.proves(b))
-                    && (!locked || chain_locked(&w.context, chainlock))
+                    && block_beats(&w.context, locked, chainlock, |b| finality.proves(b))
                     && (w.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
             });
             if abandoned || beaten || (!locked && through_parent(&txid)) {
@@ -229,8 +228,7 @@ impl Env for SessionEnv {
         let hub = &self.session.hub;
         let finality = (self.session)
             .finality(|at_most| {
-                (hub.history)
-                    .read_all(|all| crate::history::spender_heights(all.iter().copied(), at_most))
+                (hub.history).read_all(|all| crate::history::spender_heights(all, at_most))
             })
             .await;
         let chainlock =
@@ -479,17 +477,7 @@ impl NetworkSession {
     #[cfg(test)]
     pub(crate) async fn withdrawal_clear_barriers(self: &Arc<Self>, pro_tx_hash: &[u8; 32]) {
         let env = SessionEnv::of(self).unwrap();
-        let identity = super::check::Gated {
-            read: super::net::Proved {
-                value: None,
-                height: 0,
-                core_height: 0,
-                time_ms: 0,
-                verified: false,
-            },
-            passed: false,
-        };
-        (super::check::pending_barriers(&env, pro_tx_hash, &identity).await).unwrap();
+        (super::check::clear_barriers_unproved(&env, pro_tx_hash).await).unwrap();
     }
 
     /// Tests: the heights of the ProUpRegTxs of `pro_tx_hash` a withdrawal

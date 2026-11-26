@@ -569,7 +569,6 @@ fn test_a_refused_spend_back_is_replaced_by_one_of_every_coin() {
     };
     assert_eq!(s.recovery.attributed, want);
     f.mine(a.clone(), 60);
-    f.chainlock(60);
     f.tip(61);
     let r = f.recovery(1, &id);
     assert_eq!(
@@ -1058,9 +1057,11 @@ fn test_a_two_abandon_upgrade_never_spends_one_coin_alone() {
 }
 
 /// T4 settlement: A in a block is `confirming{abandon_tx}` with its
-/// depth, never `uncertain`; buried it is `settled`, `released` once the
-/// follower clears the locks, and stays so across a restart; every call
-/// refuses `conflicted`. A reorg takes it back to `pending`.
+/// depth, never `uncertain`; buried in a block a ChainLock covers it is
+/// `settled`, `released` once the follower clears the locks, and stays so
+/// across a restart; every call refuses `conflicted`. Buried with no
+/// ChainLock, it is still `confirming`. A reorg takes it back to
+/// `pending`.
 #[test]
 fn test_a_spend_back_in_a_block_settles_and_releases() {
     let mut f = fx(3, true);
@@ -1069,8 +1070,7 @@ fn test_a_spend_back_in_a_block_settles_and_releases() {
     f.spv(true, 1);
     let a = f.net.sent()[0].clone();
     f.mine(a.clone(), 60);
-    f.chainlock(60);
-    for (tip, n) in [(60, 1), (64, 5)] {
+    for (tip, n) in [(60, 1), (64, 5), (65, 6)] {
         f.tip(tip);
         let r = f.recovery(1, &id);
         assert_eq!(
@@ -1084,6 +1084,7 @@ fn test_a_spend_back_in_a_block_settles_and_releases() {
         assert!(r.actions.is_empty() && r.blocked.is_none());
         assert_eq!(r.abandon_spend.as_ref().unwrap().state, None);
     }
+    f.chainlock(60);
     assert_stage(f.abandon(1, &id).unwrap_err(), "conflicted");
     assert_stage(f.resend_abandon(1, &id, COIN).unwrap_err(), "conflicted");
     f.seam.shared_mined.lock().unwrap().clear();
@@ -1128,7 +1129,6 @@ fn test_another_spend_in_a_block_settles_as_other_spend() {
     let coin = f.net.sent()[0].input[0].previous_output;
     let x = foreign_spend(&[coin], 7);
     f.mine(x, 60);
-    f.chainlock(60);
     f.tip(60);
     let r = f.recovery(1, &id);
     assert_eq!(
@@ -1140,6 +1140,7 @@ fn test_another_spend_in_a_block_settles_as_other_spend() {
         }
     );
     assert!(r.actions.is_empty());
+    f.chainlock(60);
     assert_stage(f.resend_abandon(1, &id, COIN).unwrap_err(), "conflicted");
     f.session.hub.tracker().set_chainlock_height(60);
     assert_eq!(

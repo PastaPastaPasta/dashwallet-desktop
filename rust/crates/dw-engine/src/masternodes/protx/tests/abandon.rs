@@ -1105,12 +1105,21 @@ fn mg954_a_rival_reloaded_from_a_replaced_block_after_a_restart_releases_nothing
     f.forks.lock().unwrap().extend([(60, replaced), (61, lock)]);
     f.chain_lock_applied(61, lock);
     {
-        let persister = Arc::clone(&f.session.live().unwrap().persister);
-        let stored = (persister
-            .get_core_tx_record(f.wallet.0, &rival.txid())
-            .unwrap())
-        .and_then(|r| r.context.block_info().map(|b| b.block_hash()));
-        assert_eq!(stored, Some(stale), "the store keeps the rival's block");
+        let live = f.session.live().unwrap();
+        crate::kill9::eventually("the store keeps the rival's block", || {
+            live.persister.flush(f.wallet.0).unwrap();
+            let stored = (live.persister)
+                .get_core_tx_record(f.wallet.0, &rival.txid())
+                .unwrap();
+            stored.and_then(|r| r.context.block_info().map(|b| b.block_hash())) == Some(stale)
+        });
+        crate::kill9::eventually("the store keeps the ChainLock", || {
+            live.persister.flush(f.wallet.0).unwrap();
+            let stored = live.store.load().unwrap();
+            let applied = (stored.wallets.get(&f.wallet.0))
+                .and_then(|w| w.wallet_info.metadata.last_applied_chain_lock.clone());
+            applied.is_some_and(|cl| (cl.block_height, cl.block_hash) == (61, lock))
+        });
     }
 
     f.restart(&[(3, MASTERNODE_COLLATERAL)]);
@@ -1127,7 +1136,6 @@ fn mg954_a_rival_reloaded_from_a_replaced_block_after_a_restart_releases_nothing
         Some(stale),
         "the load restores the rival in its old block"
     );
-    assert_eq!(f.session.hub.best_chainlock(), Some((61, lock)));
     f.tip(66);
     let ops = (&key_change_op, &registration);
     let abandoned = ProTxOperationState::Abandoned;
@@ -1180,11 +1188,13 @@ fn mg954_a_rival_in_a_block_no_chainlock_covers_releases_nothing_until_one_does(
     f.assert_released(&hash, &key_change_op, &registration, collateral);
 }
 
-/// #954 (M-2): an InstantSend-locked key change and registration whose
-/// own fee inputs a plain block spends. The lock outranks that block
-/// (DIP-10), so they stay `sent`: a quote keeps the barrier, the
-/// collateral stays locked and a later update waits. Once a ChainLock
-/// covers the block they are `conflicted` and release.
+/// #954: an InstantSend-locked key change whose own fee input a plain
+/// block spends (M-2), and a registration, not locked, whose fee input a
+/// plain block spends (M-1's direct term). The lock outranks that block
+/// (DIP-10), and the block is not final, so both stay `sent`: a quote
+/// keeps the key change's barrier, a later update waits and the
+/// registration's collateral stays locked. Once a ChainLock covers the
+/// block they are `conflicted` and release.
 #[test]
 fn mg954_an_instant_send_locked_operation_holds_against_a_plain_block_until_a_chainlock() {
     let f = fx(Library::Accept);
@@ -1192,8 +1202,7 @@ fn mg954_an_instant_send_locked_operation_holds_against_a_plain_block_until_a_ch
     let hash = reg.pro_tx_hash.clone().unwrap();
     let pro_tx_hash = reg_tx.txid().to_byte_array();
     let (key_change_op, k, k_fee) = f.sent_key_change(&hash);
-    let locked = || TransactionContext::InstantSend(Default::default());
-    f.seen_with(&k, locked());
+    f.seen_with(&k, TransactionContext::InstantSend(Default::default()));
     let collateral = f.credit(3, MASTERNODE_COLLATERAL);
     let req = RegistrationRequest {
         service: "1.2.3.5".into(),
@@ -1202,9 +1211,7 @@ fn mg954_an_instant_send_locked_operation_holds_against_a_plain_block_until_a_ch
         })
     };
     let registration = f.register(req, f.grant(COIN)).unwrap();
-    let r = f.lib.sent().pop().unwrap();
-    f.record(r.clone(), locked());
-    let r_fee = r.input[0].previous_output;
+    let r_fee = f.lib.sent().pop().unwrap().input[0].previous_output;
     for (fee, nonce) in [(k_fee, 1), (r_fee, 2)] {
         let mut rival = Fx::rival_of(fee);
         rival.lock_time = nonce;
@@ -1216,10 +1223,6 @@ fn mg954_an_instant_send_locked_operation_holds_against_a_plain_block_until_a_ch
     f.assert_held("a plain block", &hash, &pro_tx_hash, ops, collateral, sent);
 
     f.chainlock(60);
-    // key-wallet's conflict sweep drops a locked registration once a
-    // ChainLocked block beats it (`drop_conflicted_transactions`), and the
-    // history with it, so the follower no longer lists its masternode.
-    (f.session.hub.history).with_wallet(f.wallet, |h| h.forget(&r.txid()));
     f.quote_barriers(&pro_tx_hash);
     assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
     f.assert_released(&hash, &key_change_op, &registration, collateral);

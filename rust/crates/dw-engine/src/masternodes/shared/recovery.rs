@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use super::super::MasternodesError;
 use super::super::protx::build::tx_size;
-use super::super::protx::ops::{conflict_of, overdue, tip_overdue};
+use super::super::protx::ops::{Beats, beaten_height, conflict_of, overdue, tip_overdue};
 use super::super::protx::require_protx_sending;
 use super::super::shared_records::{
     AbandonSpend, AbandonSpendState, Blocked, BlockedReason, HandoffError, HandoffErrorOutcome,
@@ -649,29 +649,35 @@ impl NetworkSession {
         let confirmed = matches!(session.stage, SharedStage::Confirmed { .. });
         // A lower block that beats a transaction the request spends (#740)
         // is another spend too: the release reads the lowest.
-        let conflict = (row.out_at.is_some() && !confirmed)
-            .then(|| {
-                let direct = (conflict_of(
-                    &chain.history,
-                    &own_inputs,
-                    except.as_ref(),
-                    &attributed,
-                    &chain.beats,
-                ))
-                .map(|(by, height)| (attributed.contains(&by), height));
-                match (direct, chain.beaten(&own_inputs, except.as_ref())) {
-                    (Some((_, d)), Some(lowest)) if lowest < d => Some((false, lowest)),
-                    (None, lowest) => lowest.map(|h| (false, h)),
-                    (direct, _) => direct,
-                }
-            })
-            .flatten();
-        if let Some((by_abandon, height)) = conflict {
+        let conflict_by = |beats: &Beats| {
+            (row.out_at.is_some() && !confirmed)
+                .then(|| {
+                    let direct = conflict_of(
+                        &chain.history,
+                        &own_inputs,
+                        except.as_ref(),
+                        &attributed,
+                        beats,
+                    )
+                    .map(|(by, height)| (attributed.contains(&by), height));
+                    let beaten = beaten_height(&chain.history, beats, &own_inputs, except.as_ref());
+                    match (direct, beaten) {
+                        (Some((_, d)), Some(lowest)) if lowest < d => Some((false, lowest)),
+                        (None, lowest) => lowest.map(|h| (false, h)),
+                        (direct, _) => direct,
+                    }
+                })
+                .flatten()
+        };
+        // Any block shows the progress; only a final one, buried, settles.
+        let settled = conflict_by(&chain.beats).filter(|(_, height)| (ctx.buried)(*height));
+        let conflict = conflict_by(&chain.seen);
+        if let Some((by_abandon, height)) = settled.or(conflict) {
             let by = match by_abandon {
                 true => SettledBy::AbandonTx,
                 false => SettledBy::OtherSpend,
             };
-            r.settlement = match (ctx.buried)(height) {
+            r.settlement = match settled.is_some() {
                 true => Settlement::Settled {
                     by,
                     released: reserved_of(row).is_empty(),

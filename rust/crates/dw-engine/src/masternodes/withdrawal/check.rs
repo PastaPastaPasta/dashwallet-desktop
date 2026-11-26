@@ -329,7 +329,7 @@ fn payout_rank(change: &PayoutChange) -> u64 {
 /// not complete (`barriers_ready` false) is pending whatever the table
 /// holds, and counts as an older pending barrier. `Abandoned` when every
 /// pending one is an operation its wallet abandoned (MG-10 §1.10).
-pub(super) async fn pending_barriers(
+async fn pending_barriers(
     env: &impl Env,
     pro_tx_hash: &[u8; 32],
     identity: &Gated<Option<Identity>>,
@@ -350,9 +350,31 @@ pub(super) async fn pending_barriers(
     Ok(pending)
 }
 
+/// Tests: [`pending_barriers`] with no Platform read passed.
+#[cfg(test)]
+pub(super) async fn clear_barriers_unproved(
+    env: &impl Env,
+    pro_tx_hash: &[u8; 32],
+) -> Result<(), WithdrawalError> {
+    let read = super::net::Proved {
+        value: None,
+        height: 0,
+        core_height: 0,
+        time_ms: 0,
+        verified: false,
+    };
+    let identity = Gated {
+        read,
+        passed: false,
+    };
+    pending_barriers(env, pro_tx_hash, &identity)
+        .await
+        .map(drop)
+}
+
 /// Why a payout-change barrier is still pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Pending {
+enum Pending {
     /// Its operation was abandoned in Activity and may still be mined.
     Abandoned,
     Other,
