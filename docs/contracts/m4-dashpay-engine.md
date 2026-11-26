@@ -1048,7 +1048,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 27cf5f19be2458a05fe81279abfa0d9924370d8a66f56a3c1172f3a3a8c1cc4f version: 104 -->
+<!-- surface-sha256: 2b97292eedd4edbcc8df63409454e0e3466173d6ae19317c9e6e0bf836170f1c version: 105 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1131,11 +1131,13 @@ pub struct ConnectSheet {
     pub max_funding_limit: u64,
     pub earlier_approval: Option<ConnectChoice>,
     pub block_time_ms: u64,
+    pub groups: [u8 ; 32],
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectQuote {
     pub request: [u8 ; 20],
     pub plan: [u8 ; 32],
+    pub groups: [u8 ; 32],
     pub max_credits: u64,
     pub fee: u64,
     pub budgets: Vec<u64>,
