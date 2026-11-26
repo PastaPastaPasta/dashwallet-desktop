@@ -807,6 +807,9 @@ pub enum TxActionRefusalName {
     /// It, or a later transaction that spends from it, funds a Platform
     /// transfer that hasn't finished, which Dash Wallet sends again.
     PlatformFunding,
+    /// The network's data was restored from its backup: Abandon, Resend
+    /// and Remove Unconfirmed wait for its first full sync.
+    Restored,
 }
 
 impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
@@ -823,6 +826,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
             R::SettledDescendant => Self::SettledDescendant,
             R::RecordUnreadable(_) => Self::RecordUnreadable,
             R::PlatformFunding => Self::PlatformFunding,
+            R::Restored => Self::Restored,
         }
     }
 }

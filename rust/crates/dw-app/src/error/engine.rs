@@ -52,6 +52,7 @@ codes! {
         StuckFunding = "stuck_funding",
         ShieldedSpendUnresolved = "shielded_spend_unresolved",
         LastStartupWallet = "last_startup_wallet",
+        Restored = "restored",
         RestoreOnly = "restore_only",
     }
 }
@@ -221,6 +222,7 @@ impl From<EngineError> for AppError {
                 }),
             ),
             E::LastStartupWallet => (EngineCode::LastStartupWallet.into(), None),
+            E::Restored => (EngineCode::Restored.into(), None),
             E::RestoreOnly => (EngineCode::RestoreOnly.into(), None),
             E::SpvRunning => (EngineCode::SpvRunning.into(), None),
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
@@ -565,6 +567,7 @@ mod tests {
             E::ShieldedSpendUnresolved,
             E::ShieldedSpendHeld(dw_engine::ShieldedHold::CarriedOver),
             E::LastStartupWallet,
+            E::Restored,
             E::RestoreOnly,
         ];
         // Every code of `EngineCode` is one of these (the one-to-one check).

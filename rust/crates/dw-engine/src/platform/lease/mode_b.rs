@@ -2111,6 +2111,9 @@ impl Resumer for SessionTracked {
             let Some(session) = self.session.upgrade() else {
                 return Resumed::NotRun;
             };
+            if session.wallet_platform_held(wallet) {
+                return Resumed::NotRun;
+            }
             match session.wallet(&wallet).await {
                 Ok(w) => w,
                 Err(_) => return Resumed::NotRun,

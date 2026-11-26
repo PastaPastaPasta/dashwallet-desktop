@@ -755,7 +755,7 @@ export function openedNetwork(world: World, network: NetworkInfo): OpenedNetwork
   return { network, lock: world.lock, notice: world.upgradeNotice ?? null };
 }
 
-function restoredNetwork(world: World): RestoredNetworkInfo {
+export function restoredNetwork(world: World): RestoredNetworkInfo {
   return { ...world.launch.network, restored: world.restored === true };
 }
 

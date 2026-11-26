@@ -12,7 +12,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { bridgeEvents } from "./api/events";
 import { guardWhileLocked } from "./api/lockGate";
-import { BackendContext } from "./api/queries";
+import { readPlatformOffFrom } from "./api/platformHold";
+import { BackendContext, cachedPlatformOff } from "./api/queries";
 import { inTauri, IpcBackend } from "./api/tauri";
 import { App, LaunchContext } from "./app/App";
 import { installContextMenuGuard } from "./app/contextMenuGuard";
@@ -47,6 +48,7 @@ async function boot() {
     defaultOptions: { queries: { staleTime: Infinity, refetchOnWindowFocus: false, retry: false } },
   });
   await bridgeEvents(backend, client, launch.network.dirName);
+  readPlatformOffFrom(() => cachedPlatformOff(client));
   if (fixturePassphrase !== null) exposeSelftest(backend, client, fixturePassphrase);
 
   installDropGuard();

@@ -21,6 +21,7 @@ import { hasUnansweredOp } from "../../platform/move";
 import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, sendWent, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
 import { GrantSheet } from "../tools/common";
 import { FormField, type useAmountField } from "./form";
+import { platformHoldText } from "../../api/platformHold";
 
 /** `seen`: the Platform activity when Confirm opened (what a later read is compared with). */
 type Confirmed = { quote: PlatformSendQuote; amount: WithdrawAmount; seen: readonly PlatformActivity[] | null | undefined };
@@ -236,7 +237,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const sheetOpen = confirmed !== null || flow.running || flow.step !== "confirm";
 
   const q = quote.data;
-  const problem = waiting ? C.waiting : quote.isError ? sendErrorText(quote.error, credits, activity.data) : (amount.error ?? null);
+  const problem = waiting ? C.waiting : quote.isError ? (platformHoldText(quote.error, false) ?? sendErrorText(quote.error, credits, activity.data)) : (amount.error ?? null);
   // An operation is single use: after an attempt, Confirm waits for a quote taken since.
   const ready = !waiting && !!q && !quote.isFetching && !quote.isError && asked !== null && !flow.isSpent(q.operation);
   const requote = quote.refetch;

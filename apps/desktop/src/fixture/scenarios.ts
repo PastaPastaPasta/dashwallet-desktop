@@ -36,6 +36,7 @@ import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registeri
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -115,8 +116,15 @@ export interface World {
   restoreRequested?: boolean;
   /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
   restored?: boolean;
+  /** What RESTORED waits for (`restore_status`); nothing when unset. */
+  restoreStatus?: RestoreStatus;
+  /** The session was opened with `no_platform` (Finish without Dash Platform), until `restart_app`. */
+  noPlatform?: boolean;
+  /** What `finish_without_platform` does instead of finishing: refuse as a busy or draining network
+   * does, or fail to open without Platform and open as usual (`rolledBack`). */
+  finishWithoutPlatform?: "busy" | "draining" | "rolledBack";
   /** The restore commands called, in order. */
-  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "recover")[];
+  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "restoreRetry" | "recover")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
@@ -614,6 +622,63 @@ export function withHistoryGap(w: World): World {
   return w;
 }
 
+/** The `restore-holds` scenarios' payment. */
+export const RESTORE_HELD_TXID = "4e".repeat(32);
+
+/** A payment still unconfirmed in the wallet data restored from before the upgrade (Q92 H1, H2): it
+ * spent the 7.5 DASH coin, and its change is shown but never offered, counted as pending. */
+function withRestoreHold(w: World, stillRestored: boolean): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const row: TxRow = {
+    ...sent,
+    txid: RESTORE_HELD_TXID,
+    timestamp: (sent.timestamp ?? 0) + 60,
+    blockHeight: null,
+    label: null,
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  const spent = wallet.coins.find((u) => u.amount === 750_000_000)!;
+  const change: Utxo = {
+    ...spent,
+    outpoint: { txid: RESTORE_HELD_TXID, vout: 1 },
+    amount: spent.amount + row.amount,
+    confirmations: 0,
+    blockHeight: null,
+    timestamp: row.timestamp,
+    instantLocked: false,
+    chainLocked: false,
+    label: null,
+    isChange: true,
+    spendable: false,
+    pendingUnproven: true,
+  };
+  wallet.rows = [row, ...wallet.rows];
+  wallet.coins = [...wallet.coins.filter((u) => u !== spent), change];
+  const b = wallet.summary.balances!;
+  wallet.summary = {
+    ...wallet.summary,
+    balances: { ...b, confirmed: b.confirmed - spent.amount, unconfirmed: b.unconfirmed + change.amount, total: b.total + row.amount },
+  };
+  w.restored = stillRestored;
+  w.send.sent[RESTORE_HELD_TXID] = { walletId: wallet.summary.walletId, spent: [spent], change: change.outpoint };
+  w.send.restoreHeld = [RESTORE_HELD_TXID];
+  return w;
+}
+
+/** RESTORED set, waiting as `status` says (`restore_status`). */
+function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
+  w.restored = true;
+  w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false, ...status };
+  return w;
+}
+
+function withFinish(w: World, finish: World["finishWithoutPlatform"]): World {
+  withRestoreStatus(w, { waiting: ["platformPass"] });
+  w.finishWithoutPlatform = finish;
+  return w;
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -1051,6 +1116,32 @@ const SCENARIOS = {
     w.send.debitUnknown = [row.txid];
     return w;
   },
+  /** RESTORED cleared, with a payment still held from before the restore: its change shows MG's
+   * pendingUnproven line in Coin Selection, and Abandon's confirm starts with the restoredHint. */
+  "restore-holds": (t) => withRestoreHold(base(t), false),
+  /** As `restore-holds` while RESTORED is still set: the money gate's line stands in for Abandon. */
+  "restore-holds-restored": (t) => withRestoreHold(base(t), true),
+  /** RESTORED set while the engine waits for the wallet to sync with the Dash network. */
+  "restored-waiting-core": (t) => withRestoreStatus(base(t), { waiting: ["coreSync"] }),
+  /** RESTORED set while Platform's first check is what it waits for: Finish without Dash Platform shows,
+   * and after it RESTORED clears. */
+  "restored-waiting-platform": (t) => withRestoreStatus(base(t), { waiting: ["platformPass"] }),
+  /** As `restored-waiting-platform`, but Finish without Dash Platform is refused: username registration runs. */
+  "restored-finish-busy": (t) => withFinish(base(t), "busy"),
+  /** As `restored-waiting-platform`, but the open without Platform fails and the network opens as usual. */
+  "restored-finish-rolled-back": (t) => withFinish(base(t), "rolledBack"),
+  /** C6: the Core gate open (RESTORED clear) while Platform and Shielded funds wait for Platform's check. */
+  "restored-platform-only": (t) => {
+    const w = withRestoreStatus(base(t), { waiting: ["platformPass"], platformOnly: true });
+    w.restored = false;
+    return w;
+  },
+  /** RESTORED set while a wallet's history loads. */
+  "restored-waiting-history": (t) => withRestoreStatus(base(t), { waiting: ["historyLoad"] }),
+  /** The wallet's history couldn't load: named, with Report a problem only. */
+  "restored-history-failed": (t) => withRestoreStatus(base(t), { historyWallets: [FIXTURE_WALLET_ID] }),
+  /** The check finished but its clear couldn't be written: Try again (which works) and Report a problem. */
+  "restored-clear-failed": (t) => withRestoreStatus(base(t), { clearFailed: true }),
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);

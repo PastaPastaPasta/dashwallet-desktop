@@ -422,6 +422,17 @@ impl NetworkSession {
         keys: Option<Vec<HeldKey>>,
         platform_address: bool,
     ) -> Result<Lease, LeaseError> {
+        if flow.moves_funds() {
+            let gate = &self.hub.restore;
+            if flow.needs_platform() && self.platform.funds_off() {
+                return Err(LeaseError::PlatformUnavailable);
+            }
+            if gate.is_restored()
+                || (flow.moves_platform_funds() && self.wallet_platform_held(wallet))
+            {
+                return Err(LeaseError::Restored);
+            }
+        }
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let grants = grants.to_vec();

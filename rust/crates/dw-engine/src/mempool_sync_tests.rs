@@ -37,6 +37,8 @@ mod own_spend_balance_tests;
 mod own_spend_disk_tests;
 #[path = "removed_payment_way_out_tests.rs"]
 mod removed_payment_way_out_tests;
+#[path = "restore_holds_tests.rs"]
+mod restore_holds_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
 #[path = "store_repair_legacy_tests.rs"]

@@ -5,6 +5,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { FundAmount } from "./generated/FundAmount";
 import type { Backend } from "./backend";
+import type { RestoreStatus } from "./generated/RestoreStatus";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
@@ -46,6 +47,8 @@ export const keys = {
   network: ["network"] as const,
   /** The network's `restored` (storeOpen.ts): seeded by the open, read again while it is `true`. */
   restored: ["restored"] as const,
+  /** What RESTORED still waits for, read while it is set and again on each sync. */
+  restoreStatus: ["restoreStatus"] as const,
   /** Whether a verified snapshot is there to restore, read by a screen shown instead of the wallet. */
   restoreAvailable: ["restoreAvailable"] as const,
   /** The store upgrade's notice for this session (`OpenedNetwork.notice`): seeded by the open only, `null`
@@ -200,6 +203,19 @@ export function useUpgradeNotice() {
 export function useDismissUpgradeNotice() {
   const client = useQueryClient();
   return () => client.setQueryData<StoreLine | null>(keys.upgradeNotice, null);
+}
+
+/** What RESTORED still waits for (`restore_status`): `null` with nothing held. The panel reads it once
+ * `restored` is known; the shell reads it whenever the wallet is unlocked. */
+export function useRestoreStatus(enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.restoreStatus, queryFn: () => b.restoreStatus(), enabled });
+}
+
+/** The cached `restore_status`'s `platformOff`: this session runs without Dash Platform. The shell reads
+ * it while the wallet is unlocked (App.tsx). */
+export function cachedPlatformOff(client: QueryClient): boolean {
+  return client.getQueryData<RestoreStatus | null>(keys.restoreStatus)?.platformOff === true;
 }
 
 /** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */

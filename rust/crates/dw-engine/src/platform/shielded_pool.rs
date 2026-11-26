@@ -3380,6 +3380,9 @@ where
     let session = Arc::clone(session);
     let rt = session.rt.clone();
     rt.spawn(async move {
+        if signing {
+            session.refuse_platform_funds(wallet_id)?;
+        }
         // Before the session's gate: a close holding it to write waits for
         // the calls that entered, never for this one.
         let _admitted = session

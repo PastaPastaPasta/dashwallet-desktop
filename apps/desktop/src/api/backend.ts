@@ -77,6 +77,7 @@ import type { LockStatus } from "./generated/LockStatus";
 import type { MnemonicCheck } from "./generated/MnemonicCheck";
 import type { NetworkInfo } from "./generated/NetworkInfo";
 import type { OpenedNetwork } from "./generated/OpenedNetwork";
+import type { RestoreStatus } from "./generated/RestoreStatus";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
@@ -439,6 +440,15 @@ export interface Backend {
   keepCurrentFiles(): Promise<unknown>;
   /** The couldn't-start screen's Cancel restore (`cancel_restore`): drops the request; the open is then tried again. */
   cancelRestore(): Promise<null>;
+  /** What RESTORED still waits for (`restore_status`); `null` while it isn't set. */
+  restoreStatus(): Promise<RestoreStatus | null>;
+  /** Try again (`restore_retry`): the engine checks what RESTORED waits for again now. */
+  restoreRetry(): Promise<null>;
+  /** Finish without Dash Platform (`finish_without_platform`): closes the network unless busy
+   * (`app.network_busy`, nothing changed) and opens it without Platform for this session. If that open
+   * fails it opens as usual: `app.network_switch_failed` with `rolledBack`. Nothing unless Platform's
+   * first check is what RESTORED waits for. */
+  finishWithoutPlatform(): Promise<OpenedNetwork>;
   /** A damaged store's Set up from recovery phrase (`recover_in_fresh_folder`): the window's network moves to a
    * new folder, the refused one left as it is; a restart then opens it. */
   recoverInFreshFolder(): Promise<null>;

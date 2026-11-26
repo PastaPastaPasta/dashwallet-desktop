@@ -102,6 +102,33 @@ export const storeUpgrade = {
   },
   restore: {
     banner: "Anything that moves your funds is paused until syncing finishes.",
+    waiting: {
+      core: "Waiting for the wallet to finish syncing with the Dash network.",
+      platform: "Waiting for Dash Wallet's first check with Dash Platform.",
+      history: "Waiting for a wallet's history to load.",
+    },
+    retry: "Try again",
+    finishWithoutPlatform: "Finish without Dash Platform",
+    finishWithoutPlatformMeaning:
+      "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
+    platformOnly:
+      "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+    platformRestored:
+      "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
+    platformOff: "Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.",
+    platformOffNotSending: "Dash Platform is off until you next start Dash Wallet, and this needs it.",
+    finishBusy: {
+      waitBefore: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform.",
+      waitOrStopMixing: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform.",
+      waitBeforeLockStops: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform. Locking the wallet stops {stops}.",
+      waitOrStopMixingLockStops: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform. Locking the wallet stops {stops}.",
+      stopMixing: "Stop mixing before Dash Wallet can reopen without Dash Platform.",
+      busyDraining: "Dash Wallet is still finishing a request. Choose Finish without Dash Platform again once it's done.",
+    },
+    finishFailed: "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: {error}",
+    historyFailed: "Dash Wallet couldn't load the history of {wallet}, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
+    clearFailed:
+      "Dash Wallet finished checking the wallet data it restored, but couldn't save that the check is done, so anything that moves your funds stays paused. The disk may be full, or Dash Wallet may not be able to write to it. Free up some space, then try again. If this keeps happening, report a problem.",
     confirm: {
       title: "Restore wallet data from before the upgrade?",
       text: "Dash Wallet restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent. The wallet data recorded since the upgrade is kept in the upgrade-backups folder inside {folder}. Don't delete it: it may hold the only record of a recent payment.\n\nThis version of Dash Wallet pauses sending until syncing finishes. An earlier version doesn't. If you open the wallet with one, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.\n\nIf Dash Wallet closes before the restore finishes, start this version again before you open an earlier one.",

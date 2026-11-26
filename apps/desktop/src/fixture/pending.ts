@@ -31,7 +31,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
 import { heldExitOp, isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, restoredNetwork, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -39,6 +39,7 @@ import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 import { restoreFailure, storeRestoreError } from "./errors";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import { FIXTURE_DATA_DIR } from "./settings";
 
 /** What a move costs the fixture's wallet, in credits. */
@@ -248,6 +249,23 @@ export function switchedWorld(): World | null {
   const { active, others } = JSON.parse(saved) as { active: World; others: Record<string, World> };
   otherNetworks = others;
   return active;
+}
+
+/** What the gate waits for (`restore_status`), as the engine counts it: while RESTORED is set with
+ * Platform off, Platform's first check is not waited for; `platformOff` is the session's. */
+function restoreStatusOf(world: World): RestoreStatus {
+  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false };
+  const off = world.noPlatform === true;
+  return { ...s, waiting: off && !s.platformOnly ? s.waiting.filter((w) => w !== "platformPass") : s.waiting, platformOff: off };
+}
+
+/** Clears RESTORED once nothing holds it; with Platform off, Platform's check stays held (C6). */
+function settleRestored(world: World) {
+  const s = restoreStatusOf(world);
+  if (s.waiting.length === 0 && s.historyWallets.length === 0 && !s.clearFailed) {
+    world.restored = false;
+    world.restoreStatus = world.noPlatform ? { waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true, platformOff: true } : undefined;
+  }
 }
 
 function keepWorlds(world: World) {
@@ -597,6 +615,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const shielded = world.pending.shielded;
     if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
     if (world.networkSwitch) world.networkSwitch.reopenFails = false;
+    world.noPlatform = undefined;
     // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
     if (world.restoreRequested) {
       world.restoreRequested = false;
@@ -632,6 +651,45 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     (world.restoreCalls ??= []).push("cancelRestore");
     if (world.openRestore?.state === "notStarted") world.openRestore = undefined;
     return null;
+  },
+  // B addendum 1: what RESTORED waits for; Try again, which writes a clear that failed before; and
+  // Finish without Dash Platform, which closes the network unless busy and opens it without Platform
+  // (as usual if that fails), under one lock as `switch_network` does.
+  restore_status: (_: Record<string, never>, { world }: Ctx) => (world.restored || world.restoreStatus?.platformOnly ? restoreStatusOf(world) : null),
+  restore_retry: (_: Record<string, never>, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreRetry");
+    if (world.restored && world.restoreStatus?.clearFailed) {
+      world.restoreStatus = { ...world.restoreStatus, clearFailed: false };
+      settleRestored(world);
+    }
+    return null;
+  },
+  finish_without_platform: (_: Record<string, never>, { world }: Ctx) => {
+    // Nothing unless Platform's first check is what RESTORED waits for.
+    if (!world.restored || !restoreStatusOf(world).waiting.includes("platformPass")) return openedNetwork(world, restoredNetwork(world));
+    const knob = world.finishWithoutPlatform;
+    if (knob === "busy" || knob === "draining")
+      throw fail("app.network_busy", "closing the network would cut what runs", {
+        kind: "networkBusy",
+        flows: knob === "busy" ? ["registration"] : [],
+        mixing: false,
+        broadcast: false,
+        stalled: false,
+        draining: knob === "draining",
+      });
+    restarted(world);
+    if (knob === "rolledBack") {
+      world.finishWithoutPlatform = undefined;
+      throw fail("app.network_switch_failed", `${world.launch.network.dirName} did not open without Platform: fixture`, {
+        kind: "networkSwitch",
+        network: world.launch.network,
+        rolledBack: true,
+      });
+    }
+    world.noPlatform = true;
+    settleRestored(world);
+    keepWorlds(world);
+    return openedNetwork(world, restoredNetwork(world));
   },
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
   // then the source: Shielded is off until its slice; Platform pays one address withdrawal.

@@ -222,3 +222,125 @@ test.describe("the upgrade notice", () => {
     await expect(page.getByTestId("upgrade-notice")).toHaveCount(0);
   });
 });
+
+test.describe("what RESTORED waits for", () => {
+  const WAITS = [
+    { scenario: "restored-waiting-core", wait: "coreSync", text: "Waiting for the wallet to finish syncing with the Dash network.", finish: false },
+    { scenario: "restored-waiting-platform", wait: "platformPass", text: "Waiting for Dash Wallet's first check with Dash Platform.", finish: true },
+    { scenario: "restored-waiting-history", wait: "historyLoad", text: "Waiting for a wallet's history to load.", finish: false },
+  ];
+
+  for (const theme of THEMES)
+    for (const { scenario, wait, text, finish } of WAITS)
+      test(`${wait}: its line under the banner, Try again and Report a problem (${theme})`, async ({ page }) => {
+        const errors = trackPageErrors(page);
+        await page.goto(fixtureUrl(scenario, theme));
+        await expect(page.getByTestId("restored-banner")).toBeVisible();
+        await expect(page.getByTestId("restored-banner").locator("+ [data-testid=restored-state]")).toBeVisible();
+        await expect(page.getByTestId(`restored-waiting-${wait}`)).toHaveText(text);
+        await expect(page.getByTestId("restored-retry")).toHaveText("Try again");
+        await expect(page.getByTestId("restored-report")).toHaveText("Report a problem");
+        await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(finish ? 1 : 0);
+        await expect(page.getByTestId("restored-finish-meaning")).toHaveCount(finish ? 1 : 0);
+        expect(errors).toEqual([]);
+      });
+
+  test("Try again asks the engine to check again; the wait stays until what it waits for comes", async ({ page }) => {
+    await page.goto(fixtureUrl("restored-waiting-core", "light"));
+    await page.getByTestId("restored-retry").click();
+    await expect.poll(async () => (await world(page)).restoreCalls).toEqual(["restoreRetry"]);
+    await expect(page.getByTestId("restored-waiting-coreSync")).toBeVisible();
+    await expect(page.getByTestId("restored-banner")).toBeVisible();
+  });
+
+  for (const theme of THEMES)
+    test(`Finish without Dash Platform reopens without it: the banner goes, Platform and Shielded funds stay held (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("restored-waiting-platform", theme));
+      await expect(page.getByTestId("restored-finish-meaning")).toHaveText(
+        "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
+      );
+      await page.getByTestId("restored-finish-without-platform").click();
+      await unlockIfLocked(page);
+      await expect(page.getByTestId("restored-banner")).toHaveCount(0);
+      await expect(page.getByTestId("restored-platform-only")).toBeVisible();
+      await expect(page.getByTestId("restored-waiting-platformPass")).toBeVisible();
+      await expect(page.getByTestId("restored-retry")).toHaveCount(0);
+      await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
+      await expect(page.getByTestId("restored-report")).toBeEnabled();
+      const after = await world(page);
+      expect(after.noPlatform).toBe(true);
+      expect(after.restored).toBe(false);
+      expect(errors).toEqual([]);
+    });
+
+  for (const theme of THEMES)
+    test(`an open without Dash Platform that fails opens as usual, and the panel says so (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("restored-finish-rolled-back", theme));
+      await page.getByTestId("restored-finish-without-platform").click();
+      await unlockIfLocked(page);
+      await expect(page.getByTestId("restored-state-problem")).toHaveText(
+        "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: testnet did not open without Platform: fixture",
+      );
+      await expect(page.getByTestId("restored-banner")).toBeVisible();
+      await expect(page.getByTestId("restored-waiting-platformPass")).toBeVisible();
+      for (const id of ["restored-retry", "restored-finish-without-platform", "restored-report"]) await expect(page.getByTestId(id)).toBeEnabled();
+      const after = await world(page);
+      expect(after.noPlatform).toBeUndefined();
+      expect(after.restored).toBe(true);
+      expect(errors).toEqual([]);
+    });
+
+  for (const theme of THEMES)
+    test(`Core funds free, Platform and Shielded funds held: the panel without the banner, and no Finish (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("restored-platform-only", theme));
+      await expect(page.getByTestId("restored-state")).toBeVisible();
+      await expect(page.getByTestId("restored-banner")).toHaveCount(0);
+      await expect(page.getByTestId("restored-platform-only")).toHaveText(
+        "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+      );
+      await expect(page.getByTestId("restored-waiting-platformPass")).toHaveText("Waiting for Dash Wallet's first check with Dash Platform.");
+      await expect(page.getByTestId("restored-retry")).toBeEnabled();
+      await expect(page.getByTestId("restored-report")).toBeEnabled();
+      await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
+      await expect(page.getByTestId("restored-finish-meaning")).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+  test("a busy network refuses Finish without Dash Platform and changes nothing", async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("restored-finish-busy", "light"));
+    await page.getByTestId("restored-finish-without-platform").click();
+    await expect(page.getByTestId("restored-state-problem")).toHaveText("Wait for username registration to finish before Dash Wallet can reopen without Dash Platform.");
+    await expect(page.getByTestId("restored-banner")).toBeVisible();
+    await expect(page.getByTestId("lock-screen")).toHaveCount(0);
+    await expect(page.getByTestId("restored-finish-without-platform")).toBeEnabled();
+    expect((await world(page)).noPlatform).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+
+  for (const theme of THEMES)
+    test(`a history that failed to load names the wallet, with Report a problem only (${theme})`, async ({ page }) => {
+      await page.goto(fixtureUrl("restored-history-failed", theme));
+      await expect(page.getByTestId("restored-history-failed")).toHaveText(
+        "Dash Wallet couldn't load the history of Main, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
+      );
+      await expect(page.getByTestId("restored-retry")).toHaveCount(0);
+      await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
+      await page.getByTestId("restored-report").click();
+      await expect.poll(async () => (await world(page)).linksOpened).toEqual(["issues"]);
+    });
+
+  for (const theme of THEMES)
+    test(`a clear that couldn't be written: Try again writes it and the banner goes (${theme})`, async ({ page }) => {
+      await page.goto(fixtureUrl("restored-clear-failed", theme));
+      await expect(page.getByTestId("restored-clear-failed")).toContainText("couldn't save that the check is done");
+      await expect(page.getByTestId("restored-report")).toBeVisible();
+      await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
+      await page.getByTestId("restored-retry").click();
+      await expect(page.getByTestId("restored-banner")).toHaveCount(0);
+      await expect(page.getByTestId("restored-state")).toHaveCount(0);
+    });
+});

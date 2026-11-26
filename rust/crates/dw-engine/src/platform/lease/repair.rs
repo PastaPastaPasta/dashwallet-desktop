@@ -181,6 +181,11 @@ impl NetworkSession {
         let step = step.to_owned();
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // Resolve abandons and sends: behind the restore's money gate,
+            // as an Activity Abandon and a send are.
+            if resolve {
+                this.refuse_while_restored()?;
+            }
             // Not while a wallet loads, as an Activity Abandon.
             let _lifecycle = match resolve {
                 true => Some(this.wallet_lifecycle.hold().await),

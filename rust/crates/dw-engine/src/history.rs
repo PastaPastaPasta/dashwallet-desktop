@@ -21,7 +21,7 @@ use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use dw_protx::payloads::resolve_collateral;
-use key_wallet::managed_account::transaction_record::TransactionRecord;
+use key_wallet::managed_account::transaction_record::{OutputRole, TransactionRecord};
 use key_wallet::transaction_checking::TransactionContext;
 
 use crate::platform::Counterparty;
@@ -1453,6 +1453,17 @@ pub(crate) struct WalletHistory {
     /// still names a collateral, locked as an own ProRegTx's is
     /// ([`HistoryStore::registration_collaterals`]).
     hidden_registrations: HashMap<Txid, Transaction>,
+    /// The wallet's outputs of each transaction, by index, with their
+    /// values and whether each pays a change address, from
+    /// platform-wallet's records.
+    pub(crate) own_outputs: HashMap<Txid, BTreeMap<u32, (u64, bool)>>,
+    /// The restore holds (`restore_gate`), with the inputs each names.
+    pub(crate) restore_holds: BTreeMap<Txid, BTreeSet<OutPoint>>,
+    /// This session's load wrote the restore holds while the restored mark
+    /// was set (H3).
+    pub(crate) restore_holds_built: bool,
+    /// The last load could not read the restore holds.
+    pub(crate) restore_holds_unread: bool,
 }
 
 impl WalletHistory {
@@ -1488,6 +1499,7 @@ impl WalletHistory {
         self.txs.remove(txid);
         self.drops.remove(txid);
         self.drop_inputs.remove(txid);
+        self.own_outputs.remove(txid);
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
     }
@@ -1535,6 +1547,12 @@ impl WalletHistory {
             entry
                 .own_inputs
                 .insert(input.index, (input.value, input.address.clone()));
+        }
+        let outputs = self.own_outputs.entry(record.txid).or_default();
+        for o in &record.output_details {
+            if matches!(o.role, OutputRole::Received | OutputRole::Change) {
+                outputs.insert(o.index, (o.value, matches!(o.role, OutputRole::Change)));
+            }
         }
         self.name_registration_collateral(record);
         if (record.output_details.iter())
@@ -1660,6 +1678,7 @@ impl WalletHistory {
     pub fn truncate(&mut self, removed: &[Txid], unconfirmed: &[Txid]) -> Vec<Txid> {
         for txid in removed {
             self.hidden_registrations.remove(txid);
+            self.own_outputs.remove(txid);
         }
         let mut changed: Vec<Txid> = removed
             .iter()

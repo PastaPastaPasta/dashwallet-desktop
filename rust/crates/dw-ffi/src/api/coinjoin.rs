@@ -449,6 +449,7 @@ impl From<dw_engine::EngineError> for CoinJoinError {
                 F::MixingActive | F::InputsHeld => Self::MixingActive,
                 F::MoveRunning => Self::MoveRunning,
                 F::PlanChanged => Self::PlanChanged,
+                F::Restored => Self::Internal { detail },
             },
             E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
             E::Vault(V::GrantInvalid | V::GrantPurposeMismatch) => Self::GrantInvalid,

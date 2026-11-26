@@ -206,6 +206,10 @@ pub enum EngineError {
     /// wallets cannot be reached.
     #[error("at least one wallet opens at start")]
     LastStartupWallet,
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    #[error("funds actions wait for the first sync after a restore")]
+    Restored,
     /// The network's wallet data is a restore not yet cleared (its RESTORED
     /// mark, Q107 C1): until its first full sync a wallet is added only from
     /// its recovery phrase, so a new wallet, a file or key import and a
@@ -284,6 +288,7 @@ impl EngineError {
                 "shielded_spend_unresolved"
             }
             EngineError::LastStartupWallet => "last_startup_wallet",
+            EngineError::Restored => "restored",
             EngineError::RestoreOnly => "restore_only",
         }
     }
