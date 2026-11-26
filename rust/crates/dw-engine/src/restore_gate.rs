@@ -7,8 +7,12 @@
 //! `restore_hold:<P>` (wallet scope) naming the wallet's inputs it spends
 //! (H3, H5). While the row exists and P stays unmined and not abandoned,
 //! P's outputs to the wallet and those inputs are neither offered nor
-//! counted as spendable (H1). The row is deleted in the same durable write
-//! as whatever ends P: its block, a sweep, an abandon or a drop (H2). The
+//! counted as spendable (H1). A block that mines P deletes the row after
+//! its records' update; a sweep that beats P and the retire of a dropped P
+//! delete it in their own write. An abandon (Resolve stuck funding's of
+//! its own locks too) and the drop-dead pass mark P abandoned and leave
+//! the row: a row on an abandoned payment holds nothing and may stay,
+//! so an abandon key-wallet refuses has no hold to put back (H2). The
 //! mark clears at the first all-Synced once a drop-dead pass started after
 //! it has completed (H4).
 //!
@@ -437,7 +441,8 @@ pub(crate) fn hold_keys<'a>(txids: impl IntoIterator<Item = &'a Txid>) -> Vec<St
 
 impl WalletHistory {
     /// Whether the hold of `txid` holds anything: its payment is in no
-    /// block and not abandoned. One the history lacks holds only while the
+    /// block and not abandoned (a row on an abandoned payment may stay,
+    /// H2). One the history lacks holds only while the
     /// history may be short (its load missed a record, or the holds didn't
     /// read).
     fn hold_in_effect(&self, txid: &Txid) -> bool {
