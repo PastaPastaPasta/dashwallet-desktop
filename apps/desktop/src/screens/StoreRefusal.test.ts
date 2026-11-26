@@ -12,7 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../api/backend";
 import { BackendContext, keys } from "../api/queries";
-import { NOT_PRIVATE_REASONS, RESTORE_CAUSES, type NotPrivateData, type RestoreState, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
+import { NOT_PRIVATE_REASONS, RESTORE_CAUSES, RESTORE_HOLD_CAUSES, type NotPrivateData, type RestoreState, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { App } from "../app/App";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import {
@@ -519,6 +519,12 @@ function api(calls: string[], fail: Record<string, unknown> = {}) {
 const RESTORE_STATES = Object.keys(RESTORE_CAUSES) as RestoreState[];
 const RESTORE_FIXTURES = RESTORE_FAILURE_NAMES.map((name) => [name, restoreFailure(name, FOLDER)] as const);
 const R = en.storeUpgrade.restore;
+const isHoldCause = (cause: string) => Object.hasOwn(RESTORE_HOLD_CAUSES, cause);
+/** MG's R-1 refusal: the base, the inFlight sentence when the spend may still go through, then Quit. */
+const HELD = {
+  inFlight: `${R.held.text} ${R.held.inFlight} ${R.held.quit}`,
+  carriedOver: `${R.held.text} ${R.held.quit}`,
+};
 
 describe("the restore screens", () => {
   for (const theme of THEMES)
@@ -529,7 +535,8 @@ describe("the restore screens", () => {
         const html = renderRestore(restore);
         expect(html).toContain('role="alertdialog"');
         expect(html).toContain(`>${escaped(copy.title)}</h1>`);
-        expect(html).toContain(`data-testid="store-restore-text">${escaped(copy.text.replaceAll("{folder}", FOLDER))}</p>`);
+        const text = restore.state === "notStarted" && isHoldCause(restore.cause) ? HELD[RESTORE_HOLD_CAUSES[restore.cause as keyof typeof RESTORE_HOLD_CAUSES]] : copy.text.replaceAll("{folder}", FOLDER);
+        expect(html).toContain(`data-testid="store-restore-text">${escaped(text)}</p>`);
         expect(html).not.toContain("{folder}");
         const keys = RESTORE_BUTTONS[restore.state];
         expect(html.match(/<button/g)).toHaveLength(keys.length);
@@ -550,17 +557,34 @@ describe("the restore screens", () => {
       });
     });
 
-  it("renders the same markup in light and dark, and the same for every cause of a state", () => {
+  it("renders the same markup in light and dark, and the same for every cause of a state but a shielded hold", () => {
     for (const [, restore] of RESTORE_FIXTURES) sameInBothThemes(() => renderRestore(restore));
     for (const state of RESTORE_STATES) {
-      const [first, ...rest] = RESTORE_CAUSES[state].map((cause) => renderRestore({ ...restoreFailure(`${state}:${RESTORE_CAUSES[state][0]}`, FOLDER), cause }));
+      const [first, ...rest] = RESTORE_CAUSES[state].filter((cause) => !isHoldCause(cause)).map((cause) => renderRestore({ ...restoreFailure(`${state}:${RESTORE_CAUSES[state][0]}`, FOLDER), cause }));
       for (const html of rest) expect(html).toBe(first);
     }
   });
 
+  it("says why a shielded hold stopped the restore, with the inFlight sentence only for inFlight, and keeps the notStarted buttons", () => {
+    expect(Object.keys(RESTORE_HOLD_CAUSES).every((c) => (RESTORE_CAUSES.notStarted as readonly string[]).includes(c))).toBe(true);
+    const plain = renderRestore(restoreFailure("notStarted:other", FOLDER));
+    for (const [cause, reason] of Object.entries(RESTORE_HOLD_CAUSES)) {
+      const html = renderRestore(restoreFailure(`notStarted:${cause}`, FOLDER));
+      expect(html, cause).toContain(`data-testid="store-restore-text">${escaped(HELD[reason])}</p>`);
+      expect(html, cause).not.toContain(escaped(R.notStarted.text.replaceAll("{folder}", FOLDER)));
+      expect(html.replace(/data-testid="store-restore-text">[^<]*</, ""), cause).toBe(plain.replace(/data-testid="store-restore-text">[^<]*</, ""));
+    }
+    expect(HELD.inFlight).toBe(
+      "Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, so restoring earlier data now would lose track of it. Nothing was restored. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
+    );
+    expect(HELD.carriedOver).toBe(
+      "Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, so restoring earlier data now would lose track of it. Nothing was restored. You can still quit Dash Wallet.",
+    );
+  });
+
   it("covers every state and each cause the engine names", () => {
     expect(RESTORE_STATES).toEqual(["refused", "noSpace", "notStarted", "incomplete", "foreign"]);
-    expect(RESTORE_FAILURE_NAMES).toHaveLength(3 + 1 + 4 + 4 + 2);
+    expect(RESTORE_FAILURE_NAMES).toHaveLength(3 + 1 + 6 + 5 + 2);
     expect([...new Set(RESTORE_FIXTURES.map(([, r]) => r.state))]).toEqual(RESTORE_STATES);
   });
 
@@ -723,6 +747,24 @@ describe("the restore actions", () => {
     expect(actions.requested).toBe(false);
     await actions.dismissRestore();
     expect(calls).toEqual(["requestRestore"]);
+  });
+
+  it("never restarts when a shielded hold refused the request, and says why in MG's words by its reason", async () => {
+    const held = (data: unknown) => ({ code: "shielded_spend_unresolved", message: "a shielded payment is still being confirmed", data });
+    for (const [data, want] of [
+      [{ kind: "shieldedHold", reason: "inFlight" }, HELD.inFlight],
+      [{ kind: "shieldedHold", reason: "carriedOver" }, HELD.carriedOver],
+      [null, HELD.carriedOver],
+    ] as const) {
+      const calls: string[] = [];
+      const actions = new OpenFailureActions(api(calls, { requestRestore: held(data) }));
+      await actions.restore();
+      expect(calls).toEqual(["requestRestore"]);
+      expect(actions.problem).toBe(want);
+      expect(actions.requested).toBe(false);
+    }
+    const shown = renderToStaticMarkup(createElement(RestoreConfirmView, { folder: FOLDER, busy: false, problem: HELD.inFlight, onConfirm: noop, onClose: noop }));
+    expect(shown).toContain(`data-testid="restore-confirm-problem">${escaped(HELD.inFlight)}</p>`);
   });
 
   it("after a failed restart, tries only the restart again, and drops the request when the confirm closes", async () => {

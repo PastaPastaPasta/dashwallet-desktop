@@ -163,6 +163,7 @@ use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
 use super::requests::{leased, write_permit};
+use super::restore_hold::JournalHolds;
 use super::shield_drain::DrainCoin;
 use super::shielded::{
     PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
@@ -4386,7 +4387,6 @@ fn read_fork_holds(
     path: &std::path::Path,
 ) -> Result<(Vec<dw_appdb::dispatch::ForkHold>, BTreeSet<WalletId>), String> {
     use rusqlite::OpenFlags;
-    use rusqlite::types::Value;
     if !path.try_exists().map_err(|e| e.to_string())? {
         return Ok(Default::default());
     }
@@ -4397,6 +4397,14 @@ fn read_fork_holds(
     .map_err(|e| e.to_string())?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
+    fork_holds_in(&db)
+}
+
+/// [`read_fork_holds`] on an open connection to the store.
+pub(super) fn fork_holds_in(
+    db: &rusqlite::Connection,
+) -> Result<(Vec<dw_appdb::dispatch::ForkHold>, BTreeSet<WalletId>), String> {
+    use rusqlite::types::Value;
     let columns: Vec<String> = db
         .prepare("SELECT name FROM pragma_table_info('shielded_spend_dispositions')")
         .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
@@ -4523,6 +4531,12 @@ pub(crate) async fn holds_unresolved(
 /// or a row on disk the open store did not load (a damaged record the
 /// library keeps but never re-sends) ([`ShieldedHold`]). `InFlight`
 /// otherwise.
+///
+/// With no coordinator the journal on disk is read too (#925): an artifact
+/// the dispatch registered after the library stored its record holds once
+/// the library has resolved and dropped that record, until a pass settles
+/// it. An open artifact is `InFlight`; any other unsettled one, a marker,
+/// or a journal that does not read is `CarriedOver`.
 pub(crate) async fn removal_hold(
     session: &NetworkSession,
     manager: &Manager,
@@ -4537,19 +4551,38 @@ pub(crate) async fn removal_hold(
     if let Err(e) = &on_disk {
         tracing::warn!(wallet_id = %id, error = %e, "the stored shielded spends could not be read; the removal is refused");
     }
+    let coordinator = manager.shielded_coordinator().await;
+    let journal = match coordinator {
+        Some(_) => Ok(JournalHolds::default()),
+        None => {
+            let dir = session.data_dir().to_path_buf();
+            (session.rt)
+                .spawn_blocking(move || super::restore_hold::journal_holds(&dir, id))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r)
+        }
+    };
+    if let Err(e) = &journal {
+        tracing::warn!(wallet_id = %id, error = %e, "the dispatch journal could not be read; the removal is refused");
+    }
     let leases = &session.leases;
-    if !holds_unresolved(leases, manager, id).await && on_disk == Ok(false) {
+    if !holds_unresolved(leases, manager, id).await
+        && on_disk == Ok(false)
+        && journal == Ok(JournalHolds::default())
+    {
         return None;
     }
-    let (unread, unloaded) = match manager.shielded_coordinator().await {
+    let (unread, unloaded) = match coordinator {
         Some(coordinator) => (
             reported_outcome(leases, &coordinator, id).await.is_none(),
             on_disk == Ok(true) && !holds_stored_spends(manager, id).await,
         ),
         None => (false, false),
     };
+    let carried = journal.as_ref().map_or(true, |j| j.marked || j.unsettled);
     Some(
-        if on_disk.is_err() || unread || unloaded || leases.marks_unrecorded(id).await {
+        if on_disk.is_err() || carried || unread || unloaded || leases.marks_unrecorded(id).await {
             crate::ShieldedHold::CarriedOver
         } else {
             crate::ShieldedHold::InFlight
@@ -4580,6 +4613,15 @@ fn stored_on_disk(path: &std::path::Path, wallet: WalletId) -> Result<bool, Stri
     .map_err(|e| e.to_string())?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
+    pending_rows_in(&db, Some(wallet))
+}
+
+/// Whether the store open on `db` has a `shielded_pending_spends` row of
+/// `wallet`, or of any wallet. None with no table.
+pub(super) fn pending_rows_in(
+    db: &rusqlite::Connection,
+    wallet: Option<WalletId>,
+) -> Result<bool, String> {
     let table: bool = db
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_master \
@@ -4592,8 +4634,9 @@ fn stored_on_disk(path: &std::path::Path, wallet: WalletId) -> Result<bool, Stri
         return Ok(false);
     }
     db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM shielded_pending_spends WHERE wallet_id = ?1)",
-        [&wallet.0[..]],
+        "SELECT EXISTS (SELECT 1 FROM shielded_pending_spends \
+         WHERE ?1 IS NULL OR wallet_id = ?1)",
+        [wallet.map(|w| w.0.to_vec())],
         |r| r.get(0),
     )
     .map_err(|e| e.to_string())

@@ -289,6 +289,11 @@ async fn end_failed_open(
 pub(crate) static FAIL_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 #[cfg(test)]
 pub(crate) static FAIL_HISTORY_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+/// Tests: data directories whose next open counts none of the wallets the
+/// manager loaded among the wallets it knows, as when a registered wallet
+/// did not load.
+#[cfg(test)]
+pub(crate) static KNOWN_WITHOUT_LOADED_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Tests: what the failed opens of a data directory left. For each failed
 /// journal open, whether its manager had a shielded coordinator and how
@@ -821,12 +826,36 @@ impl NetworkSession {
         }
         // A change of the wallet set re-reads the masternodes (MG-03 D28).
         let sink = masternodes.watch_wallets(sink);
-        // The wallets the session knows: loaded, unloaded, or listed in the
-        // app database. A shielded spend imported from the 0.1 journal of
-        // any other wallet is archived for good.
-        let known: std::collections::HashSet<[u8; 32]> = (manager.wallet_ids().await.into_iter())
+        // The wallets the session knows: loaded, unloaded, listed in the app
+        // database, or registered in wallet.sqlite, whatever loaded. A
+        // shielded spend imported from the 0.1 journal of any other wallet is
+        // archived for good, so a wallet list that does not read stops the
+        // open.
+        let loaded_ids = manager.wallet_ids().await;
+        #[cfg(test)]
+        let loaded_ids = match crate::keys::take_test_failure(&KNOWN_WITHOUT_LOADED_IN, &data_dir) {
+            true => Vec::new(),
+            false => loaded_ids,
+        };
+        let registered = {
+            let db_path = data_dir.join(WALLET_DB_FILE);
+            tokio::task::spawn_blocking(move || crate::store::registered_wallet_ids(&db_path)).await
+        };
+        let registered = match registered {
+            Ok(Ok(ids)) => ids,
+            Ok(Err(e)) => {
+                end_failed_open(&data_dir, manager, persister, (store, replay, tap)).await;
+                return Err(EngineError::Storage(format!("wallet list: {e}")));
+            }
+            Err(e) => {
+                end_failed_open(&data_dir, manager, persister, (store, replay, tap)).await;
+                return Err(e.into());
+            }
+        };
+        let known: std::collections::HashSet<[u8; 32]> = (loaded_ids.into_iter())
             .chain(store.unloaded())
             .chain(listed)
+            .chain(registered)
             .collect();
         let opened_journal = crate::platform::lease::session::open_journal(
             &data_dir,

@@ -8,8 +8,8 @@
 // restarts: onboarding then shows there, restore only.
 
 import { useId, useState, type ReactNode } from "react";
-import type { Backend } from "../api/backend";
-import { storeRestore, type NotPrivateData, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
+import { hasCode, type Backend } from "../api/backend";
+import { RESTORE_HOLD_CAUSES, storeRestore, type NotPrivateData, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { useBackend, useRestoreAvailable } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -96,10 +96,18 @@ export function restoreButtonKey(state: RestoreState, k: string): string {
 
 type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "recoverInFreshFolder" | "openProjectLink">;
 
+/** Why a restore was refused while a shielded spend holds, in MG's words: what clears it when the spend
+ * may still go through, nothing more for any other reason. */
+export function restoreHeldText(tr: Translate, reason: string | null): string {
+  const clears = reason === "inFlight" ? [tr("storeUpgrade.restore.held.inFlight")] : [];
+  return [tr("storeUpgrade.restore.held.text"), ...clears, tr("storeUpgrade.restore.held.quit")].join(" ");
+}
+
 /** What a failed action shows: a refused restore request in MG's words, an `Error`'s message, else the
  * generic line. */
 function problemOf(e: unknown): string {
   if (storeRestore(e)?.state === "refused") return t("storeUpgrade.restore.refused.text");
+  if (hasCode(e, "shielded_spend_unresolved")) return restoreHeldText(t, e.data?.kind === "shieldedHold" ? e.data.reason : null);
   return e instanceof Error ? e.message : t("onboarding.error.generic");
 }
 
@@ -323,8 +331,9 @@ export interface StoreRestoreViewProps {
   onAction: (action: ButtonAction) => void;
 }
 
-/** A restore that stopped the open, by its state: the same screen for every cause. Report a problem
- * has the issues warning under the buttons; the foreign screen has what Keep means above it. */
+/** A restore that stopped the open, by its state: the same screen for every cause but a shielded hold,
+ * whose text says why. Report a problem has the issues warning
+ * under the buttons; the foreign screen has what Keep means above it. */
 export function StoreRestoreView({ restore, problem, failedLink = null, busy = false, onAction }: StoreRestoreViewProps) {
   const tr = useT();
   const say = tr as unknown as LooseTranslate;
@@ -338,8 +347,10 @@ export function StoreRestoreView({ restore, problem, failedLink = null, busy = f
   });
   const reports = keys.includes("report");
   const hint = foreign ? say("storeUpgrade.restore.foreign.keepMeaning", { folder }) : reports ? tr(ISSUES_HINT) : null;
+  const held = state === "notStarted" && Object.hasOwn(RESTORE_HOLD_CAUSES, restore.cause) ? RESTORE_HOLD_CAUSES[restore.cause as keyof typeof RESTORE_HOLD_CAUSES] : null;
+  const text = held ? restoreHeldText(tr, held) : say(`storeUpgrade.restore.${state}.text`, { folder });
   return (
-    <Panel id={id} testId="store-restore" title={say(`storeUpgrade.restore.${state}.title`)} text={say(`storeUpgrade.restore.${state}.text`, { folder })} problem={problem} failedLink={failedLink}>
+    <Panel id={id} testId="store-restore" title={say(`storeUpgrade.restore.${state}.title`)} text={text} problem={problem} failedLink={failedLink}>
       <Buttons id={id} testId="store-restore" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
       {foreign && reports && (
         <p className="field-hint" data-testid="store-restore-issues-hint">

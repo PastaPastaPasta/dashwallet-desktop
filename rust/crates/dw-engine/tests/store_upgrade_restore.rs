@@ -293,3 +293,223 @@ fn a_request_without_a_snapshot_is_refused() {
     close(engine);
     assert!(tree_diff(&before, &tree(&f.net)).is_empty());
 }
+
+/// "Fixture main" of the v0.1.0 fixture, as SQL.
+const MAIN: &str = "X'0FF35F248C69653EFCE8336CE14B78E29CD3BBAF4162C42246259850AF2C2ADD'";
+const KEY: &str = "X'5151515151515151515151515151515151515151515151515151515151515151'";
+
+/// A `shielded_pending_spends` row of [`MAIN`] in the live shielded store:
+/// a spend of unknown result the library stored.
+fn add_pending_row(net: &Path) {
+    exec(
+        &net.join("shielded.sqlite"),
+        &format!(
+            "CREATE TABLE IF NOT EXISTS shielded_pending_spends (wallet_id BLOB NOT NULL, \
+             account_index INTEGER NOT NULL, activity_id BLOB NOT NULL, anchor BLOB NOT NULL, \
+             nullifiers BLOB NOT NULL, st_bytes BLOB NOT NULL, attempts INTEGER NOT NULL \
+             DEFAULT 0, PRIMARY KEY (wallet_id, account_index, activity_id)); \
+             INSERT INTO shielded_pending_spends (wallet_id, account_index, activity_id, anchor, \
+             nullifiers, st_bytes) VALUES ({MAIN}, 0, {KEY}, {KEY}, {KEY}, X'00')"
+        ),
+    );
+}
+
+/// Each of the four stores' sha256, `None` for one not there.
+fn stores(net: &Path) -> Vec<Option<String>> {
+    let all = tree(net);
+    dw_store_upgrade::STORE_FILES
+        .iter()
+        .map(|s| all.get(*s).cloned())
+        .collect()
+}
+
+/// The restore stopped before anything moved, its request kept: no copy,
+/// no mark, no journal, every store as it was.
+fn nothing_moved(f: &Fixture, live: &[Option<String>]) {
+    assert_eq!(stores(&f.net), live);
+    assert_eq!(
+        dw_store_upgrade::pending_restore(&f.net).unwrap(),
+        Some(dw_store_upgrade::PendingRestore::Requested)
+    );
+    assert_eq!(after_dirs(f), 0);
+    assert!(!dw_store_upgrade::restored_mark_present(&f.net));
+}
+
+fn request(f: &Fixture) {
+    let engine = engine(&f.root);
+    engine
+        .block_on(engine.request_restore(&DashNetwork::Regtest))
+        .unwrap();
+    close(engine);
+}
+
+/// R-1 (b): a spend dispatched after the request (here its stored record)
+/// stops the next start's restore before anything moves, in the notStarted
+/// state with the request kept; once it clears, the same request runs.
+#[test]
+fn a_hold_that_appears_after_the_request_stops_the_restore() {
+    let f = upgraded();
+    request(&f);
+    add_pending_row(&f.net);
+    let live = stores(&f.net);
+    assert_eq!(
+        open_in_child(&f.root),
+        "restore NotStarted shieldedSpendInFlight"
+    );
+    nothing_moved(&f, &live);
+    assert_eq!(
+        open_in_child(&f.root),
+        "restore NotStarted shieldedSpendInFlight",
+        "again at every start while it holds"
+    );
+    exec(
+        &f.net.join("shielded.sqlite"),
+        "DELETE FROM shielded_pending_spends",
+    );
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert!(dw_store_upgrade::restored_mark_present(&f.net));
+    assert_eq!(after_dirs(&f), 1);
+}
+
+/// R-1 (b): a DEC-1057 marker or an open artifact in the live journal, and
+/// a shielded store that does not read, stop the restore the same way.
+#[test]
+fn a_journal_hold_or_an_unreadable_store_stops_the_restore() {
+    let marker = format!(
+        "INSERT INTO shielded_unrecorded (wallet, activity, anchor, at) \
+         VALUES ({MAIN}, {KEY}, {KEY}, 1)"
+    );
+    let artifact = format!(
+        "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, kind, anchor, status, \
+         at) VALUES ({MAIN}, {KEY}, 'dispatched', {KEY}, 'transfer', {KEY}, 'registered', 1)"
+    );
+    for (what, want, write) in [
+        ("marker", "shieldedSpendCarriedOver", Some(marker.as_str())),
+        ("artifact", "shieldedSpendInFlight", Some(artifact.as_str())),
+        ("unreadable", "shieldedSpendCarriedOver", None),
+    ] {
+        let f = upgraded();
+        request(&f);
+        match write {
+            Some(sql) => exec(&f.net.join("dispatch.sqlite"), sql),
+            None => std::fs::write(f.net.join("shielded.sqlite"), b"not a database").unwrap(),
+        }
+        let live = stores(&f.net);
+        assert_eq!(
+            open_in_child(&f.root),
+            format!("restore NotStarted {want}"),
+            "{what}"
+        );
+        nothing_moved(&f, &live);
+    }
+}
+
+/// A before set without `shielded.sqlite`: the restore would remove the
+/// live one. While it holds a spend, the restore stops first and the live
+/// store stays, its row in it.
+#[test]
+fn a_snapshot_without_the_shielded_store_never_removes_a_held_one() {
+    let f = fixture("v0.1.0");
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let _ = std::fs::remove_file(f.net.join(format!("shielded.sqlite{suffix}")));
+    }
+    assert_eq!(open_in_child(&f.root), "ok");
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    assert!(
+        !snapshot.files().iter().any(|s| s.name == "shielded.sqlite"),
+        "the before set has no shielded store"
+    );
+    request(&f);
+    add_pending_row(&f.net);
+    let live = stores(&f.net);
+    assert!(live[1].is_some());
+    assert_eq!(
+        open_in_child(&f.root),
+        "restore NotStarted shieldedSpendInFlight"
+    );
+    nothing_moved(&f, &live);
+    let rows: i64 = rusqlite::Connection::open(f.net.join("shielded.sqlite"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM shielded_pending_spends", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+
+/// R-1 (a), (c): with no session open on the network, the stores on disk
+/// are read: a hold refuses the request and nothing is written.
+#[test]
+fn a_hold_on_disk_refuses_the_request_with_no_session_open() {
+    let f = upgraded();
+    exec(
+        &f.net.join("dispatch.sqlite"),
+        &format!(
+            "INSERT INTO shielded_unrecorded (wallet, activity, anchor, at) \
+             VALUES ({MAIN}, {KEY}, {KEY}, 1)"
+        ),
+    );
+    let before = tree(&f.net);
+    let engine = engine(&f.root);
+    assert!(
+        engine
+            .block_on(engine.session(&DashNetwork::Regtest))
+            .is_none()
+    );
+    let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+    assert!(
+        matches!(
+            got,
+            Err(EngineError::ShieldedSpendHeld(
+                dw_engine::ShieldedHold::CarriedOver
+            ))
+        ),
+        "{got:?}"
+    );
+    close(engine);
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+}
+
+/// B row 2: a fork disposition of the before set comes back with it. The
+/// first open after the restore upgrades and drains the restored store
+/// again, and the hold is in the journal again.
+#[test]
+fn a_restored_fork_disposition_is_held_again_on_the_next_open() {
+    use dw_shielded_drain::test_support::{ForkRow, fork_store};
+    let f = fixture("v0.1.0");
+    let shielded = f.net.join("shielded.sqlite");
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let _ = std::fs::remove_file(f.net.join(format!("shielded.sqlite{suffix}")));
+    }
+    let mut wallet = [0; 32];
+    hex::decode_to_slice(&MAIN[2..66], &mut wallet).unwrap();
+    fork_store(
+        &shielded,
+        &wallet,
+        0,
+        &[ForkRow::Disposition {
+            st: 2,
+            kind: "unresolved",
+            reason: Some("purged"),
+            nullifiers: vec![[102; 32]],
+        }],
+    )
+    .unwrap();
+    let held = |f: &Fixture| -> Vec<Vec<u8>> {
+        let db = rusqlite::Connection::open(f.net.join("dispatch.sqlite")).unwrap();
+        let mut stmt = db
+            .prepare("SELECT nullifier FROM shielded_drained_hold WHERE spent = 0")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert_eq!(held(&f), [vec![102u8; 32]], "drained at the upgrade");
+    request(&f);
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert!(dw_store_upgrade::restored_mark_present(&f.net));
+    assert_eq!(after_dirs(&f), 1);
+    assert_eq!(held(&f), [vec![102u8; 32]], "held again after the restore");
+}

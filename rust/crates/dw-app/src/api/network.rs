@@ -461,7 +461,9 @@ commands! {
     /// (`null`: the window's) verified before-upgrade snapshot at the next
     /// start; the renderer then calls `restartApp`. Nothing is restored in
     /// this process. Without a verified snapshot, `storage_restore`
-    /// (refused, missingBackup).
+    /// (refused, missingBackup). While a wallet of `network` holds a
+    /// shielded spend whose result is not known, or its stores don't read,
+    /// `shielded_spend_unresolved` with its `shieldedHold` reason.
     #[facade("Engine::request_restore")]
     fn request_restore(state, network: Option<String>) -> () {
         let network = restore_network(&state, network)?;

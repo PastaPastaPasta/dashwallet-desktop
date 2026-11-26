@@ -390,6 +390,16 @@ fn restore_errors() -> Vec<StoreUpgradeError> {
             });
         }
     }
+    for (cause, journal_written) in [
+        (IncompleteCause::HoldsOpen, false),
+        (IncompleteCause::HoldsUnchecked, true),
+    ] {
+        v.push(E::RestoreIncomplete {
+            cause,
+            journal_written,
+            detail: "x".into(),
+        });
+    }
     v
 }
 
@@ -429,7 +439,20 @@ fn every_restore_screen_is_storage_restore_by_its_state() {
                     }
                     RestoreState::NoSpace => &["diskFull"],
                     RestoreState::Foreign => &["otherLineage", "oldBuildWrote"],
-                    _ => &["diskFull", "permissionDenied", "fileVanished", "other"],
+                    RestoreState::NotStarted => &[
+                        "diskFull",
+                        "permissionDenied",
+                        "fileVanished",
+                        "other",
+                        "shieldedSpendCarriedOver",
+                    ],
+                    RestoreState::Incomplete => &[
+                        "diskFull",
+                        "permissionDenied",
+                        "fileVanished",
+                        "other",
+                        "holdsUnchecked",
+                    ],
                 };
                 assert!(causes.contains(&r.cause), "{detail}: {}", r.cause);
                 assert_eq!(r.folder, dir.path());

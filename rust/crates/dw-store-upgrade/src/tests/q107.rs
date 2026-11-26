@@ -38,7 +38,7 @@ fn named(f: &Fixture, prefix: &str) -> Vec<String> {
 /// A new process: no store opened in it yet.
 pub(super) fn start(f: &Fixture, at: SystemTime) -> crate::Result<crate::Prepared> {
     crate::token::reset_opened_for_test();
-    crate::prepare_with(&f.net, build(), at)
+    crate::prepare_with_holds(&f.net, build(), at, &|_| Ok(()))
 }
 
 /// Upstream's backup step can't write: `backups/` is a file.
@@ -277,7 +277,7 @@ fn a_restore_journal_keeps_a_snapshot_of_other_data_unmarked() {
     crate::token::reset_opened_for_test();
     let ordered = format!(
         "{:?}",
-        crate::restore::run_pending_restore(&f.net, later(60)).unwrap_err()
+        crate::restore::run_pending_restore(&f.net, later(60), &|_| Ok(())).unwrap_err()
     );
     let started = start(&f, later(60)).unwrap_err();
     assert_eq!(format!("{started:?}"), ordered, "the restore goes first");

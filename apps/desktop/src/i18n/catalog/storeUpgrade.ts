@@ -113,6 +113,11 @@ export const storeUpgrade = {
       text: "Dash Wallet needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.",
       ok: "OK",
     },
+    held: {
+      text: "Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, so restoring earlier data now would lose track of it. Nothing was restored.",
+      inFlight: "This usually clears on its own once the payment is confirmed.",
+      quit: "You can still quit Dash Wallet.",
+    },
     notStarted: {
       title: "Dash Wallet couldn't start restoring your wallet data",
       text: "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.",
