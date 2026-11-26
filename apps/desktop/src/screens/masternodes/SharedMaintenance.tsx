@@ -588,11 +588,11 @@ function KeyChangeSheet({ c, onClose }: { c: MaintenanceCtx; onClose: () => void
   const b = useBackend();
   const K = "masternodes.myMasternodes.changeKeys";
   const [operator, setOperator] = useState<OperatorPick>("keep");
-  const [operatorKey, setOperatorKey] = useState("");
+  const [operatorPub, setOperatorPub] = useState("");
   const [voting, setVoting] = useState<VotingPick>("keep");
   const [address, setAddress] = useState("");
   const g = useGranted(c, t(`${P}.keyChange.ask`));
-  const keyProblem = operator === "given" ? operatorKeyProblem(operatorKey) : null;
+  const keyProblem = operator === "given" ? operatorKeyProblem(operatorPub) : null;
   const addressMissing = voting === "address" && address.trim() === "";
   const nothing = operator === "keep" && voting === "keep";
   const request: KeyChangeRequest | null =
@@ -600,7 +600,7 @@ function KeyChangeSheet({ c, onClose }: { c: MaintenanceCtx; onClose: () => void
       ? null
       : {
           proTxHash: c.hash,
-          operator: operator === "keep" ? { kind: "keep" } : operator === "keychain" ? { kind: "next_unused" } : { kind: "given", publicKey: operatorKey.trim() },
+          operator: operator === "keep" ? { kind: "keep" } : operator === "keychain" ? { kind: "next_unused" } : { kind: "given", publicKey: operatorPub.trim() },
           voting: voting === "keep" ? { kind: "keep" } : voting === "keychain" ? { kind: "next_unused" } : { kind: "address", address: address.trim() },
         };
   const ready = request !== null && g.credential.ready && !g.busy && !c.wallet.watchOnly;
@@ -635,9 +635,9 @@ function KeyChangeSheet({ c, onClose }: { c: MaintenanceCtx; onClose: () => void
           {radio("operator", "given", operator === "given", () => setOperator("given"), t(`${K}.operator.given`))}
           {operator === "given" && (
             <label className="mg-field">
-              <input className="mono" data-testid="sh-keychange-operator-key" aria-label={t(`${K}.operator.given`)} value={operatorKey} spellCheck={false} autoComplete="off" onChange={(e) => setOperatorKey(e.target.value)} />
+              <input className="mono" data-testid="sh-keychange-operator-key" aria-label={t(`${K}.operator.given`)} value={operatorPub} spellCheck={false} autoComplete="off" onChange={(e) => setOperatorPub(e.target.value)} />
               <span className="mg-field-help">{t(`${K}.operator.givenHelp`)}</span>
-              {operatorKey.trim() !== "" && keyProblem && <span className="mg-field-error">{t(`${P}.setup.error.operator_${keyProblem}`)}</span>}
+              {operatorPub.trim() !== "" && keyProblem && <span className="mg-field-error">{t(`${P}.setup.error.operator_${keyProblem}`)}</span>}
             </label>
           )}
         </fieldset>
