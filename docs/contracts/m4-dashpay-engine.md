@@ -5389,4 +5389,5 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     with nothing offered.
     Both rely on Drive refusing a transition at a taken nonce unpaid, and on no `BumpAddressInputNonces` for a
     transfer, a withdrawal or a top-up from addresses, at the pinned platform revision (as item 103 does); a repin
-    checks both again.
+    checks both again. A repin that changes the rules for address transfers or withdrawals also either ships the exit
+    beside a held cancel (#1006) or shows that a held cancel's exact re-send still passes the transfer's pre-check.
