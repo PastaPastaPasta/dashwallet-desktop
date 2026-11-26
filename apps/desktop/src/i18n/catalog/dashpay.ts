@@ -275,6 +275,7 @@ export const dashpay = {
      * the link between the funds and the username, which itself is public). */
     privacy: {
       title: "Make your username private",
+      titleNoShielded: "Pay for your username",
       body: "To help keep your payment activity private, we recommend paying for the username from your Shielded balance",
       shieldedNote: "Helps hide the link between your funds and your username",
       coreNote: "Funds will be traceable to your username",
