@@ -1567,6 +1567,7 @@ fn a_stale_temporary_file_goes_only_once_a_newer_backup_of_its_wallet_is_there()
     let dir = dw_testutil::private_tempdir();
     let (engine, session, a, bytes) = automatic_bytes(dir.path(), PHRASE);
     let b = import(&engine, &session, OTHER_PHRASE);
+    wait_for_listed(&engine, &session, 1);
     let backups = session.backup_directory();
     for f in list_automatic(&backups, "regtest", None).unwrap() {
         std::fs::remove_file(f.path).unwrap();
