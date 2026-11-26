@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationStateName } from "../api/generated/ProTxOperationStateName";
 import { t } from "../i18n";
-import { conflicted, inProgress, lastErrorText, opRow, proTxSends, resendCap, resendConfirmText, actsOn } from "./operations";
+import { conflicted, handoffRefusedText, togetherOperation, inProgress, lastErrorText, opRow, proTxSends, resendCap, resendConfirmText, actsOn } from "./operations";
 import { registrarUpdateSends } from "./changeKeys";
 import { registrationSends } from "./registration";
 
@@ -141,5 +141,30 @@ describe("In progress (§1.10)", () => {
     expect(lastErrorText(null)).toBeNull();
     expect(lastErrorText("send.no_peers")).toBe(t("pay.error.noPeers"));
     expect(lastErrorText("send.something_new")).toBe(t(`${I}.unknownError`, { code: "send.something_new" }));
+  });
+});
+
+describe("a shared dissolution's send result", () => {
+  it("warns when the network didn't take it, offline in its own words, and says nothing once sent", () => {
+    const d = (state: ProTxOperationStateName, lastError: string | null = null) => op("d", state, { kind: "dissolve", lastError });
+    expect(handoffRefusedText(d({ kind: "not_sent" }, "send.no_peers"))).toBe(t("masternodes.shared.dissolve.notSentOffline"));
+    expect(handoffRefusedText(d({ kind: "not_sent" }, "send.rejected"))).toBe(t("masternodes.shared.dissolve.notSent"));
+    expect(handoffRefusedText(d({ kind: "not_sent" }))).toBe(t("masternodes.shared.dissolve.notSent"));
+    expect(handoffRefusedText(d({ kind: "signed" }))).toBe(t("masternodes.shared.dissolve.notSent"));
+    expect(handoffRefusedText(d({ kind: "sent" }))).toBeNull();
+    expect(handoffRefusedText(d({ kind: "confirmed", height: 9 }))).toBeNull();
+  });
+});
+
+describe("a dissolution together's operation", () => {
+  it("is the dissolve row with the session's txid, once the session is out", () => {
+    const tx = "7e".repeat(32);
+    const d = op("d", { kind: "not_sent" }, { kind: "dissolve", txid: tx });
+    const ops = [op("r", { kind: "not_sent" }, { txid: tx }), d];
+    expect(togetherOperation({ kind: "dissolve_together", stage: { kind: "sent" }, txid: tx }, ops)).toBe(d);
+    expect(togetherOperation({ kind: "dissolve_together", stage: { kind: "combined" }, txid: tx }, ops)).toBeNull();
+    expect(togetherOperation({ kind: "key_change", stage: { kind: "sent" }, txid: tx }, ops)).toBeNull();
+    expect(togetherOperation({ kind: "dissolve_together", stage: { kind: "sent" }, txid: "11".repeat(32) }, ops)).toBeNull();
+    expect(togetherOperation({ kind: "dissolve_together", stage: { kind: "sent" }, txid: tx }, undefined)).toBeNull();
   });
 });

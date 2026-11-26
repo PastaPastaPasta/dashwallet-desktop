@@ -67,6 +67,8 @@ import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
+import type { DissolvePreview } from "./DissolvePreview";
+import type { DissolveRequest } from "./DissolveRequest";
 import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
@@ -96,6 +98,7 @@ import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
 import type { JoinSharedRequest } from "./JoinSharedRequest";
 import type { JsonValue } from "./serde_json/JsonValue";
+import type { KeyChangeRequest } from "./KeyChangeRequest";
 import type { KeyCheckName } from "./KeyCheckName";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
@@ -107,6 +110,7 @@ import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
+import type { MaintenanceSent } from "./MaintenanceSent";
 import type { MasternodeDetail } from "./MasternodeDetail";
 import type { MasternodeKeyInfo } from "./MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "./MasternodeKeyRoleName";
@@ -196,6 +200,7 @@ import type { SharedImport } from "./SharedImport";
 import type { SharedMessage } from "./SharedMessage";
 import type { SharedOutcome } from "./SharedOutcome";
 import type { SharedSession } from "./SharedSession";
+import type { SharedShares } from "./SharedShares";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { ShieldOutcome } from "./ShieldOutcome";
@@ -207,6 +212,8 @@ import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
 import type { ShieldedSyncInfo } from "./ShieldedSyncInfo";
 import type { SpvStateName } from "./SpvStateName";
+import type { Standby } from "./Standby";
+import type { StandbyVariantName } from "./StandbyVariantName";
 import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckShieldFunding } from "./StuckShieldFunding";
@@ -3339,6 +3346,23 @@ export function mnSharedSession(walletId: string, session: string): Promise<Shar
 }
 
 /**
+ * A shared masternode's shares from the wallet's history: amounts,
+ * refund and reward addresses, the early period and whether a share
+ * may dissolve or change keys now. No session is needed.
+ */
+export function mnSharedShares(walletId: string, proTxHash: string): Promise<SharedShares> {
+  return invoke<SharedShares>("mn_shared_shares", { walletId, proTxHash });
+}
+
+/**
+ * The wallet's stored standbys of a shared masternode, by share and
+ * fee; their signed bytes stay in Rust.
+ */
+export function mnSharedStandby(walletId: string, proTxHash: string): Promise<Array<Standby>> {
+  return invoke<Array<Standby>>("mn_shared_standby", { walletId, proTxHash });
+}
+
+/**
  * Starts a session as its coordinator: reserves the coordinator's share
  * and the fee, signs nothing, and returns the Invitation.
  */
@@ -3461,6 +3485,90 @@ export function mnSharedImport(walletId: string, text: string, target: string | 
  */
 export function mnSharedImportFile(walletId: string, target: string | null): Promise<Array<SharedImport> | null> {
   return invoke<Array<SharedImport> | null>("mn_shared_import_file", { walletId, target });
+}
+
+/**
+ * Plans a dissolution alone by one of this wallet's shares: what each
+ * share gets back, the penalty, the fee and `totalDebit`. Signs nothing.
+ */
+export function mnSharedPreviewDissolve(walletId: string, request: DissolveRequest): Promise<DissolvePreview> {
+  return invoke<DissolvePreview>("mn_shared_preview_dissolve", { walletId, request });
+}
+
+/**
+ * Signs the preview's dissolution with the share's owner key and sends
+ * it, under a `masternodeOp` grant covering its `totalDebit`. Refused on
+ * mainnet before the engine is called (`app.shared_send_off`).
+ */
+export function mnSharedDissolve(walletId: string, request: DissolveRequest, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_shared_dissolve", { walletId, request, grant });
+}
+
+/**
+ * Signs and stores the standby dissolutions paying `fee` of each of this
+ * wallet's shares, under a `masternodeOp` grant covering each share's
+ * penalty and fee. Sends nothing.
+ */
+export function mnSharedCreateStandby(walletId: string, proTxHash: string, fee: number, grant: string): Promise<Array<Standby>> {
+  return invoke<Array<Standby>>("mn_shared_create_standby", { walletId, proTxHash, fee, grant });
+}
+
+/**
+ * Shows the save dialog and writes the stored standby of `share` paying
+ * `fee` there as Core's file (0600 on Unix), under a `masternodeOp`
+ * grant of 0. Returns the file's name, `null` when the user cancelled
+ * (the grant unused). The file's text never reaches the renderer.
+ */
+export function mnSharedExportStandby(walletId: string, proTxHash: string, share: number, fee: number, grant: string): Promise<string | null> {
+  return invoke<string | null>("mn_shared_export_standby", { walletId, proTxHash, share, fee, grant });
+}
+
+/**
+ * Sends a variant of the stored standby of `share` paying `fee`, under a
+ * `masternodeOp` grant covering the fee and, for the immediate variant,
+ * the penalty (0 for another share's). Refused on mainnet before the
+ * engine is called (`app.shared_send_off`).
+ */
+export function mnSharedSendStandby(walletId: string, proTxHash: string, share: number, fee: number, variant: StandbyVariantName, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_shared_send_standby", { walletId, proTxHash, share, fee, variant, grant });
+}
+
+/**
+ * Prepares a dissolution together with this wallet's share the actor
+ * paying `fee`, and signs this wallet's shares under a `masternodeOp`
+ * grant covering the fee. Returns the session and its request.
+ */
+export function mnSharedStartDissolveTogether(walletId: string, request: DissolveRequest, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_start_dissolve_together", { walletId, request, grant });
+}
+
+/**
+ * Prepares a change of the registrar keys together, this wallet the
+ * funder: reserves the fee coins and signs this wallet's shares under a
+ * `masternodeOp` grant of 0. Returns the session and its request.
+ */
+export function mnSharedStartKeyChange(walletId: string, request: KeyChangeRequest, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_start_key_change", { walletId, request, grant });
+}
+
+/**
+ * Signs this wallet's unsigned shares of a dissolution together or a
+ * key change. A dissolution's grant covers `actorFee` when the request
+ * takes the fee from this wallet's share (`accept_actor_fee`), else 0; a
+ * key change's is 0.
+ */
+export function mnSharedApproveMaintenance(walletId: string, session: string, grant: string, acceptActorFee: boolean): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_approve_maintenance", { walletId, session, grant, acceptActorFee });
+}
+
+/**
+ * Sends a complete dissolution together, under a `masternodeOp` grant of
+ * 0. Refused before the engine is called on mainnet
+ * (`app.shared_send_off`) and for any other kind of session
+ * (`app.shared_send_unsupported`): this version sends no key change.
+ */
+export function mnSharedSendMaintenance(walletId: string, session: string, grant: string): Promise<MaintenanceSent> {
+  return invoke<MaintenanceSent>("mn_shared_send_maintenance", { walletId, session, grant });
 }
 
 /**
@@ -3978,6 +4086,8 @@ export type CommandArgs = {
   mn_shared_sessions: { walletId: string };
   mn_shared_unreadable: { walletId: string };
   mn_shared_session: { walletId: string; session: string };
+  mn_shared_shares: { walletId: string; proTxHash: string };
+  mn_shared_standby: { walletId: string; proTxHash: string };
   mn_shared_start: { walletId: string; request: StartSharedRequest };
   mn_shared_set_fee: { walletId: string; session: string; fee: number };
   mn_shared_join: { walletId: string; session: string; request: JoinSharedRequest };
@@ -3993,6 +4103,15 @@ export type CommandArgs = {
   mn_shared_discard: { walletId: string; session: string };
   mn_shared_import: { walletId: string; text: string; target: string | null };
   mn_shared_import_file: { walletId: string; target: string | null };
+  mn_shared_preview_dissolve: { walletId: string; request: DissolveRequest };
+  mn_shared_dissolve: { walletId: string; request: DissolveRequest; grant: string };
+  mn_shared_create_standby: { walletId: string; proTxHash: string; fee: number; grant: string };
+  mn_shared_export_standby: { walletId: string; proTxHash: string; share: number; fee: number; grant: string };
+  mn_shared_send_standby: { walletId: string; proTxHash: string; share: number; fee: number; variant: StandbyVariantName; grant: string };
+  mn_shared_start_dissolve_together: { walletId: string; request: DissolveRequest; grant: string };
+  mn_shared_start_key_change: { walletId: string; request: KeyChangeRequest; grant: string };
+  mn_shared_approve_maintenance: { walletId: string; session: string; grant: string; acceptActorFee: boolean };
+  mn_shared_send_maintenance: { walletId: string; session: string; grant: string };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -4379,6 +4498,8 @@ export type CommandResults = {
   mn_shared_sessions: Array<SharedSession>;
   mn_shared_unreadable: Array<UnreadableSession>;
   mn_shared_session: SharedSession;
+  mn_shared_shares: SharedShares;
+  mn_shared_standby: Array<Standby>;
   mn_shared_start: SharedOutcome;
   mn_shared_set_fee: SharedOutcome;
   mn_shared_join: SharedOutcome;
@@ -4394,6 +4515,15 @@ export type CommandResults = {
   mn_shared_discard: null;
   mn_shared_import: SharedImport;
   mn_shared_import_file: Array<SharedImport> | null;
+  mn_shared_preview_dissolve: DissolvePreview;
+  mn_shared_dissolve: ProTxOperation;
+  mn_shared_create_standby: Array<Standby>;
+  mn_shared_export_standby: string | null;
+  mn_shared_send_standby: ProTxOperation;
+  mn_shared_start_dissolve_together: SharedOutcome;
+  mn_shared_start_key_change: SharedOutcome;
+  mn_shared_approve_maintenance: SharedOutcome;
+  mn_shared_send_maintenance: MaintenanceSent;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -4782,6 +4912,8 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_sessions: "masternodes",
   mn_shared_unreadable: "masternodes",
   mn_shared_session: "masternodes",
+  mn_shared_shares: "masternodes",
+  mn_shared_standby: "masternodes",
   mn_shared_start: "masternodes",
   mn_shared_set_fee: "masternodes",
   mn_shared_join: "masternodes",
@@ -4797,6 +4929,15 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_discard: "masternodes",
   mn_shared_import: "masternodes",
   mn_shared_import_file: "masternodes",
+  mn_shared_preview_dissolve: "masternodes",
+  mn_shared_dissolve: "masternodes",
+  mn_shared_create_standby: "masternodes",
+  mn_shared_export_standby: "masternodes",
+  mn_shared_send_standby: "masternodes",
+  mn_shared_start_dissolve_together: "masternodes",
+  mn_shared_start_key_change: "masternodes",
+  mn_shared_approve_maintenance: "masternodes",
+  mn_shared_send_maintenance: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",

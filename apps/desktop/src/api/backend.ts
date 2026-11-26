@@ -156,12 +156,19 @@ import type { MasternodeListState } from "./generated/MasternodeListState";
 import type { MasternodeOverview } from "./generated/MasternodeOverview";
 import type { MasternodePayout } from "./generated/MasternodePayout";
 import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
+import type { DissolvePreview } from "./generated/DissolvePreview";
+import type { DissolveRequest } from "./generated/DissolveRequest";
 import type { JoinSharedRequest } from "./generated/JoinSharedRequest";
+import type { KeyChangeRequest } from "./generated/KeyChangeRequest";
+import type { MaintenanceSent } from "./generated/MaintenanceSent";
+import type { StandbyVariantName } from "./generated/StandbyVariantName";
 import type { SharedCapability } from "./generated/SharedCapability";
 import type { SharedImport } from "./generated/SharedImport";
 import type { SharedMessage } from "./generated/SharedMessage";
 import type { SharedOutcome } from "./generated/SharedOutcome";
 import type { SharedSession } from "./generated/SharedSession";
+import type { SharedShares } from "./generated/SharedShares";
+import type { Standby } from "./generated/Standby";
 import type { UnreadableSession } from "./generated/UnreadableSession";
 import type { StartSharedRequest } from "./generated/StartSharedRequest";
 import type { MnRegistrationPreview } from "./generated/MnRegistrationPreview";
@@ -787,6 +794,10 @@ export interface Backend {
   /** Sessions whose stored record no longer reads; Discard frees one while `discardable`. */
   mnSharedUnreadable(walletId: string): Promise<UnreadableSession[]>;
   mnSharedSession(walletId: string, session: string): Promise<SharedSession>;
+  /** A shared masternode's shares from history, with or without its session (MG-10 S6). */
+  mnSharedShares(walletId: string, proTxHash: string): Promise<SharedShares>;
+  /** Stored standbys, described; their signed bytes stay in Rust. */
+  mnSharedStandby(walletId: string, proTxHash: string): Promise<Standby[]>;
   /** Reserves the coordinator's share and the fee; signs nothing. */
   mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome>;
   mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome>;
@@ -814,6 +825,23 @@ export interface Backend {
   mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport>;
   /** The open dialog runs in dw-app; the file's text never reaches the renderer. `null` on cancel. */
   mnSharedImportFile(walletId: string, target: string | null): Promise<SharedImport[] | null>;
+  // Shared masternode maintenance (MG-10 S6). Sends refuse on mainnet (`app.shared_send_off`).
+  /** What a dissolution alone would build; signs nothing. */
+  mnSharedPreviewDissolve(walletId: string, request: DissolveRequest): Promise<DissolvePreview>;
+  /** A `masternodeOp` grant covering the preview's `totalDebit`. */
+  mnSharedDissolve(walletId: string, request: DissolveRequest, grant: string): Promise<ProTxOperation>;
+  /** A `masternodeOp` grant covering each own share's penalty and fee; sends nothing. */
+  mnSharedCreateStandby(walletId: string, proTxHash: string, fee: number, grant: string): Promise<Standby[]>;
+  /** The save dialog runs in dw-app and writes the file; only its name comes back. `null` on cancel. */
+  mnSharedExportStandby(walletId: string, proTxHash: string, share: number, fee: number, grant: string): Promise<string | null>;
+  mnSharedSendStandby(walletId: string, proTxHash: string, share: number, fee: number, variant: StandbyVariantName, grant: string): Promise<ProTxOperation>;
+  /** A `masternodeOp` grant covering the fee. */
+  mnSharedStartDissolveTogether(walletId: string, request: DissolveRequest, grant: string): Promise<SharedOutcome>;
+  /** A `masternodeOp` grant of 0; reserves the fee coins. */
+  mnSharedStartKeyChange(walletId: string, request: KeyChangeRequest, grant: string): Promise<SharedOutcome>;
+  mnSharedApproveMaintenance(walletId: string, session: string, grant: string, acceptActorFee: boolean): Promise<SharedOutcome>;
+  /** A dissolution together only (`app.shared_send_unsupported` for a key change). */
+  mnSharedSendMaintenance(walletId: string, session: string, grant: string): Promise<MaintenanceSent>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */
