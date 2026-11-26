@@ -2593,8 +2593,9 @@ export function setLoadContactPictures(on: boolean): Promise<null> {
 
 /**
  * The approval sheet of the App Connect request `link_id` for the
- * wallet `wallet_id`. A refusal answers the request (its status goes
- * back with the return link).
+ * wallet `wallet_id`, which the inbox then keeps as the one on screen.
+ * A refusal answers the request (its status goes back with the return
+ * link).
  */
 export function appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet> {
   return invoke<ConnectSheet>("app_connect_sheet", { walletId, linkId });
@@ -2617,7 +2618,8 @@ export function appConnectApprove(walletId: string, linkId: string, choice: Conn
 }
 
 /**
- * Sends the response an approval could not send.
+ * Sends the response an approval of `link_id` could not send; a
+ * request with no approval started has none (`invalid_argument`).
  */
 export function appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone> {
   return invoke<ConnectDone>("app_connect_retry_send", { walletId, linkId });
