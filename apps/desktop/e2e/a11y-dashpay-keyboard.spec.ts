@@ -128,6 +128,7 @@ async function toConfirmAndPay(page: Page, label: string) {
 
   await tabTo(page, page.getByTestId("join-create"), { back: true });
   await page.keyboard.press("Enter");
+  await dashWalletByKeyboard(page);
   // Step 1: the field has focus; availability is a live status as typed.
   const field = page.getByTestId("registration-name-field");
   await expect(field).toBeFocused();
@@ -674,12 +675,27 @@ test("keyboard only: while the wedge's OK runs after its passphrase, focus stays
   expect(errors).toEqual([]);
 });
 
+/** "Make your username private" by keyboard: the Dash wallet row checked with Space, Continue with
+ * Enter; nothing is chosen until then. */
+async function dashWalletByKeyboard(page: Page) {
+  const core = page.getByTestId("pay-with-core").getByRole("radio");
+  await expect(page.getByTestId("registration-next")).toBeDisabled();
+  // One Tab stop for the group, its first row (Shielded when it can pay); the arrows choose.
+  const radios = page.getByTestId("registration-pay-with").getByRole("radio");
+  await tabTo(page, radios.first());
+  await page.keyboard.press((await radios.count()) > 1 ? "ArrowDown" : "Space");
+  await expect(core).toBeChecked();
+  await expect(core).toBeFocused();
+  await page.keyboard.press("Enter");
+}
+
 /** Registers "alice-77" with the keyboard from `dashpay-no-identity`: the progress screen, its
  * Home button focused, and the welcome's status region recorded. */
 async function toProgressHome(page: Page) {
   await goTo(page, "joinDashPay");
   await tabTo(page, page.getByTestId("join-create"));
   await page.keyboard.press("Enter");
+  await dashWalletByKeyboard(page);
   await expect(page.getByTestId("registration-name-field")).toBeFocused();
   await page.keyboard.type("alice-77");
   await expect(page.getByTestId("registration-availability")).toHaveText("Username available");

@@ -1,11 +1,13 @@
 //! The shipped engine spends from Shielded on testnet only: built as the app
 //! links it (not `cfg(test)`, so with no test override of the switch),
 //! mainnet's and regtest's status and sync read report `spends_available`
-//! false and their receive address and spend quotes are refused, while
-//! testnet reports spends available and issues the receive address.
+//! false, and their receive address, spend quotes and a Shielded-funded
+//! registration's quote and start are refused, while testnet reports spends
+//! available and issues the receive address.
 
 use std::sync::Arc;
 
+use dw_engine::platform::{RegistrationFunding, RegistrationRequest};
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, ImportOptions, SessionOptions,
 };
@@ -95,6 +97,29 @@ fn shielded_spends_are_off_on_mainnet_until_their_funds_review() {
                 quote.unwrap_err().code(),
                 "platform.unavailable",
                 "{network:?}: no quote"
+            );
+        }
+        let req = || RegistrationRequest {
+            label: "spendsoff2".into(),
+            temporary_label: None,
+            funding: RegistrationFunding::Shielded { denomination: 0 },
+            initial_profile: None,
+        };
+        let registration = [
+            engine.block_on(dp.registration_quote(req())).map(drop),
+            engine
+                .block_on(dp.start_registration(req(), "no-grant".into()))
+                .map(drop),
+        ];
+        let code = match network {
+            DashNetwork::Mainnet => "platform.feature_off",
+            _ => "platform.unavailable",
+        };
+        for refused in registration {
+            assert_eq!(
+                refused.unwrap_err().code(),
+                code,
+                "{network:?}: no Shielded registration"
             );
         }
         engine.block_on(engine.close_network(network)).unwrap();

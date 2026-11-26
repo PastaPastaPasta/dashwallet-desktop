@@ -16,20 +16,20 @@ import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
 import { isSyncing, syncPercent } from "../format/sync";
-import type { PayWithInputs } from "./payWith";
+import type { PaySource, PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { AvailabilityChecker, needsAvailability, suggest } from "./instantName";
 import { contestRow, lacksTemporary, registrationOffered, rereadAfterSecond, rowSecond, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
-import { QUOTE_REQUEST, type StatusInputs } from "./status";
-import { coreRequest, invitationRequest, platformRequest } from "./wizard";
+import { QUOTE_REQUEST, READINESS_FAILED, type StatusInputs } from "./status";
+import { coreRequest, invitationRequest, platformRequest, shieldedRequest } from "./wizard";
 
 export const dashpayKeys = {
   registrationsAll: ["dashpay", "registrations"] as const,
   registrations: (walletId: string) => ["dashpay", "registrations", walletId] as const,
   quote: (walletId: string) => ["dashpay", "quote", walletId] as const,
   /** DP1-09: the quote of one label, under `quote`, so a balance change re-reads it too. */
-  labelQuote: (walletId: string, label: string, fromPlatform = false, temporaryLabel: string | null = null) => {
-    const key = fromPlatform ? (["dashpay", "quote", walletId, label, "platform"] as const) : (["dashpay", "quote", walletId, label] as const);
+  labelQuote: (walletId: string, label: string, source: PaySource = "core", temporaryLabel: string | null = null) => {
+    const key = source === "core" ? (["dashpay", "quote", walletId, label] as const) : (["dashpay", "quote", walletId, label, source] as const);
     // An instant username beside it is priced too (D4 reversed).
     return temporaryLabel === null ? key : ([...key, { temporaryLabel }] as const);
   },
@@ -121,11 +121,12 @@ export function useNameCredits(walletId: string, identity: string | null, label:
 
 /** Step 2's quote for `label` and the instant username beside it, from the Dash wallet or the
  * Platform balance. */
-export function useLabelQuote(walletId: string, label: string, enabled: boolean, fromPlatform = false, temporaryLabel: string | null = null) {
+export function useLabelQuote(walletId: string, label: string, enabled: boolean, source: PaySource = "core", temporaryLabel: string | null = null) {
   const b = useBackend();
+  const request = { core: coreRequest, platform: (l: string, temp: string | null) => platformRequest(l, undefined, temp), shielded: (l: string, temp: string | null) => shieldedRequest(l, undefined, temp) }[source];
   return useQuery({
-    queryKey: dashpayKeys.labelQuote(walletId, label, fromPlatform, temporaryLabel),
-    queryFn: () => b.registrationQuote(walletId, fromPlatform ? platformRequest(label, undefined, temporaryLabel) : coreRequest(label, temporaryLabel)),
+    queryKey: dashpayKeys.labelQuote(walletId, label, source, temporaryLabel),
+    queryFn: () => b.registrationQuote(walletId, request(label, temporaryLabel)),
     enabled,
     retry: false,
   });
@@ -157,14 +158,15 @@ export function useStatusRegistration(walletId: string | undefined, status: Dash
 
 /** The "Pay with" step's Shielded row (C-funding F16): the quote's readiness, for the label the
  * Join page quotes (the denomination covers a plain name; the engine ignores the request's). */
-export function useShieldedReadiness(walletId: string) {
+export function useShieldedReadiness(walletId: string, enabled = true) {
   const b = useBackend();
   const quote = useQuery({
     queryKey: dashpayKeys.shieldedReadiness(walletId),
-    queryFn: () => b.registrationQuote(walletId, { ...QUOTE_REQUEST, funding: { kind: "shielded", denomination: "0" } }),
+    queryFn: () => b.registrationQuote(walletId, shieldedRequest(QUOTE_REQUEST.label)),
+    enabled,
     retry: false,
   });
-  return quote.data?.readiness ?? null;
+  return quote.isError ? READINESS_FAILED : (quote.data?.readiness ?? null);
 }
 
 /** The "Pay with" step's Platform row (C-funding F19): a plain name's quote from the Platform

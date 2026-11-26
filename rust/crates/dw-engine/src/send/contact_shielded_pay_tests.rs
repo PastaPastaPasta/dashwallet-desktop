@@ -629,6 +629,84 @@ fn mainnet_refuses_a_shielded_payout_before_anything_is_written() {
     assert!(lib.withdrawn_to().is_empty(), "nothing sent");
 }
 
+/// While the library cannot spend from the key set, a Shielded contact
+/// quote and payment refuse `platform.unavailable` after the payee's gates
+/// and before the pool opens, so a pass holding the note store delays
+/// neither; a stranger is still refused as a stranger, and the grant is
+/// kept.
+#[test]
+fn a_shielded_contact_payment_refuses_after_the_payee_while_spends_are_off() {
+    let f = fixture(false);
+    let dashpay = f.session.dashpay(f.wallet);
+    let grant = f.credits_grant();
+    let refusals = |to: u8| {
+        let quote = dashpay.contact_pay_quote(b58(ME), b58(to), credits(), PaymentSource::Shielded);
+        let call = f.call(to, credits(), &grant, true);
+        let pay = dashpay.contact_pay(
+            call.identity,
+            call.contact,
+            call.credits,
+            call.source,
+            call.note,
+            call.grant,
+            call.confirm_unrecorded,
+        );
+        let quoted = f.engine.block_on(quote).unwrap_err();
+        (quoted, f.engine.block_on(pay).unwrap_err())
+    };
+    let spends_on = refusals(DAVE);
+    let off = &f.session.keyset_spends_off;
+    off.store(true, std::sync::atomic::Ordering::SeqCst);
+    let stranger = refusals(DAVE);
+    assert_eq!(
+        (code(&stranger.0), code(&stranger.1)),
+        (code(&spends_on.0), code(&spends_on.1)),
+        "the payee's gate first"
+    );
+    assert_ne!(code(&stranger.0), "platform.unavailable");
+    assert_ne!(code(&stranger.1), "platform.unavailable");
+    let call = f.call(BOB, credits(), &grant, true);
+    let manager = f.session.manager().unwrap();
+    let held = f.session.dashpay(f.wallet);
+    let s = Arc::clone(&f.session);
+    let (quoted, paid) = f.engine.block_on(async move {
+        let coordinator = (crate::platform::shielded_pool::coordinator(&s, &manager, None))
+            .await
+            .unwrap();
+        let _pass = coordinator.store().write().await;
+        let wait = std::time::Duration::from_secs(10);
+        let quote = held.contact_pay_quote(b58(ME), b58(BOB), credits(), PaymentSource::Shielded);
+        let quoted =
+            (tokio::time::timeout(wait, quote).await).expect("the quote waits for no pass");
+        let pay = held.contact_pay(
+            call.identity,
+            call.contact,
+            call.credits,
+            call.source,
+            call.note,
+            call.grant,
+            call.confirm_unrecorded,
+        );
+        let paid = (tokio::time::timeout(wait, pay).await).expect("the payment waits for no pass");
+        (quoted, paid)
+    });
+    assert_eq!(code(&quoted.unwrap_err()), "platform.unavailable");
+    assert_eq!(code(&paid.unwrap_err()), "platform.unavailable");
+    assert!(f.grant_kept(&grant), "the grant is kept");
+    assert!(f.payout_rows().is_empty(), "no payout row");
+
+    let txid = Txid::from_byte_array([4; 32]);
+    let pair = (id(ME), id(BOB));
+    (f.engine).block_on(f.session.lock_payment(f.wallet, pair, txid, vec![]));
+    let locked = |e: ContactError| match e {
+        ContactError::PaymentLocked { txid } => txid,
+        other => panic!("expected contact.payment_locked, got {other:?}"),
+    };
+    let (quoted, paid) = refusals(BOB);
+    assert_eq!(locked(quoted), txid.to_string(), "the pair's lock first");
+    assert_eq!(locked(paid), txid.to_string(), "the pair's lock first");
+}
+
 /// A load that settles a payout an earlier load locked drops that lock
 /// from memory: a second bring-up without a restart leaves no stale lock.
 #[test]

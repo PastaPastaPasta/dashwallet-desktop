@@ -14,4 +14,17 @@ checks: Array<ShieldedCheckState>,
 /**
  * While `rested` is not ready: when it will be (unix seconds).
  */
-readyAt: number | null, };
+readyAt: number | null,
+/**
+ * The shielded pool's note count, proved; `null` while unknown.
+ */
+poolNotes: number | null,
+/**
+ * The count Platform requires before a payment may leave the pool.
+ */
+poolRequired: number,
+/**
+ * What returns to this wallet's Shielded balance after the create, in
+ * credits; `null` while the notes cannot pay.
+ */
+change: string | null, };

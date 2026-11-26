@@ -94,6 +94,10 @@ pub enum PlatformActivityKind {
     /// (#402); `Pending` until a proved apply, then `Done` with the credits
     /// it added.
     Recovered,
+    /// What Platform returned to this wallet's Platform address
+    /// (`address`) when it could not create the identity a Shielded-funded
+    /// registration paid for (C-funding F13): the payment less a penalty.
+    RegistrationRefund,
 }
 
 /// Where an activity row stands.
@@ -513,7 +517,10 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            Ok(platform_moves::receive_address(&net, &wallet, session.vault.network()).await?)
+            Ok(
+                platform_moves::receive_address(&net, &session, &wallet, session.vault.network())
+                    .await?,
+            )
         })
         .await
     }
@@ -605,6 +612,7 @@ impl DashPay {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             platform_moves::address_sends_open(session.vault.network())?;
+            shielded_pool::session_keyset_closed(&session)?;
             let lib = shielded_pool::PwShielded::open(&session, wallet_id).await?;
             let version = shielded_pool::platform_shield_gate(&lib).await?;
             let net = platform_moves::SdkMoves {

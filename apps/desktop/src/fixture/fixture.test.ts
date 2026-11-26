@@ -287,6 +287,19 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
+    // From the Shielded balance: off on mainnet too (flag shielded_registration), before any read.
+    const fromShielded = { kind: "shielded", denomination: "0" } as const;
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    // While this build cannot spend from Shielded: platform.unavailable, before the grant (m4 item 114).
+    clearMocks();
+    backend({ scenario: "shielded-spends-off" });
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.unavailable" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.unavailable" });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {

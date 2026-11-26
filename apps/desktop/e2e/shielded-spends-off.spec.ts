@@ -131,6 +131,26 @@ test.describe("Shielded spends off", () => {
     });
   }
 
+  test("Tools ▸ Repair promises no move into Shielded while the pool reads inactive", async ({ page }) => {
+    const errors = await open(page, "repair-shield-spends-off", "light");
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.pending.shielded!.active = false;
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } } as never);
+    });
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" }));
+    await expect(page.getByText("Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.", { exact: true })).toBeVisible();
+    const priced = page.getByTestId("repair-stuck-shield/0/funding");
+    await expect(priced).toContainText(/Repair sends the move's 3 mixed coins/);
+    await expect(priced).not.toContainText("into Shielded again");
+    await expect(page.getByTestId("repair-stuck-shield/1/funding")).not.toContainText("New moves into Shielded");
+    await page.getByTestId("repair-resolve-shield/0/funding").click();
+    await page.getByTestId("repair-confirm-ok").click();
+    await authorize(page);
+    await expect(page.getByTestId("repair-outcome")).toHaveText(/^The coins were sent back to your wallet \(transaction [0-9a-f]{64}\)\.$/);
+    expect(errors).toEqual([]);
+  });
+
   test("moving mixed coins into Shielded waits with the ways-in reason", async ({ page }) => {
     const errors = trackPageErrors(page);
     for (const scenario of ["coinjoin-move-spends-off", "coinjoin-move"] as const) {

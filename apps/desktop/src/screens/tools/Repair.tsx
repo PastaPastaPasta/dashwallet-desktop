@@ -9,7 +9,7 @@ import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys, useBackend, useShieldedSyncInfo, useUnfinishedTransfers } from "../../api/queries";
-import { shieldedSpendsOff } from "../../shielded/spends";
+import { shieldedSpendsKnownOn } from "../../shielded/spends";
 import { unreadText } from "../../dashpay/registration";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
@@ -29,7 +29,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
   const shown = useDisplay(network);
   const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
   const client = useQueryClient();
-  const spendsOff = shieldedSpendsOff(useShieldedSyncInfo(wallet.walletId).data);
+  const spendsOff = !shieldedSpendsKnownOn(useShieldedSyncInfo(wallet.walletId).data);
   const spendsOffNow = useRef(spendsOff);
   useEffect(() => {
     spendsOffNow.current = spendsOff;

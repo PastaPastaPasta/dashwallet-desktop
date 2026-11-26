@@ -27,7 +27,7 @@ import type { AddressSync } from "../api/generated/AddressSync";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { IdentitiesWorld } from "./identities";
-import type { PlatformCreateOutcome, PlatformRegisterPlan } from "./registration";
+import type { PlatformCreateOutcome, PlatformRegisterPlan, ShieldedCreateOutcome } from "./registration";
 import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -72,6 +72,9 @@ export interface DashPayWorld {
   /** C-funding F10: what each next identity create from the Platform balance comes to, first
    * first; once empty, `registered`. */
   platformCreates?: PlatformCreateOutcome[];
+  /** C-funding F12: what each next identity create from the Shielded balance comes to, first
+   * first; once empty, `registered`. */
+  shieldedCreates?: ShieldedCreateOutcome[];
   /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
    * scenario sets it (topup.ts `creditsOf`). */
   credits?: CreditsWorld;
@@ -464,6 +467,7 @@ export function contestedRow(temp: string): RegistrationStatus {
     profileFailure: null,
     invitation: null,
     fromPlatform: false,
+    fromShielded: false,
     createdAt: at(0, 2),
     updatedAt: at(0, 1),
   };
@@ -494,6 +498,7 @@ export function registering(): DashPayWorld {
         profileFailure: null,
         invitation: null,
         fromPlatform: false,
+        fromShielded: false,
         createdAt: at(0, 1),
         updatedAt: at(0, 0),
       },
