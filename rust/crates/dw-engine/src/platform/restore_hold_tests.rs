@@ -417,11 +417,12 @@ fn an_unreadable_store_or_journal_refuses_the_request() {
     passes(dir.path(), "once it reads");
 }
 
-/// (a) with the network open: the removal gate's hold of a loaded wallet
-/// refuses the request, a reservation the library keeps in memory alone
-/// included; once it clears, the request gets past the check.
+/// M1: with the network open, Restore earlier data is refused before any
+/// hold is read, a reservation the library keeps in memory alone included,
+/// and nothing is asked for: only a network whose open was refused with it
+/// restores.
 #[test]
-fn a_reservation_in_the_open_session_refuses_the_request() {
+fn a_request_with_the_network_open_is_refused_before_its_holds() {
     let dir = dw_testutil::private_tempdir();
     let engine = engine_at(dir.path());
     let (session, wallet) = launch(&engine);
@@ -437,13 +438,9 @@ fn a_reservation_in_the_open_session_refuses_the_request() {
         ))
         .unwrap();
     });
-    assert_eq!(restore_hold(&data_dir), None, "nothing on disk");
     let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
     assert!(
-        matches!(
-            &got,
-            Err(EngineError::ShieldedSpendHeld(ShieldedHold::InFlight))
-        ),
+        matches!(&got, Err(EngineError::InvalidArgument(_))),
         "{got:?}"
     );
     assert_eq!(dw_store_upgrade::pending_restore(&data_dir).unwrap(), None);
@@ -453,8 +450,9 @@ fn a_reservation_in_the_open_session_refuses_the_request() {
     });
     let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
     assert!(
-        matches!(&got, Err(EngineError::StoreRestore(r)) if r.cause == "missingBackup"),
+        matches!(&got, Err(EngineError::InvalidArgument(_))),
         "{got:?}"
     );
+    assert_eq!(dw_store_upgrade::pending_restore(&data_dir).unwrap(), None);
     engine.block_on(engine.shutdown()).unwrap();
 }

@@ -373,11 +373,14 @@ impl Engine {
 
     /// Asks for the restore of `network`'s verified before-upgrade snapshot
     /// at the next start of the app; nothing is restored in this process.
-    /// Without a verified snapshot it is refused with `storage_restore`
-    /// (`refused`, missingBackup). Refused with `ShieldedSpendHeld` while a
-    /// wallet of `network` holds a shielded spend whose result is not known:
-    /// the session's, when `network` is open (the removal gate's hold of
-    /// each loaded wallet), and the stores' on disk, open or not
+    /// `InvalidArgument`, with nothing read or written, while `network` is
+    /// open, or unless its last open in this engine was refused by the
+    /// store-upgrade check with `wayOut.restore` (the screen that offers
+    /// Restore earlier data), Restore earlier data refused for a shielded
+    /// hold since then included. Without a verified snapshot it is refused
+    /// with `storage_restore` (`refused`, missingBackup). Refused with
+    /// `ShieldedSpendHeld` while a wallet of `network` holds a shielded
+    /// spend whose result is not known on disk
     /// (`store_upgrade::request_restore`); the next start reads the stores
     /// again before the restore moves anything. After an open refused with
     /// `wayOut.restore`, that refusal lets `network` start over
@@ -385,6 +388,19 @@ impl Engine {
     pub async fn request_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
         network.validate()?;
         let sessions = self.shared.sessions.lock().await;
+        if sessions.contains_key(network) {
+            return Err(EngineError::InvalidArgument(format!(
+                "{network} is open; only a network whose open was refused restores earlier data"
+            )));
+        }
+        if !matches!(
+            self.shared.refused(network),
+            Some(Refused::Restore | Refused::RestoreHeld)
+        ) {
+            return Err(EngineError::InvalidArgument(format!(
+                "the last open of {network} was not refused with Restore earlier data; nothing to restore from"
+            )));
+        }
         let dir = self.network_dir(network)?;
         if let Some(session) = sessions.get(network).cloned()
             && let Some(hold) = session.restore_hold().await
