@@ -145,6 +145,17 @@ pub(crate) struct OpView {
     pub chainlock: Option<u32>,
 }
 
+impl OpView {
+    /// The history, the unspent coins and the history's
+    /// [`crate::history::conflicted`] set, for [`state_of`].
+    pub(crate) fn with_conflicted(
+        self,
+    ) -> (HashMap<Txid, TxEntry>, HashSet<OutPoint>, HashSet<Txid>) {
+        let conflicted = crate::history::conflicted(&self.history, self.chainlock);
+        (self.history, self.unspent, conflicted)
+    }
+}
+
 pub(crate) fn signed_tx(row: &MasternodeOpRow) -> Option<Transaction> {
     dashcore::consensus::deserialize(row.signed_tx.as_deref()?).ok()
 }
@@ -539,12 +550,7 @@ impl NetworkSession {
         wallet: WalletId,
         row: &MasternodeOpRow,
     ) -> Result<ProTxOperationState, MasternodesError> {
-        let OpView {
-            history,
-            unspent,
-            chainlock,
-        } = self.op_view(wallet).await?;
-        let conflicted = crate::history::conflicted(&history, chainlock);
+        let (history, unspent, conflicted) = self.op_view(wallet).await?.with_conflicted();
         let abandoned = self.abandoned_txids(wallet).await?;
         let view = self
             .dissolution_view(wallet, std::slice::from_ref(row))
@@ -737,12 +743,7 @@ impl NetworkSession {
         if rows.iter().all(|r| r.fee_inputs == "[]") {
             return Ok(());
         }
-        let OpView {
-            history,
-            unspent,
-            chainlock,
-        } = self.op_view(wallet).await?;
-        let conflicted = crate::history::conflicted(&history, chainlock);
+        let (history, unspent, conflicted) = self.op_view(wallet).await?.with_conflicted();
         let abandoned = self.abandoned_txids(wallet).await?;
         let buried = self.buried();
         let settled: Vec<(String, Vec<OutPoint>, bool)> = rows
@@ -810,17 +811,12 @@ impl NetworkSession {
         if !rows.iter().any(|r| r.locked_collateral) {
             return Ok(());
         }
-        let OpView {
-            history,
-            unspent,
-            chainlock,
-        } = self.op_view(wallet).await?;
-        let conflicted = crate::history::conflicted(&history, chainlock);
-        let (conflicted, live): (Vec<_>, Vec<_>) = rows.iter().partition(|r| {
+        let (history, unspent, conflicted) = self.op_view(wallet).await?.with_conflicted();
+        let (beaten, live): (Vec<_>, Vec<_>) = rows.iter().partition(|r| {
             state_of(r, &history, &unspent, &conflicted) == ProTxOperationState::Conflicted
         });
         let named: HashSet<OutPoint> = live.iter().filter_map(|r| row_collateral(r)).collect();
-        let release: Vec<(String, OutPoint)> = conflicted
+        let release: Vec<(String, OutPoint)> = beaten
             .iter()
             .filter(|r| r.locked_collateral)
             .filter_map(|r| Some((r.id.clone(), row_collateral(r)?)))

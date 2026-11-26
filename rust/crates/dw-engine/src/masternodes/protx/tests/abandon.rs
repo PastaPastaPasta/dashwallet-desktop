@@ -694,11 +694,10 @@ fn mg10_an_abandon_during_a_resend_stops_its_hand_off() {
 impl Fx {
     /// A fresh BIP44 receive address of the wallet.
     fn receive_address(&self) -> dashcore::Address {
-        let session = Arc::clone(&self.session);
-        let (id, inner) = (self.wallet, Arc::clone(&session));
+        let (s, id) = (Arc::clone(&self.session), self.wallet);
         self.engine
-            .block_on(session.on_runtime(async move {
-                let wallet = inner.wallet(&id).await?;
+            .block_on(self.session.on_runtime(async move {
+                let wallet = s.wallet(&id).await?;
                 Ok(wallet.core().next_receive_address_for_account(0).await?)
             }))
             .unwrap()
