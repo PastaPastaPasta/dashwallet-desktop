@@ -1204,6 +1204,27 @@ fn a_conflicted_payout_change_holds_nothing() {
     }
 }
 
+/// #740: a change paid from an unconfirmed payment P's output can never
+/// mine once a block holds a rival of P's input, so it holds nothing then;
+/// with the rival only unconfirmed, it holds.
+#[test]
+fn mg740_a_payout_change_paid_from_a_beaten_payment_holds_nothing() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+        let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+        fa.seen(&payment, TransactionContext::Mempool);
+        fa.seen(&change, TransactionContext::Mempool);
+        let mut rival = rival_of(&payment);
+        rival.lock_time = 1;
+        fa.seen(&rival, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.seen(&rival, in_block(TIP - 3));
+        fa.released(key);
+    }
+}
+
 /// A wallet the change only pays (or names a key of) records it with
 /// nothing of its own to abandon: the paying wallet's abandon, or a block
 /// in the paying wallet's history spending its input, releases it.

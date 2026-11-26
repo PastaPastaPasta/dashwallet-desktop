@@ -647,11 +647,21 @@ impl NetworkSession {
             ),
         };
         let confirmed = matches!(session.stage, SharedStage::Confirmed { .. });
+        // A block that beats a transaction the request spends (#740) is
+        // another spend too.
         let conflict = (row.out_at.is_some() && !confirmed)
-            .then(|| conflict_of(&chain.history, &own_inputs, except.as_ref(), &attributed))
+            .then(|| {
+                conflict_of(&chain.history, &own_inputs, except.as_ref(), &attributed)
+                    .map(|(by, height)| (attributed.contains(&by), height))
+                    .or_else(|| {
+                        chain
+                            .beaten(&own_inputs, except.as_ref())
+                            .map(|h| (false, h))
+                    })
+            })
             .flatten();
-        if let Some((by, height)) = conflict {
-            let by = match attributed.contains(&by) {
+        if let Some((by_abandon, height)) = conflict {
+            let by = match by_abandon {
                 true => SettledBy::AbandonTx,
                 false => SettledBy::OtherSpend,
             };

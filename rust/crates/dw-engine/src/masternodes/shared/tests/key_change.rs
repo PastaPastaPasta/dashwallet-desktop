@@ -999,7 +999,8 @@ fn mg740_a_key_change_paid_from_a_beaten_payments_change_is_conflicted() {
         (f.session.hub.history).with_wallet(f.wallets[0], |h| h.txs.insert(key, entry));
     };
     // The fee coin, seed 9's, is P's change: P is out of a block, and the
-    // funder abandons it once the key change is out.
+    // funder abandons it once the key change is out. P is keyed by that
+    // coin's funding txid, as the descendant rule reads the history's keys.
     let (p, funding) = (spend(COIN), Txid::from_byte_array([9; 32]));
     record(&p, funding, false);
     let (id, request) = complete(&f, txid);
@@ -1017,7 +1018,18 @@ fn mg740_a_key_change_paid_from_a_beaten_payments_change_is_conflicted() {
     assert_update_pending(start(&f, 0, rotate(txid), 0).unwrap_err(), &id);
 
     f.mine(rival, 60);
-    assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
+    f.tip(60);
+    let s = f.session_of(0, &id);
+    assert_eq!(s.stage, SharedStage::Conflicted);
+    assert_eq!(
+        s.recovery.settlement,
+        crate::masternodes::Settlement::Confirming {
+            by: crate::masternodes::SettledBy::OtherSpend,
+            confirmations: 1,
+            chainlocked: false
+        }
+    );
+    assert!(s.recovery.actions.is_empty(), "{:?}", s.recovery.actions);
     f.credit(0, 10, COIN);
     start(&f, 0, rotate(txid), 0).unwrap();
     f.tip(64);

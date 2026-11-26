@@ -813,9 +813,8 @@ impl Fx {
 
     /// The operations funded from a conflicted payment's change are
     /// `conflicted`, and nothing holds on them: the barrier's operation
-    /// reads `conflicted`, the follower unlocks the collateral and settles
-    /// their fee inputs (the rival is buried), and a later update of the
-    /// masternode is signed.
+    /// reads `conflicted`, the follower unlocks the collateral and a later
+    /// update of the masternode is signed.
     fn assert_released(
         &self,
         hash: &str,
@@ -831,10 +830,6 @@ impl Fx {
         );
         self.follow();
         assert!(!self.locked().contains(&collateral), "D54");
-        let ops = [&key_change_op.id, &registration.id];
-        let rows = self.rows();
-        let mut settled = rows.iter().filter(|r| ops.contains(&&r.id));
-        assert!(settled.all(|r| r.fee_inputs == "[]"), "fee inputs settled");
         self.credit(4, COIN);
         let next = self.update(key_change(hash, 6), self.grant(COIN)).unwrap();
         assert_eq!(next.state, ProTxOperationState::Sent);
@@ -923,4 +918,33 @@ fn mg740_an_abandoned_payments_rival_only_in_the_mempool_keeps_every_hold() {
         matches!(&e, MasternodesError::UpdateAbandonedPending { operation } if *operation == key_change_op.id),
         "{e:?}"
     );
+}
+
+/// #740 with P never abandoned (the history still holds it): the
+/// operations paid from its change read `conflicted` once a rival of P's
+/// input is mined, and their fee inputs settle only once that block is
+/// buried, as a direct conflict's do.
+#[test]
+fn mg740_fee_inputs_of_operations_on_a_beaten_payments_change_settle_once_buried() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (_, input, change) = f.pending_payment();
+    let (key_change_op, registration, _) = f.operations_on_change(&hash, change);
+    let ops = [&key_change_op.id, &registration.id];
+    let fee_inputs = || -> Vec<String> {
+        let rows = f.rows().into_iter().filter(|r| ops.contains(&&r.id));
+        rows.map(|r| r.fee_inputs).collect()
+    };
+    assert!(fee_inputs().iter().all(|i| i != "[]"));
+
+    f.confirm(Fx::rival_of(input), 60);
+    f.tip(64);
+    assert_eq!(f.state(&key_change_op), ProTxOperationState::Conflicted);
+    assert_eq!(f.state(&registration), ProTxOperationState::Conflicted);
+    f.follow();
+    assert!(fee_inputs().iter().all(|i| i != "[]"), "not buried");
+    f.tip(66);
+    f.follow();
+    assert!(fee_inputs().iter().all(|i| i == "[]"), "{:?}", fee_inputs());
 }

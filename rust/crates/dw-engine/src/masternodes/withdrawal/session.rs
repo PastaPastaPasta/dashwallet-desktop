@@ -83,7 +83,8 @@ fn payout_set(
 /// The ProRegTx and ProUpRegTxs of `pro_tx_hash` in the loaded wallets'
 /// `histories`,
 /// once each, but those out of a block that a wallet abandoned or that a
-/// block in any wallet's history conflicts (MG-04's reading). A wallet the
+/// block in any wallet's history conflicts, directly or through a
+/// transaction they spend (MG-04's reading, #740). A wallet the
 /// change pays or names a key of records it with nothing of its own to
 /// abandon. An InstantSend-locked change is conflicted only by a block
 /// `chainlock` covers (key-wallet's finality order).
@@ -93,6 +94,9 @@ fn payout_changes_in(
     chainlock: Option<u32>,
 ) -> Vec<PayoutChange> {
     let all = || histories.iter().flat_map(|h| h.iter());
+    let conflicted: Vec<_> = (histories.iter())
+        .map(|h| crate::history::conflicted(h, chainlock))
+        .collect();
     type Seen<'a> = ((Option<Vec<u8>>, bool), Vec<&'a TxEntry>);
     let mut seen: HashMap<Txid, Seen> = HashMap::new();
     for (txid, e) in all() {
@@ -116,7 +120,8 @@ fn payout_changes_in(
                     && (!locked || chain_locked(&w.context, chainlock))
                     && (w.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
             });
-            if abandoned || beaten {
+            let through_parent = !locked && conflicted.iter().any(|c| c.contains_key(&txid));
+            if abandoned || beaten || through_parent {
                 return None;
             }
         }

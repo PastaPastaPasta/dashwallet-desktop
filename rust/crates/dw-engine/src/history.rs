@@ -5058,6 +5058,49 @@ mod tests {
         );
     }
 
+    /// #740: [`conflicted`] keeps the lowest block that beats each
+    /// transaction, along every path: a child of two beaten parents, and
+    /// its child, take the lower block. [`spent_outpoints`] holds only the
+    /// rivals' inputs.
+    #[test]
+    fn mg740_conflicted_keeps_the_lowest_beating_block_along_every_path() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let (a, b) = (
+            tx(vec![input(coin(1).txid, 0)], vec![out(1, &hash_addr(9))]),
+            tx(vec![input(coin(2).txid, 0)], vec![out(2, &hash_addr(9))]),
+        );
+        let c = tx(
+            vec![input(a.txid(), 0), input(b.txid(), 0)],
+            vec![out(3, &hash_addr(9))],
+        );
+        let d = tx(vec![input(c.txid(), 0)], vec![out(4, &hash_addr(9))]);
+        let rival = |n, value| {
+            tx(
+                vec![input(coin(n).txid, 0)],
+                vec![out(value, &hash_addr(8))],
+            )
+        };
+        let mut txs: HashMap<Txid, TxEntry> = [&a, &b, &c, &d]
+            .into_iter()
+            .map(|t| (t.txid(), entry(t.clone(), TransactionContext::Mempool)))
+            .collect();
+        for (r, height) in [(rival(1, 5), 20), (rival(2, 6), 12)] {
+            txs.insert(r.txid(), entry(r, in_block(height, 0)));
+        }
+        let got = conflicted(&txs, None);
+        let want = HashMap::from([
+            (a.txid(), 20),
+            (b.txid(), 12),
+            (c.txid(), 12),
+            (d.txid(), 12),
+        ]);
+        assert_eq!(got, want);
+        assert_eq!(
+            spent_outpoints(&txs, None),
+            HashSet::from([coin(1), coin(2)])
+        );
+    }
+
     /// Two mined spends of one coin B (a fork's block the store kept) beside
     /// a locked payment P of A and B: a ChainLocked one beats P whichever
     /// spend the map visits last, so A is not held. 16 independent pairs, so
