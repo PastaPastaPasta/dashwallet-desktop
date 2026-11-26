@@ -61,6 +61,7 @@ impl Fixture {
 }
 
 fn private_dir(path: &Path) {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = fs::DirBuilder::new();
     #[cfg(unix)]
     {
