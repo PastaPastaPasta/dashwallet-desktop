@@ -4881,6 +4881,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.shielded_not_ready",
   "registration.quote_changed",
   "registration.refunded",
+  "registration.payment_consumed",
   "name.invalid",
   "name.taken",
   "name.contest_open",

@@ -149,6 +149,11 @@ impl Fixture {
     /// As [`Self::new`], with no height either spend's anchor was proved
     /// recorded at: as an earlier build left them.
     fn stuck(platform: Platform) -> Self {
+        Self::stuck_as(platform, ArtifactKind::Transfer)
+    }
+
+    /// As [`Self::stuck`], each spend's artifact of `kind`.
+    fn stuck_as(platform: Platform, kind: ArtifactKind) -> Self {
         let dir = dw_testutil::private_tempdir();
         let engine = engine_at(dir.path());
         let (session, wallet) = first_launch(&engine);
@@ -160,7 +165,7 @@ impl Fixture {
             script: Arc::default(),
         };
         f.save_notes(&nullifiers(1));
-        store_spends(&f.engine, &f.session, f.wallet);
+        store_spends_as(&f.engine, &f.session, f.wallet, kind);
         f.cancel(1);
         f.reads(platform);
         f
@@ -553,6 +558,58 @@ fn every_nullifier_spent_settles_executed() {
         )
     );
     assert!(!f.listing().contains(&st_hash(1)));
+    assert_eq!(f.row(), (Shown::Unknown, None));
+}
+
+/// A Shielded-funded identity create is not the release's: its
+/// registration's evidence settles it (§7 item 112), where an unpadded
+/// create read executed here would read as Platform's fallback and arm a
+/// refund that never came. Every nullifier spent, or its anchor pruned with
+/// none spent, leaves it held, unsettled and unacknowledged. Mutant: let the
+/// release take a create.
+#[test]
+fn a_create_is_left_to_its_registration() {
+    let f = Fixture::stuck_as(
+        Platform {
+            anchors: Some((vec![anchor()], 100)),
+            nullifiers_height: Some(100),
+            spent: nullifiers(1).into_iter().collect(),
+            ..Default::default()
+        },
+        ArtifactKind::IdentityCreate,
+    );
+    f.recorded_at(1, 1);
+    f.pass();
+    f.assert_held();
+    f.reads(pruned());
+    f.forget_backoff();
+    f.pass();
+    f.assert_held();
+}
+
+/// A spend acknowledged while unresolved (a create whose notes read spent
+/// with no identity: consumed) reads unknown once the library no longer
+/// holds it, never held for good.
+#[test]
+fn an_acknowledged_unresolved_spend_reads_unknown() {
+    let f = Fixture::stuck_as(pruned(), ArtifactKind::IdentityCreate);
+    f.save_failed_row();
+    assert_eq!(f.row(), (Shown::Pending, Some(ShieldedRefusal::Held)));
+    let (s, w, coordinator) = (Arc::clone(&f.session), f.wallet, f.coordinator());
+    let acked = (f.engine).block_on(async move {
+        crate::platform::shielded_pool::settle_then_ack(
+            &s,
+            &coordinator,
+            subwallet(w),
+            st_hash(1),
+            ArtifactStatus::Unresolved { unrecorded: false },
+            Some(("unresolved", Some("cancelled"))),
+            true,
+        )
+        .await
+    });
+    assert!(acked);
+    assert!(!f.held_spends().contains(&st_hash(1)));
     assert_eq!(f.row(), (Shown::Unknown, None));
 }
 

@@ -274,6 +274,13 @@ fn instant_proof(tx: &dashcore::Transaction) -> AssetLockProof {
     AssetLockProof::Instant(InstantAssetLockProof::new(islock, tx.clone(), 0))
 }
 
+/// The dispatch hook's answer to a create, as a test scripts it.
+pub(super) type CreateHook = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// What a spend handed the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Spent {
@@ -335,11 +342,18 @@ pub(crate) struct FakeShielded {
     proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
+    /// What the next `sync_now` does before it returns (a pass's writes).
+    pub(super) on_sync: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Platform's shielded note count; unknown when `None`.
+    pub(super) pool_notes: Mutex<Option<u64>>,
+    /// What an identity create asks of the dispatch hook before it signs
+    /// (`Err`: the hook refused it).
+    pub(super) create_hook: Mutex<Option<CreateHook>>,
     /// The answers of the next reads of the hook, in order, before
     /// `unhooked` answers.
     hook_reads: Mutex<std::collections::VecDeque<bool>>,
     /// The library cannot spend from the key set.
-    no_keyset_spends: AtomicBool,
+    pub(super) no_keyset_spends: AtomicBool,
     /// The spends the library resolved unproved and holds the notes of.
     held: Mutex<HashSet<[u8; 32]>>,
     /// What `holds` reads; `held` is not derived from it.
@@ -354,6 +368,8 @@ pub(crate) struct FakeShielded {
     after_failure: Mutex<AfterFailure>,
     /// The library's held spends cannot be read.
     held_unreadable: AtomicBool,
+    /// Every acknowledgement of a spend's outcome, in order.
+    pub(super) acks: Mutex<Vec<[u8; 32]>>,
     /// The library's stored transitions cannot be read.
     stored_unreadable: AtomicBool,
     /// The receive addresses issued.
@@ -562,6 +578,9 @@ impl Default for FakeShielded {
             applied: Mutex::default(),
             proof_hold: Mutex::default(),
             unhooked: AtomicBool::new(false),
+            on_sync: Mutex::default(),
+            pool_notes: Mutex::new(None),
+            create_hook: Mutex::new(None),
             hook_reads: Mutex::default(),
             no_keyset_spends: AtomicBool::new(false),
             held: Mutex::default(),
@@ -571,6 +590,7 @@ impl Default for FakeShielded {
             notes_reads: AtomicU32::new(0),
             after_failure: Mutex::default(),
             held_unreadable: AtomicBool::new(false),
+            acks: Mutex::default(),
             stored_unreadable: AtomicBool::new(false),
             issued: AtomicU32::new(0),
             funder: Mutex::default(),
@@ -948,6 +968,9 @@ impl ShieldedLib for FakeShielded {
 
     async fn sync_now(&self) -> bool {
         self.syncs.fetch_add(1, Ordering::SeqCst);
+        if let Some(on_sync) = self.on_sync.lock().unwrap().take() {
+            on_sync();
+        }
         if let Some(ledger) = self.scan_ledger.lock().unwrap().as_mut() {
             ledger.synced_index = ledger.synced_index.or(Some(1));
         }
@@ -1010,6 +1033,33 @@ impl ShieldedLib for FakeShielded {
             credits,
             &[],
         )
+    }
+
+    async fn identity_create(
+        &self,
+        permit: &CallPermit,
+        create: &pool::ShieldedCreate,
+    ) -> Result<(), SpendError> {
+        permit.identity_signer(&[create.index])?;
+        let hook = self.create_hook.lock().unwrap().clone();
+        if let Some(hook) = hook
+            && let Err(reason) = hook().await
+        {
+            return Err(SpendError::Library(Box::new(
+                PlatformWalletError::ShieldedDispatchRefused { reason },
+            )));
+        }
+        self.spend(
+            permit.shielded_keys()?,
+            "identity_create",
+            platform_text(create.fallback),
+            create.denomination,
+            &[],
+        )
+    }
+
+    async fn pool_notes(&self) -> Option<u64> {
+        *self.pool_notes.lock().unwrap()
     }
 
     async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {
@@ -1146,6 +1196,11 @@ impl ShieldedLib for FakeShielded {
             });
         }
         Ok(self.held.lock().unwrap().clone())
+    }
+
+    async fn ack_spend(&self, st_hash: [u8; 32]) -> Result<bool, PlatformError> {
+        self.acks.lock().unwrap().push(st_hash);
+        Ok(self.held.lock().unwrap().remove(&st_hash))
     }
 
     async fn holds(&self) -> Result<Vec<pool::Hold>, PlatformError> {
@@ -3286,6 +3341,27 @@ fn facts(fx: &Fixture, lib: &Arc<FakeShielded>) -> ShieldedFacts {
             .unwrap();
         facts
     })
+}
+
+/// A registration's quote and start read their facts here: while the
+/// library cannot spend from the key set they refuse `platform.unavailable`
+/// before any read, so before the start takes a fallback. Mutant: no check.
+#[test]
+fn registration_facts_refuse_first_while_spends_are_off() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    *lib.pool_notes.lock().unwrap() = Some(300);
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let (refused, read) = run(&fx, &lib, move |s, lib| async move {
+        let mut facts = ShieldedFacts::default();
+        let refused = pool::registration_facts(&s, wallet, &*lib, &mut facts).await;
+        (refused.unwrap_err().code(), facts.pool_notes)
+    });
+    assert_eq!(refused, "platform.unavailable");
+    assert_eq!(read, None, "nothing read");
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    assert_eq!(facts(&fx, &lib).pool_notes, Some(300));
 }
 
 fn rested(facts: &ShieldedFacts, now: u64) -> (bool, Option<u64>) {

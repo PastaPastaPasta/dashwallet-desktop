@@ -491,6 +491,11 @@ pub(crate) enum FromShieldedSource {
     /// `unshield_to_platform`: armed by the dispatch hook's accept, settled
     /// by the spend's artifact.
     Unshield,
+    /// The refund of the registration `draft`'s Shielded-funded create
+    /// that executed as Platform's fallback (C-funding F13): written done
+    /// and armed only once its proof is read
+    /// ([`arm_registration_refund`]), `credits` the most it can return.
+    Registration { draft: i64 },
 }
 
 /// Credits on their way from the wallet's shielded notes to one of its
@@ -606,12 +611,34 @@ impl FromShieldedRecord {
         format!("from-shielded-{}", self.activity)
     }
 
+    /// What its row shows: a refund only what a read showed of it.
+    fn shown(&self) -> u64 {
+        match self.source {
+            FromShieldedSource::Unshield => self.credits,
+            FromShieldedSource::Registration { .. } => {
+                (self.credits).saturating_sub(self.unseen.saturating_add(self.unclaimed))
+            }
+        }
+    }
+
+    /// Whether it is a row: armed, and a refund only once a read showed it.
+    fn listed(&self) -> bool {
+        self.armed
+            && match self.source {
+                FromShieldedSource::Unshield => true,
+                FromShieldedSource::Registration { .. } => self.shown() > 0,
+            }
+    }
+
     fn activity(&self) -> PlatformActivity {
         PlatformActivity {
             id: self.id(),
-            kind: PlatformActivityKind::FromShielded,
+            kind: match self.source {
+                FromShieldedSource::Unshield => PlatformActivityKind::FromShielded,
+                FromShieldedSource::Registration { .. } => PlatformActivityKind::RegistrationRefund,
+            },
             state: self.state,
-            credits: self.credits,
+            credits: self.shown(),
             address: Some(self.to.clone()),
             to: None,
             expected_duffs: None,
@@ -777,6 +804,59 @@ pub(crate) async fn arm_from_shielded(
         store.commit(vec![from_shielded_write(&record)?]).await?;
     }
     Ok(true)
+}
+
+/// The height of the wallet's Platform address activity baseline: no rise
+/// above it has been read as anyone's yet. 0 before the first read.
+pub(crate) async fn activity_height(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Result<u64, PlatformError> {
+    let store = Store::of(session, wallet)?;
+    Ok(store.baseline().await?.map_or(0, |b| b.height))
+}
+
+/// Writes the refund record of the registration `draft`'s create, the spend
+/// `activity`, once the create is proved executed as Platform's fallback
+/// (C-funding F13): done and armed, at most `cap` credits of `to`'s rise
+/// still to read as its own, from the first read at or above `executed_by`
+/// (the height its nullifiers were proved spent at) back. Only while no
+/// read since `named_at` (the activity's height when the hook named the
+/// create, before it could execute) may have shown the refund: otherwise
+/// that read showed it as `incoming`, and the record claims nothing. One
+/// record per spend; under the move lock, which callers take after the
+/// shielded wallet lock (C-routes §0).
+pub(crate) async fn arm_registration_refund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (activity, st_hash): ([u8; 32], [u8; 32]),
+    (draft, to, cap): (i64, String, u64),
+    (named_at, executed_by): (u64, u64),
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if store
+        .shielded_record(&hex::encode(activity))
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let read = store.baseline().await?.map_or(0, |b| b.height);
+    let unread = read <= named_at;
+    let mut record = FromShieldedRecord::staged(
+        FromShieldedSource::Registration { draft },
+        (activity, st_hash),
+        to,
+        if unread { cap } else { 0 },
+    );
+    record.state = PlatformActivityState::Done;
+    record.armed = true;
+    record.armed_at = now_nanos();
+    record.unseen = record.credits;
+    record.done_height = executed_by.saturating_sub(1);
+    store.commit(vec![from_shielded_write(&record)?]).await
 }
 
 /// The wallet's `FromShielded` records, each pending one settled by its
@@ -2689,7 +2769,7 @@ async fn read(
 }
 
 /// One wallet's moves and activity reads, one at a time.
-fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: LazyLock<Mutex<HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>>> =
         LazyLock::new(Mutex::default);
     let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3235,6 +3315,12 @@ pub(crate) async fn activity(
     wallet: &PlatformWallet,
     wallet_id: WalletId,
 ) -> Result<Vec<PlatformActivity>, CreditsError> {
+    // Every recorded fallback is derived into the pool first, so the read
+    // below covers a refund to one after a reload. Unreadable, the read
+    // goes on without them, as before.
+    if let Err(e) = retire_handed_out(session, wallet).await {
+        tracing::info!("restoring the Platform address records before reading activity: {e}");
+    }
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let store = Store::of(session, wallet_id)?;
@@ -3281,7 +3367,7 @@ pub(crate) async fn activity(
         .chain(
             shielded
                 .iter()
-                .filter(|r| r.armed)
+                .filter(|r| r.listed())
                 .map(FromShieldedRecord::activity),
         )
         .collect();
@@ -4486,21 +4572,39 @@ async fn own_core_destination(
 /// public key material; the same one until a sync pass sees it funded).
 pub(crate) async fn receive_address(
     net: &impl MoveNet,
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
     address_sends_open(network)?;
     sends_active(net.sends_version().await)?;
-    next_receive_address(wallet, network).await
+    next_receive_address(session, wallet, network).await
 }
 
 /// The payment account's lowest unused address, as [`receive_address`]
 /// names it, with no version check.
 pub(crate) async fn next_receive_address(
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
+    let (address, index) = next_receive(session, wallet).await?;
+    Ok(PlatformReceiveAddress {
+        address: bech32m(&address, network),
+        index,
+    })
+}
+
+/// [`next_receive_address`] with its index. Never the fallback of one of
+/// the wallet's Shielded-funded registrations, and recorded as handed out
+/// before it is returned, so no later fallback is it (C-funding F13;
+/// [`retire_handed_out`]).
+pub(crate) async fn next_receive(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<(PlatformAddress, u32), PlatformError> {
+    let handed_out = retire_handed_out(session, wallet).await?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,
@@ -4516,10 +4620,218 @@ pub(crate) async fn next_receive_address(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the receive address is not in the payment account".into(),
         })?;
-    Ok(PlatformReceiveAddress {
-        address: bech32m(&address, network),
-        index,
+    if handed_out.is_none_or(|h| index > h) {
+        let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+        (session.appdb_op(move |db| {
+            db.raise_setting_durable(
+                &scope,
+                dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
+                u64::from(index),
+            )
+        }))
+        .await
+        .map_err(PlatformError::from)?;
+    }
+    Ok((address, index))
+}
+
+/// Restores, in the payment account, the marks of what the wallet handed
+/// out, which the account keeps in memory only: every index below the
+/// highest receive address handed out (that one stays Receive's until it
+/// is funded) and every fallback the wallet's Shielded-funded registrations
+/// were given ([`fallback_address`]), each derived first if a reload has
+/// not yet. Their durable record is the wallet's local scope of
+/// `app.sqlite`, and the rows' own funding for a fallback given before it.
+/// Returns that highest index.
+async fn retire_handed_out(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<u32>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, handed_out) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        let recorded =
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?;
+        let handed_out = db.setting(&scope, dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT)?;
+        Ok((db.registration_rows(&id)?, recorded, handed_out))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let index = |value: &str| {
+        value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })
+    };
+    let handed_out = handed_out.as_deref().map(index).transpose()?;
+    let named = (rows.iter()).filter_map(|row| match Funding::decode(&row.funding) {
+        Decoded::Known(Funding::Shielded { fallback, .. }) => Some(fallback),
+        _ => None,
+    });
+    let deepest = (recorded.iter())
+        .map(|(_, value)| index(value))
+        .collect::<Result<Vec<u32>, _>>()?
+        .into_iter()
+        .chain(handed_out)
+        .max();
+    let given = (recorded.into_iter()).filter_map(|(key, _)| {
+        key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)
+            .map(str::to_owned)
+    });
+    let fallbacks: BTreeSet<PlatformAddress> =
+        named.chain(given).filter_map(|a| parse(&a)).collect();
+    if deepest.is_none() && fallbacks.is_empty() {
+        return Ok(None);
+    }
+    with_payment_pool(wallet, |pool, source| {
+        if let Some(deepest) = deepest {
+            (pool.generate_up_to(deepest, source)).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        }
+        let given: Vec<u32> = (pool.addresses.iter())
+            .filter(|(_, info)| {
+                PlatformP2PKHAddress::from_address(&info.address)
+                    .is_ok_and(|p| fallbacks.contains(&PlatformAddress::P2pkh(p.to_bytes())))
+            })
+            .map(|(index, _)| *index)
+            .collect();
+        for index in (0..handed_out.unwrap_or(0)).chain(given) {
+            pool.mark_index_used(index);
+        }
+        Ok(())
     })
+    .await?;
+    Ok(handed_out)
+}
+
+/// `f` on the payment account's address pool and its public key source,
+/// under one write lock of the wallet.
+async fn with_payment_pool<T>(
+    wallet: &PlatformWallet,
+    f: impl FnOnce(
+        &mut key_wallet::managed_account::address_pool::AddressPool,
+        &key_wallet::KeySource,
+    ) -> Result<T, PlatformError>,
+) -> Result<T, PlatformError> {
+    use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+    let internal = |detail: &str| PlatformError::Internal {
+        detail: detail.into(),
+    };
+    let mut wm = wallet.wallet_manager().write().await;
+    let (core, info) = wm
+        .get_wallet_mut_and_info_mut(&wallet.wallet_id())
+        .ok_or(PlatformError::WalletNotFound)?;
+    let key = PlatformPaymentAccountKey {
+        account: ACCOUNT,
+        key_class: 0,
+    };
+    let xpub = (core.accounts.platform_payment_accounts.get(&key))
+        .map(|a| a.account_xpub)
+        .ok_or_else(|| internal("the wallet has no Platform payment key"))?;
+    let account = (info.core_wallet)
+        .platform_payment_managed_account_at_index_mut(ACCOUNT)
+        .ok_or_else(|| internal("the wallet has no Platform payment account"))?;
+    f(&mut account.addresses, &key_wallet::KeySource::Public(xpub))
+}
+
+/// A new registration's fallback (C-funding F13), published beside the
+/// identity it creates, so never an address handed out before: once the
+/// account's marks of what was handed out are restored, under one lock of
+/// the account its lowest unused address (the one Receive may be showing,
+/// at or above the highest handed out) and the next are marked used, and
+/// the next is the fallback. It is recorded durably, with its index,
+/// before it is returned. A recorded one that never left this install
+/// ([`unpublished_fallback`]) is given again instead, so registrations
+/// dropped before their create was sent take no more of the account.
+pub(crate) async fn fallback_address(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    network: Network,
+) -> Result<String, PlatformError> {
+    if let Some(address) = unpublished_fallback(session, wallet).await? {
+        return Ok(address);
+    }
+    retire_handed_out(session, wallet).await?;
+    let (fallback, index) = with_payment_pool(wallet, |pool, source| {
+        let mut take = || -> Result<_, PlatformError> {
+            let next = (pool.next_unused_with_info(source, true)).map_err(|e| {
+                PlatformError::Internal {
+                    detail: e.to_string(),
+                }
+            })?;
+            pool.mark_index_used(next.index);
+            Ok(next)
+        };
+        take()?;
+        let next = take()?;
+        let fallback =
+            PlatformAddress::try_from(next.address).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        Ok((fallback, next.index))
+    })
+    .await?;
+    let address = bech32m(&fallback, network);
+    let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+    let (key, value) = (
+        dw_appdb::dp_registration_fallback(&address),
+        index.to_string(),
+    );
+    (session
+        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(&value)))
+        .await)
+        .map_err(PlatformError::from)?;
+    Ok(address)
+}
+
+/// The lowest recorded fallback that no registration row names and no
+/// create published ([`dw_appdb::dp_registration_published`]): it never
+/// left this install. `None` while any row is of a funding this build does
+/// not read, as its fallback is unknown. A failed read, or a record that
+/// does not read as an index, refuses the hand-out.
+async fn unpublished_fallback(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<String>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, published) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        Ok((
+            db.registration_rows(&id)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX)?,
+        ))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let mut named = HashSet::new();
+    for row in &rows {
+        match Funding::decode(&row.funding) {
+            Decoded::Known(Funding::Shielded { fallback, .. }) => {
+                named.insert(fallback);
+            }
+            Decoded::Known(_) => {}
+            Decoded::Unsupported => return Ok(None),
+        }
+    }
+    let published: HashSet<&str> = (published.iter())
+        .filter_map(|(key, _)| key.strip_prefix(dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX))
+        .collect();
+    let mut free = Vec::new();
+    for (key, value) in &recorded {
+        let Some(address) = key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX) else {
+            continue;
+        };
+        let index = value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })?;
+        if !named.contains(address) && !published.contains(address) {
+            free.push((index, address.to_owned()));
+        }
+    }
+    Ok(free.into_iter().min().map(|(_, address)| address))
 }
 
 /// The outcome's write; tests make it fail.

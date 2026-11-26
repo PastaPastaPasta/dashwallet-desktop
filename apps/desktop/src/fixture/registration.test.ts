@@ -339,6 +339,17 @@ describe("discard and Finish transfers", () => {
     await expect(cmd.discardRegistration(W, "reg-1")).rejects.toMatchObject({ code: "invalid_argument" });
   });
 
+  it("F12: a reopened Shielded payment is checked again with no grant, spending nothing again", async () => {
+    const f = install("dashpay-registering-shielded-recheck");
+    const balance = f.world.pending.shielded?.balance;
+    expect(await rowOf("reg-1")).toMatchObject({ waiting: "paymentUnknown", running: false, fromShielded: true });
+    await cmd.resumeRegistration(W, "reg-1", null);
+    expect(await rowOf("reg-1")).toMatchObject({ waiting: "paymentUnknown", running: true });
+    f.advanceRegistration("reg-1");
+    expect(await rowOf("reg-1")).toMatchObject({ phase: "identityRegistered", waiting: null });
+    expect(f.world.pending.shielded?.balance).toBe(balance);
+  });
+
   it("D10: Finish transfers resumes the rows waiting for it", async () => {
     install("dashpay-registration-needs-finish");
     expect(await cmd.finishAssetLocks(W, await grant(1))).toEqual({ resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [], unread: [] });
