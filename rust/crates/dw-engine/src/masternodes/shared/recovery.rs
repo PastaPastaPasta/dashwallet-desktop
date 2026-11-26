@@ -647,17 +647,17 @@ impl NetworkSession {
             ),
         };
         let confirmed = matches!(session.stage, SharedStage::Confirmed { .. });
-        // A block that beats a transaction the request spends (#740) is
-        // another spend too.
+        // A lower block that beats a transaction the request spends (#740)
+        // is another spend too: the release reads the lowest.
         let conflict = (row.out_at.is_some() && !confirmed)
             .then(|| {
-                conflict_of(&chain.history, &own_inputs, except.as_ref(), &attributed)
-                    .map(|(by, height)| (attributed.contains(&by), height))
-                    .or_else(|| {
-                        chain
-                            .beaten(&own_inputs, except.as_ref())
-                            .map(|h| (false, h))
-                    })
+                let direct = conflict_of(&chain.history, &own_inputs, except.as_ref(), &attributed)
+                    .map(|(by, height)| (attributed.contains(&by), height));
+                match (direct, chain.beaten(&own_inputs, except.as_ref())) {
+                    (Some((_, d)), Some(lowest)) if lowest < d => Some((false, lowest)),
+                    (None, lowest) => lowest.map(|h| (false, h)),
+                    (direct, _) => direct,
+                }
             })
             .flatten();
         if let Some((by_abandon, height)) = conflict {

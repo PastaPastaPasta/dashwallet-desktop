@@ -83,8 +83,9 @@ fn payout_set(
 /// The ProRegTx and ProUpRegTxs of `pro_tx_hash` in the loaded wallets'
 /// `histories`,
 /// once each, but those out of a block that a wallet abandoned or that a
-/// block in any wallet's history conflicts, directly or through a
-/// transaction they spend (MG-04's reading, #740). A wallet the
+/// block in any wallet's history conflicts, directly or, by the history's
+/// descendant rule over every wallet's reading, through a transaction they
+/// spend (MG-04's reading, #740). A wallet the
 /// change pays or names a key of records it with nothing of its own to
 /// abandon. An InstantSend-locked change is conflicted only by a block
 /// `chainlock` covers (key-wallet's finality order).
@@ -94,9 +95,23 @@ fn payout_changes_in(
     chainlock: Option<u32>,
 ) -> Vec<PayoutChange> {
     let all = || histories.iter().flat_map(|h| h.iter());
-    let conflicted: Vec<_> = (histories.iter())
-        .map(|h| crate::history::conflicted(h, chainlock))
-        .collect();
+    // The histories as one, each transaction at its most settled reading
+    // in any wallet (mined, else InstantSend-locked), for the descendant
+    // rule: built once, and only for a change out of a block.
+    let merged = std::cell::OnceCell::new();
+    let through_parent = |txid: &Txid| {
+        let conflicted = merged.get_or_init(|| {
+            let rank = |e: &TxEntry| (e.context.block_info().is_some(), instant_locked(e));
+            let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
+            for (t, e) in all() {
+                if txs.get(t).is_none_or(|m| rank(e) > rank(m)) {
+                    txs.insert(*t, e.clone());
+                }
+            }
+            crate::history::conflicted(&txs, chainlock)
+        });
+        conflicted.contains_key(txid)
+    };
     type Seen<'a> = ((Option<Vec<u8>>, bool), Vec<&'a TxEntry>);
     let mut seen: HashMap<Txid, Seen> = HashMap::new();
     for (txid, e) in all() {
@@ -120,8 +135,7 @@ fn payout_changes_in(
                     && (!locked || chain_locked(&w.context, chainlock))
                     && (w.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
             });
-            let through_parent = !locked && conflicted.iter().any(|c| c.contains_key(&txid));
-            if abandoned || beaten || through_parent {
+            if abandoned || beaten || (!locked && through_parent(&txid)) {
                 return None;
             }
         }

@@ -936,6 +936,7 @@ fn mg740_fee_inputs_of_operations_on_a_beaten_payments_change_settle_once_buried
         let rows = f.rows().into_iter().filter(|r| ops.contains(&&r.id));
         rows.map(|r| r.fee_inputs).collect()
     };
+    assert_eq!(fee_inputs().len(), 2);
     assert!(fee_inputs().iter().all(|i| i != "[]"));
 
     f.confirm(Fx::rival_of(input), 60);

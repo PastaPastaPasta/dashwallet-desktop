@@ -1225,6 +1225,43 @@ fn mg740_a_payout_change_paid_from_a_beaten_payment_holds_nothing() {
     }
 }
 
+/// #740's rule reads every wallet: a change InstantSend-locked, or paid
+/// from a payment another wallet reads InstantSend-locked or mined, still
+/// holds when a plain block holds a rival of the payment's input.
+#[test]
+fn mg740_a_payout_change_holds_while_any_wallet_reads_it_or_its_payment_settled() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+    let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+    let mut rival = rival_of(&payment);
+    rival.lock_time = 1;
+    let locked = || TransactionContext::InstantSend(Default::default());
+    let cases: [(&str, TransactionContext, Option<TransactionContext>); 3] = [
+        ("the change locked", locked(), None),
+        (
+            "the payment locked elsewhere",
+            TransactionContext::Mempool,
+            Some(locked()),
+        ),
+        (
+            "the payment mined elsewhere",
+            TransactionContext::Mempool,
+            Some(in_block(TIP - 5)),
+        ),
+    ];
+    for (case, change_context, elsewhere) in cases {
+        let fa = Fa::new(true);
+        fa.seen(&payment, TransactionContext::Mempool);
+        if let Some(context) = elsewhere {
+            fa.seen_in(OTHER_WALLET, &payment, context);
+        }
+        fa.seen(&change, change_context);
+        fa.seen(&rival, in_block(TIP - 3));
+        eprintln!("{case}");
+        fa.held_by(Key::Owner, UNCONFIRMED);
+    }
+}
+
 /// A wallet the change only pays (or names a key of) records it with
 /// nothing of its own to abandon: the paying wallet's abandon, or a block
 /// in the paying wallet's history spending its input, releases it.
