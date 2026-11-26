@@ -1002,7 +1002,19 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
         Kind::Withdrawal => ShieldedActivityKind::Withdrawal,
         Kind::IdentityCreate { .. } => ShieldedActivityKind::IdentityCreate,
         Kind::IdentityTopUp { .. } => ShieldedActivityKind::IdentityTopUp,
-        Kind::ShieldedSpend => ShieldedActivityKind::Spend,
+        // The wallet makes none of these spends; each pays from the pool, so
+        // it shows as an own spend.
+        Kind::ShieldedSpend
+        | Kind::TokenPurchase
+        | Kind::TokenShieldedTransfer
+        | Kind::TokenUnshield { .. }
+        | Kind::PrivateDocumentCreate
+        | Kind::PrivateContactRequest => ShieldedActivityKind::Spend,
+    };
+    // A token spend's amount counts tokens; the credits it moved are its fee.
+    let credits = match e.kind {
+        Kind::TokenShieldedTransfer | Kind::TokenUnshield { .. } => 0,
+        _ => e.amount,
     };
     let counterparty = (e.counterparty.as_deref()).and_then(|bytes| match e.kind {
         Kind::Sent => <[u8; 43]>::try_from(bytes)
@@ -1032,7 +1044,7 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
             Direction::Out => ShieldedDirection::Out,
             Direction::SelfTransfer => ShieldedDirection::SelfTransfer,
         },
-        credits: e.amount,
+        credits,
         fee_credits: e.fee,
         counterparty,
         memo,
