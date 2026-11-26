@@ -544,7 +544,7 @@ impl NetworkSession {
         grant: &str,
         sibling_of: Option<&str>,
     ) -> Result<WithdrawalRow, WithdrawalError> {
-        if self.platform.enabled() && self.hub.restore.platform_held() {
+        if self.platform.enabled() && self.wallet_platform_held(wallet) {
             return Err(crate::platform::PlatformError::Restored.into());
         }
         let hash = parse_pro_tx_hash(&call.pro_tx_hash)?;
@@ -658,7 +658,7 @@ impl WithdrawalRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 let every = s.masternodes.withdrawals.waits().recheck;
-                if !s.hub.restore.platform_held()
+                if !s.any_platform_held()
                     && let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
                 {
                     #[cfg(test)]

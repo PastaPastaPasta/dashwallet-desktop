@@ -18,6 +18,14 @@
 //! (`platform.restored`), and the asset-lock resume and the masternode
 //! withdrawals' recheck wait, until a session with Platform has checked it
 //! and run its own drop-dead pass. Core is not gated by it.
+//!
+//! When the gate opens in a session with Platform, every wallet of the
+//! network's wallet list that Platform has not checked since its load
+//! (closed, or loaded after the passes) gets an app.sqlite row
+//! `restore_platform_pending` (wallet scope), written before the mark or
+//! the residue goes: while it is present, or does not read, that wallet's
+//! Platform funds wait the same way, until a session with Platform has
+//! checked the wallet after its load and run its drop-dead pass.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -39,6 +47,10 @@ pub(crate) const RESTORE_HOLD_PREFIX: &str = "restore_hold:";
 /// A test's fault point on the holds' write.
 #[cfg(all(test, debug_assertions))]
 pub(crate) const BUILD_FAULT: &str = "restore_gate.build";
+
+/// A test's fault point on the Platform rows' write.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const PLATFORM_ROWS_FAULT: &str = "restore_gate.platform_rows";
 
 /// How often the gate's watcher looks again without a wake.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
@@ -74,8 +86,9 @@ pub struct RestoreStatus {
     /// is tried again after a growing delay, at once on
     /// [`NetworkSession::restore_retry`].
     pub clear_failed: bool,
-    /// Core's gate is open: only Platform's check after a Platform-off
-    /// finish is waited for.
+    /// Core's gate is open: only Platform's check is waited for, after a
+    /// Platform-off finish or of a loaded wallet Platform has not checked
+    /// since its load.
     pub platform_only: bool,
 }
 
@@ -104,6 +117,16 @@ pub(crate) struct RestoreGate {
     platform_pass: AtomicBool,
     /// A shielded pass completed since the session opened.
     shielded_pass: AtomicBool,
+    /// The wallets a Platform-address pass synced cleanly since their load.
+    wallet_platform_pass: Mutex<HashSet<WalletId>>,
+    /// The wallets a shielded pass synced, or found without a shielded
+    /// account, since their load.
+    wallet_shielded_pass: Mutex<HashSet<WalletId>>,
+    /// The wallets whose next Platform-address pass result does not count:
+    /// loaded while a pass that may have started before was in flight.
+    wallet_skip_platform_pass: Mutex<HashSet<WalletId>>,
+    /// What waited for the gate was let run in this session.
+    opened: AtomicBool,
     pub(crate) wake: tokio::sync::Notify,
     /// The last clear failed.
     clear_failed: AtomicBool,
@@ -147,6 +170,15 @@ pub(crate) struct RestoreGate {
     /// Tests: this many writes of the Platform residue fail.
     #[cfg(test)]
     pub(crate) residue_fails: std::sync::atomic::AtomicU32,
+    /// Tests: this many removals of the Platform residue fail.
+    #[cfg(test)]
+    pub(crate) residue_remove_fails: std::sync::atomic::AtomicU32,
+    /// Tests: every wallet's Platform row reads as an error.
+    #[cfg(test)]
+    pub(crate) rows_unreadable: AtomicBool,
+    /// Tests: the network's wallet list reads as an error.
+    #[cfg(test)]
+    pub(crate) wallet_list_unreadable: AtomicBool,
 }
 
 impl RestoreGate {
@@ -194,6 +226,13 @@ impl RestoreGate {
 
     /// Removes the residue durably; one already gone is no error.
     fn remove_residue(&self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if (self.residue_remove_fails)
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(std::io::Error::other("the residue did not clear"));
+        }
         let dir = self
             .network_dir
             .get()
@@ -261,6 +300,80 @@ impl RestoreGate {
             self.wake.notify_one();
         }
     }
+
+    /// The wallets a Platform-address pass synced cleanly.
+    pub(crate) fn note_wallet_platform_pass(&self, wallets: impl IntoIterator<Item = WalletId>) {
+        {
+            let mut skip =
+                (self.wallet_skip_platform_pass.lock()).unwrap_or_else(|p| p.into_inner());
+            let mut passed = (self.wallet_platform_pass.lock()).unwrap_or_else(|p| p.into_inner());
+            for wallet in wallets {
+                if !skip.remove(&wallet) {
+                    passed.insert(wallet);
+                }
+            }
+        }
+        self.wake.notify_one();
+    }
+
+    /// The wallets a shielded pass synced or found without a shielded
+    /// account.
+    pub(crate) fn note_wallet_shielded_pass(&self, wallets: impl IntoIterator<Item = WalletId>) {
+        (self
+            .wallet_shielded_pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .extend(wallets);
+        self.wake.notify_one();
+    }
+
+    /// A wallet loads, closes or goes: only a pass after its load checks
+    /// it. `pass_in_flight`: a Platform-address pass may have started
+    /// before, so its result does not count.
+    pub(crate) fn forget_wallet_checks(&self, wallet: WalletId, pass_in_flight: bool) {
+        (self
+            .wallet_platform_pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .remove(&wallet);
+        (self
+            .wallet_shielded_pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .remove(&wallet);
+        let mut skip = (self.wallet_skip_platform_pass.lock()).unwrap_or_else(|p| p.into_inner());
+        match pass_in_flight {
+            true => skip.insert(wallet),
+            false => skip.remove(&wallet),
+        };
+    }
+
+    fn wallet_passes(&self, wallet: WalletId) -> (bool, bool) {
+        (
+            (self
+                .wallet_platform_pass
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()))
+            .contains(&wallet),
+            (self
+                .wallet_shielded_pass
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()))
+            .contains(&wallet),
+        )
+    }
+
+    /// Whether `wallet`'s Platform row is present; one that does not read
+    /// is.
+    pub(crate) fn row_present(&self, appdb: &AppDb, wallet: WalletId) -> bool {
+        let read = appdb.setting(&wallet.to_string(), RESTORE_PLATFORM_PENDING);
+        #[cfg(test)]
+        let read = match self.rows_unreadable.load(Ordering::SeqCst) {
+            true => Err(AppDbError::Corrupt("the Platform row".into())),
+            false => read,
+        };
+        !matches!(read, Ok(None))
+    }
 }
 
 /// The growing delay after `failures` failed clears: twice the watcher's
@@ -305,6 +418,13 @@ pub(crate) const RESTORE_BUILD_PENDING: &str = "restore_build_pending";
 pub(crate) fn build_pending(appdb: &AppDb, wallet: WalletId) -> Result<bool, AppDbError> {
     Ok((appdb.setting_lossy(&wallet.to_string(), RESTORE_BUILD_PENDING)?).is_some())
 }
+
+/// Settings key (wallet scope) of a wallet whose Platform funds wait for a
+/// check after a restore: one Platform had not checked since its load when
+/// the gate opened in a session with Platform (closed, or loaded after the
+/// passes). It goes once a session with Platform has checked the wallet
+/// after its load and run its drop-dead pass.
+pub(crate) const RESTORE_PLATFORM_PENDING: &str = "restore_platform_pending";
 
 /// The keys deleting the holds of `txids`.
 pub(crate) fn hold_keys<'a>(txids: impl IntoIterator<Item = &'a Txid>) -> Vec<String> {
@@ -550,18 +670,124 @@ impl NetworkSession {
         }
     }
 
-    /// A funds action that needs Platform, before any grant, lease,
-    /// intent, journal row or signature: `platform.unavailable` in a
-    /// session without Platform (C7), else `platform.restored` while the
-    /// restored mark or its Platform residue is present (C6).
-    pub(crate) fn refuse_platform_funds(&self) -> Result<(), crate::platform::PlatformError> {
+    /// A funds action of `wallet` that needs Platform, before any grant,
+    /// lease, intent, journal row or signature: `platform.unavailable` in
+    /// a session without Platform (C7), else `platform.restored` while the
+    /// restored mark, its Platform residue or the wallet's Platform row is
+    /// present (C6).
+    pub(crate) fn refuse_platform_funds(
+        &self,
+        wallet: WalletId,
+    ) -> Result<(), crate::platform::PlatformError> {
         if self.platform.funds_off() {
             return Err(crate::platform::PlatformError::Unavailable);
         }
-        match self.hub.restore.platform_held() {
+        match self.wallet_platform_held(wallet) {
             true => Err(crate::platform::PlatformError::Restored),
             false => Ok(()),
         }
+    }
+
+    /// Whether `wallet`'s Platform funds wait: the mark, the residue, or
+    /// the wallet's own Platform row (present when it does not read).
+    pub(crate) fn wallet_platform_held(&self, wallet: WalletId) -> bool {
+        let gate = &self.hub.restore;
+        gate.platform_held()
+            || self
+                .live()
+                .map_or(true, |live| gate.row_present(&live.appdb, wallet))
+    }
+
+    /// Whether any loaded wallet's Platform funds wait.
+    pub(crate) fn any_platform_held(&self) -> bool {
+        let gate = &self.hub.restore;
+        if gate.platform_held() {
+            return true;
+        }
+        let Ok(live) = self.live() else {
+            return true;
+        };
+        (live.manager.list_wallet_ids_blocking().into_iter())
+            .any(|w| gate.row_present(&live.appdb, WalletId(w)))
+    }
+
+    /// Every wallet of the network's wallet list (wallet.sqlite, not the
+    /// loaded set): an error when it does not read.
+    async fn registered_wallets(&self) -> Result<Vec<WalletId>, EngineError> {
+        #[cfg(test)]
+        if (self.hub.restore.wallet_list_unreadable).load(Ordering::SeqCst) {
+            return Err(EngineError::Storage(
+                "restore: the wallet list did not read".into(),
+            ));
+        }
+        let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+        let ids = tokio::task::spawn_blocking(move || {
+            std::fs::symlink_metadata(&db_path).map_err(|e| e.to_string())?;
+            crate::store::registered_wallet_ids(&db_path).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| EngineError::Internal(format!("restore: the wallet list: {e}")))?
+        .map_err(|e| EngineError::Storage(format!("restore: the wallet list: {e}")))?;
+        Ok(ids.into_iter().map(WalletId).collect())
+    }
+
+    /// Whether a wallet of the network's list has its Platform row.
+    async fn rows_remain(&self) -> Result<bool, EngineError> {
+        let appdb = self.live()?.appdb;
+        let gate = &self.hub.restore;
+        Ok((self.registered_wallets().await?.into_iter()).any(|w| gate.row_present(&appdb, w)))
+    }
+
+    /// Whether Platform has checked loaded `wallet` since its load: the
+    /// masternode list synced, a clean Platform-address pass and the
+    /// shielded pass of it (or no shielded sync to run).
+    async fn wallet_checked(&self, manager: &crate::session::Manager, wallet: WalletId) -> bool {
+        let gate = &self.hub.restore;
+        #[cfg(test)]
+        if let Some(synced) = *gate.all_synced.lock().unwrap() {
+            return synced;
+        }
+        let masternodes = self.hub.tracker().masternodes_synced();
+        #[cfg(test)]
+        let masternodes = (*gate.core_synced.lock().unwrap()).unwrap_or(masternodes);
+        let (platform, shielded) = gate.wallet_passes(wallet);
+        self.platform.enabled()
+            && masternodes
+            && platform
+            && (shielded || !crate::platform::shielded_pool::runs_sync(manager).await)
+    }
+
+    /// Writes the Platform row of every wallet of the network's list that
+    /// Platform has not checked since its load, durably in one write.
+    async fn write_platform_rows(
+        &self,
+        manager: &crate::session::Manager,
+        appdb: &Arc<AppDb>,
+    ) -> Result<(), EngineError> {
+        let loaded: HashSet<WalletId> = (manager.list_wallet_ids_blocking().into_iter())
+            .map(WalletId)
+            .collect();
+        let mut unchecked = Vec::new();
+        for wallet in self.registered_wallets().await? {
+            if !(loaded.contains(&wallet) && self.wallet_checked(manager, wallet).await) {
+                unchecked.push(wallet.to_string());
+            }
+        }
+        if unchecked.is_empty() {
+            return Ok(());
+        }
+        let appdb = Arc::clone(appdb);
+        tokio::task::spawn_blocking(move || {
+            #[cfg(all(test, debug_assertions))]
+            appdb.fault_point(PLATFORM_ROWS_FAULT, dw_appdb::fault::Stage::Before)?;
+            let writes: Vec<(&str, &str, Option<&str>)> = (unchecked.iter())
+                .map(|w| (w.as_str(), RESTORE_PLATFORM_PENDING, Some("")))
+                .collect();
+            appdb.set_scoped_settings_durable(&writes)
+        })
+        .await
+        .map_err(|e| EngineError::Internal(format!("restore: Platform rows: {e}")))?
+        .map_err(|e| EngineError::Storage(format!("restore: Platform rows: {e}")))
     }
 
     /// Whether the network's restored mark is set (the money gate).
@@ -581,6 +807,9 @@ impl NetworkSession {
             tracing::info!("restore: the money gate is on until the first full sync");
         } else if self.platform.enabled() && gate.platform_pending() {
             tracing::info!("restore: Platform funds wait for the first Platform check");
+        } else if self.platform.enabled() && self.platform_rows_at_open() {
+            gate.opened.store(true, Ordering::SeqCst);
+            tracing::info!("restore: a wallet's Platform funds wait for its Platform check");
         } else {
             return;
         }
@@ -625,6 +854,28 @@ impl NetworkSession {
         });
     }
 
+    /// Whether a wallet of the network's list has its Platform row as the
+    /// session opens; yes when the list or the store does not read.
+    fn platform_rows_at_open(&self) -> bool {
+        #[cfg(test)]
+        if (self.hub.restore.wallet_list_unreadable).load(Ordering::SeqCst) {
+            return true;
+        }
+        let Ok(live) = self.live() else {
+            return true;
+        };
+        let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+        if std::fs::symlink_metadata(&db_path).is_err() {
+            return true;
+        }
+        match crate::store::registered_wallet_ids(&db_path) {
+            Ok(ids) => {
+                (ids.into_iter()).any(|w| self.hub.restore.row_present(&live.appdb, WalletId(w)))
+            }
+            Err(_) => true,
+        }
+    }
+
     /// What the money gate waits for; `None` when it is off. With the
     /// mark gone and the Platform residue present: `platform_only`, waiting
     /// for `PlatformPass` until a session with Platform has checked it (and
@@ -642,7 +893,15 @@ impl NetworkSession {
             }));
         }
         if !gate.platform_pending() {
-            return Ok(None);
+            if !self.any_platform_held() {
+                return Ok(None);
+            }
+            return Ok(Some(RestoreStatus {
+                waiting: vec![RestoreWait::PlatformPass],
+                history_wallets: Vec::new(),
+                clear_failed,
+                platform_only: true,
+            }));
         }
         Ok(Some(RestoreStatus {
             waiting: self.residue_waiting().await?,
@@ -675,7 +934,7 @@ impl NetworkSession {
     /// while the session is open. Does nothing while the gate is off.
     pub async fn restore_retry(self: &Arc<Self>) -> Result<(), EngineError> {
         let gate = &self.hub.restore;
-        if !gate.platform_held() {
+        if !self.any_platform_held() {
             return Ok(());
         }
         gate.retry.store(true, Ordering::SeqCst);
@@ -775,15 +1034,11 @@ impl NetworkSession {
     pub(crate) async fn try_clear_restored(self: &Arc<Self>) -> Result<bool, EngineError> {
         let gate = &self.hub.restore;
         let mark = gate.is_restored();
-        if !mark {
-            if !gate.platform_pending() {
+        if !mark && (!gate.platform_pending() || !self.platform.enabled()) {
+            if !gate.opened.load(Ordering::SeqCst) {
                 self.restore_cleared()?;
-                return Ok(true);
             }
-            if !self.platform.enabled() {
-                self.restore_cleared()?;
-                return Ok(true);
-            }
+            return self.clear_platform_rows().await;
         }
         if !self.restore_ready(mark).await? {
             return Ok(false);
@@ -795,11 +1050,46 @@ impl NetworkSession {
             #[cfg(test)]
             crate::coins::pause_at(&self.hub.restore.pause_pass).await;
             let live = self.live()?;
-            let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
             let wallets: Vec<WalletId> = (manager.list_wallet_ids_blocking().into_iter())
                 .map(WalletId)
                 .collect();
-            let appdb = Arc::clone(&live.appdb);
+            self.drop_dead_pass(&manager, &live, wallets).await?;
+            if !self.restore_ready(mark).await? {
+                return Ok(false);
+            }
+            if self.platform.enabled() {
+                self.write_platform_rows(&manager, &live.appdb).await?;
+            }
+            if mark {
+                self.clear_mark(&live).await?;
+            }
+            match self.platform.enabled() {
+                true => gate.remove_residue().map_err(|e| {
+                    EngineError::Storage(format!(
+                        "restore: the Platform residue did not clear: {e}"
+                    ))
+                }),
+                false => Ok(()),
+            }
+        };
+        if mark || residue.is_ok() {
+            self.restore_cleared()?;
+        }
+        residue?;
+        Ok(!self.platform.enabled() || !self.rows_remain().await?)
+    }
+
+    /// Runs one drop-dead pass over `wallets`: an error when a wallet's
+    /// dropped records do not read.
+    async fn drop_dead_pass(
+        &self,
+        manager: &Arc<crate::session::Manager>,
+        live: &crate::session::Live,
+        wallets: Vec<WalletId>,
+    ) -> Result<(), EngineError> {
+        let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+        let appdb = Arc::clone(&live.appdb);
+        {
             let seeds = tokio::task::spawn_blocking(move || {
                 let persisted = crate::history_ops::persisted_txids(&db_path);
                 (wallets.into_iter())
@@ -834,31 +1124,80 @@ impl NetworkSession {
             }
             for (wallet, dead, _) in seeds {
                 if !dead.is_empty() {
-                    self.abandon_on_dead(&manager, wallet, &dead, false).await;
+                    self.abandon_on_dead(manager, wallet, &dead, false).await;
                     #[cfg(test)]
                     (self.hub.restore.pass_runs.lock().unwrap()).push((wallet, dead));
                 }
             }
-            if !self.restore_ready(mark).await? {
-                return Ok(false);
-            }
-            if mark {
-                self.clear_mark(&live).await?;
-            }
-            match self.platform.enabled() {
-                true => gate.remove_residue().map_err(|e| {
-                    EngineError::Storage(format!(
-                        "restore: the Platform residue did not clear: {e}"
-                    ))
-                }),
-                false => Ok(()),
-            }
-        };
-        if mark || residue.is_ok() {
-            self.restore_cleared()?;
         }
-        residue?;
-        Ok(true)
+        Ok(())
+    }
+
+    /// With Platform: the rows of the loaded wallets Platform has checked
+    /// since their load go, after one drop-dead pass over them, durably in
+    /// one write; then what waited for them runs. Returns whether no
+    /// wallet of the network's list keeps one (without Platform: nothing
+    /// this session can clear).
+    async fn clear_platform_rows(self: &Arc<Self>) -> Result<bool, EngineError> {
+        if !self.platform.enabled() {
+            return Ok(true);
+        }
+        let gate = &self.hub.restore;
+        let appdb = self.live()?.appdb;
+        let rowed: Vec<WalletId> = (self.registered_wallets().await?.into_iter())
+            .filter(|w| gate.row_present(&appdb, *w))
+            .collect();
+        if rowed.is_empty() {
+            return Ok(true);
+        }
+        let manager = self.manager()?;
+        if !self.checked_of(&manager, &rowed).await.is_empty() {
+            let _op = self.enter().await?;
+            let _lifecycle = self.wallet_lifecycle.hold().await;
+            let live = self.live()?;
+            let ready = self.checked_of(&manager, &rowed).await;
+            self.drop_dead_pass(&manager, &live, ready.clone()).await?;
+            let ready = self.checked_of(&manager, &ready).await;
+            if !ready.is_empty() {
+                let scopes: Vec<String> = ready.iter().map(ToString::to_string).collect();
+                let appdb = Arc::clone(&live.appdb);
+                tokio::task::spawn_blocking(move || {
+                    let writes: Vec<(&str, &str, Option<&str>)> = (scopes.iter())
+                        .map(|w| (w.as_str(), RESTORE_PLATFORM_PENDING, None))
+                        .collect();
+                    appdb.set_scoped_settings_durable(&writes)
+                })
+                .await
+                .map_err(|e| EngineError::Internal(format!("restore: Platform rows: {e}")))?
+                .map_err(|e| EngineError::Storage(format!("restore: Platform rows: {e}")))?;
+                self.leases.request_resume(None);
+                self.hub.pump.mark_sync();
+                for wallet in ready {
+                    self.hub.pump.mark_balances(wallet);
+                }
+                tracing::info!("restore: a wallet's Platform funds are checked");
+            }
+        }
+        Ok(!self.rows_remain().await?)
+    }
+
+    /// The loaded wallets of `wallets` Platform has checked since their
+    /// load.
+    async fn checked_of(
+        &self,
+        manager: &crate::session::Manager,
+        wallets: &[WalletId],
+    ) -> Vec<WalletId> {
+        let loaded: HashSet<WalletId> = (manager.list_wallet_ids_blocking().into_iter())
+            .map(WalletId)
+            .collect();
+        let mut out = Vec::new();
+        for wallet in wallets {
+            if loaded.contains(wallet) && self.wallet_checked(manager, *wallet).await {
+                out.push(*wallet);
+            }
+        }
+        out
     }
 
     /// Writes the holds' build marks of the unloaded wallets and, without
@@ -901,6 +1240,7 @@ impl NetworkSession {
     /// failed after the remove included): what waited for the gate runs.
     fn restore_cleared(&self) -> Result<(), EngineError> {
         let manager = self.manager()?;
+        self.hub.restore.opened.store(true, Ordering::SeqCst);
         #[cfg(test)]
         (self.hub.restore.cleared_runs).fetch_add(1, Ordering::SeqCst);
         self.leases.request_resume(None);

@@ -379,6 +379,7 @@ impl NetworkSession {
                 return Err(e);
             }
             this.hub.unload_wallet(&id);
+            this.hub.restore.forget_wallet_checks(id, false);
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
@@ -458,6 +459,8 @@ impl NetworkSession {
                 this.hub.unload_wallet(&id);
                 return Err(e);
             }
+            let in_flight = live.manager.platform_address_sync_arc().is_syncing();
+            this.hub.restore.forget_wallet_checks(id, in_flight);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);

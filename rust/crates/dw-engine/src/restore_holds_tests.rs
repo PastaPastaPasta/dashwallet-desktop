@@ -1745,3 +1745,246 @@ fn a_recovered_folders_mark_clears_once_a_restored_wallet_has_synced() {
     assert!(!mark_present(&session));
     assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
 }
+
+/// Whether `wallet` has its Platform row in app.sqlite.
+fn platform_row(session: &NetworkSession, wallet: WalletId) -> bool {
+    (session.live().unwrap().appdb)
+        .setting(
+            &wallet.to_string(),
+            crate::restore_gate::RESTORE_PLATFORM_PENDING,
+        )
+        .unwrap()
+        .is_some()
+}
+
+/// After a finish without Platform, a session with Platform opened with
+/// a second wallet closed; the returned session is open, its residue
+/// present, the second wallet not loaded.
+fn residue_with_a_closed_wallet() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    WalletId,
+) {
+    let (dir, engine, session, id, _paid, _p) = held_payment();
+    let other = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let session = finished_without_platform(&engine, session);
+    engine
+        .block_on(session.set_load_on_startup(other, false))
+        .unwrap();
+    let session = reopen_with(&engine, session, false);
+    assert!(session.live().unwrap().store.is_unloaded(&other.0));
+    assert!(residue_present(&session) && !session.restored());
+    (dir, engine, session, id, other)
+}
+
+/// Option (b): a wallet closed when Platform's check cleared the residue
+/// keeps its Platform funds held by its own row; a later session with
+/// Platform refuses its Shield lease and its Platform send until a pass
+/// after its load (one before it does not count) and its drop-dead pass
+/// ran; the other wallet is not held.
+#[test]
+fn a_wallet_closed_at_the_platform_check_is_held_until_checked_after_its_load() {
+    use crate::platform::{FlowKind, LeaseError};
+    use dw_vault::{Credential, GrantPurpose};
+    let (_dir, engine, session, id, other) = residue_with_a_closed_wallet();
+    all_synced(&session);
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(
+        platform_row(&session, other),
+        "the closed wallet has no row"
+    );
+    assert!(!platform_row(&session, id), "the checked wallet has a row");
+    let session = reopen_with(&engine, session, false);
+    let restore = &session.hub.restore;
+    *restore.core_synced.lock().unwrap() = Some(true);
+    let dead = Txid::from_byte_array([0x27; 32]);
+    (session.live().unwrap().appdb)
+        .set_setting(&other.to_string(), &format!("dropped:{dead}"), Some(""))
+        .unwrap();
+    restore.note_wallet_platform_pass([other]);
+    restore.note_wallet_shielded_pass([other]);
+    engine.block_on(session.load_wallet(other)).unwrap();
+    let shield = |w| engine.block_on(session.begin_lease(w, FlowKind::Shield, &[]));
+    assert!(
+        matches!(shield(other), Err(LeaseError::Restored)),
+        "{:?}",
+        shield(other).err()
+    );
+    assert!(!matches!(shield(id), Err(LeaseError::Restored)));
+    let grant = (session.vault())
+        .authorize(
+            GrantPurpose::PlatformOp {
+                max_duffs: COIN,
+                max_credits: COIN * 1000,
+            },
+            Some(&other.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let send = engine.block_on(session.dashpay(other).platform_send("op".into(), grant));
+    assert_eq!(send.err().map(|e| e.code()), Some("platform.restored"));
+    let status = engine.block_on(session.restore_status()).unwrap().unwrap();
+    assert!(status.platform_only, "{status:?}");
+    assert_eq!(status.waiting, [crate::RestoreWait::PlatformPass]);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        platform_row(&session, other),
+        "a pass before the load counted"
+    );
+    assert!(restore.pass_runs.lock().unwrap().is_empty());
+    restore.note_wallet_platform_pass([other]);
+    restore.note_wallet_shielded_pass([other]);
+    eventually("the wallet's row clears", || !platform_row(&session, other));
+    assert_eq!(
+        restore.pass_runs.lock().unwrap().as_slice(),
+        [(other, BTreeSet::from([dead]))],
+        "the clear ran the wallet's drop-dead pass"
+    );
+    assert!(!matches!(shield(other), Err(LeaseError::Restored)));
+    assert_eq!(engine.block_on(session.restore_status()).unwrap(), None);
+}
+
+/// A wallet's Platform row that does not read holds its Platform funds.
+#[test]
+fn an_unreadable_platform_row_reads_present() {
+    use crate::platform::{FlowKind, LeaseError};
+    let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
+    let restore = &session.hub.restore;
+    assert!(!session.wallet_platform_held(id));
+    restore
+        .rows_unreadable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let shield = || engine.block_on(session.begin_lease(id, FlowKind::Shield, &[]));
+    assert!(matches!(shield(), Err(LeaseError::Restored)));
+    let status = engine.block_on(session.restore_status()).unwrap().unwrap();
+    assert!(status.platform_only, "{status:?}");
+    restore
+        .rows_unreadable
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(!matches!(shield(), Err(LeaseError::Restored)));
+    assert_eq!(engine.block_on(session.restore_status()).unwrap(), None);
+}
+
+/// The rows are written before the residue goes: a failed write keeps the
+/// residue without rows, a failed removal leaves both, and the next clear
+/// removes the residue and keeps the row.
+#[test]
+fn the_platform_rows_are_written_before_the_residue_goes() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, _id, other) = residue_with_a_closed_wallet();
+    let failed = || {
+        engine
+            .block_on(session.restore_status())
+            .unwrap()
+            .is_some_and(|s| s.clear_failed)
+    };
+    let restore = &session.hub.restore;
+    *restore.backoff.lock().unwrap() = Some(std::time::Duration::from_secs(600));
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        crate::restore_gate::PLATFORM_ROWS_FAULT,
+        dw_appdb::fault::Stage::Before,
+    );
+    all_synced(&session);
+    eventually("the rows' write fails", &failed);
+    dw_appdb::fault::disarm(&path);
+    assert!(residue_present(&session) && !platform_row(&session, other));
+    restore.residue_remove_fails.store(1, SeqCst);
+    engine.block_on(session.restore_retry()).unwrap();
+    eventually("the row is written", || platform_row(&session, other));
+    eventually("the removal fails", || {
+        restore.residue_remove_fails.load(SeqCst) == 0 && failed()
+    });
+    assert!(residue_present(&session), "the residue went");
+    engine.block_on(session.restore_retry()).unwrap();
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(platform_row(&session, other), "the row went with it");
+}
+
+/// P1: the wallets that get a row come from the network's wallet list; a
+/// list that does not read keeps the residue, retried after the backoff.
+#[test]
+fn an_unreadable_wallet_list_keeps_the_residue() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, _id, other) = residue_with_a_closed_wallet();
+    let restore = &session.hub.restore;
+    *restore.backoff.lock().unwrap() = Some(std::time::Duration::from_secs(600));
+    restore.wallet_list_unreadable.store(true, SeqCst);
+    all_synced(&session);
+    eventually("the clear fails", || {
+        engine
+            .block_on(session.restore_status())
+            .unwrap()
+            .is_some_and(|s| s.clear_failed)
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(residue_present(&session), "the residue cleared");
+    restore.wallet_list_unreadable.store(false, SeqCst);
+    engine.block_on(session.restore_retry()).unwrap();
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(platform_row(&session, other));
+}
+
+/// A mark in RECOVER's format (no pending list) clears at all-Synced with
+/// a wallet loaded, in a session with Platform: the wallet closed then
+/// keeps its Platform row, and no residue is left.
+#[test]
+fn a_recover_mark_clears_and_leaves_a_closed_wallet_its_platform_row() {
+    let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
+    let other = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    engine
+        .block_on(session.set_load_on_startup(other, false))
+        .unwrap();
+    std::fs::create_dir_all(mark_dir(&session)).unwrap();
+    std::fs::write(
+        mark_dir(&session).join("RESTORED"),
+        "dw-store-upgrade restored\nformat 1\nrestored 2026-11-25T00:00:00Z from before\n",
+    )
+    .unwrap();
+    let session = reopen(&engine, session);
+    assert!(session.restored() && session.live().unwrap().store.is_unloaded(&other.0));
+    cleared(&session);
+    assert!(!residue_present(&session));
+    assert!(platform_row(&session, other) && !platform_row(&session, id));
+}
+
+/// A wallet loaded after Platform's passes, still unchecked when they
+/// clear the residue, keeps its Platform funds held by its own row while
+/// it stays loaded, until a pass of it; the checked wallet is not held.
+#[test]
+fn a_wallet_loaded_after_the_passes_keeps_its_platform_row_until_checked() {
+    use crate::platform::{FlowKind, LeaseError};
+    let (_dir, engine, session, id, other) = residue_with_a_closed_wallet();
+    let restore = &session.hub.restore;
+    *restore.core_synced.lock().unwrap() = Some(true);
+    engine.block_on(session.load_wallet(other)).unwrap();
+    restore.note_wallet_platform_pass([id]);
+    restore.note_wallet_shielded_pass([id]);
+    restore.note_platform_pass();
+    restore.note_shielded_pass();
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(platform_row(&session, other), "the late wallet has no row");
+    assert!(!platform_row(&session, id));
+    let shield = |w| engine.block_on(session.begin_lease(w, FlowKind::Shield, &[]));
+    assert!(matches!(shield(other), Err(LeaseError::Restored)));
+    assert!(!matches!(shield(id), Err(LeaseError::Restored)));
+    let status = engine.block_on(session.restore_status()).unwrap().unwrap();
+    assert!(status.platform_only, "{status:?}");
+    restore.note_wallet_platform_pass([other]);
+    restore.note_wallet_shielded_pass([other]);
+    eventually("the late wallet's row clears", || {
+        !platform_row(&session, other)
+    });
+    assert!(!matches!(shield(other), Err(LeaseError::Restored)));
+    assert_eq!(engine.block_on(session.restore_status()).unwrap(), None);
+}

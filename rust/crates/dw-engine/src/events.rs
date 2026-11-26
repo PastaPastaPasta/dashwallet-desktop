@@ -1286,6 +1286,7 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
+                self.restore.forget_wallet_checks(id, true);
                 self.history.with_wallet(id, |h| {
                     h.session_held.clear();
                     h.held_here.clear();
@@ -1298,6 +1299,7 @@ impl SessionHub {
     pub(crate) fn forget_wallet(&self, id: &WalletId) {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         unloaded.insert(*id);
+        self.restore.forget_wallet_checks(*id, false);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1974,9 +1976,7 @@ impl EventHandler for SessionHub {
         }
         if changed {
             self.pump.mark_sync();
-            if self.restore.platform_held() {
-                self.restore.wake.notify_one();
-            }
+            self.restore.wake.notify_one();
         }
         if tip.is_some_and(|tip| self.header_tip_dropped(tip)) {
             let wallets: Vec<WalletId> = (self.wallets.read().unwrap_or_else(|p| p.into_inner()))
@@ -2032,6 +2032,11 @@ impl PlatformEventHandler for SessionHub {
         {
             self.restore.note_platform_pass();
         }
+        (self.restore).note_wallet_platform_pass(
+            (summary.wallet_results.iter())
+                .filter(|(_, o)| o.is_ok())
+                .map(|(id, _)| WalletId(*id)),
+        );
         for (id, outcome) in &summary.wallet_results {
             if outcome.is_ok() {
                 self.pump
@@ -2049,6 +2054,15 @@ impl PlatformEventHandler for SessionHub {
         {
             self.restore.note_shielded_pass();
         }
+        (self.restore).note_wallet_shielded_pass(
+            (summary.wallet_results.iter())
+                .filter(|(_, o)| match o {
+                    WalletShieldedOutcome::Ok(pass) => !pass.is_cooldown_skip,
+                    WalletShieldedOutcome::Skipped => true,
+                    WalletShieldedOutcome::Err(_) => false,
+                })
+                .map(|(id, _)| WalletId(*id)),
+        );
         for (id, outcome) in &summary.wallet_results {
             if let WalletShieldedOutcome::Ok(pass) = outcome
                 && !pass.is_cooldown_skip

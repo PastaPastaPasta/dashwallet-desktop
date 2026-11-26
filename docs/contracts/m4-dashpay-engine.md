@@ -2766,7 +2766,12 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   withdrawal's calls are refused (as while the mark is present, mn-engine version 32), and the asset-lock resume and
   the background withdrawal recheck wait. Core funds are not, nor is accepting a contact request and paying it from
   Core. It clears in a session with Platform once the masternode list has synced, a clean Platform-address pass and
-  the shielded pass have completed and that session's drop-dead pass has run.
+  the shielded pass have completed and that session's drop-dead pass has run. When the gate opens in a session with
+  Platform, every wallet of the network's wallet list that Platform has not checked since its load (closed, or loaded
+  after the passes) keeps a row `restore_platform_pending`, written before the mark or the residue goes: while it is
+  present, or does not read, that wallet's Platform funds are refused the same way, until a session with Platform has
+  checked the wallet after its load and run its drop-dead pass; `restore_status` then reads `platformOnly` with
+  `platformPass` while a loaded wallet has it.
 - `platform.unavailable` (Contract-Version 91) in a session without Platform: every funds flow that needs Platform is
   refused with it before any grant is redeemed or any lease, record or signature made (`LeaseError::PlatformUnavailable`
   at its lease), whatever the restore's state; it takes precedence over `platform.restored`. The evonode credit

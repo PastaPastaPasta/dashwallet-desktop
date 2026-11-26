@@ -35,7 +35,9 @@ Version 32 holds the evonode credit withdrawal behind a restore (m4 Contract-Ver
 while the restored mark or its Platform residue (`upgrade-backups/PLATFORM_PENDING`, left by a mark cleared without
 Platform) is present, `withdraw_credits`, `retry_withdrawal` and `recheck_withdrawal` are `platform.restored` before any
 read, grant redemption, record or signature, and the background recheck skips its rounds. In a session without Platform
-they stay `masternodes.platform_unavailable`.
+they stay `masternodes.platform_unavailable`. A wallet's own Platform row (m4 Contract-Version 91) holds
+`withdraw_credits` and `retry_withdrawal` of that wallet; `recheck_withdrawal` and the background recheck wait while any
+loaded wallet has one.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with

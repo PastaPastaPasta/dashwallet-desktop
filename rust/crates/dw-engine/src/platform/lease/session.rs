@@ -374,7 +374,9 @@ impl NetworkSession {
             if flow.needs_platform() && self.platform.funds_off() {
                 return Err(LeaseError::PlatformUnavailable);
             }
-            if gate.is_restored() || (flow.moves_platform_funds() && gate.platform_pending()) {
+            if gate.is_restored()
+                || (flow.moves_platform_funds() && self.wallet_platform_held(wallet))
+            {
                 return Err(LeaseError::Restored);
             }
         }

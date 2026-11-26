@@ -355,7 +355,7 @@ impl DashPay {
         req: RegistrationRequest,
         grant: String,
     ) -> Result<String, RegistrationError> {
-        self.session.refuse_platform_funds()?;
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet = self.wallet_id;
         self.on_lib(
             move |session, _, lib| async move { start(&session, wallet, lib, req, grant).await },
@@ -377,7 +377,7 @@ impl DashPay {
         grant: String,
         past: Vec<String>,
     ) -> Result<String, RegistrationError> {
-        self.session.refuse_platform_funds()?;
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet = self.wallet_id;
         self.on_lib(move |session, _, lib| async move {
             start_past(&session, wallet, lib, req, grant, &past).await
@@ -396,7 +396,7 @@ impl DashPay {
         draft: String,
         grant: Option<String>,
     ) -> Result<(), RegistrationError> {
-        self.session.refuse_platform_funds()?;
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet = self.wallet_id;
         self.on_lib(move |session, _, lib| async move {
             resume(&session, wallet, lib, &draft, grant).await
@@ -467,7 +467,7 @@ impl DashPay {
             .rt
             .spawn(async move {
                 if signing {
-                    session.refuse_platform_funds()?;
+                    session.refuse_platform_funds(wallet_id)?;
                 }
                 // Before the session's gate, as `run_on_pool` takes it.
                 let _admitted = session
