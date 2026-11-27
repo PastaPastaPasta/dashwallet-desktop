@@ -1474,17 +1474,19 @@ pub(crate) struct WalletHistory {
 }
 
 impl WalletHistory {
+    pub(crate) fn invalid_mark(&self, txid: &Txid) -> Option<DropCause> {
+        let cause = self.drops.get(txid)?.cause;
+        matches!(cause, DropCause::InvalidClaim | DropCause::InvalidSource).then_some(cause)
+    }
+
     /// A claim or descendant dropped as invalid that has not since settled.
     pub(crate) fn dead_claim(&self, txid: &Txid) -> Option<DropCause> {
-        let drop = self.drops.get(txid)?;
-        (matches!(
-            drop.cause,
-            DropCause::InvalidClaim | DropCause::InvalidSource
-        ) && !self
+        let cause = self.invalid_mark(txid)?;
+        (!self
             .txs
             .get(txid)
             .is_some_and(|e| e.context.block_info().is_some() || instant_locked(e)))
-        .then_some(drop.cause)
+        .then_some(cause)
     }
 
     /// Sets the coins the wallet held at a load (empty when the load failed

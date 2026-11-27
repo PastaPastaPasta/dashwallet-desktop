@@ -2568,7 +2568,7 @@ impl NetworkSession {
                         .chain(&links)
                         .filter_map(|t| txs.get(t).map(|e| &e.tx).or_else(|| copies.get(t)))
                         .flat_map(|tx| tx.input.iter().map(|i| i.previous_output.txid))
-                        .filter(|t| h.dead_claim(t).is_some());
+                        .filter(|t| h.invalid_mark(t).is_some());
                     d.known_dead
                         .keys()
                         .copied()
@@ -4822,24 +4822,24 @@ impl NetworkSession {
         dead: &Dead,
         at_load: bool,
     ) {
-        if at_load {
-            self.prune_dropped(wallet, dead).await;
-        }
-        let dead = Arc::new(self.hub.history.read(&wallet, |txs| {
-            dead.iter()
-                .filter(|(t, _)| {
-                    !txs.get(*t)
-                        .is_some_and(|e| e.context.block_info().is_some() || locked(e))
-                })
-                .map(|(t, cause)| (*t, *cause))
-                .collect::<Dead>()
-        }));
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let Some(info) = wm.get_wallet_info(&wallet.0) else {
             return;
         };
         let core = &info.core_wallet;
+        let mut dead = dead.clone();
+        if at_load {
+            let infos = wm.get_all_wallet_infos().iter();
+            let settled = self.settled_all(
+                infos.map(|(id, i)| (id, &i.core_wallet)),
+                dead.keys().copied(),
+            );
+            for t in self.prune_dropped(wallet, &dead, &settled).await {
+                dead.remove(&t);
+            }
+        }
+        let dead = Arc::new(dead);
         // Include a dropped payment key-wallet recorded again after a relay.
         let children: Vec<(Txid, BTreeSet<Txid>)> = (self.hub.history).read(&wallet, |txs| {
             (txs.iter())
@@ -4891,27 +4891,65 @@ impl NetworkSession {
         self.drop_trees(manager, wallet, drops).await;
     }
 
-    /// Forgets the `dropped:` rows and the store repair's records of `dead`
-    /// the history now holds mined or InstantSend-locked: the verdict that
-    /// dropped them was wrong, and they no longer seed the load's walk.
-    async fn prune_dropped(&self, wallet: WalletId, dead: &Dead) {
-        let settled: Vec<Txid> = (self.hub.history).read(&wallet, |txs| {
-            (dead.keys())
-                .filter(|t| {
-                    txs.get(*t)
-                        .is_some_and(|e| e.context.block_info().is_some() || locked(e))
-                })
-                .copied()
-                .collect()
-        });
+    async fn prune_dropped(
+        &self,
+        wallet: WalletId,
+        dead: &Dead,
+        settled: &Settled,
+    ) -> HashSet<Txid> {
+        let settled: HashSet<Txid> = dead
+            .keys()
+            .filter(|t| settled.direct.contains_key(t))
+            .copied()
+            .collect();
         if settled.is_empty() {
-            return;
+            return settled;
         }
-        tracing::warn!(%wallet, ?settled, "dropped transactions are settled since: their records go");
+        let expired = self.hub.history.read(&wallet, |txs| {
+            let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+            for (t, e) in txs {
+                for input in &e.tx.input {
+                    children
+                        .entry(input.previous_output.txid)
+                        .or_default()
+                        .push(*t);
+                }
+            }
+            let mut descendants = HashSet::new();
+            let mut todo: Vec<_> = settled.iter().copied().collect();
+            while let Some(t) = todo.pop() {
+                for &child in children.get(&t).into_iter().flatten() {
+                    if descendants.insert(child) {
+                        todo.push(child);
+                    }
+                }
+            }
+            let mut expired: HashSet<_> = dead
+                .iter()
+                .filter(|(t, cause)| {
+                    **cause == DropCause::InvalidSource && descendants.contains(*t)
+                })
+                .map(|(t, _)| *t)
+                .collect();
+            // An older dependent mark can have lost its transaction and
+            // ancestry. Keep the settled anchors while any such verdict
+            // could still seed another drop.
+            if dead.iter().all(|(t, cause)| {
+                *cause != DropCause::InvalidSource || expired.contains(t) || settled.contains(t)
+            }) {
+                expired.extend(&settled);
+            }
+            expired
+        });
+        if expired.is_empty() {
+            return expired;
+        }
+        tracing::warn!(%wallet, ?expired, "forgetting drop verdicts contradicted by settlement");
         let scope = wallet.to_string();
+        let removed = expired.clone();
         let result = self
             .appdb_op(move |db| {
-                let keys: Vec<String> = (settled.iter())
+                let keys: Vec<String> = (removed.iter())
                     .flat_map(|t| {
                         [
                             format!("{DROPPED_PREFIX}{t}"),
@@ -4925,15 +4963,15 @@ impl NetworkSession {
             })
             .await;
         match result {
-            Ok(()) => self.hub.history.with_wallet(wallet, |h| {
-                h.drops.retain(|t, _| {
-                    !h.txs
-                        .get(t)
-                        .is_some_and(|e| e.context.block_info().is_some() || locked(e))
+            Ok(()) => {
+                self.hub.history.with_wallet(wallet, |h| {
+                    h.drops.retain(|t, _| !expired.contains(t));
                 });
-            }),
+                expired
+            }
             Err(e) => {
-                tracing::warn!(%wallet, error = %e, "could not forget the records of settled dropped transactions")
+                tracing::warn!(%wallet, error = %e, "could not forget the records of settled dropped transactions");
+                HashSet::new()
             }
         }
     }

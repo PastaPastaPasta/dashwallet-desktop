@@ -983,6 +983,17 @@ fn a_locked_sibling_keeps_a_pending_payment_on_a_dropped_claim() {
 
 #[test]
 fn a_locked_sibling_of_a_dead_parent_keeps_its_pending_child() {
+    a_settled_dead_tree_keeps_its_pending_child(false, false);
+}
+
+#[test]
+fn a_dropped_claim_that_settles_keeps_its_pending_grandchild() {
+    for at_load in [false, true] {
+        a_settled_dead_tree_keeps_its_pending_child(true, at_load);
+    }
+}
+
+fn a_settled_dead_tree_keeps_its_pending_child(settle_claim: bool, at_load: bool) {
     use crate::history::DropCause;
     use std::collections::BTreeMap;
 
@@ -1016,7 +1027,15 @@ fn a_locked_sibling_of_a_dead_parent_keeps_its_pending_child() {
             (parent.txid(), parent.clone()),
             (lock.txid(), lock.clone()),
         ]);
-        h.txs.get_mut(&lock.txid()).unwrap().instant_locked = true;
+        let settled = if settle_claim {
+            claim.txid()
+        } else {
+            lock.txid()
+        };
+        h.txs.get_mut(&settled).unwrap().instant_locked = true;
+        for (t, cause) in &dead {
+            h.drops.insert(*t, crate::history::DropInfo::new(*cause));
+        }
     });
     let (s, manager) = (Arc::clone(&session), session.manager().unwrap());
     engine
@@ -1028,12 +1047,17 @@ fn a_locked_sibling_of_a_dead_parent_keeps_its_pending_child() {
                 .unwrap()
                 .core_wallet
                 .restore_dismissed(dead.keys().copied(), []);
-            s.abandon_on_dead(&manager, id, &dead, false).await;
+            s.abandon_on_dead(&manager, id, &dead, at_load).await;
             Ok(())
         }))
         .unwrap();
     assert!(!dropped(&engine, &session, id, payment.txid()));
     assert!(!spendable(&engine, &session, id, b));
+    if at_load {
+        (session.hub.history).read_wallet(&id, |h| {
+            assert!(h.invalid_mark(&parent.txid()).is_none());
+        });
+    }
     assert!(
         dropped_records(&session, id).is_empty(),
         "the veto precedes the marks"
