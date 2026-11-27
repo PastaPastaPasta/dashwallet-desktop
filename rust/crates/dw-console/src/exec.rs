@@ -148,9 +148,9 @@ impl ConsoleContext {
     fn take_grant(&mut self, purpose: GrantPurpose) -> Result<String, ConsoleFailure> {
         self.grant_id
             .take()
-            .ok_or(ConsoleFailure::AuthorizationRequired {
+            .ok_or_else(|| ConsoleFailure::AuthorizationRequired {
                 purpose,
-                wallet: self.wallet,
+                wallet: self.wallet.map(Box::new),
             })
     }
 }

@@ -33,7 +33,7 @@ pub enum ConsoleFailure {
     #[error("authorization required")]
     AuthorizationRequired {
         purpose: dw_vault::GrantPurpose,
-        wallet: Option<dw_engine::WalletId>,
+        wallet: Option<Box<dw_engine::WalletId>>,
     },
     /// A wallet command with no wallet selected.
     #[error("no wallet selected")]
