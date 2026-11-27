@@ -9,12 +9,15 @@
 //! live. Before the journal, a failure removes only the dirs this attempt
 //! recorded (92-4).
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::SystemTime;
 
 use dashcore::{OutPoint, Txid};
+use key_wallet::managed_account::transaction_record::TransactionRecord;
 
 use crate::error::{Result, StoreUpgradeError};
 use crate::fsx::{self, fault};
@@ -27,7 +30,7 @@ pub const RESTORE_REQUESTED: &str = "RESTORE-REQUESTED";
 /// The journal: present from just before the first replace until the
 /// restore is complete.
 pub const RESTORE_JOURNAL: &str = "RESTORE-IN-PROGRESS";
-/// The money gate's mark (M3-UX), with the before set's pending payments
+/// The money gate's mark (M3-UX), with both sets' pending payments
 /// (Q89 §3 option 2). Set before the first replace; cleared by the engine.
 pub const RESTORED_MARK: &str = "RESTORED";
 /// The paths an attempt creates before its journal (design §3).
@@ -54,7 +57,7 @@ const HOLDS_CHECKED: &str = "holds checked";
 /// before set would not, or can't be read. It runs once per attempt,
 /// before anything is written; a resume never runs it, and refuses a
 /// journal without [`HOLDS_CHECKED`].
-pub type HoldCheck<'a> = &'a dyn Fn(&Path) -> std::result::Result<(), String>;
+pub type HoldCheck<'a> = &'a dyn Fn(&Path, &SnapshotInfo) -> std::result::Result<(), String>;
 
 /// D2: the replace order; wallet.sqlite is always last.
 const REPLACE_ORDER: [&str; 4] = [
@@ -176,10 +179,12 @@ pub struct RestoreInfo {
     pub kept_live: bool,
 }
 
-/// One pending payment of the restored set: its txid and the wallet coins it
+/// One pending payment of either store set: its txid and the wallet coins it
 /// spends (Q89 §3 option 2: the engine holds these inputs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingPayment {
+    /// Legacy mark entries did not name the wallet.
+    pub wallet: Option<[u8; 32]>,
     pub txid: Txid,
     pub inputs: Vec<OutPoint>,
 }
@@ -208,6 +213,7 @@ fn exists(path: &Path) -> bool {
 /// Whether a restore is requested or part-done in `network_dir`.
 pub fn pending_restore(network_dir: &Path) -> io::Result<Option<PendingRestore>> {
     let root = root(network_dir);
+    fsx::check_private_dir(&root)?;
     if exists(&root.join(RESTORE_JOURNAL)) {
         return Ok(Some(PendingRestore::InProgress));
     }
@@ -485,6 +491,10 @@ fn gates(network_dir: &Path) -> Result<StoreLocks> {
     if crate::token::stores_opened_in_process() {
         return Err(StoreUpgradeError::RestoreAfterOpen);
     }
+    lock_stores(network_dir)
+}
+
+fn lock_stores(network_dir: &Path) -> Result<StoreLocks> {
     crate::token::refuse_if_held(network_dir)?;
     let mut held = Vec::new();
     for lock in STORE_LOCKS {
@@ -600,29 +610,24 @@ fn partial_of(dest: &Path) -> PathBuf {
 /// against `sha`. `Ok(false)` when the copy does not match (the partial is
 /// removed).
 fn verified_copy(src: &Path, dest: &Path, sha: &str) -> io::Result<bool> {
+    fault_io("restore.copy")?;
     let tmp = partial_of(dest);
-    let copied = copy_checked(src, &tmp, dest, sha);
-    if copied.is_err() {
-        let _ = remove_if_file(&tmp);
+    let mut file = fsx::create_partial(&tmp)?;
+    let copied = fs::File::open(src)
+        .and_then(|mut source| io::copy(&mut source, &mut file))
+        .and_then(|_| file.sync_all());
+    drop(file);
+    let copied = copied.and_then(|()| {
+        if sha256_file(&tmp)? != sha {
+            return Ok(false);
+        }
+        fs::rename(&tmp, dest)?;
+        Ok(true)
+    });
+    if !matches!(copied, Ok(true)) {
+        fs::remove_file(&tmp)?;
     }
     copied
-}
-
-fn copy_checked(src: &Path, tmp: &Path, dest: &Path, sha: &str) -> io::Result<bool> {
-    fault_io("restore.copy")?;
-    fs::copy(src, tmp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(tmp, fs::Permissions::from_mode(0o600))?;
-    }
-    fsx::fsync_file(tmp)?;
-    if sha256_file(tmp)? != sha {
-        fs::remove_file(tmp)?;
-        return Ok(false);
-    }
-    fs::rename(tmp, dest)?;
-    Ok(true)
 }
 
 /// The dirs a fresh attempt creates before its journal, recorded durably in
@@ -692,6 +697,15 @@ fn remove_if_file(path: &Path) -> io::Result<()> {
     }
 }
 
+fn remove_regular_partial(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() => remove_if_file(path),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Whether `dir` is a plain folder carrying attempt `id`.
 fn carries_id(dir: &Path, id: Option<&str>) -> bool {
     fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir())
@@ -728,7 +742,7 @@ fn remove_attempt_dir(dir: &Path, id: Option<&str>) -> io::Result<()> {
     }
     for name in STORE_FILES {
         let file = dir.join(name);
-        remove_if_file(&partial_of(&file))?;
+        remove_regular_partial(&partial_of(&file))?;
         remove_if_file(&file)?;
     }
     remove_if_file(&dir.join(ATTEMPT_ID))?;
@@ -856,7 +870,7 @@ impl Attempt {
             remove_attempt_dir(&self.root.join(rel), self.id.as_deref())?;
         }
         for name in ["RESTORED.partial", "RESTORE-IN-PROGRESS.partial"] {
-            remove_if_file(&self.root.join(name))?;
+            remove_regular_partial(&self.root.join(name))?;
         }
         let mark = self.root.join(RESTORED_MARK);
         if self.mark_created && mark_attempt(&mark).is_some() && mark_attempt(&mark) == self.id {
@@ -991,7 +1005,7 @@ fn fresh(
     now: SystemTime,
     holds: HoldCheck<'_>,
 ) -> Result<RestoreInfo> {
-    holds(network_dir).map_err(|detail| StoreUpgradeError::RestoreIncomplete {
+    holds(network_dir, snapshot).map_err(|detail| StoreUpgradeError::RestoreIncomplete {
         cause: IncompleteCause::HoldsOpen,
         journal_written: false,
         detail,
@@ -1036,12 +1050,14 @@ fn fresh(
             return Err(before_journal_error(network_dir, &e, what, needed));
         }
     }
-    let marked = write_mark_for(network_dir, snapshot, now, Some(&mut attempt)).and_then(|()| {
-        fsx::write_durable(
-            &root.join(RESTORE_JOURNAL),
-            render_journal(&journal).as_bytes(),
-        )
-    });
+    let after = root.join(&journal.after);
+    let marked =
+        write_mark_for(network_dir, snapshot, &after, now, Some(&mut attempt)).and_then(|()| {
+            fsx::write_durable(
+                &root.join(RESTORE_JOURNAL),
+                render_journal(&journal).as_bytes(),
+            )
+        });
     if let Err(e) = marked {
         if exists(&root.join(RESTORE_JOURNAL)) {
             return Err(incomplete(&e, "write the restore journal"));
@@ -1096,40 +1112,107 @@ fn replace(network_dir: &Path, j: &Journal) -> io::Result<()> {
     fsx::fsync_dir(network_dir)
 }
 
-type Payments = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
+type Payments = Vec<PendingPayment>;
 
-/// The before set's pending payments: unmined transactions that spend a
-/// wallet coin, read immutable from the before set's wallet.sqlite.
-fn pending_payments(wallet: &Path) -> rusqlite::Result<Payments> {
-    if !wallet.exists() {
+fn pending_payments(wallet: &Path) -> io::Result<Payments> {
+    if !wallet.try_exists()? {
         return Ok(Vec::new());
     }
-    pending_payments_in(&crate::sql::open_immutable(wallet)?)
+    let conn = crate::sql::open_immutable(wallet).map_err(io::Error::other)?;
+    pending_payments_in(&conn)
 }
 
-fn pending_payments_in(conn: &rusqlite::Connection) -> rusqlite::Result<Payments> {
-    if !crate::sql::has_table(conn, "core_transactions")?
-        || !crate::sql::has_table(conn, "core_utxos")?
-    {
+pub(crate) fn pending_payments_in(conn: &rusqlite::Connection) -> io::Result<Payments> {
+    if !crate::sql::has_table(conn, "core_transactions").map_err(io::Error::other)? {
         return Ok(Vec::new());
     }
-    let mut stmt = conn.prepare(
-        "SELECT t.txid, u.outpoint FROM core_transactions t \
-         JOIN core_utxos u ON u.wallet_id = t.wallet_id AND u.spent_in_txid = t.txid \
-         WHERE (t.height IS NULL OR t.height = 0) ORDER BY t.txid, u.outpoint",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
-    })?;
-    let mut out: Payments = Vec::new();
-    for row in rows {
-        let (txid, outpoint) = row?;
-        match out.last_mut() {
-            Some((t, inputs)) if *t == txid => inputs.push(outpoint),
-            _ => out.push((txid, vec![outpoint])),
+    let mut payments = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT wallet_id, txid, record_blob FROM core_transactions
+             WHERE (height IS NULL OR height = 0) AND record_blob IS NOT NULL",
+        )
+        .map_err(io::Error::other)?;
+    let mut rows = stmt.query([]).map_err(io::Error::other)?;
+    while let Some(row) = rows.next().map_err(io::Error::other)? {
+        let wallet: [u8; 32] = row.get(0).map_err(io::Error::other)?;
+        let txid = Txid::from_byte_array(row.get(1).map_err(io::Error::other)?);
+        let blob: Vec<u8> = row.get(2).map_err(io::Error::other)?;
+        let config = bincode::config::standard()
+            .with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
+        let (record, used): (TransactionRecord, _) =
+            bincode::serde::decode_from_slice(&blob, config).map_err(io::Error::other)?;
+        if used != blob.len() || record.txid != txid || record.transaction.txid() != txid {
+            return Err(io::Error::other(format!(
+                "invalid pending payment record {txid}"
+            )));
+        }
+        let inputs = record
+            .input_details
+            .iter()
+            .map(|input| {
+                record
+                    .transaction
+                    .input
+                    .get(input.index as usize)
+                    .map(|input| input.previous_output)
+                    .ok_or_else(|| {
+                        io::Error::other(format!("invalid wallet input in pending payment {txid}"))
+                    })
+            })
+            .collect::<io::Result<BTreeSet<_>>>()?;
+        if !inputs.is_empty() {
+            payments.push(PendingPayment {
+                wallet: Some(wallet),
+                txid,
+                inputs: inputs.into_iter().collect(),
+            });
         }
     }
-    Ok(out)
+    Ok(payments)
+}
+
+fn app_payment_holds(app: &Path) -> io::Result<Payments> {
+    if !app.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let conn = crate::sql::open_immutable(app).map_err(io::Error::other)?;
+    if !crate::sql::has_table(&conn, "settings_kv").map_err(io::Error::other)? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT scope, key, value FROM settings_kv
+         WHERE key GLOB 'sent:*' OR key GLOB 'restore_hold:*'",
+        )
+        .map_err(io::Error::other)?;
+    let mut rows = stmt.query([]).map_err(io::Error::other)?;
+    let mut payments = Vec::new();
+    while let Some(row) = rows.next().map_err(io::Error::other)? {
+        let scope: String = row.get(0).map_err(io::Error::other)?;
+        let key: String = row.get(1).map_err(io::Error::other)?;
+        let value: String = row.get(2).map_err(io::Error::other)?;
+        let invalid = || io::Error::other("invalid wallet payment hold");
+        let wallet = unhex(&scope)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(invalid)?;
+        let (_, txid) = key.split_once(':').ok_or_else(invalid)?;
+        let txid = Txid::from_str(txid).map_err(io::Error::other)?;
+        let inputs: Vec<_> = value
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(OutPoint::from_str)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(io::Error::other)?;
+        if !inputs.is_empty() {
+            payments.push(PendingPayment {
+                wallet: Some(wallet),
+                txid,
+                inputs,
+            });
+        }
+    }
+    Ok(payments)
 }
 
 /// S4-5: the live wallet's pending payments with its log applied. The main
@@ -1148,8 +1231,9 @@ fn live_pending_payments(root: &Path, wallet: &Path) -> io::Result<Payments> {
             fs::copy(&side, side_path(scratch.path(), &name, suffix))?;
         }
     }
-    let read = rusqlite::Connection::open(&copy).and_then(|c| pending_payments_in(&c));
-    read.map_err(|e| io::Error::other(format!("read the live wallet's pending payments: {e}")))
+    let db = rusqlite::Connection::open(&copy).map_err(io::Error::other)?;
+    pending_payments_in(&db)
+        .map_err(|e| io::Error::other(format!("read the live wallet's pending payments: {e}")))
 }
 
 /// An outpoint blob as platform-wallet-storage writes it (bincode, standard
@@ -1173,15 +1257,25 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Step 6: the mark, listing the before set's pending payments.
+/// Step 6: the mark, protecting pending payments in both verified copies.
 fn write_mark_for(
     network_dir: &Path,
     snapshot: &SnapshotInfo,
+    after: &Path,
     now: SystemTime,
     attempt: Option<&mut Attempt>,
 ) -> io::Result<()> {
-    let payments = pending_payments(&snapshot.dir().join(STORE_FILES[0]))
-        .map_err(|e| io::Error::other(format!("read the pending payments: {e}")))?;
+    let mut payments = pending_payments(&snapshot.dir().join(STORE_FILES[0]))
+        .map_err(|e| io::Error::other(format!("read the backup's pending payments: {e}")))?;
+    payments.extend(
+        pending_payments(&after.join(STORE_FILES[0])).map_err(|e| {
+            io::Error::other(format!("read the live wallet's pending payments: {e}"))
+        })?,
+    );
+    payments.extend(
+        app_payment_holds(&after.join("app.sqlite"))
+            .map_err(|e| io::Error::other(format!("read the live app's payment holds: {e}")))?,
+    );
     write_mark(network_dir, snapshot, now, payments, attempt)
 }
 
@@ -1196,31 +1290,40 @@ fn write_mark(
 ) -> io::Result<()> {
     let root = root(network_dir);
     let path = root.join(RESTORED_MARK);
-    let mut lines: Vec<String> = fs::read_to_string(&path)
-        .map(|t| {
-            t.lines()
-                .filter(|l| l.starts_with("pending "))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut lines: BTreeSet<_> = match fs::read_to_string(&path) {
+        Ok(text) => text
+            .lines()
+            .filter(|line| line.starts_with("pending "))
+            .map(str::to_owned)
+            .collect(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeSet::new(),
+        Err(e) => return Err(e),
+    };
     let mut binding = None;
     if let (Some(attempt), false) = (attempt, exists(&path)) {
         attempt.will_create_mark()?;
         binding = attempt.id.clone();
     }
-    for (txid, inputs) in payments {
-        if !payment_decodes(&txid, &inputs) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("an unreadable pending payment {}", hex(&txid)),
-            ));
+    for payment in payments {
+        let inputs = payment
+            .inputs
+            .iter()
+            .map(|outpoint| {
+                bincode::serde::encode_to_vec(outpoint, bincode::config::standard())
+                    .map(|bytes| hex(&bytes))
+                    .map_err(io::Error::other)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut line = format!(
+            "pending {} {}",
+            hex(payment.txid.as_byte_array()),
+            inputs.join(",")
+        );
+        if let Some(wallet) = payment.wallet {
+            line.push(' ');
+            line.push_str(&hex(&wallet));
         }
-        let inputs: Vec<String> = inputs.iter().map(|o| hex(o)).collect();
-        let line = format!("pending {} {}", hex(&txid), inputs.join(","));
-        if !lines.contains(&line) {
-            lines.push(line);
-        }
+        lines.insert(line);
     }
     let mut text = format!(
         "{MARK_HEADER}\nformat {FORMAT}\nrestored {} from {}\n",
@@ -1235,11 +1338,6 @@ fn write_mark(
         text.push('\n');
     }
     fsx::write_durable(&path, text.as_bytes())
-}
-
-/// Whether [`restored_mark`] can read this payment back.
-fn payment_decodes(txid: &[u8], inputs: &[Vec<u8>]) -> bool {
-    txid.len() == 32 && !inputs.is_empty() && inputs.iter().all(|o| decode_outpoint(o).is_some())
 }
 
 /// The attempt id a mark carries while the attempt that created it has no
@@ -1289,7 +1387,7 @@ pub fn restored_mark_present(network_dir: &Path) -> bool {
     }
 }
 
-/// The money gate's mark and the before set's pending payments, if set. An
+/// The money gate's mark and both sets' pending payments, if set. An
 /// entry that can't be read fails the call: the holds must never be
 /// silently short. The engine answers that error by opening the wallet with
 /// the money gate closed (every unmined own payment's outputs withheld, as
@@ -1310,6 +1408,15 @@ pub fn restored_mark(network_dir: &Path) -> Result<Option<RestoredMark>> {
         let txid: [u8; 32] = unhex(txid)
             .and_then(|b| b.try_into().ok())
             .ok_or_else(|| bad(line))?;
+        let (inputs, wallet) = match inputs.split_once(' ') {
+            Some((inputs, wallet)) => {
+                let wallet = unhex(wallet)
+                    .and_then(|w| w.try_into().ok())
+                    .ok_or_else(|| bad(line))?;
+                (inputs, Some(wallet))
+            }
+            None => (inputs, None),
+        };
         let inputs = inputs
             .split(',')
             .map(|o| {
@@ -1319,6 +1426,7 @@ pub fn restored_mark(network_dir: &Path) -> Result<Option<RestoredMark>> {
             })
             .collect::<Result<Vec<_>>>()?;
         pending.push(PendingPayment {
+            wallet,
             txid: Txid::from_byte_array(txid),
             inputs,
         });
@@ -1539,11 +1647,11 @@ fn ensure_staged(
     name: &str,
     sha: &str,
 ) -> io::Result<PathBuf> {
+    fsx::ensure_private_dir(staging_dir)?;
     let staged = staging_dir.join(name);
     if hash_opt(&staged)?.as_deref() == Some(sha) {
         return Ok(staged);
     }
-    fsx::ensure_private_dir(staging_dir)?;
     if !verified_copy(&snapshot_dir.join(name), &staged, sha)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1645,7 +1753,7 @@ fn finish(
             if e.before.is_some() && hash_opt(&staged).map_err(fail)? == e.before {
                 fs::remove_file(&staged).map_err(fail)?;
             }
-            remove_if_file(&partial_of(&staged)).map_err(fail)?;
+            remove_regular_partial(&partial_of(&staged)).map_err(fail)?;
         }
         remove_if_file(&staging.join(ATTEMPT_ID)).map_err(fail)?;
         if let Err(e) = fs::remove_dir(&staging) {
@@ -1775,16 +1883,6 @@ fn keep_live(
         }
         Err(e) => return Err(fail(e)),
     };
-    let payments = payments
-        .into_iter()
-        .filter(|(txid, inputs)| {
-            let ok = payment_decodes(txid, inputs);
-            if !ok {
-                tracing::warn!(txid = %hex(txid), "store upgrade: skipped an unreadable pending payment");
-            }
-            ok
-        })
-        .collect();
     write_mark(network_dir, snapshot, now, payments, None).map_err(fail)?;
     during.note(KEPT_LIVE.into()).map_err(fail)?;
     for e in &j.stores {
@@ -1848,7 +1946,7 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
         ));
     }
     if !exists(&root.join(RESTORED_MARK)) {
-        write_mark_for(network_dir, &snapshot, now, None)
+        write_mark_for(network_dir, &snapshot, &after_dir, now, None)
             .map_err(|e| incomplete(&e, "write the restored mark"))?;
     }
     Ok((journal, snapshot))
@@ -1917,7 +2015,7 @@ fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
 /// `RestoreIncomplete{journal_written: true}` and changes nothing. Nothing
 /// pending is `Ok`.
 pub fn cancel_restore(network_dir: &Path) -> Result<()> {
-    let _locks = gates(network_dir)?;
+    let _locks = lock_stores(network_dir)?;
     let root = root(network_dir);
     match pending_restore(network_dir)
         .map_err(StoreUpgradeError::io("read the restore marker", true))?
