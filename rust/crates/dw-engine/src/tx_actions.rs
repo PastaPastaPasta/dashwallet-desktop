@@ -159,6 +159,7 @@ const RESEND_HANDOFF: std::time::Duration = std::time::Duration::from_secs(2);
 /// Settings key prefix (wallet scope) of an abandoned transaction; the
 /// value is its consensus hex.
 const ABANDONED_PREFIX: &str = "abandoned:";
+const ABANDON_RELEASE_PREFIX: &str = "abandon_release:";
 /// A transaction this app dropped as one that can never confirm, or built
 /// on one (#739): a load seeds the walk of what to drop with it, and never
 /// restores it from a sent mark.
@@ -1016,12 +1017,27 @@ pub(crate) fn abandoned_txids(
     )
 }
 
+fn release_mark(
+    txid: Txid,
+    tx: &Transaction,
+    released: &BTreeSet<OutPoint>,
+) -> (String, Option<String>) {
+    let coins = tx
+        .input
+        .iter()
+        .map(|input| input.previous_output)
+        .filter(|outpoint| released.contains(outpoint))
+        .map(|outpoint| outpoint.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    (format!("{ABANDON_RELEASE_PREFIX}{txid}"), Some(coins))
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
-/// unlocked (its record in the mempool, or only its outputs) is swept, and
-/// the coins it spent that no other stored record spends are released,
-/// except a dropped one's ([`DROP_HOLDS_PREFIX`]).
+/// unlocked (its record in the mempool, or only its outputs) is swept.
+/// Replays the original release set subject to newer spend evidence.
 /// Only marked payments are swept; one mined or InstantSend-locked since
 /// (a height-only row, a record in a block or locked, a stored lock) counts
 /// again and is left. Run before the wallets load, so a swept payment's
@@ -1071,6 +1087,7 @@ pub(crate) fn finish_marked_abandons(
                 .insert(crate::history_ops::persisted_txids(db_path).map_err(|e| storage(&e))?),
         };
         let persisted = all.get(&wallet.0).cloned().unwrap_or_default();
+        let marked: HashSet<_> = marks.keys().copied().collect();
         let (outputs, locked) = crate::history_ops::txids_with_outputs_and_locks(
             db_path,
             wallet,
@@ -1111,6 +1128,11 @@ pub(crate) fn finish_marked_abandons(
             continue;
         };
         let mut spent_by_others = HashSet::new();
+        let mut mined_funding: HashSet<_> = persisted
+            .recordless
+            .difference(&persisted.unconfirmed)
+            .copied()
+            .collect();
         for t in persisted
             .records
             .iter()
@@ -1120,9 +1142,30 @@ pub(crate) fn finish_marked_abandons(
                 .get_core_tx_record(wallet.0, t)
                 .map_err(|e| storage(&e))?
             {
+                if r.context.block_info().is_some()
+                    || matches!(r.context, TransactionContext::InstantSend(_))
+                {
+                    mined_funding.insert(*t);
+                }
                 spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output));
             }
         }
+        let scope = wallet.to_string();
+        let planned: HashMap<_, _> = (appdb
+            .settings_with_prefix_lossy(&scope, ABANDON_RELEASE_PREFIX))
+        .map_err(|e| storage(&e))?
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let txid = Txid::from_str(&key[ABANDON_RELEASE_PREFIX.len()..]).ok()?;
+            let coins = value
+                .as_deref()
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|o| OutPoint::from_str(o).ok())
+                .collect::<BTreeSet<_>>();
+            Some((txid, coins))
+        })
+        .collect();
         let drop_held: HashSet<Txid> = (appdb
             .settings_with_prefix_lossy(&wallet.to_string(), DROP_HOLDS_PREFIX))
         .map_err(|e| storage(&e))?
@@ -1132,12 +1175,8 @@ pub(crate) fn finish_marked_abandons(
         let mut sent = None;
         let (mut spent, mut held) = (BTreeSet::new(), BTreeSet::new());
         for (t, copy) in &pending {
-            let spent = match drop_held.contains(t) {
-                true => &mut held,
-                false => &mut spent,
-            };
-            match copy {
-                Some(tx) => spent.extend(tx.input.iter().map(|i| i.previous_output)),
+            let inputs: BTreeSet<_> = match copy {
+                Some(tx) => tx.input.iter().map(|i| i.previous_output).collect(),
                 None => {
                     if sent.is_none() {
                         let (read, complete) = load_sent(appdb, wallet);
@@ -1147,13 +1186,43 @@ pub(crate) fn finish_marked_abandons(
                         sent = Some(read);
                     }
                     let coins = (sent.iter()).filter_map(|s| s.get(t));
-                    spent.extend(coins.flat_map(|m| m.coins.iter().copied()));
+                    coins.flat_map(|m| m.coins.iter().copied()).collect()
+                }
+            };
+            for input in inputs {
+                let approved = match planned.get(t) {
+                    Some(coins) => coins.contains(&input),
+                    None => !drop_held.contains(t) && mined_funding.contains(&input.txid),
+                };
+                if approved {
+                    spent.insert(input);
+                } else {
+                    held.insert(input);
                 }
             }
         }
+        if !spent.is_empty() {
+            let sent = match sent {
+                Some(sent) => sent,
+                None => {
+                    let (sent, complete) = load_sent(appdb, wallet);
+                    if !complete {
+                        return Err(storage(&"the sent marks do not read"));
+                    }
+                    sent
+                }
+            };
+            spent_by_others.extend(
+                sent.iter()
+                    .filter(|(t, _)| !marked.contains(*t))
+                    .flat_map(|(_, mark)| mark.coins.iter().copied()),
+            );
+        }
         let released: BTreeSet<OutPoint> = (spent.into_iter())
             .filter(|o| {
-                !pending.contains_key(&o.txid) && !spent_by_others.contains(o) && !held.contains(o)
+                (!marked.contains(&o.txid) || mined_funding.contains(&o.txid))
+                    && !spent_by_others.contains(o)
+                    && !held.contains(o)
             })
             .collect();
         tracing::info!(%wallet, payments = pending.len(), "finishing abandoned payments the wallet store still holds");
@@ -2682,6 +2751,11 @@ impl NetworkSession {
             let mut marks: Vec<(String, Option<String>)> = (txs.iter())
                 .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))))
                 .collect();
+            let planned_release = released.iter().copied().collect();
+            marks.extend(
+                txs.iter()
+                    .map(|(t, tx)| release_mark(*t, tx, &planned_release)),
+            );
             // Before the marks, under the gate a resend's hand-off holds:
             // the stop of each marked transaction this wallet sent is asked
             // (`Self::stop_rebroadcast`). The pinned dash-spv has none, and
@@ -4035,6 +4109,7 @@ impl NetworkSession {
             .flat_map(|(t, tx)| {
                 [
                     (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))),
+                    release_mark(*t, tx, &plan.freed),
                     (format!("{DROP_HOLDS_PREFIX}{t}"), Some(holds(tx))),
                     (format!("{DROP_WINNER_PREFIX}{t}"), Some(origin.clone())),
                 ]
@@ -4081,6 +4156,7 @@ impl NetworkSession {
                 .flat_map(|(t, _)| {
                     [
                         (format!("{ABANDONED_PREFIX}{t}"), None),
+                        (format!("{ABANDON_RELEASE_PREFIX}{t}"), None),
                         (format!("{DROP_HOLDS_PREFIX}{t}"), None),
                         (format!("{DROP_WINNER_PREFIX}{t}"), None),
                     ]
@@ -4148,6 +4224,10 @@ impl NetworkSession {
             winner_mined_height: winner.mined.filter(|_| all_won),
             released_outpoints: freed.into_iter().collect(),
         };
+        #[cfg(test)]
+        if (self.hub.quit_before_sweep).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Internal("quit before the sweep".into()));
+        }
         tokio::task::spawn_blocking(move || {
             let changeset = PlatformWalletChangeSet {
                 core: Some(CoreChangeSet {

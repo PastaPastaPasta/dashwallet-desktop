@@ -1808,6 +1808,33 @@ fn an_abandon_whose_sweep_fails_after_its_mark_loads_abandoned() {
     );
 }
 
+#[test]
+fn an_interrupted_abandon_keeps_the_pending_parent_output_spent() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let parent = send(&engine, &session, id, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, id, &parent);
+    let change = change_of(&parent, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 4,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[parent.txid(), child.txid()]);
+    assert_eq!(stored_spent(&session, id, change), Some(true));
+
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, child.txid()).is_err());
+    assert!(abandon_marked(&session, id, child.txid()));
+    let session = reopen(&engine, session);
+    assert!(!record_stored(&session, id, child.txid()));
+    assert_eq!(stored_spent(&session, id, change), Some(true));
+    assert!(!spendable(&engine, &session, id, change));
+}
+
 /// An abandoned payment relayed again unlocked by a peer is ignored. Its
 /// record can still be stored again while its sent mark stands (the abandon
 /// sweeps the record, not the mark), as a relay after a restart stores it.
@@ -3596,6 +3623,39 @@ fn a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back() {
     assert!(spendable(&engine, &session, id, d), "D is free");
     let session = reopen(&engine, session);
     assert_holds(&engine, &session, id, &want, "after a restart");
+}
+
+#[test]
+fn an_interrupted_swept_child_drop_releases_only_its_approved_coin() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    assert_eq!(stored_spent(&session, id, d), Some(true));
+    echo(&engine, &session, id, &p);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    session
+        .hub
+        .quit_before_sweep
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    eventually("the drop stopped before the sweep", || {
+        !session
+            .hub
+            .quit_before_sweep
+            .load(std::sync::atomic::Ordering::SeqCst)
+    });
+    drops_done(&engine, &session);
+    assert!(abandon_marked(&session, id, c.txid()));
+    assert!(record_stored(&session, id, c.txid()));
+    assert_eq!(stored_spent(&session, id, d), Some(true));
+
+    let session = reopen(&engine, session);
+    assert!(!record_stored(&session, id, c.txid()));
+    assert_eq!(stored_spent(&session, id, d), Some(false));
+    assert_eq!(stored_spent(&session, id, a), Some(true));
+    assert!(!spendable(&engine, &session, id, d));
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert!(spendable(&engine, &session, id, d));
+    assert!(!spendable(&engine, &session, id, a));
 }
 
 /// #170 case 4, the safety rule: a sweep whose winner is only
