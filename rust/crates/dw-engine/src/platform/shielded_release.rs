@@ -146,7 +146,6 @@ fn stored_height(value: &str) -> Option<u64> {
 
 /// The highest height the anchor of `wallet`'s spend `st_hash` was proved
 /// recorded at (`Some(None)`: none); `None` when it cannot be read.
-#[cfg(test)]
 pub(crate) async fn presence(
     session: &NetworkSession,
     wallet: WalletId,

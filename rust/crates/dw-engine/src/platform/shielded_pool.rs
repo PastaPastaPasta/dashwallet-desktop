@@ -1334,8 +1334,8 @@ pub(super) async fn authority(
 /// The library's refusal of a spend as the facade's error: the pool's note
 /// floor (Platform's `InsufficientPoolNotesError`, which the library hands
 /// on as text) is its own kind, and so is a spend refused before anything
-/// was sent. `spend` keeps unconfirmed results pending and keeps the
-/// library's holds in place even when it returns a pool-floor refusal.
+/// was sent. An unconfirmed result is no refusal, nor is a failed send
+/// whose notes the library holds: `spend` keeps both pending.
 pub(crate) fn spend_error(e: PlatformWalletError) -> ShieldedError {
     match e {
         PlatformWalletError::ShieldedInsufficientBalance {
@@ -1538,8 +1538,7 @@ pub(super) struct Armed<'s> {
 /// charged the total of its quote under the hold, so what the lease is
 /// charged is what the library builds (Opus r1 m1). One the library could
 /// not confirm is `Pending` with the record the library keeps of it
-/// (module doc). A held withdrawal whose broadcast hit the pool floor
-/// reports that reason without releasing its notes.
+/// (module doc), never an error: the host must not offer to send it again.
 async fn spend(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -1732,8 +1731,9 @@ pub(super) async fn send_armed(
             // let go of it. It may still hold the signed transition to
             // send in a later pass (it could not write the spend's end),
             // or hold its notes with no proof of either outcome: both are
-            // pending. A held withdrawal can report the pool-floor refusal
-            // when the library reads no transition queued for redrive.
+            // pending, not failed. An error only when both reads show
+            // nothing new of the spend; one that cannot be told may still
+            // go through.
             let (held, stored) = match (lib.held_spends().await, lib.unresolved().await) {
                 (Ok(held), Ok(stored)) => (held, stored),
                 (held, stored) => {
@@ -1761,11 +1761,7 @@ pub(super) async fn send_armed(
                     "a shielded spend failed and the library still holds its signed \
                      transition; it stays pending and a sync pass may send it"
                 );
-            } else if held.is_subset(&held_before)
-                || (matches!(to, To::Core(_) | To::Platform(_))
-                    && matches!(&*e, PlatformWalletError::ShieldedBroadcastFailed(text)
-                        if pool_notes(text).is_some()))
-            {
+            } else if held.is_subset(&held_before) {
                 return Err(spend_error(*e));
             } else {
                 tracing::warn!(
@@ -2730,12 +2726,19 @@ impl PwShielded {
             .map_err(store_error)?;
         let store = self.coordinator.store().read().await;
         let subwallet = self.subwallet();
+        use dw_appdb::dispatch::ShieldedHistoryRefusal as Evidence;
         for (row, id) in outstanding {
-            if eligible.contains(&id)
-                && holds_activity(&*store, subwallet, &id).map_err(store_error)?
+            let Some(evidence) = eligible.get(&id) else {
+                continue;
+            };
+            if *evidence == Evidence::DrainedHold
+                || holds_activity(&*store, subwallet, &id).map_err(store_error)?
             {
                 row.refusal = Some(ShieldedRefusal::Held);
                 row.status = ShieldedActivityStatus::Pending;
+            } else if *evidence == Evidence::Released {
+                row.refusal = Some(ShieldedRefusal::Released);
+                row.status = ShieldedActivityStatus::Failed;
             }
         }
         Ok(())
@@ -2978,8 +2981,16 @@ async fn want_drained_evidence(session: &NetworkSession, coordinator: &NetworkSh
 /// a height for (Q110 110-3, E2, P17b H1), each spend whole, by the
 /// account that held its notes. The pass bounds their anchors from the
 /// store's own notes and tree, and judges only what it was fed.
-async fn prepare_drained_pass(session: &NetworkSession, coordinator: &NetworkShieldedCoordinator) {
-    want_drained_evidence(session, coordinator).await;
+async fn prepare_drained_pass(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    has_orphaned_dispatches: bool,
+) {
+    if has_orphaned_dispatches {
+        coordinator.set_pass_evidence_wanted(true);
+    } else {
+        want_drained_evidence(session, coordinator).await;
+    }
     let spends = drained_release_candidates(session)
         .await
         .into_iter()
@@ -3069,6 +3080,124 @@ async fn release_drained_spends(
         sync_drained_holds(session, coordinator, &wallets).await?;
     }
     failed.map_or(Ok(()), Err)
+}
+
+struct OrphanedDispatch {
+    wallet: WalletId,
+    activity: [u8; 32],
+    st_hash: [u8; 32],
+    anchor: [u8; 32],
+    recorded_at: u64,
+    nullifiers: Vec<[u8; 32]>,
+}
+
+async fn orphaned_dispatches(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    wallets: &BTreeSet<[u8; 32]>,
+) -> Vec<OrphanedDispatch> {
+    let mut candidates = Vec::new();
+    for &id in wallets {
+        let wallet = WalletId(id);
+        let Ok(artifacts) = session.leases.unarchived_shielded_artifacts(wallet).await else {
+            continue;
+        };
+        let subwallet = SubwalletId::new(id, SHIELDED_ACCOUNT);
+        for artifact in artifacts {
+            if artifact.origin != ArtifactOrigin::Dispatched
+                || !open_artifact(&artifact)
+                || artifact.selected.is_empty()
+                || artifact.selected.iter().any(|(_, spent)| *spent)
+            {
+                continue;
+            }
+            let (Some(st_hash), Some(anchor)) = (artifact.st_hash, artifact.anchor) else {
+                continue;
+            };
+            if !matches!(
+                holds_activity(
+                    &*coordinator.store().read().await,
+                    subwallet,
+                    &artifact.activity
+                ),
+                Ok(false)
+            ) || !matches!(
+                session.leases.shielded_drain_names(wallet, st_hash).await,
+                Ok(false)
+            ) {
+                continue;
+            }
+            let Some(Some(recorded_at)) =
+                super::shielded_release::presence(session, wallet, st_hash).await
+            else {
+                continue;
+            };
+            candidates.push(OrphanedDispatch {
+                wallet,
+                activity: artifact.activity,
+                st_hash,
+                anchor,
+                recorded_at,
+                nullifiers: artifact.selected.into_iter().map(|(n, _)| n).collect(),
+            });
+        }
+    }
+    candidates
+}
+
+async fn release_orphaned_dispatches(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    evidence: &ShieldedPassEvidence,
+    candidates: Vec<OrphanedDispatch>,
+) -> Result<(), String> {
+    if candidates.is_empty() || coordinator.last_completed_pass() != Some(evidence.heights().0) {
+        return Ok(());
+    }
+    let nullifiers = candidates
+        .iter()
+        .flat_map(|c| c.nullifiers.iter().copied())
+        .collect::<Vec<_>>();
+    let reading = coordinator.read_held_nullifiers(&nullifiers).await;
+    let mut released = BTreeSet::new();
+    let mut failure = None;
+    for c in candidates {
+        let subwallet = SubwalletId::new(c.wallet.0, SHIELDED_ACCOUNT);
+        if !evidence.proves_spend_cannot_execute(&reading, &c.anchor, c.recorded_at, &c.nullifiers)
+            || !matches!(
+                holds_activity(&*coordinator.store().read().await, subwallet, &c.activity),
+                Ok(false)
+            )
+        {
+            continue;
+        }
+        match session
+            .leases
+            .settle_shielded_artifact(
+                c.wallet,
+                c.st_hash,
+                ArtifactStatus::NotExecuted,
+                Some(("not_executed", Some("pruned"))),
+                false,
+            )
+            .await
+        {
+            Ok(ArtifactSettled::Settled) => {
+                released.insert(c.wallet.0);
+            }
+            Ok(ArtifactSettled::Absent | ArtifactSettled::Unclassified) => {}
+            Err(e) => failure = Some(e),
+        }
+    }
+    if !released.is_empty() {
+        sync_drained_holds(
+            session,
+            coordinator,
+            &released.into_iter().collect::<Vec<_>>(),
+        )
+        .await?;
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Whether the engine set its dispatch hook on `coordinator`: the library
@@ -3270,7 +3399,7 @@ impl ShieldedDispatch for EngineDispatch {
                 ));
             }
         };
-        let (notes, stored) = {
+        let (notes, stored, activity) = {
             let store = coordinator.store().read().await;
             let notes: HashSet<[u8; 32]> = (store.get_all_notes(subwallet))
                 .map_err(|e| refused(format!("the account's notes could not be read: {e}")))?
@@ -3281,7 +3410,10 @@ impl ShieldedDispatch for EngineDispatch {
                 .map_err(|e| refused(format!("the stored spends could not be read: {e}")))?
                 .into_iter()
                 .find(|r| r.activity_id == payload.activity_id);
-            (notes, stored)
+            let activity = store
+                .get_activity_by_entry_id(subwallet, &payload.activity_id)
+                .map_err(|e| refused(format!("the spend's activity could not be read: {e}")))?;
+            (notes, stored, activity)
         };
         let selected: BTreeSet<[u8; 32]> = (payload.selected_notes.iter())
             .map(|n| n.nullifier)
@@ -3381,6 +3513,11 @@ impl ShieldedDispatch for EngineDispatch {
             }
             None => None,
         };
+        if let Some(activity) = activity {
+            record_dispatch_activity(&session, wallet, payload.st_hash, activity)
+                .await
+                .map_err(refused)?;
+        }
         match (session.leases.record_shielded_artifact(wallet, artifact)).await {
             Ok(true) => {}
             Ok(false) => return Err(refused("the activity already has an artifact")),
@@ -4946,13 +5083,45 @@ pub(crate) async fn keep_spend_rows(
     if rowless.is_empty() {
         return true;
     }
+    let ids = rowless
+        .iter()
+        .filter(|a| a.origin == ArtifactOrigin::Dispatched)
+        .map(|a| a.activity)
+        .collect::<Vec<_>>();
+    let dispatched = if ids.is_empty() {
+        BTreeMap::new()
+    } else {
+        match session.leases.shielded_refusal_activity(wallet, ids).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded activity evidence could not be read");
+                return !holds_rowless(&*coordinator.store().read().await, subwallet);
+            }
+        }
+    };
+    let mut details = dispatch_activity(
+        session,
+        wallet,
+        rowless
+            .iter()
+            .filter(|a| a.origin == ArtifactOrigin::Dispatched)
+            .filter_map(|a| a.st_hash)
+            .collect(),
+    )
+    .await;
     let mut kept_all = true;
     let mut store = coordinator.store().write().await;
     for artifact in rowless {
         let kept = if imported(artifact) {
             keep_import_row(&mut *store, subwallet, artifact)
         } else if dispatched_history_candidate(artifact) {
-            keep_dispatched_row(&mut *store, subwallet, artifact)
+            keep_dispatched_row(
+                &mut *store,
+                subwallet,
+                artifact,
+                dispatched.get(&artifact.activity).copied(),
+                artifact.st_hash.and_then(|hash| details.remove(&hash)),
+            )
         } else {
             keep_settled_import_row(&mut *store, subwallet, artifact)
         };
@@ -4989,27 +5158,105 @@ fn holds_rowless<S: ShieldedStore>(store: &S, subwallet: SubwalletId) -> bool {
 
 fn dispatched_history_candidate(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
     artifact.origin == ArtifactOrigin::Dispatched
-        && !artifact.acked
-        && (artifact.status == ArtifactStatus::Registered
-            || (open_artifact(artifact)
-                && super::shielded_release::disposition_is_cancelled(artifact)))
+        && (artifact.status == ArtifactStatus::NotExecuted
+            || (!artifact.acked
+                && (artifact.status == ArtifactStatus::Registered
+                    || (open_artifact(artifact)
+                        && super::shielded_release::disposition_is_cancelled(artifact)))))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DispatchActivity {
+    amount: u64,
+    fee: Option<u64>,
+    counterparty: Option<Vec<u8>>,
+    memo: Option<Vec<u8>>,
+}
+
+fn dispatch_activity_key(st_hash: [u8; 32]) -> String {
+    format!("shielded_dispatch_activity/{}", hex::encode(st_hash))
+}
+
+async fn record_dispatch_activity(
+    session: &NetworkSession,
+    wallet: WalletId,
+    st_hash: [u8; 32],
+    entry: ShieldedActivityEntry,
+) -> Result<(), String> {
+    let details = DispatchActivity {
+        amount: entry.amount,
+        fee: entry.fee,
+        counterparty: entry.counterparty,
+        memo: entry.memo,
+    };
+    let value = serde_json::to_string(&details).map_err(|e| e.to_string())?;
+    let key = dispatch_activity_key(st_hash);
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    session
+        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(&value)))
+        .await
+        .map_err(|e| format!("the shielded activity could not be recorded: {e}"))
+}
+
+async fn dispatch_activity(
+    session: &NetworkSession,
+    wallet: WalletId,
+    hashes: Vec<[u8; 32]>,
+) -> BTreeMap<[u8; 32], DispatchActivity> {
+    if hashes.is_empty() {
+        return BTreeMap::new();
+    }
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    session
+        .appdb_op(move |db| {
+            let mut rows = BTreeMap::new();
+            for hash in hashes {
+                if let Some(value) = db.setting(&scope, &dispatch_activity_key(hash))? {
+                    match serde_json::from_str(&value) {
+                        Ok(row) => {
+                            rows.insert(hash, row);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "could not read the shielded activity")
+                        }
+                    }
+                }
+            }
+            Ok(rows)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the shielded activities");
+            BTreeMap::new()
+        })
 }
 
 fn keep_dispatched_row<S: ShieldedStore>(
     store: &mut S,
     subwallet: SubwalletId,
     artifact: &dw_appdb::dispatch::ShieldedArtifact,
+    evidence: Option<dw_appdb::dispatch::ShieldedHistoryRefusal>,
+    details: Option<DispatchActivity>,
 ) -> Result<bool, S::Error> {
+    use dw_appdb::dispatch::ShieldedHistoryRefusal as Evidence;
     if store
         .get_activity_by_entry_id(subwallet, &artifact.activity)?
         .is_some()
-        || !holds_activity(&*store, subwallet, &artifact.activity)?
     {
         return Ok(false);
     }
+    let held = evidence == Some(Evidence::DrainedHold)
+        || holds_activity(&*store, subwallet, &artifact.activity)?;
+    let status = if held {
+        Status::Pending
+    } else if evidence == Some(Evidence::Released) {
+        Status::Failed
+    } else {
+        return Ok(false);
+    };
     let mut row = import_row(
         artifact,
-        Status::Pending,
+        status,
         artifact.selected.iter().map(|(n, _)| *n).collect(),
     );
     row.kind = match artifact.kind {
@@ -5024,10 +5271,17 @@ fn keep_dispatched_row<S: ShieldedStore>(
         },
         None => Kind::ShieldedSpend,
     };
-    if let Some(record) = store.pending_redrives(subwallet)?.into_iter().find(|r| {
-        r.activity_id == artifact.activity && Some(transition_hash(&r.st_bytes)) == artifact.st_hash
-    }) {
-        row.note_cmxs = super::shielded_release::spend_output_commitments(&record.st_bytes);
+    if let Some(details) = details {
+        row.amount = details.amount;
+        row.fee = details.fee;
+        row.counterparty = details.counterparty;
+        row.memo = details.memo;
+        if let Some(record) = store.pending_redrives(subwallet)?.into_iter().find(|r| {
+            r.activity_id == artifact.activity
+                && Some(transition_hash(&r.st_bytes)) == artifact.st_hash
+        }) {
+            row.note_cmxs = super::shielded_release::spend_output_commitments(&record.st_bytes);
+        }
     }
     store.save_activity(subwallet, &row)?;
     Ok(true)
@@ -5830,7 +6084,9 @@ async fn pass(
         );
         return PassOutcome::HeldImports;
     }
+    let orphaned = orphaned_dispatches(session, &coordinator, &wallets).await;
     if let Some((count, proved_at)) = count
+        && orphaned.is_empty()
         && pool_is_idle(session, manager, &coordinator, count)
             .await
             .is_some()
@@ -5847,7 +6103,7 @@ async fn pass(
     if !runs(session) {
         return PassOutcome::Stopped;
     }
-    prepare_drained_pass(session, &coordinator).await;
+    prepare_drained_pass(session, &coordinator, !orphaned.is_empty()).await;
     #[cfg(test)]
     session.platform.passes_run.fetch_add(1, Ordering::SeqCst);
     let summary = manager.shielded_sync().sync_now(force).await;
@@ -5901,13 +6157,15 @@ async fn pass(
             }
         }
         let _passes = session.platform.shielded_passes.write().await;
-        if open
-            && runs(session)
-            && fence.refusal().is_none()
-            && fence.drains() == drains
-            && let Err(e) = release_drained_spends(session, &coordinator, evidence).await
-        {
-            tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
+        if open && runs(session) && fence.refusal().is_none() && fence.drains() == drains {
+            if let Err(e) = release_drained_spends(session, &coordinator, evidence).await {
+                tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
+            }
+            if let Err(e) =
+                release_orphaned_dispatches(session, &coordinator, evidence, orphaned).await
+            {
+                tracing::warn!(error = %e, "orphaned shielded dispatches were not settled after the pass");
+            }
         }
     }
     PassOutcome::Ran

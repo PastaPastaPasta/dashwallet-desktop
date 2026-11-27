@@ -17,7 +17,7 @@
 //! carries its funding key, written in the marker's transaction and in
 //! every `Sent` bundle that re-appends it.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -270,7 +270,7 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         &self,
         _wallet: &[u8; 32],
         _activities: &[[u8; 32]],
-    ) -> Result<BTreeSet<[u8; 32]>, String> {
+    ) -> Result<BTreeMap<[u8; 32], dw_appdb::dispatch::ShieldedHistoryRefusal>, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
     /// The shielded artifacts of `wallet` (schema 11).
@@ -583,7 +583,7 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         &self,
         wallet: &[u8; 32],
         activities: &[[u8; 32]],
-    ) -> Result<BTreeSet<[u8; 32]>, String> {
+    ) -> Result<BTreeMap<[u8; 32], dw_appdb::dispatch::ShieldedHistoryRefusal>, String> {
         self.shielded_refusal_activity(wallet, activities)
             .map_err(|e| e.to_string())
     }

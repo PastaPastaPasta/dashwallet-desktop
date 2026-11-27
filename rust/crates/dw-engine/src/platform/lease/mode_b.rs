@@ -104,7 +104,7 @@
 //! ([`LeaseTable::note_resumed`]), or the library's coin selection could
 //! pick its inputs (F7).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
@@ -1635,7 +1635,7 @@ impl LeaseTable {
         &self,
         wallet: WalletId,
         activities: Vec<[u8; 32]>,
-    ) -> Result<BTreeSet<[u8; 32]>, String> {
+    ) -> Result<BTreeMap<[u8; 32], dw_appdb::dispatch::ShieldedHistoryRefusal>, String> {
         let backend = self.journal.get().ok_or("the journal is closed")?;
         self.rt
             .spawn_blocking(move || backend.shielded_refusal_activity(&wallet.0, &activities))

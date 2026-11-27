@@ -103,7 +103,7 @@
 //! one connection behind a mutex; async callers run them on the blocking
 //! pool.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -720,6 +720,14 @@ pub struct ShieldedArtifact {
     pub selected: Vec<([u8; 32], bool)>,
     /// The nullifiers it published, in action order.
     pub published: Vec<[u8; 32]>,
+}
+
+/// Journal evidence for a dispatched spend displayed in Shielded Activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldedHistoryRefusal {
+    CheckHold,
+    DrainedHold,
+    Released,
 }
 
 /// What [`DispatchJournal::settle_shielded_artifact`] found.
@@ -2202,6 +2210,22 @@ impl DispatchJournal {
                 "a shielded artifact settled {other} is not {new}"
             )));
         }
+        if disposition == Some(("not_executed", Some("pruned"))) {
+            let spent = tx.query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM shielded_artifact a
+                    JOIN shielded_artifact_note n USING (wallet, activity)
+                    WHERE a.wallet = ?1 AND a.st_hash = ?2 AND n.spent = 1
+                )",
+                params![&wallet[..], &st_hash[..]],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if spent {
+                return Err(AppDbError::Corrupt(
+                    "the pruned dispatch has inputs already marked spent".into(),
+                ));
+            }
+        }
         let (kind, reason) = disposition.unzip();
         tx.execute(
             "UPDATE shielded_artifact SET status = ?3, status_reason = NULL, \
@@ -2299,28 +2323,44 @@ impl DispatchJournal {
             .collect()
     }
 
-    /// Which displayed activity IDs have an unacknowledged local dispatch
-    /// that can still be shown as held.
+    /// Refusal evidence keyed by displayed activity ID.
     pub fn shielded_refusal_activity(
         &self,
         wallet: &[u8; 32],
         activities: &[[u8; 32]],
-    ) -> Result<BTreeSet<[u8; 32]>> {
+    ) -> Result<BTreeMap<[u8; 32], ShieldedHistoryRefusal>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT EXISTS (
-                SELECT 1 FROM shielded_artifact
-                WHERE wallet = ?1 AND activity = ?2 AND origin = 'dispatched' AND acked = 0
-                  AND (status = 'registered' OR (
-                    status = 'unresolved' AND status_reason IS NULL AND st_hash IS NOT NULL
-                    AND disposition_kind = 'unresolved' AND disposition_reason = 'cancelled'
-                  ))
-             )",
+            "SELECT CASE
+                WHEN a.status = 'not_executed' THEN 2
+                WHEN EXISTS (SELECT 1 FROM shielded_drained_hold h
+                    WHERE h.wallet = a.wallet AND h.st_hash = a.st_hash AND h.spent = 0
+                      AND h.origin IN ('unresolved', 'unreadable')
+                      AND NOT EXISTS (SELECT 1 FROM shielded_drained_release r
+                        WHERE r.wallet = h.wallet AND r.st_hash = h.st_hash
+                          AND r.released_at IS NOT NULL)) THEN 1
+                ELSE 0 END
+             FROM shielded_artifact a
+             WHERE a.wallet = ?1 AND a.activity = ?2 AND a.origin = 'dispatched'
+               AND (a.status = 'not_executed' OR (a.acked = 0
+                 AND (a.status = 'registered' OR (
+                   a.status = 'unresolved' AND a.status_reason IS NULL AND a.st_hash IS NOT NULL
+                   AND a.disposition_kind = 'unresolved' AND a.disposition_reason = 'cancelled'
+                 ))))",
         )?;
-        let mut eligible = BTreeSet::new();
+        let mut eligible = BTreeMap::new();
         for activity in activities {
-            if stmt.query_row(params![&wallet[..], &activity[..]], |r| r.get::<_, bool>(0))? {
-                eligible.insert(*activity);
+            if let Some(evidence) = stmt
+                .query_row(params![&wallet[..], &activity[..]], |r| {
+                    Ok(match r.get::<_, i32>(0)? {
+                        2 => ShieldedHistoryRefusal::Released,
+                        1 => ShieldedHistoryRefusal::DrainedHold,
+                        _ => ShieldedHistoryRefusal::CheckHold,
+                    })
+                })
+                .optional()?
+            {
+                eligible.insert(*activity, evidence);
             }
         }
         Ok(eligible)

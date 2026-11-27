@@ -699,8 +699,6 @@ fn a_held_refusal_with_no_live_row_shows_pending_until_release() {
         crate::platform::shielded::ShieldedActivityKind::Sent
     );
     assert_eq!(held.refusal, Some(ShieldedRefusal::Held));
-    damage_artifact_read(&journal, wallet, spends().remove(1).activity_id, true);
-    assert_eq!(read().refusal, Some(ShieldedRefusal::Held));
     damage_artifact_read(&journal, wallet, archived, false);
     assert!(admit(&engine, &session, wallet, id[0]).is_err());
 
