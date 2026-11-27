@@ -1641,7 +1641,9 @@ fn key_plan(
 /// The previous grant's session keys for the same identity, app and
 /// connection id that are still enabled: disabled in the same update. Only
 /// a confirmed record's ids are known to hold its keys; a submitted one's
-/// may since belong to another key.
+/// may since belong to another key. The records are local, so each id must
+/// also pass Disconnect's check against its own record
+/// ([`check_disconnect_key`]): a record with no key data disables nothing.
 fn superseded(
     records: &[ConnectRecord],
     identity: &Identity,
@@ -1660,12 +1662,11 @@ fn superseded(
                 && r.request != this
                 && r.state != RecordState::Submitted
         })
-        .flat_map(|r| r.session_keys.iter().copied())
-        .filter(|id| {
-            identity
-                .public_keys()
-                .get(id)
-                .is_some_and(|k| !k.is_disabled())
+        .flat_map(|r| {
+            (r.session_keys.iter())
+                .filter_map(|id| identity.public_keys().get(id))
+                .filter(move |k| !k.is_disabled() && check_disconnect_key(r, k).is_ok())
+                .map(|k| k.id())
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -2439,8 +2440,9 @@ fn is_forbidden_dashpay_bounds(bounds: &ContractBounds) -> bool {
     }
 }
 
-/// Verifies that `key` on Platform is an enabled app-added AUTHENTICATION
-/// session key belonging to `record`:
+/// Verifies that `key` on Platform is an app-added AUTHENTICATION session
+/// key belonging to `record` (whether it is still enabled is the caller's
+/// check):
 /// - its key id is in `record.session_keys`;
 /// - `record.session_key_data` holds the expected key digest AND matches
 ///   `key.data()` (older grants without key data are refused, never matched
