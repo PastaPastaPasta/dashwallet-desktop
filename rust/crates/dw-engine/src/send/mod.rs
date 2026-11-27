@@ -806,6 +806,8 @@ impl Resolved {
     }
 }
 
+const INVOICE_SCOPE: &str = "payment-invoices";
+
 impl NetworkSession {
     /// A new draft for `wallet_id`: no recipients, source `Any`, fee
     /// `Recommended{6}`, change `Auto`.
@@ -814,6 +816,14 @@ impl NetworkSession {
         wallet_id: WalletId,
     ) -> Result<Arc<TxDraft>, EngineError> {
         self.new_draft(wallet_id, HashSet::new(), false)
+    }
+
+    /// The transaction durably recorded for a payment invoice, if any.
+    pub async fn invoice_payment(&self, invoice: [u8; 32]) -> Result<Option<String>, EngineError> {
+        let _op = self.enter().await?;
+        let key = hex::encode(invoice);
+        self.appdb_op(move |db| db.setting(INVOICE_SCOPE, &key))
+            .await
     }
 
     /// A new draft whose coin control may spend `exempt` although tracked
@@ -1589,12 +1599,30 @@ impl TxDraft {
         self: &Arc<Self>,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
+        self.broadcast_candidate(prepared, None).await
+    }
+
+    /// Broadcasts through the normal send path and records the order's transaction
+    /// in the same durable write as its send record, before the network hand-off.
+    pub async fn broadcast_invoice(
+        self: &Arc<Self>,
+        prepared: Arc<PreparedTx>,
+        invoice: [u8; 32],
+    ) -> Result<BroadcastOutcome, EngineError> {
+        self.broadcast_candidate(prepared, Some(invoice)).await
+    }
+
+    async fn broadcast_candidate(
+        self: &Arc<Self>,
+        prepared: Arc<PreparedTx>,
+        invoice: Option<[u8; 32]>,
+    ) -> Result<BroadcastOutcome, EngineError> {
         self.check_mine(&prepared)?;
         let this = Arc::clone(self);
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
-                this.broadcast_inner(prepared).await
+                this.broadcast_inner_with_invoice(prepared, invoice).await
             })
             .await
     }
@@ -1610,6 +1638,14 @@ impl TxDraft {
     pub(crate) async fn broadcast_inner(
         &self,
         prepared: Arc<PreparedTx>,
+    ) -> Result<BroadcastOutcome, EngineError> {
+        self.broadcast_inner_with_invoice(prepared, None).await
+    }
+
+    async fn broadcast_inner_with_invoice(
+        &self,
+        prepared: Arc<PreparedTx>,
+        invoice: Option<[u8; 32]>,
     ) -> Result<BroadcastOutcome, EngineError> {
         // A contact payment's repeat waits for the attempt before it to
         // settle the contact; any other overlap is refused below.
@@ -1655,8 +1691,8 @@ impl TxDraft {
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send
         // recovered with its outcome unknown, which may be its first.
-        if let Err(e) = self.mark_sent(&prepared, true).await {
-            let next = match first && self.drop_mark(&prepared).await {
+        if let Err(e) = self.mark_sent(&prepared, true, invoice).await {
+            let next = match first && self.drop_mark(&prepared, invoice).await {
                 true => Phase::Pending,
                 false => Phase::Unknown,
             };
@@ -1684,7 +1720,7 @@ impl TxDraft {
         // be dropped keeps the payment held as maybe sent.
         let unsent = next == Phase::Released
             || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
-        if unsent && !self.drop_mark(&prepared).await {
+        if unsent && !self.drop_mark(&prepared, invoice).await {
             next = Phase::Unknown;
             *prepared.held.lock().unwrap() = Some(Held::UntilRestart);
             self.note_held(&prepared);
@@ -2398,7 +2434,7 @@ impl Drop for ReleaseClaim {
 impl TxDraft {
     /// Drops `prepared`'s sent mark; whether it went (a failure is logged),
     /// or stays on purpose: a load claimed its coins from it.
-    async fn drop_mark(&self, prepared: &PreparedTx) -> bool {
+    async fn drop_mark(&self, prepared: &PreparedTx, invoice: Option<[u8; 32]>) -> bool {
         // A load this session claimed the payment's coins from its marks:
         // they're all that holds those coins, so they stay, and the payment
         // stays pending (Abandon frees the coins in History, after a restart
@@ -2410,7 +2446,7 @@ impl TxDraft {
         if claimed {
             return true;
         }
-        let dropped = self.mark_sent(prepared, false).await;
+        let dropped = self.mark_sent(prepared, false, invoice).await;
         if let Err(e) = &dropped {
             tracing::warn!(error = %e, "could not drop a payment's sent mark: it stays held as maybe sent");
         }
@@ -2420,8 +2456,13 @@ impl TxDraft {
     /// Marks `prepared` as a payment this app sent, naming the wallet's
     /// coins it signed (`sent`), or removes the mark
     /// ([`crate::tx_actions::SENT_PREFIX`]).
-    async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
-        let txid = &prepared.summary.txid;
+    async fn mark_sent(
+        &self,
+        prepared: &PreparedTx,
+        sent: bool,
+        invoice: Option<[u8; 32]>,
+    ) -> Result<(), EngineError> {
+        let txid = prepared.summary.txid.clone();
         let scope = self.wallet_id.to_string();
         let keys = [
             format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
@@ -2489,7 +2530,34 @@ impl TxDraft {
                     (keys[1].as_str(), tx.as_deref()),
                     (keys[2].as_str(), inputs.as_deref()),
                 ];
-                db.set_settings_durable(&scope, &writes)
+                let Some(invoice) = invoice else {
+                    return db.set_settings_durable(&scope, &writes);
+                };
+                let key = hex::encode(invoice);
+                let existing = db.setting(INVOICE_SCOPE, &key)?;
+                if existing.as_deref().is_some_and(|id| id != txid) {
+                    return if sent {
+                        Err(dw_appdb::AppDbError::Invalid(
+                            "the invoice already has a different transaction".into(),
+                        ))
+                    } else {
+                        db.set_settings_durable(&scope, &writes)
+                    };
+                }
+                let mut scoped: Vec<_> = writes
+                    .iter()
+                    .map(|(key, value)| (scope.as_str(), *key, *value))
+                    .collect();
+                scoped.push((INVOICE_SCOPE, key.as_str(), sent.then_some(txid.as_str())));
+                if !db.set_scoped_settings_if_durable(
+                    Some((INVOICE_SCOPE, &key, existing.as_deref())),
+                    &scoped,
+                )? {
+                    return Err(dw_appdb::AppDbError::Invalid(
+                        "the invoice payment changed".into(),
+                    ));
+                }
+                Ok(())
             })
             .await
     }

@@ -36,6 +36,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   preReleaseNoticeDismissed: true,
   language: null,
   checkUpdatesAutomatically: false,
+  giftCardsNetworks: [],
 };
 const MAX_AUTO_LOCK_SECS = 86_400;
 /** The language tags `settings.rs` accepts: narrower than BCP 47. A 2–3 letter language, subtags of

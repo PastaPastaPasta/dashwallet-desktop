@@ -1,3 +1,9 @@
+import type { GiftAccount } from "./generated/GiftAccount";
+import type { GiftBrand } from "./generated/GiftBrand";
+import type { GiftCardProduct } from "./generated/GiftCardProduct";
+import type { GiftOrder } from "./generated/GiftOrder";
+import type { GiftOrderDetails } from "./generated/GiftOrderDetails";
+import type { GiftSignup } from "./generated/GiftSignup";
 // The renderer's view of the engine: dw-app's commands through the generated
 // `generated/commands.ts` (`IpcBackend`, api/tauri.ts). Every call maps 1:1 to a dw-app
 // command; the screens use this subset, the rest of the facade is in `generated/commands.ts`.
@@ -418,6 +424,18 @@ export interface Backend {
   draftSetChange(draft: number, change: ChangePolicy): Promise<null>;
   draftEstimate(draft: number): Promise<TxEstimate>;
   draftPrepare(draft: number, grantId: string): Promise<PreparedTxHandle>;
+  giftCardAccount(): Promise<GiftAccount>;
+  giftCardSignup(info: GiftSignup): Promise<GiftAccount>;
+  giftCardVerifyEmail(code: string): Promise<GiftAccount>;
+  giftCardSignIn(): Promise<GiftAccount>;
+  giftCardSignOut(): Promise<GiftAccount>;
+  giftCardBrands(): Promise<GiftBrand[]>;
+  giftCardProducts(brand: string): Promise<GiftCardProduct[]>;
+  giftCardOrders(walletId: string): Promise<GiftOrder[]>;
+  giftCardCreateOrder(walletId: string, brand: string, productId: number, cents: number): Promise<GiftOrder>;
+  giftCardDetails(walletId: string, orderId: string): Promise<GiftOrderDetails>;
+  giftCardDraft(walletId: string, orderId: string): Promise<number>;
+  giftCardBroadcast(orderId: string, draft: number, prepared: number): Promise<BroadcastOutcome>;
   draftBroadcast(draft: number, prepared: number): Promise<BroadcastOutcome>;
   draftAbandon(draft: number, prepared: number): Promise<null>;
   maxSpendable(walletId: string, source: CoinSource, fee: FeeMode): Promise<number>;

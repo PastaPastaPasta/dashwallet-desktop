@@ -69,6 +69,7 @@ domains!(
     governance,
     masternodes,
     rates,
+    gift_cards,
     updates,
     selftest,
 );

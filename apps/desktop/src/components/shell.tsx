@@ -65,9 +65,6 @@ const SETTINGS: SidebarItem = {
   ),
 };
 
-/** Sections behind a feature that is off: Explore until its task. CoinJoin
- * shows, as in dash-qt, whose `-enablecoinjoin` is on by default (D-row "sidebar"). */
-const EXPLORE_ENABLED = false;
 const EXPLORE: SidebarItem = { route: "explore", icon: <path d="M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm3 4-2 4-4 2 2-4 4-2Z" /> };
 
 /** The sidebar's Contacts entry is Join DashPay until the wallet has an identity; a contested
@@ -80,11 +77,11 @@ export function sidebarJoins(status: DashPayStatus | undefined): boolean {
  * waiting), Activity, CoinJoin and Explore when enabled (DASHPAY §4). */
 const badgeText = (n: number) => (n > 99 ? "99+" : String(n));
 
-export function Sidebar({ joined, requests, masternodes }: { joined: boolean; requests: number; masternodes: { shown: boolean; badge: number } }) {
+export function Sidebar({ joined, requests, masternodes, explore }: { joined: boolean; requests: number; masternodes: { shown: boolean; badge: number }; explore: boolean }) {
   const t = useT();
   const route = useUi((s) => s.route);
   const contacts: SidebarItem = joined ? { route: "contacts", icon: CONTACTS_ICON } : { route: "joinDashPay", icon: CONTACTS_ICON };
-  const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(EXPLORE_ENABLED ? [EXPLORE] : []), ...(masternodes.shown ? [MASTERNODES] : [])];
+  const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(explore ? [EXPLORE] : []), ...(masternodes.shown ? [MASTERNODES] : [])];
   const badges: Partial<Record<Route, number>> = { contacts: requests, masternodes: masternodes.badge };
   const item = (item: SidebarItem) => {
     const current = item.route === route;

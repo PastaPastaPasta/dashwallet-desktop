@@ -39,9 +39,10 @@ tauri-plugin-dialog = "2.8"
 # (src/updates.rs); no capability grants the plugin's own commands. Without
 # `zip`: the feed carries v2 artifacts only.
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
-# The status of a feed the plugin found no release in (404 or not): the
-# plugin's own reqwest, with its TLS and proxy features.
-reqwest = { version = "0.13", default-features = false }
+# The updater and PiggyCards use the same reqwest TLS stack.
+# PiggyCards initializes its provider even when the updater never runs.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 semver = "1"
 # Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
 base64 = "0.22"
@@ -81,7 +82,8 @@ tokio = { workspace = true, features = ["signal"] }
 # Intake logs kinds and codes, never link text (DP5-01 D14).
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-zeroize = { workspace = true }
+zeroize = { workspace = true, features = ["serde"] }
+tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Tauri's own GTK: the windows hidden at exit and the dialog of a launch the
@@ -110,7 +112,6 @@ tauri = { version = "2.12", features = ["test", "tray-icon"] }
 # QR images for api/scan.rs's tests (as dw-desktop's).
 image = { version = "0.25", default-features = false, features = ["png"] }
 qrcode = { version = "0.14", default-features = false }
-tempfile = { workspace = true }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
 # NetworkSession::quote_send_for_test: a quoted send with no network, for authorize_platform_send's tests.

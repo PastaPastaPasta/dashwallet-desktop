@@ -143,6 +143,7 @@ export const DEFAULT_PREFS: UiSettings = {
   preReleaseNoticeDismissed: false,
   language: null,
   checkUpdatesAutomatically: false,
+  giftCardsNetworks: [],
 };
 
 let state: UiState = {

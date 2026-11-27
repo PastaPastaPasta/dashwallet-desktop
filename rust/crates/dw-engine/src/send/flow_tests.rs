@@ -7631,3 +7631,88 @@ fn pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_br
         vec![coin]
     );
 }
+
+#[test]
+fn invoice_payment_and_send_record_commit_together() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepare = |draft: &Arc<TxDraft>| {
+        f.engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+            .unwrap()
+    };
+    let prepared = prepare(&draft);
+    let invoice = [1; 32];
+    let read = || {
+        f.engine
+            .block_on(f.session.invoice_payment(invoice))
+            .unwrap()
+    };
+    let db = f.session.live().unwrap().appdb;
+    let wallet = f.wallet.to_string();
+    let txid = prepared.summary().txid.clone();
+    let sent_key = format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX);
+    assert_eq!(read(), None);
+    assert_eq!(db.setting(&wallet, &sent_key).unwrap(), None);
+
+    // Stop at exactly the point where a crash would leave the send recorded.
+    f.engine
+        .block_on(draft.mark_sent(&prepared, true, Some(invoice)))
+        .unwrap();
+    assert_eq!(read().as_deref(), Some(txid.as_str()));
+    assert!(db.setting(&wallet, &sent_key).unwrap().is_some());
+
+    f.credit(2, COIN);
+    let other = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let candidate = prepare(&other);
+    assert_ne!(candidate.summary().txid, txid);
+    assert!(
+        f.engine
+            .block_on(other.mark_sent(&candidate, true, Some(invoice)))
+            .is_err()
+    );
+    f.engine
+        .block_on(other.mark_sent(&candidate, false, Some(invoice)))
+        .unwrap();
+    assert_eq!(read().as_deref(), Some(txid.as_str()));
+
+    // A first attempt with no peers is definitely unsent and drops both marks.
+    assert_eq!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice))
+        ),
+        SendFailure::NoPeers
+    );
+    assert_eq!(read(), None);
+    assert_eq!(db.setting(&wallet, &sent_key).unwrap(), None);
+}
+
+#[test]
+fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let invoice = [2; 32];
+    *prepared.phase() = Phase::Unknown;
+    assert!(matches!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice))
+        ),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    assert_eq!(
+        f.engine
+            .block_on(f.session.invoice_payment(invoice))
+            .unwrap()
+            .as_deref(),
+        Some(txid.as_str())
+    );
+}

@@ -37,6 +37,7 @@ export interface DraftSpec {
 }
 
 export interface DraftApi {
+  giftOrderId?: string;
   /** Writes `spec` into the draft and estimates it. */
   estimate(spec: DraftSpec): Promise<TxEstimate>;
   /** Writes `spec` into the draft and signs it with `grantId` (nothing is sent). */
@@ -54,7 +55,7 @@ export interface DraftApi {
 
 const CLOSED: AppError = { code: "send.cancelled", message: "The payment form was closed.", data: null };
 
-export function useDraft(walletId: string, locked: boolean): DraftApi {
+export function useDraft(walletId: string, locked: boolean, giftOrderId?: string): DraftApi {
   const b = useBackend();
   const draft = useRef<Promise<number> | null>(null);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
@@ -97,7 +98,7 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     async <T,>(gen: number, spec: DraftSpec, then: (d: number) => Promise<T>, replace: boolean): Promise<T> => {
       for (let attempt = 0; ; attempt++) {
         if (generation.current !== gen || lockedNow.current) throw CLOSED;
-        if (!draft.current) draft.current = b.newTxDraft(walletId);
+        if (!draft.current) draft.current = giftOrderId ? b.giftCardDraft(walletId, giftOrderId) : b.newTxDraft(walletId);
         const made = draft.current;
         let d: number;
         try {
@@ -122,7 +123,7 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
         }
       }
     },
-    [b, walletId],
+    [b, giftOrderId, walletId],
   );
 
   // An estimate cancelled by a close while the page lives on (a lock, a wallet change, StrictMode's
@@ -158,12 +159,12 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
 
   const broadcast = useCallback(
     (d: number, prepared: number) => {
-      const run = b.draftBroadcast(d, prepared);
+      const run = giftOrderId ? b.giftCardBroadcast(giftOrderId, d, prepared) : b.draftBroadcast(d, prepared);
       broadcasts.current.add(run);
       void run.catch(() => undefined).finally(() => broadcasts.current.delete(run));
       return run;
     },
-    [b],
+    [b, giftOrderId],
   );
 
   const abandon = useCallback(async (d: number, prepared: number) => void (await b.draftAbandon(d, prepared).catch(() => null)), [b]);
@@ -181,5 +182,5 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     if (locked) void close();
   }, [close, locked]);
 
-  return { estimate, prepare, createUnsigned, broadcast, abandon, close };
+  return { giftOrderId, estimate, prepare, createUnsigned, broadcast, abandon, close };
 }

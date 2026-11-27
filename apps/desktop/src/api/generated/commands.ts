@@ -84,6 +84,12 @@ import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
 import type { FoundIdentity } from "./FoundIdentity";
 import type { FundAmount } from "./FundAmount";
+import type { GiftAccount } from "./GiftAccount";
+import type { GiftBrand } from "./GiftBrand";
+import type { GiftCardProduct } from "./GiftCardProduct";
+import type { GiftOrder } from "./GiftOrder";
+import type { GiftOrderDetails } from "./GiftOrderDetails";
+import type { GiftSignup } from "./GiftSignup";
 import type { GovernanceClock } from "./GovernanceClock";
 import type { GovernanceInfo } from "./GovernanceInfo";
 import type { GovernanceSyncState } from "./GovernanceSyncState";
@@ -3649,6 +3655,90 @@ export function refreshRates(): Promise<RatesView> {
 }
 
 /**
+ * The PiggyCards sign-in state. The OS secure store owns the credentials.
+ */
+export function giftCardAccount(): Promise<GiftAccount> {
+  return invoke<GiftAccount>("gift_card_account");
+}
+
+/**
+ * Creates a PiggyCards account and starts email verification if required.
+ */
+export function giftCardSignup(info: GiftSignup): Promise<GiftAccount> {
+  return invoke<GiftAccount>("gift_card_signup", { info });
+}
+
+/**
+ * Verifies the email code, saves the generated password, and signs in.
+ */
+export function giftCardVerifyEmail(code: string): Promise<GiftAccount> {
+  return invoke<GiftAccount>("gift_card_verify_email", { code });
+}
+
+/**
+ * Signs in again with the password stored for this PiggyCards account.
+ */
+export function giftCardSignIn(): Promise<GiftAccount> {
+  return invoke<GiftAccount>("gift_card_sign_in");
+}
+
+/**
+ * Clears the current PiggyCards session.
+ */
+export function giftCardSignOut(): Promise<GiftAccount> {
+  return invoke<GiftAccount>("gift_card_sign_out");
+}
+
+/**
+ * PiggyCards merchants for the US catalog.
+ */
+export function giftCardBrands(): Promise<Array<GiftBrand>> {
+  return invoke<Array<GiftBrand>>("gift_card_brands");
+}
+
+/**
+ * In-stock USD products and denominations for a PiggyCards merchant.
+ */
+export function giftCardProducts(brand: string): Promise<Array<GiftCardProduct>> {
+  return invoke<Array<GiftCardProduct>>("gift_card_products", { brand });
+}
+
+/**
+ * Gift card orders for the selected wallet and PiggyCards account.
+ */
+export function giftCardOrders(walletId: string): Promise<Array<GiftOrder>> {
+  return invoke<Array<GiftOrder>>("gift_card_orders", { walletId });
+}
+
+/**
+ * Creates a single-card order, recording its ID before any wallet payment.
+ */
+export function giftCardCreateOrder(walletId: string, brand: string, productId: number, cents: number): Promise<GiftOrder> {
+  return invoke<GiftOrder>("gift_card_create_order", { walletId, brand, productId, cents });
+}
+
+/**
+ * Reads fulfillment for a known order. Codes and PINs are fetched on demand.
+ */
+export function giftCardDetails(walletId: string, orderId: string): Promise<GiftOrderDetails> {
+  return invoke<GiftOrderDetails>("gift_card_details", { walletId, orderId });
+}
+
+/**
+ * Opens a normal Pay draft bound to a known PiggyCards order.
+ */
+export function giftCardDraft(walletId: string, orderId: string): Promise<number> {
+  return invoke<number>("gift_card_draft", { walletId, orderId });
+}
+
+/**
+ * Broadcasts an ordinary Pay draft bound to a PiggyCards invoice.
+ */
+export function giftCardBroadcast(orderId: string, draft: number, prepared: number): Promise<BroadcastOutcome> {
+  return invoke<BroadcastOutcome>("gift_card_broadcast", { orderId, draft, prepared });
+}
+
+/**
  * Whether this copy can update itself, and where this run is in
  * finding and installing an update. Fetches nothing.
  */
@@ -4167,6 +4257,18 @@ export type CommandArgs = {
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
   refresh_rates: {  };
+  gift_card_account: {  };
+  gift_card_signup: { info: GiftSignup };
+  gift_card_verify_email: { code: string };
+  gift_card_sign_in: {  };
+  gift_card_sign_out: {  };
+  gift_card_brands: {  };
+  gift_card_products: { brand: string };
+  gift_card_orders: { walletId: string };
+  gift_card_create_order: { walletId: string; brand: string; productId: number; cents: number };
+  gift_card_details: { walletId: string; orderId: string };
+  gift_card_draft: { walletId: string; orderId: string };
+  gift_card_broadcast: { orderId: string; draft: number; prepared: number };
   update_status: {  };
   check_for_update: {  };
   install_update: { version: string };
@@ -4584,6 +4686,18 @@ export type CommandResults = {
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
   refresh_rates: RatesView;
+  gift_card_account: GiftAccount;
+  gift_card_signup: GiftAccount;
+  gift_card_verify_email: GiftAccount;
+  gift_card_sign_in: GiftAccount;
+  gift_card_sign_out: GiftAccount;
+  gift_card_brands: Array<GiftBrand>;
+  gift_card_products: Array<GiftCardProduct>;
+  gift_card_orders: Array<GiftOrder>;
+  gift_card_create_order: GiftOrder;
+  gift_card_details: GiftOrderDetails;
+  gift_card_draft: number;
+  gift_card_broadcast: BroadcastOutcome;
   update_status: UpdateStatus;
   check_for_update: UpdateStatus;
   install_update: UpdateStatus;
@@ -5003,6 +5117,18 @@ export const COMMANDS: Record<CommandName, string> = {
   rates_currencies: "rates",
   set_rates_settings: "rates",
   refresh_rates: "rates",
+  gift_card_account: "gift_cards",
+  gift_card_signup: "gift_cards",
+  gift_card_verify_email: "gift_cards",
+  gift_card_sign_in: "gift_cards",
+  gift_card_sign_out: "gift_cards",
+  gift_card_brands: "gift_cards",
+  gift_card_products: "gift_cards",
+  gift_card_orders: "gift_cards",
+  gift_card_create_order: "gift_cards",
+  gift_card_details: "gift_cards",
+  gift_card_draft: "gift_cards",
+  gift_card_broadcast: "gift_cards",
   update_status: "updates",
   check_for_update: "updates",
   install_update: "updates",

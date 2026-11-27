@@ -113,7 +113,8 @@ export function ConfirmSheet({
   const watchOnlyKnown = wallets.data?.find((w) => w.walletId === walletId)?.watchOnly;
   // Read and not there, or not readable: Send stays hidden, and the sheet says why.
   const walletUnknown = watchOnlyKnown === undefined && (wallets.isError || wallets.isSuccess);
-  const actions = contact ? contactConfirmActions(watchOnlyKnown) : confirmActions(unsigned, watchOnlyKnown);
+  const giftCard = draft.giftOrderId !== undefined;
+  const actions = contact || giftCard ? contactConfirmActions(watchOnlyKnown) : confirmActions(unsigned, watchOnlyKnown);
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -330,9 +331,10 @@ export function ConfirmSheet({
       // window locked before it was asked (then it is abandoned here); nothing else is abandoned
       // after a broadcast.
       const never = refusedWhileLocked(e);
-      const o = never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
+      const invoiceRefused = giftCard && hasCode(e, "invalid_argument");
+      const o = invoiceRefused ? ({ kind: "failed", text: failureText(e, chain, amountUnit) } as const) : never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        const engineHolds = toContact || never || hasCode(e, UNRECORDED);
+        const engineHolds = toContact || never || invoiceRefused || hasCode(e, UNRECORDED);
         await settleNotSent(engineHolds ? () => draft.abandon(d, prepared.handle) : null, () => notSent(o.text));
       } else attempt.outcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {
@@ -549,7 +551,7 @@ export function ConfirmSheet({
           <DashButton key="cancel" ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
             {t("common.cancel")}
           </DashButton>
-          {!contact && (
+          {!contact && !giftCard && (
             <DashButton
               key="unsigned"
               ref={unsignedButton}

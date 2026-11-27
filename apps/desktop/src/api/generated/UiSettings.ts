@@ -61,4 +61,8 @@ language: string | null,
  * Settings ▸ About ▸ Check for updates automatically (PK-03): off until
  * the user turns it on; only a copy that can update itself checks.
  */
-checkUpdatesAutomatically: boolean, };
+checkUpdatesAutomatically: boolean,
+/**
+ * Networks on which the user enabled experimental gift cards.
+ */
+giftCardsNetworks: Array<string>, };

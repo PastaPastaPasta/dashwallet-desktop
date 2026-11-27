@@ -2482,6 +2482,7 @@ dependencies = [
  "qrcode",
  "reqwest 0.13.5",
  "rfd",
+ "rustls",
  "semver",
  "serde",
  "serde_json",

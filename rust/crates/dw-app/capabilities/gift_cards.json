@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "gift_cards",
+  "description": "PiggyCards account, catalog and gift card orders, available only after opting in.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": [
+    "allow-gift-card-account",
+    "allow-gift-card-signup",
+    "allow-gift-card-verify-email",
+    "allow-gift-card-sign-in",
+    "allow-gift-card-sign-out",
+    "allow-gift-card-brands",
+    "allow-gift-card-products",
+    "allow-gift-card-orders",
+    "allow-gift-card-create-order",
+    "allow-gift-card-details",
+    "allow-gift-card-draft",
+    "allow-gift-card-broadcast"
+  ]
+}

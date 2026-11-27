@@ -22,7 +22,7 @@ export function SettingsPage({ network }: { network: NetworkInfo }) {
   return (
     <Page route="settings">
       <Tabs label={t("routes.settings")} tabs={tabs} current={tab} onSelect={(settingsTab) => ui.set({ settingsTab })} testId="settings-tabs">
-        {tab === "general" && <GeneralTab />}
+        {tab === "general" && <GeneralTab network={network} />}
         {tab === "security" && <SecurityTab />}
         {tab === "wallets" && <WalletsTab />}
         {tab === "coinjoin" && <CoinJoinTab />}
