@@ -919,7 +919,7 @@ export const dashpay = {
       noResponseKey: "your identity has no key that can sign the answer to the app.",
       nothingToSend: "Dash Wallet had nothing to send back to the app. Start again from the app; that adds new keys to your identity, for a small fee in credits.",
       scopeChanged: "the app changed its contracts or keys on Dash Platform after your keys were added.",
-      unverifiedKey: "Dash Wallet couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any.",
+      unverifiedKey: "In Settings ▸ Advanced ▸ Connected apps, review and disconnect this app’s older keys. Then start sign-in again from the app.",
       feeTooHigh: "the Dash Platform fee to disable these keys is higher than Dash Wallet's limit.",
       disconnectConflict: "this identity changed on Dash Platform before the earlier disconnect finished.",
       pendingFeeTooHigh: "the Dash Platform fee to resend this disconnect is above Dash Wallet's limit.",

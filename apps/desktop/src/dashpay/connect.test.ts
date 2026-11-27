@@ -52,6 +52,11 @@ describe("connect.failed's detail", () => {
     expect(connectErrorText(err("connect.failed"), "testnet")).toBe("Sign-in didn't finish: something went wrong on the way.");
   });
 
+  it("directs the user to disconnect older keys before starting a new sign-in", () => {
+    const error = err("connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
+    expect(connectErrorText(error, "testnet")).toContain("Settings ▸ Advanced ▸ Connected apps, review and disconnect this app’s older keys. Then start sign-in again from the app.");
+  });
+
   it("adds what is on the identity only where the engine proved it, never after notConfirmed", () => {
     const added = "The keys were added to your identity.";
     const suffix = (failure: string) => {

@@ -2194,13 +2194,6 @@ fn renewal_checks_digests_and_accepts_confirmed_legacy_keys() {
             }) as fn(&mut ConnectRecord),
             vec![],
         ),
-        (
-            (|r: &mut ConnectRecord| {
-                r.session_key_data.clear();
-                r.state = RecordState::Published;
-            }) as fn(&mut ConnectRecord),
-            vec![],
-        ),
     ] {
         let f = Fixture::new();
         let l = devnet(request());
@@ -2228,6 +2221,70 @@ fn renewal_checks_digests_and_accepts_confirmed_legacy_keys() {
             );
         }
     }
+}
+
+#[test]
+fn legacy_published_renewal_requires_disconnect_before_replacing_the_grant() {
+    let f = Fixture::new();
+    let original = devnet(request());
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&original, &choice);
+    f.approve(&original, &choice, &grant).unwrap();
+
+    let mut renewal = original.clone();
+    renewal.request.app_eph_pub =
+        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
+    let issued = f.quoted_grant(&renewal, &choice);
+    let record = first_record(&f);
+    assert_eq!(record.state, RecordState::Published);
+    let mut legacy = serde_json::to_value(record).unwrap();
+    let fields = legacy.as_object_mut().unwrap();
+    for field in [
+        "returns_to",
+        "session_key_data",
+        "pending_disconnect",
+        "response_delivery",
+    ] {
+        fields.remove(field);
+    }
+    let legacy: ConnectRecord = serde_json::from_value(legacy).unwrap();
+    f.put_record(legacy.clone());
+
+    let refused = ConnectError::Failed {
+        failure: ConnectFailure::UnverifiedKey,
+    };
+    assert_eq!(f.approve(&renewal, &choice, &issued), Err(refused.clone()));
+    assert_eq!(f.quote(&renewal, &choice), Err(refused));
+    assert!(f.unused(&issued));
+    assert_eq!(f.net.updates.lock().unwrap().len(), 1);
+    assert_eq!(f.net.published.lock().unwrap().len(), 1);
+
+    let quote = f
+        .disconnect_quote(&legacy.identity, &legacy.request)
+        .unwrap();
+    assert!(quote.needs_legacy_key_confirmation);
+    let grant = f.disconnect_grant_from_quote(&quote, true);
+    let done = f
+        .disconnect(&legacy.identity, &legacy.request, &grant)
+        .unwrap();
+    assert_eq!(done.keys_disabled, legacy.session_keys);
+
+    let grant = f.quoted_grant(&renewal, &choice);
+    f.approve(&renewal, &choice, &grant).unwrap();
+    let identity = f.net.me();
+    assert!(
+        legacy
+            .session_keys
+            .iter()
+            .all(|id| identity.public_keys()[id].is_disabled())
+    );
+    let enabled_budget: u64 = identity
+        .public_keys()
+        .values()
+        .filter(|key| !key.is_disabled())
+        .filter_map(IdentityPublicKeyGettersV1::total_budget)
+        .sum();
+    assert_eq!(enabled_budget, choice.terms.funding_limit);
 }
 
 /// An update Platform refused says so, instead of claiming the keys may

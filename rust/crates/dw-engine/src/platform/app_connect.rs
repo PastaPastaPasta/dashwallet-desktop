@@ -1500,6 +1500,9 @@ pub(crate) async fn quote(
     choice: &ConnectChoice,
 ) -> Result<ConnectQuote, ConnectError> {
     let p = prepare(net, session, wallet, link, choice).await?;
+    if link.request.connection_id.is_some() {
+        check_legacy_renewal(&records(session, wallet).await?, &p.identity, &link.request)?;
+    }
     Ok(ConnectQuote {
         request: link.request.request_hash(),
         plan: p.digest,
@@ -1665,27 +1668,53 @@ fn key_plan(
     Ok(out)
 }
 
-/// The previous grant's session keys for the same identity, app and
-/// connection id that are still enabled and pass Disconnect's key check.
+fn previous_grants<'a>(
+    records: &'a [ConnectRecord],
+    identity: &Identity,
+    request: &AppConnectRequest,
+) -> impl Iterator<Item = &'a ConnectRecord> + use<'a> {
+    let connection = request.connection_id.map(hex::encode);
+    let (app, owner) = (b58(&plan::id(&request.app_id)), b58(&identity.id()));
+    let this = hex::encode(request.request_hash());
+    records.iter().filter(move |r| {
+        connection.is_some()
+            && r.app_id == app
+            && r.identity == owner
+            && r.connection_id == connection
+            && r.request != this
+            && matches!(r.state, RecordState::Confirmed | RecordState::Published)
+    })
+}
+
+fn check_legacy_renewal(
+    records: &[ConnectRecord],
+    identity: &Identity,
+    request: &AppConnectRequest,
+) -> Result<(), ConnectError> {
+    if previous_grants(records, identity, request).any(|record| {
+        record.needs_legacy_key_confirmation()
+            && record.session_keys.iter().any(|id| {
+                identity
+                    .public_keys()
+                    .get(id)
+                    .is_none_or(|key| !key.is_disabled())
+            })
+    }) {
+        return Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        });
+    }
+    Ok(())
+}
+
+/// The previous grant's session keys that are still enabled and pass Disconnect's key check.
 fn superseded(
     records: &[ConnectRecord],
     identity: &Identity,
     request: &AppConnectRequest,
 ) -> Vec<KeyID> {
-    let Some(connection) = request.connection_id.map(hex::encode) else {
-        return Vec::new();
-    };
-    let (app, owner) = (b58(&plan::id(&request.app_id)), b58(&identity.id()));
-    let this = hex::encode(request.request_hash());
-    (records.iter())
-        .filter(|r| {
-            r.app_id == app
-                && r.identity == owner
-                && r.connection_id.as_deref() == Some(&connection)
-                && r.request != this
-                && matches!(r.state, RecordState::Confirmed | RecordState::Published)
-                && !r.needs_legacy_key_confirmation()
-        })
+    previous_grants(records, identity, request)
+        .filter(|r| !r.needs_legacy_key_confirmation())
         .flat_map(|r| {
             (r.session_keys.iter())
                 .filter_map(|id| identity.public_keys().get(id))
@@ -2109,6 +2138,7 @@ pub(crate) async fn approve(
         return Err(PlatformError::Unavailable.into());
     }
     let p = prepare(net, session, wallet_id, link, choice).await?;
+    check_legacy_renewal(&all_records, &p.identity, request)?;
     check_grant(session, wallet_id, &grant, request_hash, p.digest).await?;
     // Mandatory refresh before redeeming the grant (r4712172979): the update
     // signs at the refreshed identity's next revision, and a failed refresh
@@ -2141,7 +2171,7 @@ pub(crate) async fn approve(
             return Err(e);
         }
     };
-    let disable: Vec<KeyID> = superseded(&records(session, wallet_id).await?, &p.identity, request)
+    let disable: Vec<KeyID> = superseded(&all_records, &p.identity, request)
         .into_iter()
         .filter(|k| !plan.session_ids.contains(k))
         .collect();
