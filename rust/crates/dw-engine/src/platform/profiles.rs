@@ -491,15 +491,11 @@ mod gone_tests {
         let mut core = vec![7; 21];
         core[0] = 0;
         let platform = dpp::address_funds::PlatformAddress::P2pkh([8; 20]).to_bytes();
-        let orchard = platform_wallet::wallet::shielded::OrchardKeySet::from_seed(
-            &[9; 32],
-            dashcore::Network::Testnet,
-            0,
+        let orchard = dpp::address_funds::OrchardAddress::from_bech32m_string(
+            super::super::shielded_tests::ABANDON_MAINNET,
         )
         .unwrap()
-        .viewing_keys()
-        .default_address
-        .to_raw_address_bytes()
+        .to_raw_bytes()
         .to_vec();
         let props = ProfileProperties::from_iter([
             (

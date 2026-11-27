@@ -67,11 +67,11 @@ const LATEST: u32 = 15;
 const NOTE: u64 = 300_000_000;
 /// Lane V's reference: iOS and Android show this shielded address for
 /// "abandon … about" on mainnet.
-const ABANDON_MAINNET: &str =
+pub(super) const ABANDON_MAINNET: &str =
     "dash1zrlpvqcgyx2rag5d5rkhq0wy69hz3q37xe54xlrreqgp8htpv3gmm2l52gznxha0fd3kq9s4l67rj";
 
 /// A shielded address of an unrelated regtest wallet.
-fn payee() -> OrchardAddress {
+pub(super) fn payee() -> OrchardAddress {
     let keys = OrchardKeySet::from_seed(&[7; 64], Network::Regtest, 0).unwrap();
     let raw = keys.viewing_keys().default_address.to_raw_address_bytes();
     OrchardAddress::from_raw_bytes(&raw).unwrap()
@@ -2359,36 +2359,6 @@ fn a_failed_spend_keeps_its_quote_and_maps_the_librarys_error() {
             "rejected".into()
         ))
         .code()
-    );
-}
-
-#[test]
-fn a_pool_floor_refusal_reports_its_reason_while_holding_core_withdrawal_notes() {
-    let fx = Fixture::new(0);
-    let lib = Arc::new(FakeShielded::default());
-    let wallet = fx.wallet;
-    let credits = NOTE / 2;
-    *lib.after_failure.lock().unwrap() = AfterFailure::Held;
-    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
-        "Shielded pool has insufficient notes: pool has 3 notes but minimum 250 required".into(),
-    ));
-    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
-    let handle = lease.clone();
-    let (result, held) = run(&fx, &lib, move |s, lib| async move {
-        let result = pool::unshield(&s, wallet, &*lib, credits, None, &handle, false).await;
-        (result, lib.held_spends().await.unwrap())
-    });
-    assert_eq!(
-        result.unwrap_err(),
-        ShieldedError::PoolTooSmall {
-            notes: 3,
-            required: 250
-        }
-    );
-    assert_eq!(held.len(), 1);
-    assert_eq!(
-        fx.credits_spent(&lease),
-        credits + fee_of(credits, ShieldedFeeKind::Withdrawal)
     );
 }
 

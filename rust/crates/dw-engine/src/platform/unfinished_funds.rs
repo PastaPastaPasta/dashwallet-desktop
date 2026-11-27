@@ -355,17 +355,22 @@ pub(crate) async fn fund_evidence(
     let consumed = (rows.iter())
         .filter(|l| l.info.status == LockStatus::Consumed)
         .map(|l| l.info.outpoint);
-    let persisted = persisted_consumed(session, wallet, pending);
+    let (persisted, unread_lock_status) = persisted_consumed(session, wallet, pending);
     let settled =
         locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
     let shielded_settled =
-        locks::marks_of(session, wallet, LockKindId::Shielded, Mark::Settled).await;
-    let shielded_remaining = locks::remaining_of(session, wallet, LockKindId::Shielded)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(wallet_id = %wallet, error = %e, "could not read the shielded remainders");
-            Default::default()
-        });
+        locks::try_marks_of(session, wallet, LockKindId::Shielded, Mark::Settled).await;
+    let shielded_remaining = locks::remaining_of(session, wallet, LockKindId::Shielded).await;
+    let shielded_proofs_read = shielded_settled.is_ok() && shielded_remaining.is_ok();
+    for error in [
+        shielded_settled.as_ref().err(),
+        shielded_remaining.as_ref().err(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        tracing::warn!(wallet_id = %wallet, %error, "could not read shielded completion evidence");
+    }
     let by_txid = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled funds");
         HashSet::new()
@@ -377,13 +382,16 @@ pub(crate) async fn fund_evidence(
         done: consumed
             .chain(persisted)
             .chain(settled)
-            .chain(shielded_settled)
+            .chain(shielded_settled.unwrap_or_default())
             .chain(alone)
             .collect(),
         used_up_shields: shielded_remaining
+            .unwrap_or_default()
             .into_iter()
             .filter_map(|(at, credits)| (credits == 0).then_some(at))
             .collect(),
+        shielded_proofs_read,
+        unread_lock_status,
         reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Used).await,
         tracked: rows.iter().map(|l| l.info.outpoint).collect(),
         tracked_shields: locks
@@ -402,23 +410,25 @@ fn persisted_consumed(
     session: &NetworkSession,
     wallet: WalletId,
     pending: impl IntoIterator<Item = OutPoint>,
-) -> Vec<OutPoint> {
-    let persister = match session.live() {
-        Ok(live) => live.persister,
-        Err(_) => return Vec::new(),
+) -> (Vec<OutPoint>, HashSet<OutPoint>) {
+    let Ok(live) = session.live() else {
+        return (Vec::new(), pending.into_iter().collect());
     };
-    (pending.into_iter())
-        .filter(|at| match persister.asset_lock_status(&wallet.0, at) {
-            Ok(status) => matches!(
-                status,
-                Some(AssetLockStatus::Consumed | AssetLockStatus::DrainCompleted)
-            ),
+    let mut consumed = Vec::new();
+    let mut unread = HashSet::new();
+    for at in pending {
+        match live.persister.asset_lock_status(&wallet.0, &at) {
+            Ok(Some(AssetLockStatus::Consumed | AssetLockStatus::DrainCompleted)) => {
+                consumed.push(at)
+            }
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(%at, error = %e, "reading a fund lock's stored status");
-                false
+                unread.insert(at);
             }
-        })
-        .collect()
+        }
+    }
+    (consumed, unread)
 }
 
 /// The apply's signer: [`LockKeySigner`], arming the fund's record

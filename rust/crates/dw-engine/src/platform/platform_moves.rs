@@ -1067,6 +1067,8 @@ pub(crate) struct FundEvidence {
     pub(crate) done: HashSet<OutPoint>,
     /// A legacy zero-remainder proof, usable only for the armed recovery of that lock.
     pub(crate) used_up_shields: HashSet<OutPoint>,
+    pub(crate) shielded_proofs_read: bool,
+    pub(crate) unread_lock_status: HashSet<OutPoint>,
     /// Platform's "already consumed" for that outpoint, unproved.
     pub(crate) reported: HashSet<OutPoint>,
     /// Every fund lock the library tracks, any status.
@@ -1354,7 +1356,9 @@ async fn reconcile(
             }
         } else if ev.caught_up
             && if fund.recovered {
-                !ev.tracked_shields.contains(&at)
+                ev.shielded_proofs_read
+                    && !ev.unread_lock_status.contains(&at)
+                    && !ev.tracked_shields.contains(&at)
             } else {
                 !fund.armed && !ev.tracked.contains(&at)
             }

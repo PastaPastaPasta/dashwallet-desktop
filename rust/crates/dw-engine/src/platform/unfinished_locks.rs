@@ -404,9 +404,14 @@ fn mark_rows(
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let prefix = mark_prefix(kind, mark);
     let rows = db.settings_with_prefix(&scope, &prefix)?;
-    Ok((rows.into_iter())
-        .filter_map(|(key, value)| Some((key[prefix.len()..].parse().ok()?, value)))
-        .collect())
+    rows.into_iter()
+        .map(|(key, value)| {
+            let at = key[prefix.len()..].parse().map_err(|_| {
+                AppDbError::Corrupt(format!("invalid outpoint in lock record {key}"))
+            })?;
+            Ok((at, value))
+        })
+        .collect()
 }
 
 /// `wallet`'s `mark` records of `kind`'s locks.
@@ -516,11 +521,19 @@ pub(crate) async fn marks_of(
     kind: LockKindId,
     mark: Mark,
 ) -> HashSet<OutPoint> {
-    let read = on_appdb(session, move |db| read_marks(db, wallet, kind, mark));
-    read.await.unwrap_or_else(|e| {
+    try_marks_of(session, wallet, kind, mark).await.unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, ?kind, ?mark, error = %e, "could not read a kind's lock records");
         HashSet::new()
     })
+}
+
+pub(crate) async fn try_marks_of(
+    session: &NetworkSession,
+    wallet: WalletId,
+    kind: LockKindId,
+    mark: Mark,
+) -> Result<HashSet<OutPoint>, PlatformError> {
+    on_appdb(session, move |db| read_marks(db, wallet, kind, mark)).await
 }
 
 /// [`write_mark`] on `session`'s `app.sqlite`, off the async threads.

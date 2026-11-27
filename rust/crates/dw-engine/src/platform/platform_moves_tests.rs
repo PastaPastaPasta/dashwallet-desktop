@@ -4574,6 +4574,7 @@ fn an_untracked_recover_closes_only_when_core_has_caught_up() {
                 .unwrap()
         );
         evidence.caught_up = true;
+        evidence.shielded_proofs_read = true;
         evidence.tracked_shields.insert(recovered);
         assert!(
             !reconcile(&store, &mut records, &evidence, &held)
@@ -4581,6 +4582,20 @@ fn an_untracked_recover_closes_only_when_core_has_caught_up() {
                 .unwrap()
         );
         evidence.tracked_shields.clear();
+        evidence.shielded_proofs_read = false;
+        assert!(
+            !reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        evidence.shielded_proofs_read = true;
+        evidence.unread_lock_status.insert(recovered);
+        assert!(
+            !reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        evidence.unread_lock_status.clear();
         assert!(
             reconcile(&store, &mut records, &evidence, &held)
                 .await

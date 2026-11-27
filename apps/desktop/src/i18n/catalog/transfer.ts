@@ -409,7 +409,7 @@ export const transfer = {
       restart: "Restart",
     },
     error: {
-      poolTooSmall: "Shielded withdrawals open once the network's shielded pool has enough activity. Any held funds return once Dash Wallet proves the move can no longer go through. Check Activity before trying again.",
+      poolTooSmall: "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",
       invalidAddress: "Enter a Shielded address of this network.",
       insufficient: "Not enough in Shielded: {needed} needed with the fee, {available} available.",
       insufficientShort: "Not enough in Shielded.",

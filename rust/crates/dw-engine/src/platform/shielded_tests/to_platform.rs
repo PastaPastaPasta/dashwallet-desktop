@@ -365,29 +365,6 @@ fn unshield_to_platform_failures_after_signing() {
     }
 }
 
-#[test]
-fn a_pool_floor_refusal_reports_its_reason_while_holding_platform_unshield_notes() {
-    let fx = Fixture::new(0);
-    let lib = Arc::new(FakeShielded::default());
-    *lib.after_failure.lock().unwrap() = AfterFailure::Held;
-    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
-        "Shielded pool has insufficient notes: pool has 3 notes but minimum 250 required".into(),
-    ));
-    let grant = lease(&fx);
-    assert_eq!(
-        unshield(&fx, &lib, NOTE / 4, None, &grant, false).unwrap_err(),
-        ShieldedError::PoolTooSmall {
-            notes: 3,
-            required: 250
-        },
-    );
-    assert_eq!(lib.held.lock().unwrap().len(), 1);
-    assert_eq!(
-        fx.credits_spent(&grant),
-        NOTE / 4 + fee_of(NOTE / 4, ShieldedFeeKind::Unshield)
-    );
-}
-
 /// A double submit: two unshields under one grant. The wallet's lock runs
 /// them one at a time and the second finds the grant already redeemed,
 /// `platform.grant_invalid` with no key out, so the library sends one.
