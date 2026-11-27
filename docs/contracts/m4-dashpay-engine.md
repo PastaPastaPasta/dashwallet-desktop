@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 110
+Contract-Version: 116
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1063,7 +1063,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f021fd6323682f2db31b98064c2f202e39805da38beaeee7ac025ea2bb6b2fa0 version: 110 -->
+<!-- surface-sha256: 590da34b6eb2f28e0cc02ed39a9b7c70a83530d4998ac45b0d0d843d06a24f8e version: 116 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1549,6 +1549,7 @@ pub use super::shielded::{ ShieldedStoreClosed, ShieldedSyncWait };
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
     Unavailable,
+    SessionOff,
     Timeout,
     ProofInvalid,
     TrustMismatch,
@@ -3142,9 +3143,11 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   present, or does not read, that wallet's Platform funds are refused the same way, until a session with Platform has
   checked the wallet after its load and run its drop-dead pass; `restore_status` then reads `platformOnly` with
   `platformPass` while a loaded wallet has it.
-- `platform.unavailable` (Contract-Version 106) in a session without Platform: every funds flow that needs Platform is
-  refused with it before any grant is redeemed or any lease, record or signature made (`LeaseError::PlatformUnavailable`
-  at its lease), whatever the restore's state; it takes precedence over `platform.restored`. The evonode credit
+- `platform.unavailable` in a session without Platform: every funds flow that needs Platform is refused with
+  `PlatformError::SessionOff` before any grant is redeemed or any lease, record or signature made
+  (`LeaseError::PlatformUnavailable` at its lease), regardless of the restore's state. It takes precedence over
+  `platform.restored`. `SessionOff` shares the `platform.unavailable` code and carries
+  `{"kind":"feature","feature":"platform"}` in the app error's data. The evonode credit
   withdrawal's calls answer `masternodes.platform_unavailable` (mn-engine), as before. Core sends, CoinJoin and Core
   transaction actions are not refused.
 - During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
