@@ -373,7 +373,8 @@ impl From<dw_vault::GrantPurpose> for GrantPurpose {
             P::PlatformOp { .. }
             | P::IdentityScan
             | P::MasternodeWithdraw { .. }
-            | P::AppConnect { .. } => Self::PlatformOp,
+            | P::AppConnect { .. }
+            | P::AppDisconnect { .. } => Self::PlatformOp,
             // The frozen enum has no masternode purposes (MG-05), which a
             // host here cannot request: a `MasternodeOp` shows as the spend
             // it caps, a `Governance` grant as the signature it makes.

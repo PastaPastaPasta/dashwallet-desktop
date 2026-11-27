@@ -53,6 +53,7 @@ export const network = {
     shieldDrain: "moving mixed coins to Shielded",
     contactPayFromBalance: "contact payment",
     appConnect: "app sign-in",
+    appDisconnect: "disconnecting an app",
   },
   busyDraining: "Dash Wallet is still finishing a request on this network. Try switching again once it is done.",
   walletOpening: "A wallet is still opening. Switch networks once it is open.",

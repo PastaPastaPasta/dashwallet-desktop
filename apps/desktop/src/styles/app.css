@@ -7254,3 +7254,85 @@ button.bell-row-open:focus-visible {
   content: "";
   width: var(--dw-space-l);
 }
+
+.connected-apps-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  width: 100%;
+  margin: var(--dw-space-s) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connected-app-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding-top: var(--dw-space-m);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.connected-app-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+.connected-app-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  min-width: 0;
+  flex: 1;
+}
+
+.connected-app-returns {
+  margin: 0;
+}
+
+.connected-app-actions {
+  flex-shrink: 0;
+}
+
+.connected-app-meta {
+  padding: 0;
+}
+
+.connected-app-keys-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.connected-app-keys {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connected-app-key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.connected-app-key-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+}
+
+.connected-app-key-detail {
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.connected-app-critical {
+  margin: var(--dw-space-xxs) 0 0;
+}

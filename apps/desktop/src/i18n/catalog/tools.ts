@@ -25,6 +25,7 @@ export const tools = {
     signMessage: "Enter your passphrase to sign the message.",
     platformOp: "Enter your passphrase to authorize this Dash Platform operation.",
     platformSend: "Enter your passphrase to authorize this payment.",
+    appDisconnect: "Enter your passphrase to disconnect this app.",
     continue: "Enter your passphrase to continue.",
   },
   information: {

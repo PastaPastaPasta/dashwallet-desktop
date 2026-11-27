@@ -155,6 +155,18 @@ pub enum GrantPurpose {
         request: [u8; 20],
         plan: [u8; 32],
     },
+    /// Disconnecting one App Connect login (`app_connect_disconnect`): the
+    /// login on `identity` whose request hashes to `request` (`hash160`),
+    /// spending at most `max_credits` of the identity's credits on the
+    /// MASTER-signed identity update that disables that app's keys. Yields a
+    /// [`crate::SignerScope::PlatformIdentity`] signer only (never
+    /// `AppConnect`). Always needs a passphrase: it updates the identity with
+    /// its MASTER key.
+    AppDisconnect {
+        max_credits: u64,
+        identity: [u8; 32],
+        request: [u8; 20],
+    },
 }
 
 /// [`GrantPurpose`] without its payload; what a call expects.
@@ -171,6 +183,7 @@ pub enum GrantKind {
     MasternodeOp,
     MasternodeWithdraw,
     AppConnect,
+    AppDisconnect,
 }
 
 /// Platform's fixed rate: credits per duff.
@@ -190,6 +203,7 @@ impl GrantPurpose {
             GrantPurpose::MasternodeOp { .. } => GrantKind::MasternodeOp,
             GrantPurpose::MasternodeWithdraw { .. } => GrantKind::MasternodeWithdraw,
             GrantPurpose::AppConnect { .. } => GrantKind::AppConnect,
+            GrantPurpose::AppDisconnect { .. } => GrantKind::AppDisconnect,
         }
     }
 
@@ -203,8 +217,9 @@ impl GrantPurpose {
     /// in M2) whenever the vault has a passphrase slot, even while it is
     /// unlocked or inside the signing window: revealing the phrase, wiping a
     /// wallet, changing a credential, a vote, and a masternode owner
-    /// operation (which can move every future reward for a fee), and an App
-    /// Connect login (which hands keys to an app).
+    /// operation (which can move every future reward for a fee), an App
+    /// Connect login (which hands keys to an app), and an App Disconnect
+    /// (which updates the identity with its MASTER key).
     pub fn requires_credential(&self) -> bool {
         matches!(
             self,
@@ -214,6 +229,7 @@ impl GrantPurpose {
                 | GrantPurpose::Governance
                 | GrantPurpose::MasternodeOp { .. }
                 | GrantPurpose::AppConnect { .. }
+                | GrantPurpose::AppDisconnect { .. }
         )
     }
 
@@ -234,9 +250,8 @@ impl GrantPurpose {
     /// for `PlatformOp`; `ceil(max_credits / CREDITS_PER_DUFF)` for
     /// `MasternodeWithdraw`, as `PlatformOp`'s credits count (MG-13 P12);
     /// 0 for `SignMessage` and `Governance` (MG-05 D2);
-    /// `None` for a purpose quick unlock never issues, `AppConnect` among
-    /// them: its keys spend credits and tokens its `max_credits` doesn't
-    /// count.
+    /// `None` for a purpose quick unlock never issues, `AppConnect` and
+    /// `AppDisconnect` among them.
     /// Saturates at `u64::MAX`, which is above every spending limit.
     pub fn quick_unlock_value(&self) -> Option<u64> {
         match *self {
@@ -250,7 +265,7 @@ impl GrantPurpose {
             GrantPurpose::MasternodeWithdraw { max_credits, .. } => {
                 Some(max_credits.div_ceil(CREDITS_PER_DUFF))
             }
-            GrantPurpose::AppConnect { .. } => None,
+            GrantPurpose::AppConnect { .. } | GrantPurpose::AppDisconnect { .. } => None,
             GrantPurpose::SignMessage | GrantPurpose::Governance => Some(0),
             _ => None,
         }

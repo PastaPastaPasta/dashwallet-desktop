@@ -44,6 +44,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
         FlowKind::AppConnect => &[GrantKind::AppConnect],
+        FlowKind::AppDisconnect => &[GrantKind::AppDisconnect],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw
@@ -133,11 +134,18 @@ pub(crate) fn issue(
     // The key-checked redemption first, so a key the vault does not hold
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
-    order.sort_by_key(|(_, k)| !matches!(**k, GrantKind::PlatformOp | GrantKind::AppConnect));
+    order.sort_by_key(|(_, k)| {
+        !matches!(
+            **k,
+            GrantKind::PlatformOp | GrantKind::AppConnect | GrantKind::AppDisconnect
+        )
+    });
     let redeem = |g: &String, kind: GrantKind| match (kind, keys) {
-        (GrantKind::PlatformOp | GrantKind::AppConnect, Some(keys)) => vault
-            .redeem_grant_holding_key(g, &wallet.0, keys)?
-            .ok_or(VaultError::NoSecret),
+        (GrantKind::PlatformOp | GrantKind::AppConnect | GrantKind::AppDisconnect, Some(keys)) => {
+            vault
+                .redeem_grant_holding_key(g, &wallet.0, keys)?
+                .ok_or(VaultError::NoSecret)
+        }
         _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
     };
     let mut tokens = order
@@ -321,6 +329,14 @@ pub(crate) fn issue(
                 out.signers.app_connect =
                     Some(scoped(SignerScope::AppConnect { request }).map_err(issuing)?);
             }
+            GrantPurpose::AppDisconnect { max_credits, .. } if flow == FlowKind::AppDisconnect => {
+                // Disconnecting an App Connect login: the identity keys
+                // (MASTER) alone; no AppConnect signer, no funding signer,
+                // no contact crypto.
+                out.credits = max_credits;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+            }
             GrantPurpose::Governance => {
                 out.voting = true;
                 let signer = match &key {
@@ -415,13 +431,15 @@ impl NetworkSession {
             .await
     }
 
-    async fn begin_issuing(
-        self: &Arc<Self>,
-        (wallet, flow, source): (WalletId, FlowKind, Option<PaymentSource>),
-        grants: &[String],
-        keys: Option<Vec<HeldKey>>,
-        platform_address: bool,
-    ) -> Result<Lease, LeaseError> {
+    /// Refuses a funds-moving flow when Platform funds are off or when the
+    /// network or wallet is under a restore hold. Shared between
+    /// [`begin_issuing`](Self::begin_issuing) and pending-Disconnect
+    /// rebroadcast (which submits already-signed bytes without a lease).
+    pub(crate) fn check_funds_gate(
+        &self,
+        wallet: WalletId,
+        flow: FlowKind,
+    ) -> Result<(), LeaseError> {
         if flow.moves_funds() {
             let gate = &self.hub.restore;
             if flow.needs_platform() && self.platform.funds_off() {
@@ -433,6 +451,17 @@ impl NetworkSession {
                 return Err(LeaseError::Restored);
             }
         }
+        Ok(())
+    }
+
+    async fn begin_issuing(
+        self: &Arc<Self>,
+        (wallet, flow, source): (WalletId, FlowKind, Option<PaymentSource>),
+        grants: &[String],
+        keys: Option<Vec<HeldKey>>,
+        platform_address: bool,
+    ) -> Result<Lease, LeaseError> {
+        self.check_funds_gate(wallet, flow)?;
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let grants = grants.to_vec();

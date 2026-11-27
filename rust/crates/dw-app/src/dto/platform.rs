@@ -67,6 +67,8 @@ pub enum FlowKindName {
     ContactPayFromBalance,
     /// One App Connect login under an `appConnect` grant.
     AppConnect,
+    /// Disconnecting one App Connect login under an `appDisconnect` grant.
+    AppDisconnect,
 }
 
 mirror_enum!(FlowKind => FlowKindName {
@@ -74,14 +76,14 @@ mirror_enum!(FlowKind => FlowKindName {
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
     PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
-    MasternodeWithdraw, ContactPayFromBalance, AppConnect
+    MasternodeWithdraw, ContactPayFromBalance, AppConnect, AppDisconnect
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
     PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
-    MasternodeWithdraw, ContactPayFromBalance, AppConnect
+    MasternodeWithdraw, ContactPayFromBalance, AppConnect, AppDisconnect
 });
 
 /// A lease budget: `funding`, `spend` and `masternode` are duffs, `credits`

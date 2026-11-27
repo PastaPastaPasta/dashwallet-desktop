@@ -8,12 +8,31 @@ import type { AppError } from "../api/generated/commands";
 import type { ConnectBinding } from "../api/generated/ConnectBinding";
 import type { ConnectChoice } from "../api/generated/ConnectChoice";
 import type { ConnectSheet } from "../api/generated/ConnectSheet";
+import type { ConnectedApp } from "../api/generated/ConnectedApp";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { DashPayWorld } from "./dashpay";
 import type { Handlers } from "./handlers";
 import type { FixtureGrant, World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
+
+/** Scripted outcome for `app_connect_disconnect_quote` / `app_connect_disconnect` in the fixture. */
+export type DisconnectFixtureOutcome =
+  | "ok"
+  | "responseInFlight"
+  | "notConfirmed"
+  | "unverifiedKey"
+  | "feeTooHigh"
+  | "pendingFeeTooHigh"
+  | "pendingWrite"
+  | "grantExceeded"
+  | "disconnectConflict"
+  | "priorChargeKnown"
+  | "priorChargePossible"
+  | "credits"
+  | "error";
+
+const DISCONNECT_FEE = "22000000";
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
@@ -68,7 +87,10 @@ const ADMIN = base58("6YpprAdmnRt3vZxWb6nH9cF4");
 const NEW_ADMIN = base58("4YpprNewAdmnQ2wXcT7kL8pR");
 const GROUP = base58("9YpprGrpEq1mZxWb6nH9cF4j");
 const APP_ID = "a7c3e5f1".repeat(8);
+const FORUM_APP_ID = "b8d4f6e2".repeat(8);
 const REQUEST = "5e2d".repeat(10);
+const REQUEST_YAPPR = "1a2b".repeat(10);
+const REQUEST_FORUM = "3c4d".repeat(10);
 const DAY_MS = 86_400_000;
 const FUNDING_LIMIT = "5000000000";
 const MAX_FUNDING_LIMIT = "500000000000";
@@ -80,6 +102,57 @@ const BINDINGS: ConnectBinding[] = [
   { index: 1, primary: false, level: "critical", scope: { kind: "profile" } },
   { index: 2, primary: false, level: "critical", scope: { kind: "group", group: { group: GROUP, owner: OWNER, admins: [ADMIN], contracts: [POSTS, LIKES], documentTypes: [], tokens: [] } } },
 ];
+
+/** Sample connected apps for fixture scenarios (fixture data only). */
+export function sampleConnectedApps(identity: string, now = FIXTURE_NOW.getTime()): ConnectedApp[] {
+  return [
+    {
+      request: REQUEST_YAPPR,
+      appId: APP_ID,
+      label: "Yappr",
+      returnsTo: CONNECT_HOST,
+      identity,
+      keys: [
+        {
+          keyId: 6,
+          level: "critical",
+          scope: BINDINGS[2].scope,
+          budget: "4800000000",
+          expiresAtMs: now + 30 * DAY_MS,
+        },
+        {
+          keyId: 7,
+          level: "high",
+          scope: { kind: "profile" },
+          budget: "200000000",
+          expiresAtMs: now + 30 * DAY_MS,
+        },
+      ],
+      fundingLimit: FUNDING_LIMIT,
+      expiresAtMs: now + 30 * DAY_MS,
+      approvedAtMs: now - 2 * DAY_MS,
+    },
+    {
+      request: REQUEST_FORUM,
+      appId: FORUM_APP_ID,
+      label: "Dash Forum",
+      returnsTo: null,
+      identity,
+      keys: [
+        {
+          keyId: 8,
+          level: "high",
+          scope: { kind: "documentType", contract: POSTS, documentType: "post" },
+          budget: "1000000000",
+          expiresAtMs: now + 14 * DAY_MS,
+        },
+      ],
+      fundingLimit: "1000000000",
+      expiresAtMs: now + 14 * DAY_MS,
+      approvedAtMs: now - 5 * DAY_MS,
+    },
+  ];
+}
 
 const connectOf = (w: World) => (w.connect ??= {});
 
@@ -199,7 +272,7 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
     app_connect_approve: ({ walletId, linkId, choice, grant: id }, { world }) => {
       const l = link(world, linkId);
       if (l.started || l.answer !== null) throw fail("connect.answered", "connect.answered");
-      const { who } = checkChoice(world, walletId, linkId, choice);
+      const { sheet, who } = checkChoice(world, walletId, linkId, choice);
       const g = grant(world, id, walletId, ["appConnect"]);
       if (!g || g.grant.purpose.kind !== "appConnect" || g.grant.purpose.plan !== planOf(choice)) throw fail("platform.grant_invalid", "grant invalid");
       if (l.outcome === "planChanged" && !l.reread) {
@@ -216,6 +289,28 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
         throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
       }
       l.keysAdded = choice.selection.map((_, i) => 5 + i);
+      const addedKeys = choice.selection.map((idx, i) => {
+        const b = sheet.bindings.find((x) => x.index === idx) ?? sheet.bindings[0];
+        return {
+          keyId: 5 + i,
+          level: b.level,
+          scope: b.scope,
+          budget: choice.terms.fundingLimit,
+          expiresAtMs: choice.terms.expiresAtMs,
+        };
+      });
+      const existing = (world.connectedApps ??= []);
+      existing.unshift({
+        request: sheet.request,
+        appId: sheet.appId,
+        label: sheet.label,
+        returnsTo: l.returnsTo,
+        identity: who.identity,
+        keys: addedKeys,
+        fundingLimit: choice.terms.fundingLimit,
+        expiresAtMs: choice.terms.expiresAtMs,
+        approvedAtMs: FIXTURE_NOW.getTime(),
+      });
       if (l.outcome === "sendFailed") throw fail("connect.send_failed", "connect.send_failed");
       l.answer = "ok";
       return { identity: who.identity, keysAdded: l.keysAdded };
@@ -244,6 +339,64 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const l = connectOf(world)[linkId];
       if (l) l.dismissed = true;
       return null;
+    },
+    app_connect_list: ({ walletId, identity }, { world }) => {
+      wallet(world, walletId);
+      if (world.launch.network.kind === "mainnet") throw fail("connect.mainnet_off", "connect.mainnet_off");
+      if (world.connectedAppsListError) throw fail("platform.unavailable", "platform.unavailable");
+      const exists = dashpay(world, walletId).identities.some((i) => i.identity === identity);
+      if (!exists) throw fail("identity.not_found", "identity.not_found");
+      const apps = (world.connectedApps ?? []).filter((a) => a.identity === identity && a.keys.length > 0);
+      return { identity, apps, blockTimeMs: FIXTURE_NOW.getTime() };
+    },
+    app_connect_disconnect_quote: ({ walletId, identity, request }, { world }) => {
+      wallet(world, walletId);
+      if (world.launch.network.kind === "mainnet") throw fail("connect.mainnet_off", "connect.mainnet_off");
+      const who = dashpay(world, walletId).identities.find((i) => i.identity === identity);
+      if (!who) throw fail("identity.not_found", "identity.not_found");
+      const app = (world.connectedApps ?? []).find((a) => a.identity === identity && a.request === request);
+      if (!app) throw fail("invalid_argument", "invalid argument: unknown app connection");
+      const outcome = world.disconnectOutcome ?? "ok";
+      if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
+      if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
+      const fee = BigInt(DISCONNECT_FEE);
+      const balance = outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
+      if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
+      return {
+        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request },
+        identity,
+        keys: app.keys.map((k) => k.keyId),
+        fee: String(fee),
+        balance: String(balance),
+        priorAttemptConflict: outcome === "priorChargeKnown" || outcome === "priorChargePossible",
+        priorAttemptDebit: outcome === "priorChargeKnown" ? "500000" : null,
+      };
+    },
+    app_connect_disconnect: ({ walletId, identity, request, grant: id }, { world }) => {
+      wallet(world, walletId);
+      if (world.launch.network.kind === "mainnet") throw fail("connect.mainnet_off", "connect.mainnet_off");
+      const who = dashpay(world, walletId).identities.find((i) => i.identity === identity);
+      if (!who) throw fail("identity.not_found", "identity.not_found");
+      const apps = world.connectedApps ?? [];
+      const idx = apps.findIndex((a) => a.identity === identity && a.request === request);
+      if (idx < 0) throw fail("invalid_argument", "invalid argument: unknown app connection");
+      const g = grant(world, id, walletId, ["appDisconnect"]);
+      if (!g || g.grant.purpose.kind !== "appDisconnect" || g.grant.purpose.identity !== identity || g.grant.purpose.request !== request)
+        throw fail("platform.grant_invalid", "grant invalid");
+      const outcome = world.disconnectOutcome ?? "ok";
+      if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
+      if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
+      if (outcome === "pendingFeeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingFeeTooHigh" });
+      if (outcome === "pendingWrite") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingWrite" });
+      if (outcome === "grantExceeded")
+        throw fail("platform.grant_exceeded", "platform.grant_exceeded", { kind: "budget", purpose: "credits", needed: "25000000", remaining: DISCONNECT_FEE });
+      if (outcome === "disconnectConflict") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "disconnectConflict" });
+      if (outcome === "credits") throw fail("connect.credits", "connect.credits", { kind: "credits", needed: DISCONNECT_FEE, available: "10000000" });
+      useGrant(world, id);
+      if (outcome === "notConfirmed") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
+      if (outcome === "error") throw fail("platform.unavailable", "platform.unavailable");
+      const [removed] = apps.splice(idx, 1);
+      return { identity, keysDisabled: removed.keys.map((k) => k.keyId), responseMayHaveLanded: outcome === "responseInFlight" };
     },
   };
 }
