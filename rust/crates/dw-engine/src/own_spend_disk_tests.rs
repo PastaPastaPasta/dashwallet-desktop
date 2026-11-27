@@ -1937,6 +1937,27 @@ fn a_beaten_payment_kept_to_recheck_stays_after_a_fork_below_its_block() {
     t.assert_kept(&session, "a restart");
 }
 
+#[test]
+fn a_kept_payment_is_void_after_truncation_with_its_header_unchanged() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    t.kept_to_recheck(&block);
+    let before = t.session.hub.truncations();
+    t.truncate(TIP);
+    assert!(t.session.hub.truncations() > before);
+    assert_eq!(
+        t.engine.block_on(t.session.hub.header_hash(TIP + 1)),
+        Some(block_hash(&block))
+    );
+    t.session.hub.schedule_reconcile(t.id);
+    eventually("the truncation alone voided the kept payment", || {
+        t.session.hub.carried_drop_roots(t.id).is_empty()
+    });
+    t.settle();
+    assert!(t.session.hub.carried_drop_roots(t.id).is_empty());
+    t.assert_kept(&t.session, "truncated with no header change");
+}
+
 /// #818, Q99 T3: while the other payment is kept to recheck, the wallet
 /// applies a ChainLock at the block's height on a chain whose header
 /// there is another block. Nothing goes, and the kept payment is void.

@@ -178,11 +178,13 @@ impl SessionHub {
         let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let skip = false;
-        let withheld = if skip {
-            BTreeSet::new()
-        } else {
-            (self.history).read_wallet(&wallet, |h| pending_unproven(core, h))
-        };
+        let withheld = (self.history).read_wallet(&wallet, |h| {
+            let mut withheld = pending_invalid_outputs(core, h);
+            if !skip {
+                withheld.extend(pending_unproven(core, h));
+            }
+            withheld
+        });
         let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
             .collect();
@@ -209,10 +211,72 @@ impl SessionHub {
         excluded
             || (self.history).read_wallet(id, |h| {
                 !h.rescan_holds.is_empty()
+                    || !h.checking_claims.is_empty()
+                    || h.drops.keys().any(|t| h.dead_claim(t).is_some())
                     || (h.txs.iter())
                         .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
             })
     }
+}
+
+fn pending_invalid_outputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
+    let mut invalid: HashSet<Txid> = h
+        .drops
+        .keys()
+        .filter(|t| h.dead_claim(t).is_some())
+        .copied()
+        .chain(h.checking_claims.iter().copied())
+        .collect();
+    if invalid.is_empty() {
+        return BTreeSet::new();
+    }
+    let accounts = core.accounts.all_accounts();
+    let locks = core.instant_send_locks();
+    let settled: HashSet<Txid> = accounts
+        .iter()
+        .flat_map(|a| a.transactions().iter())
+        .filter(|(_, r)| {
+            !matches!(
+                r.context,
+                key_wallet::transaction_checking::TransactionContext::Mempool
+            )
+        })
+        .map(|(t, _)| *t)
+        .chain(locks.iter().copied())
+        .chain(
+            h.txs
+                .iter()
+                .filter(|(_, e)| e.context.block_info().is_some() || instant_locked(e))
+                .map(|(t, _)| *t),
+        )
+        .collect();
+    invalid.retain(|t| !settled.contains(t));
+    let transactions = h.txs.iter().map(|(t, e)| (t, &e.tx)).chain(
+        accounts
+            .iter()
+            .flat_map(|a| a.transactions().iter().map(|(t, r)| (t, &r.transaction))),
+    );
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    for (t, tx) in transactions.filter(|(t, _)| !settled.contains(*t)) {
+        for i in &tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+        }
+    }
+    let mut todo: Vec<_> = invalid.iter().copied().collect();
+    while let Some(t) = todo.pop() {
+        for c in children.get(&t).into_iter().flatten() {
+            if invalid.insert(*c) {
+                todo.push(*c);
+            }
+        }
+    }
+    core.accounts
+        .all_funding_accounts()
+        .into_iter()
+        .flat_map(|a| a.utxos.keys())
+        .filter(|o| invalid.contains(&o.txid))
+        .copied()
+        .collect()
 }
 
 /// Unmined, neither abandoned nor InstantSend-locked as the history holds

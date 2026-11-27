@@ -1476,9 +1476,8 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
-        // A wallet closed by an operation admitted before the gate sealed
-        // let drops wait on it whose own drain the sealed gate refused:
-        // they run now, before the stores close.
+        self.abort_resends();
+        // Drain drops a wallet close unblocked while the session was sealing.
         if let Ok(live) = self.live() {
             self.drain_deferred_drops(&live.manager).await;
         }
@@ -1513,8 +1512,6 @@ impl NetworkSession {
         let taken = self.live.write().unwrap_or_else(|p| p.into_inner()).take();
         let Some(live) = taken else { return };
         let manager = live.manager;
-        // The gate is closed, so no resend starts after this.
-        self.abort_resends();
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
         // A fork no trigger found this session is found now: the store
