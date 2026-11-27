@@ -809,7 +809,12 @@ impl NetworkSession {
                 h.put_back_unread = put_back.is_none();
                 h.put_back = put_back.unwrap_or_default();
                 h.lock_parents = lock_parents;
-                for r in records.iter().chain(&in_memory) {
+                for r in &records {
+                    if !h.awaiting_after_fork(&r.txid) {
+                        h.upsert_with_locks(r, None, locks);
+                    }
+                }
+                for r in &in_memory {
                     h.upsert_with_locks(r, None, locks);
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
