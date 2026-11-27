@@ -317,10 +317,10 @@ pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
             false,
         ));
     }
-    crate::platform::shielded_pool::refuse_missing_store(network_dir, false)?;
     if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir) {
         return Err(EngineError::ShieldedSpendHeld(hold));
     }
+    crate::platform::shielded_pool::refuse_missing_store(network_dir, false)?;
     match dw_store_upgrade::snapshot_state(network_dir)
         .map_err(|e| EngineError::RetryableIo(format!("read the upgrade backups: {e}")))?
     {
