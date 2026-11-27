@@ -193,6 +193,7 @@ pub(crate) fn prepare_and_reconcile(
         .parent()
         .ok_or_else(|| EngineError::Internal(format!("{} has no parent", network_dir.display())))?;
     let restored = run_pending_restore(network_dir)?;
+    crate::platform::shielded_pool::refuse_missing_store(network_dir, restored.is_some())?;
     let adopters = Adopters::for_build(data_root);
     let prepared = prepare_with(network_dir, adopters, SystemTime::now()).map_err(|e| {
         map_error(

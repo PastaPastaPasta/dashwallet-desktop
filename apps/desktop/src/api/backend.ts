@@ -468,7 +468,7 @@ export interface Backend {
   finishWithoutPlatform(): Promise<OpenedNetwork>;
   /** A damaged store's Set up from recovery phrase (`recover_in_fresh_folder`): the window's network moves to a
    * new folder, the refused one left as it is; a restart then opens it. */
-  recoverInFreshFolder(): Promise<null>;
+  recoverInFreshFolder(network?: ChosenNetwork | null): Promise<null>;
   /** Opens the page of the release on offer, on this repository. */
   openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.

@@ -63,6 +63,7 @@ import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
+import { recoverSwitchedNetwork } from "./pending";
 
 export interface Ctx {
   world: World;
@@ -828,8 +829,9 @@ export const HANDLERS: Handlers = {
   },
   active_network: (_, { world }) => restoredNetwork(world),
   // Engine::recover_in_fresh_folder: only after a refused open; the next open is the new folder's.
-  recover_in_fresh_folder: (_, { world }) => {
-    if (!world.openRefusal) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
+  recover_in_fresh_folder: ({ network }, { world }) => {
+    const refused = network == null ? world.openRefusal !== undefined : recoverSwitchedNetwork(world, network);
+    if (!refused) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
     (world.restoreCalls ??= []).push("recover");
     startOverInNewFolder(world);
     return null;

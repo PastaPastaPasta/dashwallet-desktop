@@ -39,7 +39,7 @@ import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type Shie
 import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
-import { restoreFailure, storeRestoreError } from "./errors";
+import { restoreFailure, STORE_SCREENS, storeRefusedError, storeRestoreError } from "./errors";
 import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import { FIXTURE_DATA_DIR } from "./settings";
 
@@ -294,6 +294,14 @@ function moveWorld(world: World, to: ChosenNetwork) {
   next.networkSwitch = left.networkSwitch;
   for (const key of Object.keys(world)) delete (world as unknown as Record<string, unknown>)[key];
   Object.assign(world, next);
+}
+
+export function recoverSwitchedNetwork(world: World, network: ChosenNetwork): boolean {
+  if (world.networkSwitch?.damaged !== network) return false;
+  moveWorld(world, network);
+  world.pending.networkChoice = { chosen: network, saved: true };
+  delete world.networkSwitch?.damaged;
+  return true;
 }
 
 const sum = (addresses: PlatformWorld["addresses"]) => addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
@@ -807,6 +815,11 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
         world.networkSwitch = { ...knobs, fail: undefined, reopenFails: !knobs.fail.rolledBack };
         keepWorlds(world);
         throw fail("app.network_switch_failed", `fixture: opening ${network} failed`, { kind: "networkSwitch", network: networkInfo(network), rolledBack: knobs.fail.rolledBack });
+      }
+      if (knobs.damaged === network) {
+        restarted(world);
+        keepWorlds(world);
+        throw storeRefusedError(STORE_SCREENS.damaged(`${FIXTURE_DATA_DIR}/${network}`));
       }
       const before = world.pending.networkChoice;
       moveWorld(world, network);

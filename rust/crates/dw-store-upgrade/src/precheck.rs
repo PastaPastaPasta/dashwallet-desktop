@@ -150,9 +150,25 @@ fn check(
         return Ok(Precheck::NeedsLockedCheck);
     }
     let path = wallet_path(network_dir);
-    let conn = open_immutable(&path).map_err(map_sqlite("open wallet.sqlite read-only"))?;
-    let found = classify(&conn, adopters)?;
-    drop(conn);
+    let checked = open_immutable(&path)
+        .map_err(map_sqlite("open wallet.sqlite read-only"))
+        .and_then(|conn| classify(&conn, adopters));
+    let found = match checked {
+        Err(StoreUpgradeError::Sqlite { source, .. })
+            if matches!(
+                source.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+            ) =>
+        {
+            return Ok(Precheck::Refuse {
+                reason: StoreUpgradeError::SnapshotSourceDamaged {
+                    store: STORE_FILES[0].into(),
+                    detail: source.to_string(),
+                },
+            });
+        }
+        other => other?,
+    };
     match found {
         Classification::Fork(state) if state.upgrade_writes() => {
             if let Some(refused) = refuse_unopenable_file(network_dir)? {

@@ -6,6 +6,7 @@ import { formatLocale, systemRegionLocale } from "../i18n";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
+import type { ChosenNetwork } from "./generated/ChosenNetwork";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { FeeMode } from "./generated/FeeMode";
 import type { OutPoint } from "./generated/OutPoint";
@@ -187,7 +188,7 @@ export class IpcBackend implements Backend {
   restoreStatus = () => cmd.restoreStatus();
   restoreRetry = () => cmd.restoreRetry();
   finishWithoutPlatform = () => cmd.finishWithoutPlatform();
-  recoverInFreshFolder = () => cmd.recoverInFreshFolder();
+  recoverInFreshFolder = (network: ChosenNetwork | null = null) => cmd.recoverInFreshFolder(network);
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();

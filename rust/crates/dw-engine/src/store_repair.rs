@@ -48,6 +48,7 @@ use key_wallet::managed_account::transaction_record::TransactionRecord;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::send::{PendingSpends, SpendOwner};
 use crate::{EngineError, WalletId};
 
 /// The `wallet.sqlite` schema versions (refinery's highest applied
@@ -364,6 +365,57 @@ pub(crate) struct Outcome {
 
 fn storage(e: impl std::fmt::Display) -> EngineError {
     EngineError::Storage(format!("store repair: {e}"))
+}
+
+pub(crate) fn hold_legacy_inputs(network_dir: &Path) -> Result<PendingSpends, EngineError> {
+    let pending = PendingSpends::default();
+    let path = network_dir.join(crate::session::WALLET_DB_FILE);
+    if !path.try_exists().map_err(storage)? {
+        return Ok(pending);
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(storage)?;
+    let legacy: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+            [LEGACY],
+            |row| row.get(0),
+        )
+        .map_err(storage)?;
+    if !legacy {
+        return Ok(pending);
+    }
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT wallet_id, txid, record_blob, released_coins FROM {LEGACY}"
+        ))
+        .map_err(storage)?;
+    let mut rows = stmt.query([]).map_err(storage)?;
+    while let Some(row) = rows.next().map_err(storage)? {
+        let wallet: [u8; 32] = row.get(0).map_err(storage)?;
+        let txid =
+            Txid::from_slice(&row.get::<_, Vec<u8>>(1).map_err(storage)?).map_err(storage)?;
+        let blob: Option<Vec<u8>> = row.get(2).map_err(storage)?;
+        let inputs = if let Some(record) = blob.as_deref().and_then(|blob| decode_claim(blob, txid))
+        {
+            record
+                .transaction
+                .input
+                .into_iter()
+                .map(|i| i.previous_output)
+                .collect()
+        } else {
+            let released: String = row.get(3).map_err(storage)?;
+            released_outpoints(&released).ok_or_else(|| {
+                storage(format!("cannot identify the inputs of legacy claim {txid}"))
+            })?
+        };
+        pending.reserve(WalletId(wallet), SpendOwner::LegacyRepair, inputs);
+    }
+    Ok(pending)
 }
 
 /// The open's repair of `network_dir`'s `wallet.sqlite`, before the
@@ -1061,8 +1113,7 @@ fn recheck(
         .map(|((wallet, txid), legacy_rows)| {
             let decoded = legacy_rows.iter().find_map(|row| {
                 let blob = hex::decode(&row.record_blob).ok()?;
-                let record = crate::history_ops::decode_record(&blob)
-                    .filter(|r| r.txid == txid && r.transaction.txid() == txid)?;
+                let record = decode_claim(&blob, txid)?;
                 Some((record, blob))
             });
             Claim {
@@ -1130,7 +1181,7 @@ fn recheck(
             held_coins: Vec::new(),
             not_held: Vec::new(),
         };
-        restores.extend(planned_restore(
+        restores.push(planned_restore(
             tx,
             &spenders,
             claim.wallet,
@@ -1240,8 +1291,7 @@ fn spent_elsewhere(
 /// not a contact's, and that nothing stored spends since (L4). When the
 /// store holds the claim again with its record, or a row of it that the
 /// record can't fill, only its coins are held and the fork's rows go.
-/// `None` when nothing of the claim can be told (see
-/// [`held_without_record`]).
+/// The repair fails if neither the record nor the released inputs can be read.
 fn planned_restore(
     tx: &rusqlite::Transaction<'_>,
     spenders: &Spenders<'_>,
@@ -1249,7 +1299,7 @@ fn planned_restore(
     txid: &Txid,
     decoded: Option<(TransactionRecord, Vec<u8>)>,
     mut record: RestoreRecord,
-) -> rusqlite::Result<Option<Restore>> {
+) -> rusqlite::Result<Restore> {
     let key = txid.as_byte_array().as_slice();
     let stored: Option<(bool, bool)> = tx
         .query_row(
@@ -1302,7 +1352,7 @@ fn planned_restore(
             )?;
             restore.write = Write::Nothing;
             restore.record = record;
-            return Ok(Some(restore));
+            return Ok(restore);
         }
     };
     restore.blob = blob;
@@ -1353,6 +1403,17 @@ fn planned_restore(
                     tracing::warn!(%txid, "store repair: a fork-dropped output row names another transaction; not put back");
                     continue;
                 };
+                let Some(output) = decoded.transaction.output.get(o.vout as usize) else {
+                    tracing::warn!(%txid, vout = o.vout, "store repair: a fork-dropped output index is out of range");
+                    continue;
+                };
+                let Ok(checked_value) = i64::try_from(output.value) else {
+                    continue;
+                };
+                if value != checked_value || script.as_slice() != output.script_pubkey.as_bytes() {
+                    tracing::warn!(%txid, vout = o.vout, "store repair: a fork-dropped output row disagrees with its transaction");
+                    continue;
+                }
                 if !seen.insert(o) {
                     continue;
                 }
@@ -1366,7 +1427,12 @@ fn planned_restore(
                 }
                 let spent = spent_elsewhere(tx, spenders, &o, txid, true)?;
                 record.restored_outputs.push(hex::encode(&op));
-                restore.outputs.push((op, value, script, i64::from(spent)));
+                restore.outputs.push((
+                    op,
+                    checked_value,
+                    output.script_pubkey.as_bytes().to_vec(),
+                    i64::from(spent),
+                ));
             }
         }
     }
@@ -1374,36 +1440,47 @@ fn planned_restore(
         restored_transaction: true,
         ..record
     };
-    Ok(Some(restore))
+    Ok(restore)
+}
+
+fn decode_claim(blob: &[u8], txid: Txid) -> Option<TransactionRecord> {
+    crate::history_ops::decode_record(blob)
+        .filter(|record| record.txid == txid && record.transaction.txid() == txid)
+}
+
+fn released_outpoints(json: &str) -> Option<Vec<OutPoint>> {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
+    rows.iter()
+        .map(|row| {
+            let blob = hex::decode(row.get("outpoint")?.as_str()?).ok()?;
+            decode_outpoint(&blob)
+        })
+        .collect()
 }
 
 /// The put-back of a claim whose record doesn't read: the claim can't go
 /// back (the store reads its records strictly), so only the coins the
 /// fork released for it (its `released_coins`) are held again, and its
-/// fork rows go. `None` when those don't read either: nothing is changed
-/// and the rows stay.
+/// fork rows go. An unreadable list stops the repair with the rows intact.
 fn held_without_record(
     tx: &rusqlite::Transaction<'_>,
     spenders: &Spenders<'_>,
     txid: &Txid,
     mut restore: Restore,
-) -> rusqlite::Result<Option<Restore>> {
+) -> rusqlite::Result<Restore> {
     let mut record = restore.record.clone();
     let mut coins = Vec::new();
     for row in &record.legacy_rows {
-        let parsed: Option<Vec<serde_json::Value>> = serde_json::from_str(&row.released_coins).ok();
-        let Some(outpoints) = parsed.and_then(|rows| {
-            (rows.iter())
-                .map(|r| {
-                    r.get("outpoint")
-                        .and_then(|v| v.as_str())
-                        .and_then(|h| hex::decode(h).ok())
-                        .and_then(|b| decode_outpoint(&b))
-                })
-                .collect::<Option<Vec<OutPoint>>>()
-        }) else {
+        let Some(outpoints) = released_outpoints(&row.released_coins) else {
             tracing::warn!(%txid, "store repair: a fork-dropped claim's released coins don't read either; its rows stay");
-            return Ok(None);
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                7,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "legacy claim's released coins are unreadable",
+                )),
+            ));
         };
         coins.extend(outpoints);
     }
@@ -1419,7 +1496,7 @@ fn held_without_record(
     )?;
     restore.write = Write::Nothing;
     restore.record = record;
-    Ok(Some(restore))
+    Ok(restore)
 }
 
 /// Of `coins`, those `wallet` holds unspent in one of its own address

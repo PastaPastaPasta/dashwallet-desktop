@@ -217,6 +217,30 @@ struct Opened {
     session: Arc<NetworkSession>,
 }
 
+#[test]
+fn a_new_shielded_store_is_detected_after_deletion() {
+    let root = Root::new(&[]);
+    let net = root.net();
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let _ = fs::remove_file(net.join(format!("shielded.sqlite{suffix}")));
+    }
+    let Opened { engine, session } = root.open();
+    let manager = session.manager().unwrap();
+    engine
+        .block_on(pool::coordinator(&session, &manager, None))
+        .unwrap();
+    drop(manager);
+    drop(session);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+
+    fs::remove_file(net.join(pool::SHIELDED_DB_FILE)).unwrap();
+    let denied = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+    assert!(matches!(denied, Err(crate::EngineError::StoreRefused(r))
+        if r.screen.way_out == dw_store_upgrade::copy::WayOut::Damaged));
+}
+
 impl Opened {
     fn verdict(&self) -> Option<Result<(), ShieldedStoreClosed>> {
         self.session.platform.shielded_drain.get().cloned()

@@ -386,6 +386,8 @@ pub(crate) enum SpendOwner {
     /// collateral input and the inputs it locks, held after a success until
     /// the final transaction is seen or the observation timeout passes.
     Mixing(u64),
+    /// A claim from a fork store whose repair failed. Held until close.
+    LegacyRepair,
 }
 
 static NEXT_MIXING_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -404,7 +406,7 @@ impl SpendOwner {
 ///
 /// A claim goes when its owner releases it: a [`PreparedTx`] accepted,
 /// abandoned, dropped while pending or never sent; a CoinJoin session's
-/// end or timeout. Every claim on a coin goes when the wallet no longer
+/// end or timeout. Except for a failed legacy repair, claims go when the wallet no longer
 /// holds the coin unspent: every coin read ([`NetworkSession::coin_snapshot`])
 /// drops coins the wallet has seen spent, by the transaction itself (SPV
 /// injects a broadcast into the wallet's own mempool view, so that is
@@ -555,17 +557,22 @@ impl PendingSpends {
         }
     }
 
-    /// Drops every reservation of an unloaded wallet.
+    /// Drops regular reservations of an unloaded wallet.
     pub(crate) fn forget_wallet(&self, wallet: &WalletId) {
-        self.map().remove(wallet);
+        self.retain_unspent(wallet, &HashSet::new());
     }
 
-    /// Drops every claim on a coin that is no longer unspent (a broadcast
+    /// Drops regular claims on a coin that is no longer unspent (a broadcast
     /// whose outcome was unknown has since been seen spent).
     pub(crate) fn retain_unspent(&self, wallet: &WalletId, unspent: &HashSet<OutPoint>) {
         let mut map = self.map();
         if let Some(claims) = map.get_mut(wallet) {
-            claims.retain(|o, _| unspent.contains(o));
+            claims.retain(|o, owners| {
+                if !unspent.contains(o) {
+                    owners.retain(|owner| *owner == SpendOwner::LegacyRepair);
+                }
+                !owners.is_empty()
+            });
             if claims.is_empty() {
                 map.remove(wallet);
             }
