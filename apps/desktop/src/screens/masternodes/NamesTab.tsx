@@ -201,7 +201,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
         </span>
       </span>
       <span className="mg-row-trailing">
-        {isOwnActiveContest(contest, now) && <span className="chip chip-info">{t("masternodes.names.yourUsername")}</span>}
+        {isOwnActiveContest(contest, now) && <span className="chip chip-neutral">{t("masternodes.names.yourUsername")}</span>}
         {row.chip && <StatusChip chip={row.chip} />}
         <span className="mg-row-meta">{votesText(row.total)}</span>
       </span>
