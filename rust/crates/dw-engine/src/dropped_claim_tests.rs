@@ -739,6 +739,7 @@ fn a_payment_relayed_again_after_its_drop_is_dropped_again() {
                 .all(|a| !a.utxos.contains_key(&change))
         );
     });
+    drop(manager);
     let session = reopen(&engine, session);
     assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
     let session = reopen(&engine, session);
@@ -1141,17 +1142,15 @@ fn a_locked_sibling_keeps_a_pending_payment_on_a_dropped_claim() {
 
 #[test]
 fn a_locked_sibling_of_a_dead_parent_keeps_its_pending_child() {
-    a_settled_dead_tree_keeps_its_pending_child(false, false);
+    a_settled_dead_tree_keeps_its_pending_child(false);
 }
 
 #[test]
 fn a_dropped_claim_that_settles_keeps_its_pending_grandchild() {
-    for at_load in [false, true] {
-        a_settled_dead_tree_keeps_its_pending_child(true, at_load);
-    }
+    a_settled_dead_tree_keeps_its_pending_child(true);
 }
 
-fn a_settled_dead_tree_keeps_its_pending_child(settle_claim: bool, at_load: bool) {
+fn a_settled_dead_tree_keeps_its_pending_child(settle_claim: bool) {
     use crate::history::DropCause;
     use std::collections::BTreeMap;
 
@@ -1205,31 +1204,74 @@ fn a_settled_dead_tree_keeps_its_pending_child(settle_claim: bool, at_load: bool
                 .unwrap()
                 .core_wallet
                 .restore_dismissed(dead.keys().copied(), []);
-            s.abandon_on_dead(
-                &manager,
-                id,
-                &dead,
-                if at_load {
-                    crate::tx_actions::DeadSource::Load
-                } else {
-                    crate::tx_actions::DeadSource::Restore
-                },
-            )
-            .await;
+            s.abandon_on_dead(&manager, id, &dead, crate::tx_actions::DeadSource::Restore)
+                .await;
             Ok(())
         }))
         .unwrap();
     assert!(!dropped(&engine, &session, id, payment.txid()));
     assert!(!spendable(&engine, &session, id, b));
-    if at_load {
-        (session.hub.history).read_wallet(&id, |h| {
-            assert!(h.invalid_mark(&parent.txid()).is_none());
-        });
-    }
     assert!(
         dropped_records(&session, id).is_empty(),
         "the veto precedes the marks"
     );
+}
+
+#[test]
+fn reopening_revalidates_drop_marks_when_the_original_claim_settles() {
+    use super::own_spend_disk_tests::{fresh_address, funding, wait_stored};
+    use crate::history::DropCause;
+
+    let (_dir, engine, session, id) = engine_wallet();
+    let funding_b = funding(3, &[fresh_address(&engine, &session, id)], PAID);
+    let b = OutPoint::new(funding_b.txid(), 0);
+    mined(&engine, &session, id, BIRTH - 40, vec![funding_b]);
+    let (_, claim, parent) = payment_on_a_claims_change(&engine, &session, id);
+    let change = change_of(&parent, &own_scripts(&engine, &session, id));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change, b]),
+        CHANGE / 2 + PAID / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[parent.txid(), payment.txid()]);
+    mined(&engine, &session, id, BIRTH - 20, vec![claim.clone()]);
+    let dead = crate::tx_actions::Dead::from([
+        (claim.txid(), DropCause::InvalidClaim),
+        (parent.txid(), DropCause::InvalidSource),
+    ]);
+    let own = session
+        .hub
+        .history
+        .get(&id, &parent.txid())
+        .unwrap()
+        .own_inputs;
+    crate::tx_actions::forget_swept(
+        &session.live().unwrap().appdb,
+        id,
+        &[claim.txid(), parent.txid()],
+        &dead,
+        &[],
+        &[(parent.txid(), parent.clone(), own)],
+        None,
+    )
+    .unwrap();
+    let session = reopen(&engine, session);
+    assert!(!dropped_records(&session, id).contains(&parent.txid()));
+    assert!(!engine.block_on(session.abandon_marked(id, payment.txid())));
+    assert!(
+        !session
+            .hub
+            .history
+            .get(&id, &payment.txid())
+            .unwrap()
+            .is_abandoned()
+    );
+    assert!(!session.hub.rescan_held(&id).contains(&b));
+    assert!(!spendable(&engine, &session, id, b));
 }
 
 #[test]

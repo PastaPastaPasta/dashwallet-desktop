@@ -1133,6 +1133,7 @@ pub(crate) fn finish_marked_abandons(
             .difference(&persisted.unconfirmed)
             .copied()
             .collect();
+        let mut pending_funding = persisted.unconfirmed.clone();
         for t in persisted
             .records
             .iter()
@@ -1146,6 +1147,8 @@ pub(crate) fn finish_marked_abandons(
                     || matches!(r.context, TransactionContext::InstantSend(_))
                 {
                     mined_funding.insert(*t);
+                } else {
+                    pending_funding.insert(*t);
                 }
                 spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output));
             }
@@ -1221,6 +1224,7 @@ pub(crate) fn finish_marked_abandons(
         let released: BTreeSet<OutPoint> = (spent.into_iter())
             .filter(|o| {
                 (!marked.contains(&o.txid) || mined_funding.contains(&o.txid))
+                    && !pending_funding.contains(&o.txid)
                     && !spent_by_others.contains(o)
                     && !held.contains(o)
             })
@@ -1490,10 +1494,11 @@ fn add_known(
     let accounts = core.accounts.all_accounts();
     let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
     let mut add = |t: Txid, tx: &Transaction, locked: bool, mined: bool| {
-        let k = known.entry(t).or_insert_with(|| Known {
-            parents: tx.input.iter().map(|i| i.previous_output.txid).collect(),
-            ..Known::default()
-        });
+        let k = known.entry(t).or_default();
+        if k.parents.is_empty() {
+            k.parents
+                .extend(tx.input.iter().map(|i| i.previous_output.txid));
+        }
         let mined = mined || finalized(&t);
         k.settled |= locked || mined || core.instant_send_locks().contains(&t);
         k.mined |= mined;
@@ -1522,13 +1527,11 @@ fn add_locked_without_record(
     lock_parents: &HashMap<Txid, Vec<Txid>>,
 ) {
     for (t, parents) in lock_parents {
-        known
-            .entry(*t)
-            .or_insert_with(|| Known {
-                parents: parents.clone(),
-                ..Known::default()
-            })
-            .settled = true;
+        let k = known.entry(*t).or_default();
+        if k.parents.is_empty() {
+            k.parents.clone_from(parents);
+        }
+        k.settled = true;
     }
 }
 
@@ -3986,10 +3989,17 @@ impl NetworkSession {
         };
         let (plan, winner, forgotten) = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
-            let chainlock = self.chainlock_height(&info.core_wallet);
-            let pruned = chainlock.map(|cl| cl.min(info.core_wallet.synced_height()));
+            let core = &info.core_wallet;
+            let chainlock = self.chainlock_height(core);
             let swept_spends_may_be_gone = unrechecked && !links.is_empty()
-                && winner.mined.zip(pruned).is_some_and(|(won, boundary)| won <= boundary);
+                && winner.mined.is_some_and(|won| {
+                    won <= core.synced_height()
+                        && (chainlock.is_some_and(|cl| won <= cl)
+                            || !core.observed_spent_outpoints().values().any(|h| *h == won)
+                                && !durable_spends.values().any(|spend| {
+                                    spend.height == won && Some(spend.spender_txid) == winner.txid
+                                }))
+                });
             let facts = (complete && !swept_spends_may_be_gone, chainlock, &settled);
             // A beaten root is beaten still under this lock, by what beats
             // it now: a truncation since its detection may have undone its
@@ -5058,7 +5068,7 @@ impl NetworkSession {
     ) -> HashSet<Txid> {
         let settled: HashSet<Txid> = dead
             .keys()
-            .filter(|t| settled.direct.contains_key(t))
+            .filter(|t| settled.direct.contains_key(*t))
             .copied()
             .collect();
         if settled.is_empty() {

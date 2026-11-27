@@ -2661,12 +2661,17 @@ fn abandoning_a_transfer_finalized_only_in_the_receiving_wallet_is_refused() {
             .block_info()
             .is_none()
     );
-    assert!(matches!(
-        engine.block_on(session.abandon_transaction(id, txid)),
-        Err(crate::EngineError::TxActionRefused(
-            crate::TxActionRefusal::Confirmed
-        ))
-    ));
+    start_spv(&engine, &session);
+    let result = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::TxActionRefusal::Confirmed
+            ))
+        ),
+        "{result:?}"
+    );
     assert!(!abandoned(&engine, &session, id, txid));
 }
 
