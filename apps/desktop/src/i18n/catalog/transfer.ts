@@ -127,13 +127,19 @@ export const transfer = {
       debitOnly: "Dash Platform has not said whether the move of {taken} went through. Activity shows it when it does. Do not move again until it does.",
     },
     replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
+    /** The move is the way out of a payment from Platform that may still go through: only one of the two goes through. */
+    exitSend: {
+      line: "This payment of {amount} to {recipient} may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the two can go through. If the move goes through, {recipient} isn't paid, and the amount, less fees, goes to your Dash wallet.",
+      done: "Moved to Dash wallet. The payment to {recipient} didn't go through, so {recipient} wasn't paid.",
+      lost: "The payment went through before the move, so {recipient} was paid. The move wasn't charged.",
+    },
     failed: { title: "The move did not go through", text: "Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again." },
     unseen: "Your move has an update.",
     waiting: {
       text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
       held: "An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.",
       sendHeld: "A payment from Platform may still go through. Moving waits until it settles.",
-      heldSend: "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
+      heldSend: "An earlier payment from your Platform balance may still go through. Wait for it to finish, or open it in Activity and move the same funds to your Dash wallet instead. If the move goes through, that payment isn't made.",
       action: "View in Activity",
     },
     check: { loading: "Checking for an unfinished move…", failed: "Could not check for an unfinished move.", again: "Check again" },

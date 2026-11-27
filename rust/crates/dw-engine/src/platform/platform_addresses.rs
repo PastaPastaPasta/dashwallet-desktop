@@ -163,6 +163,11 @@ pub struct PlatformActivity {
     /// `Done` names which.
     #[serde(default)]
     pub unattributed: bool,
+    /// A `Send` that cancels this wallet's held move or contact payment of
+    /// this id (#762): to one of the wallet's own Platform addresses, it
+    /// pays no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancels: Option<String>,
 }
 
 /// What "Move to Dash wallet" takes and pays out, at the network's
@@ -186,9 +191,10 @@ pub struct MoveToCoreQuote {
     pub to: String,
     /// What to authorize: no duffs, `credits` credits.
     pub grant: GrantRequest,
-    /// The held top-up from Platform this move is the exit of: the quote is
-    /// planned on its inputs only. Pass it to `move_to_core`, which then
-    /// moves only while that top-up still holds.
+    /// The held top-up or send from Platform this move is the exit of: the
+    /// quote is planned on its inputs only. Pass it to `move_to_core`,
+    /// which then moves only while that record still holds; the exit's
+    /// withdrawal document says which of the two executed (#762).
     #[serde(default)]
     pub exit_of: Option<String>,
 }
@@ -293,6 +299,25 @@ pub struct PlatformSendQuote {
     /// send that may still execute, the same recipient and amount). Its
     /// send pays nothing more if that one landed meanwhile.
     pub retry_of: Option<String>,
+}
+
+/// What cancelling a held move or contact payment takes (#762): a
+/// transfer of its inputs, at its nonces and amounts, to one of the
+/// wallet's own Platform addresses, so only one of the two executes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformCancelQuote {
+    /// The held move or contact payment it cancels.
+    pub of: String,
+    /// What its inputs give: the held record's amount, the grant's cap.
+    /// The fee comes out of it.
+    pub credits: u64,
+    /// The fee estimate, taken from what reaches `to`.
+    pub fee_credits: u64,
+    /// The wallet's own Platform address it pays: pass it to
+    /// `platform_cancel`.
+    pub to: String,
+    /// What to authorize: no duffs, `credits` credits.
+    pub grant: GrantRequest,
 }
 
 /// A send's outcome.
@@ -499,6 +524,45 @@ impl DashPay {
             };
             let ask = (amount, to.as_str(), exit_of.as_deref());
             platform_moves::move_to_core(&net, &session, &wallet, wallet_id, ask, &grant).await
+        })
+        .await
+    }
+
+    /// What cancelling the held move or contact payment `of` takes (#762).
+    pub async fn platform_cancel_quote(
+        &self,
+        of: String,
+    ) -> Result<PlatformCancelQuote, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            platform_moves::cancel_quote(&net, &session, &wallet, wallet_id, &of).await
+        })
+        .await
+    }
+
+    /// Cancels the held move or contact payment `of` under `grant` (a
+    /// `PlatformOp` grant or a `PlatformAddressMove` lease): its inputs at
+    /// its nonces to `to`, the quote's own Platform address. Settled by the
+    /// held record's withdrawal document: only one of the two executes.
+    pub async fn platform_cancel(
+        &self,
+        of: String,
+        to: String,
+        grant: String,
+    ) -> Result<PlatformSendOutcome, CreditsError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            let ask = (of.as_str(), to.as_str());
+            platform_moves::cancel(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await
     }

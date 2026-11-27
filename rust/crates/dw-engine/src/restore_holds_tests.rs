@@ -1547,6 +1547,11 @@ fn without_platform_every_platform_funds_flow_is_refused_up_front() {
         None,
         g.clone()
     ));
+    call!("platform_cancel", |g| dp.platform_cancel(
+        "move-1-0".into(),
+        "x".into(),
+        g.clone()
+    ));
     call!("platform_fund", |g| dp.platform_fund(fund(), g.clone()));
     call!("resume_platform_fund", |g| dp
         .resume_platform_fund(txid.clone(), g.clone()));

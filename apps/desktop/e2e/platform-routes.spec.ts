@@ -348,17 +348,14 @@ test.describe("Pay from Platform", () => {
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
   });
 
-  test("a held send has no Home card, and the move's quote refuses before any passphrase", async ({ page }) => {
+  test("a held send has no Home card, and the move Transfer offers is its exit", async ({ page }) => {
     await open(page, "platform-send-failed-may-land");
     await expect(page.getByTestId("platform-card-send-held")).toHaveCount(0);
     await expect(page.getByTestId("platform-card")).toHaveCount(0);
-    // Transfer reads the move's quote when the route opens: the refusal shows on its fee line.
     await openTransfer(page, "platformToCore");
-    await expect(page.getByTestId("transfer-fee")).toHaveText(
-      "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
-    );
-    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
-    await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+    await page.getByTestId("transfer-continue").click();
+    await expect(page.getByTestId("platform-move-exit-send")).toContainText("may still go through");
     expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_move_to_core").length)).toBe(0);
   });
 

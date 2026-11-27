@@ -1459,3 +1459,64 @@ for (const theme of THEMES) {
     });
   }
 }
+
+// The way out of a held Platform item: Move to Dash wallet on a held payment's details and its
+// Confirm line, and the cancel of a held move or contact payment, from Confirm to its outcome.
+const openDetails = async (page: Page, txid: string) => {
+  await page.getByTestId("sidebar-activity").click();
+  await page.getByTestId("tx-list").waitFor();
+  await page.locator(`button[data-txid="${txid}"]`).click();
+  await page.getByTestId("source-detail").waitFor();
+};
+const HELD_EXIT: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  "send-details": { scenario: "platform-send-failed-may-land", reach: (page) => openDetails(page, "platform:send:ps-held:mayland") },
+  "send-move-confirm": {
+    scenario: "platform-send-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:send:ps-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "move-details": { scenario: "platform-move-failed-may-land", reach: (page) => openDetails(page, "platform:moveToCore:pm-held:mayland") },
+  "move-cancel-confirm": {
+    scenario: "platform-move-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-body").waitFor();
+    },
+  },
+  "move-cancel-done": {
+    scenario: "platform-move-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-cancel-outcome").waitFor();
+    },
+  },
+  "payout-cancel-confirm": {
+    scenario: "platform-payout-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:contactPayment:cp-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-body").waitFor();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(HELD_EXIT)) {
+    test(`visual held-exit-${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("hero").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `held-exit-${name}`, theme);
+    });
+  }
+}

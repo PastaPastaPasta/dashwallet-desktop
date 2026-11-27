@@ -7,6 +7,7 @@ import { absentAsUnavailable } from "../api/pending";
 import { IpcBackend } from "../api/tauri";
 import { OpenFailureActions } from "../screens/StoreRefusal";
 import { installFixture, type FixtureHandle } from "./index";
+import { plannedWithdrawalCredits } from "../platform/move";
 import { landSend, PLATFORM_PAYEE } from "./pending";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
 
@@ -400,14 +401,61 @@ describe("fixture pending commands", () => {
     expect((await backend.platformActivity(W))?.[0]).toMatchObject({ estimated: true, mayLand: false });
   });
 
-  it("holds a move beside a send that may still land, at the quote (before any passphrase) and at the move", async () => {
-    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+  it("holds a plain move beside a send that may still land; the move quoted beside it is its exit, at its inputs", async () => {
+    const plain = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     platform().nextSend = "failed";
     const { outcome } = await pay(credits("1000000000"));
     const held = { code: "credits.move_pending", data: { artifact: outcome.id } };
-    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(held);
-    const grant = await opGrant(quote.grant.maxCredits);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, grant.id)).rejects.toMatchObject(held);
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, plain.to, null, (await opGrant(plain.grant.maxCredits)).id)).rejects.toMatchObject(held);
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    expect(exit.exitOf).toBe(outcome.id);
+    // Only the send's input, the largest address: the rest stays.
+    expect(exit.credits).toBe("30000000000");
+  });
+
+  it("the exit of a held send that goes through fails the send: its recipient isn't paid, neither is replaced", async () => {
+    platform().nextSend = "failed";
+    const { outcome } = await pay(credits("1000000000"));
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id);
+    expect(moved.state).toBe("done");
+    const rows = (await backend.platformActivity(W)) ?? [];
+    expect(rows.find((a) => a.id === outcome.id)).toMatchObject({ state: "failed", mayLand: false });
+    expect(rows.some((a) => a.state === "replaced")).toBe(false);
+    expect(platform().addresses.map((a) => a.credits)).toEqual(["10000000000"]);
+  });
+
+  it("the exit of a held send that loses: the send went through and paid its recipient, the move failed", async () => {
+    platform().nextSend = "failed";
+    const { outcome } = await pay(credits("1000000000"));
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    platform().nextMove = "lost";
+    const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id);
+    expect(moved.state).toBe("failed");
+    expect((await backend.platformActivity(W))?.find((a) => a.id === outcome.id)).toMatchObject({ state: "done", mayLand: false });
+  });
+
+  it("cancels a held move to its own address: the move fails, the amount less the fee arrives, and the row names what it cancels", async () => {
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    const q = await backend.platformCancelQuote(W, "pm-held");
+    expect(q).toMatchObject({ of: "pm-held", credits: "40000000000", feeCredits: "6500000" });
+    expect(platform().addresses.map((a) => a.address)).not.toContain(q.to);
+    await expect(backend.platformCancel(W, "pm-held", PLATFORM_PAYEE, (await opGrant(q.grant.maxCredits)).id)).rejects.toMatchObject({ code: "invalid_argument" });
+    const out = await backend.platformCancel(W, "pm-held", q.to, (await opGrant(q.grant.maxCredits)).id);
+    expect(out).toMatchObject({ state: "done", to: q.to });
+    const rows = (await backend.platformActivity(W)) ?? [];
+    expect(rows.find((a) => a.id === out.id)).toMatchObject({ kind: "send", cancels: "pm-held", state: "done" });
+    expect(rows.find((a) => a.id === "pm-held")).toMatchObject({ state: "failed", mayLand: false });
+    expect(platform().addresses).toEqual([{ address: q.to, credits: "39993500000" }]);
+  });
+
+  it("refuses a cancel beside a held send, and of a move that no longer holds", async () => {
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    platform().activity = [{ ...platform().activity.find((a) => a.id === "pm-held")!, id: "ps-x", kind: "send", to: PLATFORM_PAYEE }, ...platform().activity];
+    await expect(backend.platformCancelQuote(W, "pm-held")).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "ps-x" } });
+    await expect(backend.platformCancelQuote(W, "pa-1")).rejects.toMatchObject({ code: "credits.quote_changed" });
   });
 
   it("seeds a send that may land for the scenario: its row carries mayLand and its exact retry is quoted", async () => {

@@ -57,6 +57,8 @@
     "allow-platform-receive-address",
     "allow-platform-send-quote",
     "allow-platform-send",
+    "allow-platform-cancel-quote",
+    "allow-platform-cancel",
     "allow-platform-shield-quote",
     "allow-platform-fund-quote",
     "allow-platform-fund",

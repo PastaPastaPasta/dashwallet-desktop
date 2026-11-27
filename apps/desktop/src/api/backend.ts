@@ -17,6 +17,7 @@ import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
 import type { FundAmount } from "./generated/FundAmount";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
+import type { PlatformCancelQuote } from "./generated/PlatformCancelQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { QuickUnlockPolicy } from "./generated/QuickUnlockPolicy";
@@ -343,6 +344,12 @@ export interface Backend {
   platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
+  /** What cancelling the held move or contact payment `of` takes (`platform_cancel_quote`): its inputs,
+   * at its nonces and amount, to one of the wallet's own Platform addresses. */
+  platformCancelQuote(walletId: string, of: string): Promise<PlatformCancelQuote>;
+  /** Cancels the held move or contact payment `of` to `to` (the quote's own Platform address) under a
+   * `platformOp` `grant` (`platform_cancel`); only one of the two goes through. */
+  platformCancel(walletId: string, of: string, to: string, grant: string): Promise<PlatformSendOutcome>;
   /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
   platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote>;
   /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */

@@ -32,4 +32,10 @@ contact?: TxCounterparty,
  * `false` on every row of a group whose proof does not say which
  * member went through (the newest `done` included); absent otherwise.
  */
-winnerKnown?: boolean, };
+winnerKnown?: boolean,
+/**
+ * A `send` that cancels the held move or contact payment of this id:
+ * to one of the wallet's own Platform addresses, it pays no one;
+ * absent on every other row.
+ */
+cancels?: string, };
