@@ -5,7 +5,7 @@ import type { GiftOrder } from "../api/generated/GiftOrder";
 import type { Handlers } from "./handlers";
 import type { World } from "./scenarios";
 
-const ADDRESS = "XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg";
+const ADDRESS = "Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T";
 const BRANDS = [{ id: "45", name: "Fixture Groceries" }, { id: "88", name: "Fixture Books" }];
 const fail = (message: string): AppError => ({ code: "invalid_argument", message, data: null });
 const states = new WeakMap<World, { account: GiftAccount; orders: (GiftOrder & { walletId: string; paid: boolean })[]; drafts: Map<number, string> }>();

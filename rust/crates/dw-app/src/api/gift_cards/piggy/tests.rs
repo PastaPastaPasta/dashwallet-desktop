@@ -7,7 +7,7 @@ use dw_vault::MemoryOsStore;
 use super::*;
 use crate::api::gift_cards::{GiftAccount, GiftInvoice, store::Secrets};
 
-const INVOICE: &str = "dash:XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg?amount=0.12345678";
+const INVOICE: &str = "dash:Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T?amount=0.12345678";
 
 struct Mock {
     request_line: &'static str,
@@ -112,7 +112,7 @@ async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
         },
         get(
             "GET /dash/v1/orders/fixture-order HTTP/1.1",
-            r#"{"code":200,"message":"OK","data":{"orderId":"fixture-order","payTo":"dash:XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg?amount=0.12345678","status":"Payment pending","cards":[]}}"#,
+            r#"{"code":200,"message":"OK","data":{"orderId":"fixture-order","payTo":"dash:Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T?amount=0.12345678","status":"Payment pending","cards":[]}}"#,
         ),
         get(
             "GET /dash/v1/orders/fixture-order HTTP/1.1",
