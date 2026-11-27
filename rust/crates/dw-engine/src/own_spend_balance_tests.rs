@@ -3506,6 +3506,15 @@ fn a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_
 
 #[test]
 fn a_swept_child_keeps_a_coin_when_chainlock_catchup_pruned_the_spend() {
+    swept_child_after_chainlock_catchup(true);
+}
+
+#[test]
+fn a_swept_child_keeps_a_coin_when_a_noted_chainlock_pruned_the_spend() {
+    swept_child_after_chainlock_catchup(false);
+}
+
+fn swept_child_after_chainlock_catchup(applied: bool) {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     echo(&engine, &session, id, &p);
@@ -3517,12 +3526,53 @@ fn a_swept_child_keeps_a_coin_when_chainlock_catchup_pruned_the_spend() {
     *session.hub.pause_drop_child.lock().unwrap() = Some(Arc::clone(&pause));
     mined(&engine, &session, id, TIP + 1, vec![winner]);
     assert!(pause.wait_reached(std::time::Duration::from_secs(20)));
-    chain_lock(&engine, &session, id, TIP + 1, block);
+    if applied {
+        chain_lock(&engine, &session, id, TIP + 1, block);
+    } else {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let manager = session.manager().unwrap();
+        engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let core = &mut wm.get_wallet_info_mut(&id.0).unwrap().core_wallet;
+            core.note_chain_lock_height(TIP + 1);
+            assert!(core.last_applied_chain_lock().is_none());
+        });
+    }
     assert!(!observed(&engine, &session, id).contains_key(&d));
     pause.release.notify_one();
     drops_done(&engine, &session);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "catch-up");
     assert!(!session.hub.rescan_held(&id).contains(&d), "D was released");
+}
+
+#[test]
+fn a_queued_sweep_child_is_kept_when_its_parent_is_mined_in_another_wallet() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    let other = second_wallet(&engine, &session);
+    echo(&engine, &session, id, &p);
+    let mut parent = session.hub.history.get(&id, &p.txid()).unwrap();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    *session.hub.pause_drop_child.lock().unwrap() = Some(Arc::clone(&pause));
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert!(pause.wait_reached(std::time::Duration::from_secs(20)));
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    parent.context = TransactionContext::InBlock(BlockInfo::new(
+        TIP + 1,
+        super::block_with(vec![p.clone()]).block_hash(),
+        0,
+    ));
+    session.hub.history.with_wallet(other, |h| {
+        h.txs.insert(p.txid(), parent);
+    });
+    pause.release.notify_one();
+    drops_done(&engine, &session);
+    assert!(live_in_history(&session, id, c.txid()));
+    assert!(!abandon_marked(&session, id, c.txid()));
+    assert!(!session.hub.rescan_held(&id).contains(&d));
+    assert!(!spendable(&engine, &session, id, d));
 }
 
 /// #170 case 4: as above, the winner spending only A. C goes with the

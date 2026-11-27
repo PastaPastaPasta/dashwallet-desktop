@@ -1540,14 +1540,18 @@ impl NetworkSession {
 
     fn settled_all<'a>(
         &self,
-        infos: impl IntoIterator<Item = (&'a [u8; 32], &'a ManagedWalletInfo)>,
+        infos: impl Iterator<Item = (&'a [u8; 32], &'a ManagedWalletInfo)> + Clone,
+        candidates: impl IntoIterator<Item = Txid>,
     ) -> Settled {
         let (mut known, mut incomplete) = (HashMap::new(), None);
         let mut core_locks = HashSet::new();
-        for (id, core) in infos {
+        for (id, core) in infos.clone() {
             core_locks.extend(core.instant_send_locks().iter().copied());
             let unread = (self.hub.history).read_wallet(&WalletId(*id), |h| {
                 add_wallet(&mut known, h, core);
+                for t in h.drops.keys() {
+                    known.entry(*t).or_default();
+                }
                 h.load_incomplete
             });
             if unread {
@@ -1556,6 +1560,22 @@ impl NetworkSession {
         }
         for t in core_locks {
             known.entry(t).or_default().settled = true;
+        }
+        let parents: HashSet<_> = known
+            .values()
+            .flat_map(|k| k.parents.iter().copied())
+            .collect();
+        for t in parents.into_iter().chain(candidates) {
+            known.entry(t).or_default();
+        }
+        for (_, core) in infos {
+            let accounts = core.accounts.all_accounts();
+            for (t, k) in known.iter_mut().filter(|(_, k)| !k.mined) {
+                if accounts.iter().any(|a| a.transaction_is_finalized(t)) {
+                    k.mined = true;
+                    k.settled = true;
+                }
+            }
         }
         let (under, mined) = walk_known(&known);
         let direct = known
@@ -2154,7 +2174,7 @@ impl NetworkSession {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let infos = wm.get_all_wallet_infos().iter();
-            let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)));
+            let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)), [txid]);
             f.settled_descendant = (self.hub.history).read(&wallet, |txs| {
                 settled_descendant(txs, &settled, &txid, &proof)
             });
@@ -2163,7 +2183,7 @@ impl NetworkSession {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let infos = wm.get_all_wallet_infos().iter();
-            let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)));
+            let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)), [txid]);
             let planned = (wm.get_wallet_info(&wallet.0)).map(|i| {
                 let (descendants, _) = (self.hub.history).read(&wallet, |txs| {
                     unmined_descendants(txs, &i.core_wallet, txid)
@@ -2474,7 +2494,7 @@ impl NetworkSession {
         let (abandoned, released, overridden, txs, links) = {
             let settled = {
                 let infos = wm.get_all_wallet_infos().iter();
-                self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
+                self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)), [root])
             };
             let locks: Vec<platform_wallet::TrackedAssetLock> = (loaded_locks(&wm).into_iter())
                 .filter(|l| !own.contains(&l.out_point.txid))
@@ -3790,7 +3810,10 @@ impl NetworkSession {
         }
         let settled = {
             let infos = wm.get_all_wallet_infos().iter();
-            self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
+            self.settled_all(
+                infos.map(|(id, i)| (id, &i.core_wallet)),
+                roots.iter().chain(links).chain(gone).copied(),
+            )
         };
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return Ok(BTreeSet::new());
@@ -3809,7 +3832,8 @@ impl NetworkSession {
         if unrechecked {
             let core = &info.core_wallet;
             let held = |t: &Txid| {
-                held_settled(core, t).is_some()
+                settled.direct.contains_key(t)
+                    || held_settled(core, t).is_some()
                     || (!core.is_dismissed(t)
                         && core
                             .accounts
@@ -3834,6 +3858,21 @@ impl NetworkSession {
                 return Ok(BTreeSet::new());
             }
         }
+        let durable_spends = if unrechecked && !links.is_empty() {
+            let persister = Arc::clone(&self.live()?.persister);
+            tokio::task::spawn_blocking(move || {
+                let storage = |e: &dyn std::fmt::Display| {
+                    EngineError::Storage(format!("reading a swept payment's spends: {e}"))
+                };
+                persister.flush(wallet.0).map_err(|e| storage(&e))?;
+                persister
+                    .block_spent_outpoints(&wallet.0)
+                    .map_err(|e| storage(&e))
+            })
+            .await??
+        } else {
+            BTreeMap::new()
+        };
         let (plan, winner, forgotten) = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
             let chainlock = self.chainlock_height(&info.core_wallet);
@@ -3845,7 +3884,10 @@ impl NetworkSession {
             // it now: a truncation since its detection may have undone its
             // winner, and a block or a record since may have named another.
             let rechecked: Vec<Txid>;
-            let mut forgotten = BTreeMap::new();
+            let mut forgotten = durable_spends
+                .into_iter()
+                .map(|(outpoint, spend)| (outpoint, spend.height))
+                .collect::<BTreeMap<_, _>>();
             let (roots, winner) = match recheck {
                 None => (roots, winner),
                 Some(r) => {
@@ -4212,7 +4254,8 @@ impl NetworkSession {
                 (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
                     i.core_wallet.instant_send_locks().contains(&root) || {
                         let infos = wm.get_all_wallet_infos().iter();
-                        let settled = self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)));
+                        let settled =
+                            self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)), [root]);
                         settled.under.contains(&root)
                     }
                 })
@@ -4405,7 +4448,10 @@ impl NetworkSession {
             }
             let settled = {
                 let infos = wm.get_all_wallet_infos().iter();
-                self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
+                self.settled_all(
+                    infos.map(|(id, i)| (id, &i.core_wallet)),
+                    roots.iter().copied(),
+                )
             };
             let blocks = override_blocked(&settled.under, core);
             (chainlock, roots.into_iter().filter(|t| blocks(t)).collect())
