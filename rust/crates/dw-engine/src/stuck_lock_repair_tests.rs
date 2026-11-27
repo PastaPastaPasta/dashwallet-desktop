@@ -312,6 +312,7 @@ fn reopening_during_repair_keeps_unrelated_funding_available() {
         )
         .unwrap();
     persister.flush(id.0).unwrap();
+    drop(persister);
     drop(wallet);
     phase_one(&engine, &session, id, &step, lock.txid());
 
