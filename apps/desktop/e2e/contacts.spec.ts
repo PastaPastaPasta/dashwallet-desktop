@@ -122,7 +122,7 @@ test("IOS-072 searches the network from two characters: three new usernames, Sho
 
   await network.getByTestId("network-row").filter({ hasText: "Marta" }).click();
   await expect(page.getByTestId("add-contact-name")).toHaveText("Marta");
-  await expect(page.getByTestId("add-contact")).toContainText(IDENTITY.marta);
+  await expect(page.getByTestId("add-contact-identity").locator("bdi[title]")).toHaveAttribute("title", IDENTITY.marta);
 
   // Clearing the field drops the network rows at once.
   await search(page).fill("");
@@ -175,7 +175,7 @@ test("selecting a row shows it in the detail slot; a search that filters it out 
   await expect(row(page, "Carol")).toHaveAttribute("aria-current", "true");
   const detail = page.getByTestId("contact-detail");
   await expect(detail.getByRole("heading", { level: 2 })).toHaveText("Carol");
-  await expect(page.getByTestId("contact-detail-identity")).toHaveText(IDENTITY.carol);
+  await expect(page.getByTestId("contact-detail-identity").locator("bdi[title]")).toHaveAttribute("title", IDENTITY.carol);
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
   await expect(page.getByTestId("contact-detail-channel")).toHaveText("Setting up");
   // DP2-09 fills the rest of the slot: Carol's payments are still being set up; a payment

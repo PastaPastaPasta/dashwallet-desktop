@@ -66,7 +66,11 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("tx-detail-inputs")).toBeHidden();
     await expect(page.getByTestId("tx-detail-outputs")).toBeHidden();
     await folded.locator("summary").click();
-    await expect(page.getByTestId("tx-detail-txid")).toContainText(sent.txid);
+    const txid = page.getByTestId("tx-detail-txid");
+    const identifier = txid.locator("bdi[title]");
+    await expect(identifier).toHaveAttribute("title", sent.txid);
+    expect(await identifier.evaluate((value) => value.getClientRects().length)).toBe(1);
+    await expect(txid).toContainText(`${sent.txid.slice(0, 8)}…${sent.txid.slice(-7)}`);
     await expect(folded).toContainText("Network fee");
     await expect(page.getByTestId("tx-detail-inputs")).toBeVisible();
     await expect(page.getByTestId("tx-detail-outputs")).toBeVisible();
@@ -77,6 +81,8 @@ for (const theme of THEMES) {
     // The row shows the start; the button copies the whole hex (clipboard reads: Chromium only).
     if (test.info().project.name === "chromium") {
       await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+      await txid.getByRole("button", { name: "Copy transaction ID" }).click();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sent.txid);
       await copyRaw.click();
       const copied = await page.evaluate(() => navigator.clipboard.readText());
       // The whole transaction, not the preview: two hex digits per byte of its Size.

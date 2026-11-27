@@ -1983,6 +1983,11 @@ input[type="radio"]:disabled {
   color: var(--dw-role-text-secondary);
 }
 
+.identifier {
+  white-space: nowrap;
+  word-break: normal;
+}
+
 .copy-value {
   display: inline-flex;
   align-items: flex-start;

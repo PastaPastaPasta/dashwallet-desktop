@@ -114,7 +114,7 @@ export function ResultSheet({
             <AmountText text={shown.full(outcome.fee)} unitName={unit} glyph={false} />
           </DetailRow>
           <DetailRow label={t("pay.result.txid")} testId="pay-result-txid">
-            <CopyValue value={outcome.txid} action={t("pay.result.copyTxid")} mono />
+            <CopyValue value={outcome.txid} action={t("pay.result.copyTxid")} mono truncate />
           </DetailRow>
         </dl>
       )}

@@ -194,7 +194,7 @@ test.describe("Pay", () => {
     await sendWithPassphrase(page);
     await expect(page.getByTestId("pay-result-sent")).toBeVisible();
     const txid = await world(page, (w) => w.wallets[0].rows[0].txid);
-    await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
+    await expect(page.getByTestId("pay-result-txid").locator("bdi[title]")).toHaveAttribute("title", txid);
     // The spend grant was capped at the confirmed total.
     expect(await world(page, (w) => w.grants.map((g) => [g.grant.purpose, g.used]))).toEqual([[{ kind: "spend", maxDuffs: 50_000_226 }, true]]);
 

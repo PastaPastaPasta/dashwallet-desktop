@@ -156,7 +156,7 @@ test("IOS-073 a Contacts search's network row opens its hit; Show more carries t
   await expect(hit(page, "Mayumi")).toBeVisible();
   await page.getByTestId("contacts-network").getByTestId("network-row").filter({ hasText: "Marta" }).click();
   await expect(page.getByTestId("add-contact-name")).toHaveText("Marta");
-  await expect(page.getByTestId("add-contact-identity")).toContainText(IDENTITY.marta);
+  await expect(page.getByTestId("add-contact-identity").locator("bdi[title]")).toHaveAttribute("title", IDENTITY.marta);
 });
 
 test("IOS-073 a dashpay: link opens Add Contact verified; a link that does not verify has no Send", async ({ page }) => {

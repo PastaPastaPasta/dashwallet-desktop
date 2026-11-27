@@ -211,7 +211,7 @@ for (const answer of ["sent", "unknown"] as const)
     await unlock(page);
     await expect(page.getByTestId("page-pay")).toBeVisible();
     await expect(page.getByTestId(`pay-result-${answer}`)).toBeVisible();
-    await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
+    await expect(page.getByTestId("pay-result-txid").locator("bdi[title]")).toHaveAttribute("title", txid);
     if (answer === "unknown") {
       await expect(page.getByTestId("pay-result-text")).toContainText("Check Activity before you pay again.");
       await expect(page.getByTestId("pay-result-retry")).toHaveCount(0);
@@ -236,7 +236,7 @@ test("an unlock before the broadcast answers shows the payment being sent, then 
   await release.evaluate((r) => r());
   await expect(page.getByTestId("pay-result-sent")).toBeVisible();
   await expect(page.getByTestId("pay-sending")).toHaveCount(0);
-  await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
+  await expect(page.getByTestId("pay-result-txid").locator("bdi[title]")).toHaveAttribute("title", txid);
   await expectNotResubmittable(page);
   expect(errors).toEqual([]);
 });

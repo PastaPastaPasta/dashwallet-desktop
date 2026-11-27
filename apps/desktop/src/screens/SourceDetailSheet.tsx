@@ -24,7 +24,7 @@ import { useT } from "../i18n";
 
 function Address({ value }: { value: string }) {
   const t = useT();
-  return <CopyValue value={value} action={t("activity.sourceDetail.copyAddress")} mono />;
+  return <CopyValue value={value} action={t("activity.sourceDetail.copyAddress")} mono truncate />;
 }
 
 /** "Move to Dash wallet": the way out of a held send or cancel, or of a held move or contact payment

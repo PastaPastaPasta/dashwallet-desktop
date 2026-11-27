@@ -15,7 +15,6 @@ import {
   identityErrorText,
   keyRows,
   listModel,
-  shortId,
   type IdentitiesModel,
   type IdentityRow,
   type KeyRow,
@@ -161,7 +160,7 @@ function IdentityRowView({ row, model, balance, onKeys }: { row: IdentityRow; mo
           )}
         </p>
         <p className="field-hint">
-          {row.index} · <CopyValue value={row.identity} display={shortId(row.identity)} action={PROFILE_COPY.copyIdentityId} mono />
+          {row.index} · <CopyValue value={row.identity} action={PROFILE_COPY.copyIdentityId} mono truncate />
         </p>
         <p className="identity-row-balance" data-testid="identity-balance">
           <bdi>{balance(row.credits)}</bdi>
@@ -252,7 +251,7 @@ function DetailSheet({ walletId, identity, model, onClose }: { walletId: string;
         <>
           <dl className="detail-list">
             <DetailRow label={D.identity} testId="identity-detail-id">
-              <CopyValue value={d.summary.identity} action={PROFILE_COPY.copyIdentityId} mono />
+              <CopyValue value={d.summary.identity} action={PROFILE_COPY.copyIdentityId} mono truncate />
             </DetailRow>
             <DetailRow label={D.index} testId="identity-detail-index">
               {d.summary.index}
@@ -359,7 +358,7 @@ function FindPanel({ model, balance }: { model: IdentitiesModel; balance: (c: st
         <div className="identity-found" data-testid="identity-found">
           <dl className="detail-list">
             <DetailRow label={C.detail.identity} testId="identity-found-id">
-              <CopyValue value={s.found.identity} action={PROFILE_COPY.copyIdentityId} mono />
+              <CopyValue value={s.found.identity} action={PROFILE_COPY.copyIdentityId} mono truncate />
             </DetailRow>
             <DetailRow label={C.detail.usernames} testId="identity-found-names">
               <bdi>{s.found.usernames}</bdi>

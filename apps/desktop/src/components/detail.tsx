@@ -13,14 +13,19 @@ export function DetailRow({ label, children, testId }: { label: string; children
   );
 }
 
+export function Identifier({ value, mono = false }: { value: string; mono?: boolean }) {
+  const shown = value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-7)}` : value;
+  return <bdi className={mono ? "identifier mono" : "identifier"} title={value}>{shown}</bdi>;
+}
+
 /** `value` with a copy button; `display` is shown in its place when given (a shortened id). The
  * button's name is `action`, a whole sentence ("Copy data directory"), else the catalog's copy
  * sentence around the noun `label`. */
-export function CopyValue({ value, label, action, mono = false, display }: { value: string; mono?: boolean; display?: string } & ({ label: string; action?: undefined } | { label?: undefined; action: string })) {
+export function CopyValue({ value, label, action, mono = false, display, truncate = false }: { value: string; mono?: boolean; display?: string; truncate?: boolean } & ({ label: string; action?: undefined } | { label?: undefined; action: string })) {
   const t = useT();
   return (
     <span className="copy-value">
-      <span className={mono ? "mono" : undefined}>{display ?? value}</span>
+      {truncate ? <Identifier value={value} mono={mono} /> : <span className={mono ? "mono" : undefined}>{display ?? value}</span>}
       <CopyIconButton text={value} label={action ?? t("components.copy.value", { label: label! })} />
     </span>
   );
