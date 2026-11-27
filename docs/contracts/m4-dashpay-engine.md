@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 108
+Contract-Version: 109
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1063,7 +1063,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f021fd6323682f2db31b98064c2f202e39805da38beaeee7ac025ea2bb6b2fa0 version: 108 -->
+<!-- surface-sha256: f021fd6323682f2db31b98064c2f202e39805da38beaeee7ac025ea2bb6b2fa0 version: 109 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -5498,7 +5498,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     is off or below activation, readiness reports that instead). The funding step refuses the same way before its
     lease (`unhooked`); a named row still settles by evidence. Top-ups from Shielded and the Platform-address funding on mainnet
     are unchanged.
-115. **A way out of a held Platform send, and the cancel that pays no one (#762; version 107).** A send that Platform
+115. **A way out of a held Platform send, and the cancel that pays no one (#762; version 107, reworded in 109).** A send that Platform
     neither executed nor refused for good held every move and send of the wallet. Its way out is "Move to Dash
     wallet": `move_to_core_quote` beside it names it in `exit_of` and plans on its inputs only, and `move_to_core`
     with that `exit_of` signs a `ToCore` at its exact inputs and nonces, as a top-up's exit (item 103). A plain move
@@ -5509,8 +5509,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     exact inputs to the wallet's own Platform address, settled by that record's own document (a payout's group as
     C-funding P8 settles it, the cancel the winner once every withdrawal's document is proved absent). A cancel is
     never offered beside a record that leaves no document (a send, a top-up, a registration create, or another
-    cancel): two such members at one key leave no proof of which executed, so `move_to_core`'s and the cancel's
-    `blocks` refuse any group with two of them, and the settlement settles nothing for such a group (defensive). A
+    cancel): two such members of different terms at one key leave no proof of which executed, so `move_to_core`'s
+    and the cancel's `blocks` refuse any group with two of them of different terms, and the settlement settles
+    nothing for a group with two of them of different terms (defensive). A
     send's identical retry beside its exit is one more document-less member of the same terms: when the send's side
     executed, the newest of them is `Done` and the other `Replaced`; when the exit did, both are `Failed`. A new send whose inputs could not fund their own exit is refused (`platform.insufficient_credits`).
     The exit pays no one but the wallet, so it passes the mainnet flag (item 106) beside a held record, and so does a held cancel's exact re-send; no new cancel is offered or signed there, and the held withdrawal or payout waits for its document.
@@ -5523,9 +5524,15 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     settled only on a withdrawal's document. While any group waits on evidence after its nonces were proved taken,
     its inputs are not compared for activity rows: the member that settles carries the fall. A payout's key that
     another write took part of fails every member once the payout's document is proved absent, a cancel beside it
-    or not. A cancel that never executes is a hold of its own: its way out is its exact re-send, which the quote
-    offers on the held cancel's terms, so that a refused or lost cancel never holds the wallet's Platform addresses
-    with nothing offered.
+    or not. A cancel that never executes is a hold of its own. Its exact re-send, which the quote offers on the held
+    cancel's terms, resolves a cancel that was lost, never reached Platform, or was refused for a while (a node's
+    error): once the re-send or the withdrawal or payout beside it executes, the nonces are proved taken and the
+    group settles on its documents. A cancel whose terms Drive refuses for good stays held while the withdrawal or
+    payout beside it may still execute, and while it holds, the wallet's other Platform sends, moves and top-ups are
+    refused (`credits.move_pending`). Only a later network protocol can refuse those terms. This build still signs
+    under the protocol version its SDK holds — the newest one it has seen and knows, never one past what it knows —
+    so it cannot resolve such a cancel itself: the way out is a newer build that ships the exit beside a held cancel
+    (#1006). A repin that changes the rules for address transfers or withdrawals checks this again (below).
     Both rely on Drive refusing a transition at a taken nonce unpaid, and on no `BumpAddressInputNonces` for a
     transfer, a withdrawal or a top-up from addresses, at the pinned platform revision (as item 103 does); a repin
     checks both again. A repin that changes the rules for address transfers or withdrawals also either ships the exit
