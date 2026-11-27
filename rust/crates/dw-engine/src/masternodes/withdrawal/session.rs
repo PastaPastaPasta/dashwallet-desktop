@@ -30,7 +30,7 @@ use super::{
     Alarm, Authorize, Chain, Env, HeldKey, Hold, PayoutChange, Waits, WalletKeys, WithdrawalError,
     WithdrawalRuntime, load, on_db,
 };
-use crate::history::{TxEntry, chain_locked, instant_locked};
+use crate::history::{Finality, TxEntry, block_beats, instant_locked};
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::masternodes::{MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::trust::Rule5;
@@ -82,16 +82,43 @@ fn payout_set(
 /// The ProRegTx and ProUpRegTxs of `pro_tx_hash` in the loaded wallets'
 /// `histories`,
 /// once each, but those out of a block that a wallet abandoned or that a
-/// block in any wallet's history conflicts (MG-04's reading). A wallet the
+/// block `finality` proves final, in any wallet's history, conflicts,
+/// directly or, by the history's descendant rule over every wallet's
+/// reading, through a transaction they spend (MG-04's reading, #740). A
+/// block a reorg can still undo, or one the header chain no longer holds,
+/// releases nothing. A wallet the
 /// change pays or names a key of records it with nothing of its own to
 /// abandon. An InstantSend-locked change is conflicted only by a block
 /// `chainlock` covers (key-wallet's finality order).
-fn payout_changes_in(
+pub(super) fn payout_changes_in(
     histories: &[&HashMap<Txid, TxEntry>],
     pro_tx_hash: &[u8; 32],
     chainlock: Option<u32>,
+    finality: &Finality,
 ) -> Vec<PayoutChange> {
     let all = || histories.iter().flat_map(|h| h.iter());
+    // The histories as one, each transaction at its most settled reading
+    // in any wallet (mined, else InstantSend-locked; between mined copies,
+    // a block `finality` proves), for the descendant rule: built once, and
+    // only for a change out of a block.
+    let merged = std::cell::OnceCell::new();
+    let through_parent = |txid: &Txid| {
+        let conflicted = merged.get_or_init(|| {
+            let rank = |e: &TxEntry| {
+                let block = e.context.block_info();
+                let proven = block.is_some_and(|b| finality.proves(b));
+                (block.is_some(), instant_locked(e), proven)
+            };
+            let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
+            for (t, e) in all() {
+                if txs.get(t).is_none_or(|m| rank(e) > rank(m)) {
+                    txs.insert(*t, e.clone());
+                }
+            }
+            crate::history::conflicted(&txs, chainlock, |b| finality.proves(b))
+        });
+        conflicted.contains_key(txid)
+    };
     type Seen<'a> = ((Option<Vec<u8>>, bool), Vec<&'a TxEntry>);
     let mut seen: HashMap<Txid, Seen> = HashMap::new();
     for (txid, e) in all() {
@@ -111,11 +138,10 @@ fn payout_changes_in(
                 .collect();
             let beaten = all().any(|(id, w)| {
                 *id != txid
-                    && w.context.block_info().is_some()
-                    && (!locked || chain_locked(&w.context, chainlock))
+                    && block_beats(&w.context, locked, chainlock, |b| finality.proves(b))
                     && (w.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
             });
-            if abandoned || beaten {
+            if abandoned || beaten || (!locked && through_parent(&txid)) {
                 return None;
             }
         }
@@ -202,11 +228,17 @@ impl Env for SessionEnv {
         Ok(self.session.barrier_operation_state(wallet, &row).await?)
     }
 
-    fn payout_changes(&self, pro_tx_hash: &[u8; 32]) -> Vec<PayoutChange> {
+    async fn payout_changes(&self, pro_tx_hash: &[u8; 32]) -> Vec<PayoutChange> {
         let hub = &self.session.hub;
+        let finality = (self.session)
+            .finality(|at_most| {
+                (hub.history).read_all(|all| crate::history::spender_heights(all, at_most))
+            })
+            .await;
         let chainlock =
             (hub.tracker().chainlock_height()).max(hub.best_chainlock().map(|(h, _)| h));
-        (hub.history).read_all(|histories| payout_changes_in(histories, pro_tx_hash, chainlock))
+        (hub.history)
+            .read_all(|histories| payout_changes_in(histories, pro_tx_hash, chainlock, &finality))
     }
 
     fn waits(&self) -> Waits {
@@ -442,16 +474,26 @@ impl MnWithdrawNet for SessionNet {
 }
 
 impl NetworkSession {
+    /// Tests: what a quote's look does to the payout-change barriers of
+    /// `pro_tx_hash` when no Platform read passes, so only their
+    /// operations' states clear them (MG-13 P16): it deletes those it
+    /// clears.
+    #[cfg(test)]
+    pub(crate) async fn withdrawal_clear_barriers(self: &Arc<Self>, pro_tx_hash: &[u8; 32]) {
+        let env = SessionEnv::of(self).unwrap();
+        (super::check::clear_barriers_unproved(&env, pro_tx_hash).await).unwrap();
+    }
+
     /// Tests: the heights of the ProUpRegTxs of `pro_tx_hash` a withdrawal
     /// reads from the history (`None` out of a block); its ProRegTx is left
     /// out.
     #[cfg(test)]
-    pub(crate) fn withdrawal_payout_changes(
+    pub(crate) async fn withdrawal_payout_changes(
         self: &Arc<Self>,
         pro_tx_hash: &[u8; 32],
     ) -> Vec<Option<u32>> {
         let env = SessionEnv::of(self).unwrap();
-        env.payout_changes(pro_tx_hash)
+        (env.payout_changes(pro_tx_hash).await)
             .into_iter()
             .filter(|c| !c.registration)
             .map(|c| c.height)

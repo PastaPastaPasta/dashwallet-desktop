@@ -6038,6 +6038,33 @@ fn an_older_drop_settles_on_its_root_inputs_final_spend() {
 /// is mined again on the new branch and ChainLocked, D awaits nothing.
 #[test]
 fn a_drops_winner_in_a_block_a_fork_replaced_keeps_the_wallet_awaiting_after_a_reopen() {
+    winner_in_a_replaced_block(Again::Winner);
+}
+
+/// #907: as above, but on the new branch another spend of A, paying the
+/// wallet, is mined and ChainLocked: P can never confirm, so D awaits
+/// nothing, though W's record still names B.
+#[test]
+fn a_replacement_branch_spend_of_the_contested_input_settles_the_drop_beside_a_stale_winner() {
+    winner_in_a_replaced_block(Again::Rival);
+}
+
+/// #907: as above, but on the new branch P itself is mined and ChainLocked:
+/// C, built on P, can still confirm, so D awaits it, W's record naming B.
+#[test]
+fn a_drops_own_parent_mined_beside_a_stale_winner_keeps_the_wallet_awaiting() {
+    winner_in_a_replaced_block(Again::Parent);
+}
+
+/// What the new branch mines and ChainLocks at `TIP + 3` in
+/// [`winner_in_a_replaced_block`].
+enum Again {
+    Winner,
+    Rival,
+    Parent,
+}
+
+fn winner_in_a_replaced_block(mode: Again) {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     let w = rival(&engine, &session, id, &paid, a.vout);
@@ -6093,19 +6120,31 @@ fn a_drops_winner_in_a_block_a_fork_replaced_keeps_the_wallet_awaiting_after_a_r
         "B replaced, the ChainLock past it"
     );
 
-    let again = super::block_with(vec![w.clone(), foreign()]).block_hash();
+    let (mined_again, state, awaits) = match mode {
+        Again::Rival => (
+            rival(&engine, &session, id, &paid, a.vout),
+            "another spend of A final",
+            false,
+        ),
+        Again::Parent => (p.clone(), "P mined and ChainLocked", true),
+        Again::Winner => (w.clone(), "W mined again and ChainLocked", false),
+    };
+    let again = super::block_with(vec![mined_again.clone(), foreign()]).block_hash();
     header_chain(
         &session,
         &[(TIP + 1, replaced), (TIP + 2, next), (TIP + 3, again)],
     );
-    mined(&engine, &session, id, TIP + 3, vec![w.clone(), foreign()]);
+    mined(&engine, &session, id, TIP + 3, vec![mined_again, foreign()]);
     chain_lock(&engine, &session, id, TIP + 3, again);
     reconciled(&engine, &session, id);
-    assert_eq!(
-        held_report(&session, id),
-        (x, 0, false),
-        "W mined again and ChainLocked"
+    if !matches!(mode, Again::Winner) {
+        assert_eq!(in_history(&session), Some((TIP + 1, b)), "W still names B");
+    }
+    assert!(
+        session.hub.dropped_holds(id).contains(&d),
+        "{state}: D is held"
     );
+    assert_eq!(held_report(&session, id), (x, 0, awaits), "{state}");
 }
 
 /// D held, its drop's winner W ChainLocked: nothing awaits.

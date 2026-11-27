@@ -170,7 +170,7 @@ pub(crate) async fn look(
     let identity = gated(env.rule_5(), env.waits().probe, || net.identity(id)).await?;
     let header_tip = env.chain().header_tip;
     let pending = pending_barriers(env, pro_tx_hash, &identity).await?;
-    let changes = env.payout_changes(pro_tx_hash);
+    let changes = env.payout_changes(pro_tx_hash).await;
     let (unconfirmed, unapplied) = unpaid_changes(&changes, &identity.read);
     let core = identity.read.core_height;
     let reason = if header_tip.is_none() {
@@ -348,6 +348,28 @@ async fn pending_barriers(
         }
     }
     Ok(pending)
+}
+
+/// Tests: [`pending_barriers`] with no Platform read passed.
+#[cfg(test)]
+pub(super) async fn clear_barriers_unproved(
+    env: &impl Env,
+    pro_tx_hash: &[u8; 32],
+) -> Result<(), WithdrawalError> {
+    let read = super::net::Proved {
+        value: None,
+        height: 0,
+        core_height: 0,
+        time_ms: 0,
+        verified: false,
+    };
+    let identity = Gated {
+        read,
+        passed: false,
+    };
+    pending_barriers(env, pro_tx_hash, &identity)
+        .await
+        .map(drop)
 }
 
 /// Why a payout-change barrier is still pending.
