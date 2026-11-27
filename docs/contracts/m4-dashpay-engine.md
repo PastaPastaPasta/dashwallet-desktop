@@ -5460,7 +5460,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     The identity proved present, with the engine's proof written and its registration keys proved to match the row's
     index, is `IdentityRegistered`. An unproved index or mismatched keys leave the payment `payment_unknown`.
     A library `not_executed` result for an unpadded create also checks for the identity before offering a retry.
-    A proved absence older than a fully spent nullifier read leaves the payment pending. A proved-unsent artifact,
+    A retry requires a fully spent nullifier proof and an absence proof at or above its height. An unspent,
+    partially spent, or older absence proof leaves the payment pending. A proved-unsent artifact,
     or no artifact with the row named and no dispatch recorded, clears the name (a refused send fails it,
     retryable, so it never loops; so
     does a create the hook named and then refused); an artifact executed or unresolved (the library resolves every

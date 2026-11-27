@@ -933,7 +933,8 @@ async fn by_artifact(
 }
 
 /// Another install spending the same unpadded bundle can register this identity.
-/// Require the absence proof to be at least as recent as a fully spent read.
+/// A retry requires a fully spent proof and an absence proof from at least
+/// that height. An older unspent snapshot cannot explain the settled spend.
 async fn spent_elsewhere(
     net: &impl CreateEvidence,
     identity: &str,
@@ -946,9 +947,8 @@ async fn spent_elsewhere(
         Err(_) => return ShieldedOutcome::Unknown,
     };
     match net.nullifiers(&artifact.published).await {
-        Ok(NullifierRead::Spent(at)) if at > absent_at => ShieldedOutcome::Unknown,
-        Ok(_) => ShieldedOutcome::Unsent,
-        Err(_) => ShieldedOutcome::Unknown,
+        Ok(NullifierRead::Spent(at)) if at <= absent_at => ShieldedOutcome::Unsent,
+        _ => ShieldedOutcome::Unknown,
     }
 }
 

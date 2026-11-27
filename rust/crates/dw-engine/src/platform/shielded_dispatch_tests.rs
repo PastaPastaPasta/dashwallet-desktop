@@ -2401,6 +2401,7 @@ fn a_create_whose_dispatch_is_not_recorded_is_refused_unsent() {
 #[derive(Default)]
 struct Evidence {
     spent: std::sync::Mutex<Option<u64>>,
+    partly_spent: std::sync::Mutex<bool>,
     nullifiers_fail: std::sync::Mutex<bool>,
     unspent_at: std::sync::Mutex<u64>,
     pruned: std::sync::Mutex<Option<u64>>,
@@ -2420,6 +2421,9 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
         super::super::trust::note_lookup(!*self.unverified.lock().unwrap());
         if *self.nullifiers_fail.lock().unwrap() {
             return Err(crate::platform::PlatformError::Unavailable);
+        }
+        if *self.partly_spent.lock().unwrap() {
+            return Ok(NullifierRead::Partly);
         }
         Ok(match *self.spent.lock().unwrap() {
             Some(at) => NullifierRead::Spent(at),
@@ -3183,11 +3187,18 @@ fn an_unpadded_create_spent_elsewhere_reads_its_identity() {
     *ev.identity.lock().unwrap() = (false, 100);
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unsent);
     *ev.spent.lock().unwrap() = None;
-    *ev.identity.lock().unwrap() = (false, 0);
+    *ev.unspent_at.lock().unwrap() = 90;
+    *ev.identity.lock().unwrap() = (false, 99);
     assert_eq!(
         h.evidence(draft, &id, &ev),
-        ShieldedOutcome::Unsent,
-        "nothing spent"
+        ShieldedOutcome::Unknown,
+        "an older unspent proof cannot justify a retry"
+    );
+    *ev.partly_spent.lock().unwrap() = true;
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unknown,
+        "a partial proof does not establish an ordered absence"
     );
     assert!(h.refunds().is_empty());
 
