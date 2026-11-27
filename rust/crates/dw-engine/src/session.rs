@@ -1206,9 +1206,8 @@ impl NetworkSession {
         if let Some(cl) = &core.metadata.last_applied_chain_lock {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
-        self.hub.detect_truncation(id, core);
-        let synced = core.synced_height();
         let excluded = self.hub.excluded_share(id, core);
+        let synced = core.synced_height();
         let waiting = excluded.waiting();
         let read = WalletState {
             birth_height: core.birth_height(),

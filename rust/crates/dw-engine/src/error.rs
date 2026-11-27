@@ -100,6 +100,9 @@ pub enum EngineError {
     /// (`replay_guard`).
     #[error("a rescan is in progress")]
     RescanInProgress,
+    /// The wallet could not identify coins a fork restored.
+    #[error("Run Rescan from below block {0} before spending.")]
+    RescanFirst(u32),
     /// A rescan the user stopped part way must run again before a spend.
     #[error("a rescan was interrupted")]
     RescanInterrupted,
@@ -259,7 +262,7 @@ impl EngineError {
             EngineError::RescanInProgress => "rescan_in_progress",
             EngineError::RescanInterrupted => "rescan_interrupted",
             EngineError::InvalidXpub(_) => "invalid_xpub",
-            EngineError::TxActionRefused(_) => "tx_action_refused",
+            EngineError::TxActionRefused(_) | EngineError::RescanFirst(_) => "tx_action_refused",
             EngineError::NoPeers => "no_peers",
             EngineError::HeightOutOfRange(_) => "height_out_of_range",
             EngineError::InvalidQuery(_) => "invalid_query",

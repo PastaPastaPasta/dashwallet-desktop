@@ -1097,6 +1097,7 @@ fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
         assert_eq!(penalty(), serde_json::json!(COIN));
         restored.session.hub.history.truncate(
             restored.wallets[0],
+            0,
             &[],
             &[txid],
             crate::history::ForkRestorations::Reported(&[]),
@@ -1108,6 +1109,7 @@ fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
         );
         restored.session.hub.history.truncate(
             restored.wallets[0],
+            0,
             &[txid],
             &[],
             crate::history::ForkRestorations::Reported(&[]),

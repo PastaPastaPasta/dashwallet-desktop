@@ -23,6 +23,7 @@ use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use dw_protx::payloads::resolve_collateral;
 use key_wallet::managed_account::transaction_record::{OutputRole, TransactionRecord};
 use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 
 use crate::platform::Counterparty;
 use crate::platform::attribution::Payees;
@@ -1535,6 +1536,7 @@ pub(crate) struct WalletHistory {
     /// The latest detected fork's unspent wallet inputs. A verified lock
     /// arriving after detection can identify a restored coin in this set.
     detected_fork_coins: HashSet<OutPoint>,
+    pub(crate) fork_restores: crate::fork_restore::ForkRestores,
     /// Own spends a fork removed before the wallet knew their lock.
     /// A later verified lock can restore the pending row and its hold.
     fork_removed_spends: HashMap<Txid, ForkRemovedSpend>,
@@ -1746,7 +1748,13 @@ impl WalletHistory {
         let outputs = self.own_outputs.entry(record.txid).or_default();
         for o in &record.output_details {
             if matches!(o.role, OutputRole::Received | OutputRole::Change) {
-                outputs.insert(o.index, (o.value, matches!(o.role, OutputRole::Change)));
+                if outputs
+                    .insert(o.index, (o.value, matches!(o.role, OutputRole::Change)))
+                    .is_none()
+                {
+                    self.fork_restores
+                        .note_output(OutPoint::new(record.txid, o.index));
+                }
             }
         }
         self.name_registration_collateral(record);
@@ -1978,12 +1986,15 @@ pub(crate) struct HistoryStore {
 pub(crate) const EARLY_LOCK_LIMIT: usize = 4096;
 const EARLY_LOCK_INPUT_LIMIT: usize = 65_536;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) enum ForkRestorations<'a> {
     /// Exact outpoints returned in a wallet event.
     Reported(&'a [OutPoint]),
     /// Currently unspent coins to check when detection has no event.
-    Detected(&'a [OutPoint]),
+    Detected {
+        core: &'a ManagedWalletInfo,
+        prior: u32,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -2006,7 +2017,10 @@ impl EarlyInstantLocks {
                 .flatten()
                 .filter(|t| history.session_locks.contains(*t));
             let covered = matched.clone().any(|t| history.fork_kept_locks.contains(t));
-            if !covered && (self.overflow || matched.next().is_some()) {
+            if !covered
+                && (matched.next().is_some()
+                    || (self.overflow && !history.fork_restores.covers(coin)))
+            {
                 history.restored_fork_inputs.insert(*coin);
             }
         }
@@ -2082,6 +2096,7 @@ impl HistoryStore {
     pub(crate) fn truncate(
         &self,
         wallet: WalletId,
+        height: u32,
         removed: &[Txid],
         unconfirmed: &[Txid],
         restored: ForkRestorations<'_>,
@@ -2090,10 +2105,16 @@ impl HistoryStore {
             let changed = history.truncate(removed, unconfirmed, locks.overflow);
             match restored {
                 ForkRestorations::Reported(coins) => {
+                    history.fork_restores.note_event_fork(height);
                     locks.hold_restorations(history, coins);
                 }
-                ForkRestorations::Detected(unspent) => {
-                    history.detected_fork_coins = unspent.iter().copied().collect();
+                ForkRestorations::Detected { core, prior } => {
+                    history.detected_fork_coins = crate::fork_restore::unspent_outpoints(core);
+                    if locks.overflow {
+                        history
+                            .fork_restores
+                            .infer(prior, height, &history.detected_fork_coins);
+                    }
                     history.restored_fork_inputs.extend(
                         locks
                             .spends
@@ -2116,6 +2137,13 @@ impl HistoryStore {
     pub(crate) fn hold_fork_restorations(&self, wallet: WalletId, restored: &[OutPoint]) -> bool {
         !restored.is_empty()
             && self.with_wallet_records(wallet, |h, locks| locks.hold_restorations(h, restored))
+    }
+
+    pub(crate) fn lock_buffer_overflowed(&self) -> bool {
+        self.early_locks
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .overflow
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the
@@ -3514,6 +3542,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
         store.truncate(
             wallet,
+            0,
             &[removed.txid()],
             &[kept.txid()],
             ForkRestorations::Reported(&[]),

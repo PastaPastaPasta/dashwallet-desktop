@@ -377,6 +377,8 @@ impl NetworkSession {
         let w = self.wallet(&wallet).await?;
         let mut held: Vec<(Utxo, Option<DerivationPath>)> = {
             let state = crate::wallet_read::info_of(&w).await?;
+            self.hub.observe_coins(wallet, &state.core_wallet);
+            self.hub.check_fork_spend(wallet)?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()

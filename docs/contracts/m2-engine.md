@@ -149,9 +149,11 @@ status is unknown stays pending. Its inputs stay excluded for the session, and A
 When a truncation returns a coin whose spender was never recorded, Desktop keeps it excluded for the session
 if a wallet-matched verified lock names it or the buffer has overflowed. A detected truncation without an event
 can match the live wallet's unspent coins against buffered verified locks in the same write that holds the
-inputs. A verified lock received afterward can still name an input from that read. Without the event or
-verified lock evidence, Desktop cannot identify the restored outpoint. For a recorded own spend that was
-removed before its lock verified, the
+inputs. A verified lock received afterward can still name an input from that read. After overflow, Desktop
+compares its last unspent-coin read with the post-fork read and holds the restored inputs. When a pre-fork
+read is unavailable, the wallet shows its coins as unverified and refuses spending with `rescanFirst`.
+A completed Rescan from below the truncation clears the inferred hold. For a recorded own spend removed
+before its lock verified, the
 removed record stays in memory for the session. A subsequent verified lock restores the pending row and
 excludes its inputs that are still unspent.
 

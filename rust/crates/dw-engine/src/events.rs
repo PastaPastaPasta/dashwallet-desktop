@@ -425,14 +425,18 @@ impl WalletState {
         let b = Excluded::subtract(&self.balance, Some(&self.excluded.balance));
         // Before the CoinJoin view is computed: the CoinJoin accounts'
         // spendable balance (an upper bound of the fully mixed one).
-        let coinjoin = self.fully_mixed.unwrap_or_else(|| {
-            self.accounts
-                .iter()
-                .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
-                .map(|(t, b)| Excluded::subtract(b, self.excluded.accounts.get(t)))
-                .map(|b| b.confirmed().saturating_add(b.unconfirmed()))
-                .sum()
-        });
+        let coinjoin = if self.excluded.fork_restores_unknown {
+            0
+        } else {
+            self.fully_mixed.unwrap_or_else(|| {
+                self.accounts
+                    .iter()
+                    .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
+                    .map(|(t, b)| Excluded::subtract(b, self.excluded.accounts.get(t)))
+                    .map(|b| b.confirmed().saturating_add(b.unconfirmed()))
+                    .sum()
+            })
+        };
         let held = self.restore_held.min(b.confirmed());
         WalletBalances {
             confirmed: b.confirmed() - held,
@@ -482,7 +486,7 @@ pub(crate) fn process_to(
 }
 
 /// What a fork truncation dropped ([`SessionHub::apply_truncation`]).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) struct Truncated<'a> {
     /// Transactions recorded in blocks above the height, gone.
     pub removed: &'a [Txid],
@@ -1968,6 +1972,22 @@ impl SessionHub {
         }
     }
 
+    /// Reconcile a fork before overwriting the wallet's pre-fork coin read.
+    /// The caller holds the manager lock across both.
+    pub(crate) fn observe_coins(&self, id: WalletId, core: &ManagedWalletInfo) {
+        self.detect_truncation(id, core);
+        let processed = core.last_processed_height();
+        self.update_wallet_state(id, |s| {
+            s.processed_height = s.processed_height.max(processed)
+        });
+        let released = self
+            .history
+            .with_wallet(id, |h| h.fork_restores.record_read(core));
+        if released && let Some(reread) = self.balance_reread.get() {
+            reread(id);
+        }
+    }
+
     /// Applies the balances of `core`, read from the manager under its
     /// lock, with the excluded coins' share and what of it the restore
     /// holds keep back, unless the wallet is unloaded; announces them when
@@ -2226,7 +2246,7 @@ impl SessionHub {
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) -> bool {
-        let detected = matches!(found.restored, ForkRestorations::Detected(_));
+        let detected = matches!(found.restored, ForkRestorations::Detected { .. });
         let lowered = {
             let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
             let state = map.entry(id).or_default();
@@ -2272,9 +2292,9 @@ impl SessionHub {
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         self.note_held_fork(id, height);
-        let changed = self
-            .history
-            .truncate(id, found.removed, found.unconfirmed, found.restored);
+        let changed =
+            self.history
+                .truncate(id, height, found.removed, found.unconfirmed, found.restored);
         self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
@@ -2329,10 +2349,13 @@ impl SessionHub {
         use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
         let truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
         let height = core.last_processed_height();
-        if !self
-            .wallet_state(&id)
-            .is_some_and(|s| height < s.processed_height)
-        {
+        let prior = self
+            .wallets
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)?
+            .processed_height;
+        if height >= prior {
             return None;
         }
         let accounts = core.accounts.all_accounts();
@@ -2369,12 +2392,6 @@ impl SessionHub {
                     .filter(|t| h.session_held.contains(t) && !still_recorded(t) && !finalized(t)),
             );
         });
-        let unspent: Vec<_> = core
-            .accounts
-            .all_funding_accounts()
-            .into_iter()
-            .flat_map(|account| account.utxos.keys().copied())
-            .collect();
         self.apply_truncation(
             &truncating,
             id,
@@ -2382,7 +2399,7 @@ impl SessionHub {
             Truncated {
                 removed: &removed,
                 unconfirmed: &unconfirmed,
-                restored: ForkRestorations::Detected(&unspent),
+                restored: ForkRestorations::Detected { core, prior },
             },
             &core.balance(),
             &core.account_balances(),
@@ -3400,6 +3417,7 @@ mod tests {
                 balance: WalletCoreBalance::new(3 * COIN, 0, 0, 0),
                 accounts: BTreeMap::from([(account, WalletCoreBalance::new(3 * COIN, 0, 0, 0))]),
                 pending: 0,
+                fork_restores_unknown: false,
                 coins: BTreeMap::from([
                     (held, (account, share, crate::ExclusionReason::RescanHold)),
                     (free, (account, share, crate::ExclusionReason::RescanHold)),

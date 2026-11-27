@@ -1097,7 +1097,6 @@ impl NetworkSession {
         );
         let (mut snapshot, lock_inputs, unseen, applied, excluded) = {
             let state = crate::wallet_read::info_of(wallet).await?;
-            self.hub.detect_truncation(wallet_id, &state.core_wallet);
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
             (
@@ -1105,7 +1104,7 @@ impl NetworkSession {
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
                 crate::history_ops::applied_chainlock(&state),
-                self.hub.excluded_coins(wallet_id, &state.core_wallet),
+                self.hub.spend_exclusions(wallet_id, &state.core_wallet)?,
             )
         };
         // Coins before the history: a ProRegTx that lands between the two

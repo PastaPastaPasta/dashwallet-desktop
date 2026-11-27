@@ -25,9 +25,9 @@ use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
-use crate::WalletId;
 use crate::events::SessionHub;
 use crate::history::{TxEntry, WalletHistory, instant_locked};
+use crate::{EngineError, WalletId};
 
 /// Why a coin is kept out of spending and every balance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -68,6 +68,7 @@ pub(crate) struct Excluded {
     /// The value of those shown as pending ([`ExclusionReason::listed`]):
     /// a coin waiting for its rescan is kept out without being shown.
     pub pending: u64,
+    pub fork_restores_unknown: bool,
     /// Each coin's share, with its account and why it is excluded: a coin
     /// released before the next read leaves at once ([`Self::release_rescan`]).
     pub coins: BTreeMap<OutPoint, (AccountType, WalletCoreBalance, ExclusionReason)>,
@@ -189,17 +190,46 @@ impl SessionHub {
     /// lock) and the history hold them now. Every surface that counts or
     /// offers coins reads this map and nothing else.
     pub(crate) fn excluded_coins(&self, wallet: WalletId, core: &ManagedWalletInfo) -> Exclusions {
+        self.coin_exclusions(wallet, core).0
+    }
+
+    pub(crate) fn check_fork_spend(&self, wallet: WalletId) -> Result<(), EngineError> {
+        let unknown = self
+            .history
+            .read_wallet(&wallet, |h| h.fork_restores.unknown_height());
+        unknown.map_or(Ok(()), |height| Err(EngineError::RescanFirst(height)))
+    }
+
+    pub(crate) fn spend_exclusions(
+        &self,
+        wallet: WalletId,
+        core: &ManagedWalletInfo,
+    ) -> Result<Exclusions, EngineError> {
+        let (coins, unknown) = self.coin_exclusions(wallet, core);
+        unknown.map_or(Ok(coins), |height| Err(EngineError::RescanFirst(height)))
+    }
+
+    fn coin_exclusions(
+        &self,
+        wallet: WalletId,
+        core: &ManagedWalletInfo,
+    ) -> (Exclusions, Option<u32>) {
+        self.observe_coins(wallet, core);
         #[cfg(test)]
         let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let skip = false;
-        let (withheld, kept) = (self.history).read_wallet(&wallet, |h| {
+        let (withheld, kept, unknown) = (self.history).read_wallet(&wallet, |h| {
             let withheld = if skip {
                 BTreeSet::new()
             } else {
                 pending_unproven(core, h)
             };
-            (withheld, fork_kept_inputs(core, h))
+            (
+                withheld,
+                fork_kept_inputs(core, h),
+                h.fork_restores.unknown_height(),
+            )
         });
         let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
@@ -208,12 +238,26 @@ impl SessionHub {
             (self.rescan_held(&wallet).into_iter()).map(|o| (o, ExclusionReason::RescanHold)),
         );
         out.extend(kept.into_iter().map(|o| (o, ExclusionReason::ForkKeptLock)));
-        out
+        if unknown.is_some() {
+            out.extend(
+                core.accounts
+                    .all_funding_accounts()
+                    .into_iter()
+                    .flat_map(|a| a.utxos.keys().map(|o| (*o, ExclusionReason::ForkKeptLock))),
+            );
+        }
+        (out, unknown)
     }
 
     /// The share of wallet `wallet`'s excluded coins in `core`'s balances.
     pub(crate) fn excluded_share(&self, wallet: WalletId, core: &ManagedWalletInfo) -> Excluded {
-        Excluded::of(core, &self.excluded_coins(wallet, core))
+        let (coins, unknown) = self.coin_exclusions(wallet, core);
+        let mut excluded = Excluded::of(core, &coins);
+        if unknown.is_some() {
+            excluded.pending = excluded.total();
+            excluded.fork_restores_unknown = true;
+        }
+        excluded
     }
 
     /// Whether wallet `id` may hold withheld coins now or after its next
@@ -226,11 +270,13 @@ impl SessionHub {
     pub(crate) fn may_withhold(&self, id: &WalletId) -> bool {
         let excluded = (self.wallet_state(id)).is_some_and(|s| s.excluded.total() > 0);
         excluded
+            || self.history.lock_buffer_overflowed()
             || (self.history).read_wallet(id, |h| {
                 !h.rescan_holds.is_empty()
                     || !h.fork_kept_locks.is_empty()
                     || !h.uncertain_fork_spends.is_empty()
                     || !h.restored_fork_inputs.is_empty()
+                    || h.fork_restores.holding()
                     || (h.txs.iter())
                         .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
             })
@@ -267,6 +313,7 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
     if h.fork_kept_locks.is_empty()
         && h.uncertain_fork_spends.is_empty()
         && h.restored_fork_inputs.is_empty()
+        && !h.fork_restores.holding()
     {
         return BTreeSet::new();
     }
@@ -288,6 +335,7 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
         .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
         .chain(h.uncertain_fork_spends.values().flatten().copied())
         .chain(h.restored_fork_inputs.iter().copied())
+        .chain(h.fork_restores.held())
         .filter(unspent)
         .collect()
 }

@@ -139,6 +139,13 @@ impl Scenario {
     }
 
     fn truncate_silently(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        self.truncate_silently_after(|| {})
+    }
+
+    fn truncate_silently_after(
+        &self,
+        before: impl FnOnce(),
+    ) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
         use platform_wallet::key_wallet_manager::WalletInterface;
         let manager = self.session.manager().unwrap();
         let reconciles = std::mem::take(&mut *self.session.hub.reconciles.lock().unwrap());
@@ -148,6 +155,7 @@ impl Scenario {
             }
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
+            before();
             let mut events = wm.subscribe_events();
             wm.truncate_above(TIP).unwrap();
             std::iter::from_fn(|| events.try_recv().ok()).collect()
@@ -155,7 +163,14 @@ impl Scenario {
     }
 
     fn detect_fork(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
-        let events = self.truncate_silently();
+        self.detect_fork_after(|| {})
+    }
+
+    fn detect_fork_after(
+        &self,
+        before: impl FnOnce(),
+    ) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        let events = self.truncate_silently_after(before);
         let manager = self.session.manager().unwrap();
         self.engine
             .block_on(self.session.refresh_wallet_state(&manager, self.id));
@@ -470,6 +485,7 @@ fn a_verified_lock_after_detection_holds_an_unrecorded_spenders_input() {
 #[test]
 fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
     let s = unrecorded_spender(false);
+    assert_eq!(s.max().0, 11 * COIN);
     s.overflow_early_locks();
     let events = s.detect_fork();
     let seen = s.session.hub.truncations();
@@ -592,4 +608,86 @@ fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     s.hear_lock();
     let kept = hub.history.read_wallet(&s.id, |h| h.session_locks.clone());
     assert_eq!(kept, [s.p.txid()].into_iter().collect());
+}
+
+fn public_rescan(s: &Scenario, from: u32) {
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::Height(from)))
+        .unwrap();
+}
+
+fn finish_rescan(s: &Scenario) {
+    mined(&s.engine, &s.session, s.id, TIP, vec![foreign()]);
+    let manager = s.session.manager().unwrap();
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    s.session.hub.settle_rereads();
+}
+
+#[test]
+fn an_eventless_fork_after_overflow_holds_the_unrecorded_spenders_input() {
+    let s = unrecorded_spender(true);
+    assert_eq!(s.max().0, 11 * COIN);
+    s.overflow_early_locks();
+    s.detect_fork();
+    assert_restored_input(&s, true);
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, TIP);
+    finish_rescan(&s);
+    assert_restored_input(&s, true);
+
+    public_rescan(&s, FUNDED_AT);
+    assert_eq!(balances(&s.session, s.id).confirmed, 11 * COIN);
+    finish_rescan(&s);
+    assert_restored_input(&s, false);
+}
+
+#[test]
+fn an_eventless_fork_without_a_coin_read_waits_for_a_deep_rescan() {
+    let s = unrecorded_spender(true);
+    s.overflow_early_locks();
+    s.detect_fork_after(|| {
+        s.session
+            .hub
+            .history
+            .with_wallet(s.id, |h| h.fork_restores = Default::default());
+    });
+    let balance = balances(&s.session, s.id);
+    assert_eq!((balance.confirmed, balance.withheld), (0, 12 * COIN));
+    assert!(matches!(
+        s.engine.block_on(s.session.max_spendable(
+            s.id,
+            CoinSource::Any,
+            crate::send::FeeMode::PerKb(1_000)
+        )),
+        Err(EngineError::RescanFirst(TIP))
+    ));
+    assert!(matches!(
+        s.engine
+            .block_on(s.session.utxos(s.id, CoinFilter::default())),
+        Err(EngineError::RescanFirst(TIP))
+    ));
+    let (_, prepared) = prepare(
+        &s.engine,
+        &s.session,
+        s.id,
+        CoinSource::Outpoints(vec![s.a]),
+        COIN / 2,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert!(matches!(prepared, Err(EngineError::RescanFirst(TIP))));
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, FUNDED_AT);
+    assert!(s.engine.block_on(s.session.cancel_rescan()).unwrap());
+    let manager = s.session.manager().unwrap();
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    assert_eq!(balances(&s.session, s.id).confirmed, 0);
+
+    public_rescan(&s, FUNDED_AT);
+    finish_rescan(&s);
+    assert_restored_input(&s, false);
 }

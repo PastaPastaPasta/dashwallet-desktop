@@ -635,6 +635,7 @@ fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
     // A reorg takes the reward change's block.
     (f.session.hub.history).truncate(
         f.wallets[0],
+        105,
         &[u.txid()],
         &[],
         crate::history::ForkRestorations::Reported(&[]),
