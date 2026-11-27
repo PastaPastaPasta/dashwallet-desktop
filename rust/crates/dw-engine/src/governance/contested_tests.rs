@@ -399,6 +399,7 @@ fn contested_names_lists_open_contests_and_the_wallets_voters() {
             ContestedName {
                 label: LABEL.into(),
                 ends_at: n.now + 3600,
+                own: false,
                 contenders: vec![
                     NameContender {
                         identity: b58(ID1),
@@ -418,6 +419,7 @@ fn contested_names_lists_open_contests_and_the_wallets_voters() {
             ContestedName {
                 label: "dashx".into(),
                 ends_at: n.now + 7200,
+                own: false,
                 contenders: vec![NameContender {
                     identity: b58(ID2),
                     votes: None,

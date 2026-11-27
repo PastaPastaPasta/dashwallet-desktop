@@ -56,9 +56,9 @@ describe("names and choices", () => {
   it("compares names as DPNS does", () => {
     expect(normalizeLabel("Alice")).toBe("a11ce");
     expect(normalizeLabel("DASH-Pay")).toBe("dash-pay");
-    expect(listContests(names().contests, "ALICE", "ending").map((c) => c.label)).toEqual(["a11ce"]);
-    expect(listContests(names().contests, "  ", "ending")).toHaveLength(2);
-    expect(listContests(names().contests, "bob", "ending")).toEqual([]);
+    expect(listContests(names().contests, "ALICE", "ending", NOW).map((c) => c.label)).toEqual(["a11ce"]);
+    expect(listContests(names().contests, "  ", "ending", NOW)).toHaveLength(2);
+    expect(listContests(names().contests, "bob", "ending", NOW)).toEqual([]);
   });
 
   it("names a choice and its button, and tells choices apart", () => {
@@ -155,10 +155,24 @@ describe("the list", () => {
     const c = n.contests;
     const b0b = { ...c[1], label: "b0b", endsAt: c[1].endsAt + 1, lockVotes: 7 };
     const all = [...c, b0b];
-    expect(listContests(all, "", "ending").map((x) => x.label)).toEqual(["a11ce", "dash-pay", "b0b"]);
-    expect(listContests(all, "", "name").map((x) => x.label)).toEqual(["a11ce", "b0b", "dash-pay"]);
-    expect(listContests(all, "", "votes").map((x) => x.label)).toEqual(["a11ce", "b0b", "dash-pay"]);
-    expect(listContests(all, "", "lock").map((x) => x.label)).toEqual(["b0b", "a11ce", "dash-pay"]);
+    expect(listContests(all, "", "ending", NOW).map((x) => x.label)).toEqual(["a11ce", "dash-pay", "b0b"]);
+    expect(listContests(all, "", "name", NOW).map((x) => x.label)).toEqual(["a11ce", "b0b", "dash-pay"]);
+    expect(listContests(all, "", "votes", NOW).map((x) => x.label)).toEqual(["a11ce", "b0b", "dash-pay"]);
+    expect(listContests(all, "", "lock", NOW).map((x) => x.label)).toEqual(["b0b", "a11ce", "dash-pay"]);
+  });
+
+  it("puts own active contests first and preserves the existing order within both groups", () => {
+    const all = [
+      { ...A11CE, endsAt: NOW + 1 },
+      { ...A11CE, label: "c0ra", own: true, endsAt: NOW },
+      { ...A11CE, label: "mara", own: true, endsAt: NOW + 2 },
+      { ...DASH_PAY, own: true, endsAt: NOW + 3 },
+      { ...A11CE, label: "zara", endsAt: NOW + 4 },
+    ];
+    expect(listContests(all, "", "ending", NOW).map((c) => c.label)).toEqual(["mara", "dash-pay", "a11ce", "c0ra", "zara"]);
+    expect(listContests(all, "", "name", NOW).map((c) => c.label)).toEqual(["dash-pay", "mara", "a11ce", "c0ra", "zara"]);
+    expect(listContests(all, "Cora", "ending", NOW).map((c) => c.label)).toEqual(["c0ra"]);
+  });
   });
 
   it("closes a contest at its end time and says when", () => {

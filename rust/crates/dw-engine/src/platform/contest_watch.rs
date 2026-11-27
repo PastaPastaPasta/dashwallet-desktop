@@ -495,6 +495,17 @@ async fn identities_of(wallet: &PlatformWallet) -> Result<BTreeMap<String, Mine>
         .collect())
 }
 
+pub(crate) struct ContestOwnership(BTreeMap<String, Mine>);
+
+impl ContestOwnership {
+    pub(crate) fn owns(&self, label: &str, poll: &Poll) -> bool {
+        self.0.values().any(|identity| {
+            poll.lists(&identity.id)
+                || (poll.truncated() && identity.open.iter().any(|own| own == label))
+        })
+    }
+}
+
 /// Whether a row's label is `label`'s contest (DPNS's normalized compare).
 fn same_contest(label: &str) -> impl Fn(&str) -> bool + use<> {
     let safe = convert_to_homograph_safe_chars(label);
@@ -513,6 +524,15 @@ pub(crate) fn watch_of<'a>(
 }
 
 impl NetworkSession {
+    pub(crate) async fn contest_ownership(
+        &self,
+        id: WalletId,
+    ) -> Result<ContestOwnership, PlatformError> {
+        let manager = self.manager()?;
+        let wallet = super::names::platform_wallet(&manager, id).await?;
+        Ok(ContestOwnership(identities_of(&wallet).await?))
+    }
+
     /// What the watch asks of Platform.
     pub(super) fn contest_net(&self, manager: &Manager) -> SdkOrFake {
         #[cfg(test)]

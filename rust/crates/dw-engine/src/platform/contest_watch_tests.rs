@@ -155,6 +155,18 @@ fn watch(label: &str, ends_at: u64, last_state: Option<&str>) -> ContestWatch {
     }
 }
 
+#[test]
+fn contest_ownership_survives_a_full_contender_page() {
+    let f = Fixture::new(true);
+    f.contending("Alice");
+    let ownership = f.engine.block_on(f.s.contest_ownership(f.wallet)).unwrap();
+    let full = crowd(None, 0, POLL_PAGE as u8, false);
+    assert!(ownership.owns("a11ce", &full));
+    assert!(!ownership.owns("dash-pay", &full));
+    assert!(!ownership.owns("a11ce", &poll(None, 0, &[BOB])));
+    assert!(ownership.owns("dash-pay", &poll(None, 0, &[BOB, ME])));
+}
+
 impl Fixture {
     /// Our identity, contending for `label` as the library records it,
     /// on a wallet past its first bring-up.
