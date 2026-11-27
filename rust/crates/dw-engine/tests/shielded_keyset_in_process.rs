@@ -116,7 +116,9 @@ fn the_engine_takes_a_key_set_only_for_one_library_call() {
         if is_test_file(rel) {
             continue;
         }
-        let rel = rel.to_string_lossy().into_owned();
+        let rel = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
         let src = fs::read_to_string(path).unwrap();
         if src
             .lines()
