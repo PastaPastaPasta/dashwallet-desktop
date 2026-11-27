@@ -65,13 +65,21 @@ environment, and the reviewer's approval is then the only gate. Two things close
 
 ### 2. Apple: the certificate and the notary key (15 minutes)
 
-The certificate must be a **Developer ID Application** certificate of the team pinned as `apple_team_id`.
+CI gets a **Developer ID Application** certificate of its own, of the team pinned as `apple_team_id`. Do not
+export the identity that signs Dash Core and the stable releases: that key stays off hosted runners
+([`SIGNING.md`](SIGNING.md)), and a certificate of CI's own can be revoked without touching anything signed with
+the other. A team can hold five.
 
-- To reuse the identity already in your login Keychain: **Keychain Access ▸ My Certificates**, right-click
-  `Developer ID Application: …`, **Export**, format `.p12`, and give it a new password.
-- To give CI its own certificate instead (the Account Holder only): create one at
-  <https://developer.apple.com/account/resources/certificates/add> (**Developer ID Application**), open the
-  downloaded `.cer` so it joins the key in your Keychain, then export it as above. A team can hold five.
+1. **Keychain Access ▸ Certificate Assistant ▸ Request a Certificate From a Certificate Authority**, common name
+   `Dash Wallet Desktop CI`, **Saved to disk**. The private key is made in your Keychain and never leaves it.
+2. The team's Account Holder (only that role can) uploads the request at
+   <https://developer.apple.com/account/resources/certificates/add>, **Developer ID Application**, and downloads
+   the `.cer`.
+3. Open the `.cer` so it joins its key. In **Keychain Access ▸ My Certificates** there are now two
+   `Developer ID Application: …` identities; the new one expires five years from today. Right-click it,
+   **Export**, format `.p12`, with a new password.
+4. Upload it, then delete the new identity (the certificate and its private key) from your Keychain, so signing
+   by name on this Mac still finds exactly one:
 
 ```sh
 base64 -i ~/Desktop/developer-id.p12 | gh secret set APPLE_CERTIFICATE --env release-signing --repo "$R"
@@ -90,24 +98,34 @@ gh variable set APPLE_API_ISSUER_ID --env release-signing --repo "$R" --body "<I
 rm ~/Downloads/AuthKey_<KEY_ID>.p8
 ```
 
-### 3. PGP: a signing key for `SHA256SUMS.asc` (5 minutes)
+### 3. PGP: a signing subkey for `SHA256SUMS.asc` (10 minutes)
 
-A key made for this purpose, with its own passphrase, so no personal key or passphrase goes to GitHub:
+CI gets a signing subkey of your release key, under a passphrase of its own. The primary key stays with you: it
+still signs the tag ([`RC-SIGNING.md`](RC-SIGNING.md) section 3), it is what `pgp_fingerprint` pins, and it can
+revoke the subkey without anything from GitHub. Neither the primary key nor your passphrase goes to GitHub.
 
 ```sh
-export GNUPGHOME=$(mktemp -d)
-gpg --quick-generate-key "Dash Wallet Desktop release signing <you@example.org>" ed25519 sign 2y   # asks for a new passphrase
-FPR=$(gpg --list-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
-gpg --armor --export-secret-keys "$FPR" | gh secret set RELEASE_PGP_PRIVATE_KEY --env release-signing --repo "$R"
-gh secret set RELEASE_PGP_PASSPHRASE --env release-signing --repo "$R"         # prompts: paste that passphrase
-gpg --armor --export "$FPR" > release-key.asc && echo "$FPR"                   # both are public: step 5
-gpgconf --kill all && rm -rf "$GNUPGHOME" && unset GNUPGHOME
+export PGP_FPR=<40-hex primary fingerprint of your release key>
+gpg --quick-add-key "$PGP_FPR" ed25519 sign 2y                  # asks to unlock your primary key
+gpg --list-secret-keys --with-subkey-fingerprints "$PGP_FPR"    # the new [S] subkey is the last one listed
+SUB=<40-hex fingerprint of that subkey>
+
+CI_HOME=$(mktemp -d) && chmod 700 "$CI_HOME"                    # a throwaway home that holds only the subkey
+gpg --export-secret-subkeys "$SUB!" | gpg --homedir "$CI_HOME" --import
+GRIP=$(gpg --homedir "$CI_HOME" --list-secret-keys --with-keygrip --with-colons |
+  awk -F: -v want="$SUB" '$1 == "fpr" && $10 == want { s = 1; next } s && $1 == "grp" { print $10; exit }')
+gpg-connect-agent --homedir "$CI_HOME" "passwd $GRIP" /bye      # your passphrase once, then a NEW one for CI, twice
+gpg --homedir "$CI_HOME" --armor --export-secret-subkeys "$SUB!" |
+  gh secret set RELEASE_PGP_PRIVATE_KEY --env release-signing --repo "$R"    # asks for the new passphrase
+gh secret set RELEASE_PGP_PASSPHRASE --env release-signing --repo "$R"       # prompts: paste the new passphrase
+gpgconf --homedir "$CI_HOME" --kill all && rm -rf "$CI_HOME"
+gpg --delete-secret-keys "$SUB!"                                # your own keyring keeps signing with your usual subkey
+gpg --armor --export "$PGP_FPR" > release-key.asc               # public, now with the CI subkey: step 5
 ```
 
-Keep `release-key.asc` and the fingerprint for step 5. To tie the key to your own, sign `release-key.asc`'s key
-with your personal key before committing it (`gpg --import release-key.asc && gpg --sign-key "$FPR"`, then export
-it again). To sign with a subkey of your existing release key instead, export only that subkey
-(`gpg --armor --export-secret-subkeys '<SUBKEY_FPR>!'`); the pinned fingerprint stays the primary's.
+A new subkey takes its primary's passphrase, which is why the subkey is given another one in a throwaway home
+before it is exported. The last-but-one line removes the subkey's secret half from your own keyring: gpg signs
+with the newest signing subkey it holds, and that should stay yours.
 
 ### 4. Windows: Azure Artifact Signing (30 minutes of work, then 1 to 30 business days of waiting)
 
@@ -132,11 +150,13 @@ Microsoft's steps are in <https://learn.microsoft.com/azure/artifact-signing/qui
    az login
    APP_ID=$(az ad app create --display-name dashwallet-desktop-release-signing --query appId --output tsv)
    az ad sp create --id "$APP_ID"
-   az ad app federated-credential create --id "$APP_ID" --parameters '{
-     "name": "dashwallet-desktop-release-signing",
-     "issuer": "https://token.actions.githubusercontent.com",
-     "subject": "repo:PastaPastaPasta/dashwallet-desktop:environment:release-signing",
-     "audiences": ["api://AzureADTokenExchange"]}'
+   SUBJECT="$(gh api "repos/$R/actions/oidc/customization/sub" --jq .sub_claim_prefix):environment:release-signing"
+   echo "$SUBJECT"   # repo:PastaPastaPasta@6443210/dashwallet-desktop@1409635492:environment:release-signing
+   az ad app federated-credential create --id "$APP_ID" --parameters "{
+     \"name\": \"dashwallet-desktop-release-signing\",
+     \"issuer\": \"https://token.actions.githubusercontent.com\",
+     \"subject\": \"$SUBJECT\",
+     \"audiences\": [\"api://AzureADTokenExchange\"]}"
    SUB=$(az account show --query id --output tsv)
    az role assignment create --assignee "$APP_ID" --role "Artifact Signing Certificate Profile Signer" \
      --scope "/subscriptions/$SUB/resourceGroups/<group>/providers/Microsoft.CodeSigning/codeSigningAccounts/<account>/certificateProfiles/<profile>"
@@ -150,7 +170,10 @@ Microsoft's steps are in <https://learn.microsoft.com/azure/artifact-signing/qui
 
    An older portal names the role `Trusted Signing Certificate Profile Signer`. These six values are identifiers,
    not secrets: the federated credential is what lets a job in, and only a job of this repository that the
-   `release-signing` environment admitted.
+   `release-signing` environment admitted. Microsoft Entra compares the subject exactly. This repository's tokens
+   carry the owner's and the repository's numeric IDs in it (GitHub's immutable subject), so the name-only form
+   `repo:PastaPastaPasta/dashwallet-desktop:…` does not match, and a rename or transfer of the repository needs a
+   new credential.
 5. Note the two public values that identify this signer for step 5: the organization name (`O=`) in the
    certificate's subject, and the EKU that starts `1.3.6.1.4.1.311.97.` and is not `1.3.6.1.4.1.311.97.1.0`:
 
@@ -238,7 +261,10 @@ is run again. A fault in a script or in a pin needs a fix on `main` and the next
 from the tagged commit.
 
 The `sign` job installs `osslsigncode` and `gnupg` from Homebrew at their current versions, as the signer's Mac
-does; `jsign` is fetched at a pinned version and checked against a pinned SHA-256.
+does; `jsign` is fetched at a pinned version and checked against a pinned SHA-256. Those two Homebrew packages
+and what they depend on therefore run in a job that holds the PGP key and can sign with Azure, and the approved
+tag does not fix their versions. That is the same trust the local runbook places in Homebrew, and it is not yet
+removed here.
 
 ## Rotating and revoking
 
@@ -246,8 +272,13 @@ does; `jsign` is fetched at a pinned version and checked against a pinned SHA-25
   if its key leaked: Gatekeeper then refuses every app signed with it.
 - **Windows:** delete the federated credential or the role assignment and CI can no longer sign. Nothing in GitHub
   needs changing.
-- **PGP:** publish a revocation and pin a new key and fingerprint.
-- Deleting the `release-signing` environment removes every secret at once.
+- **PGP:** revoke the CI subkey with your primary key (`gpg --edit-key "$PGP_FPR"`, select the subkey, `revkey`),
+  commit the updated `release-key.asc`, and add a new subkey as in step 3. The pinned fingerprint does not change.
+- **Shutting CI signing down:** first delete the Azure federated credential (or the role assignment) and check
+  that a sign-in fails; only then delete the `release-signing` environment, which removes every secret at once.
+  The order matters. Azure trusts the environment by its name, and a workflow that names an environment that
+  does not exist creates it again without the reviewer and the tag rule. If Azure cannot be cut off at once,
+  keep the environment and its rules and delete the secrets one by one.
 
 ## Another Windows key holder
 

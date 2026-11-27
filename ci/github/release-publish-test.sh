@@ -1653,6 +1653,44 @@ PY
     "windows_signer: release-attach refuses a signer with the pinned organization and EKU that no pinned root issued" \
     "self[- ]signed|unable to get local issuer" "$e2e/attach-signer-impostor.out" \
     "${attach_base[@]}" "${signer_ids[@]}" --sigs-dir "$e2e/sigs-impostor" --out-dir "$e2e/attached-signer-impostor"
+  # The fixture signature has no timestamp and its certificate is current: osslsigncode accepts that, and a
+  # leaf that lives three days would then take the installer's signature with it.
+  signer_prod=()
+  for a in "${attach_base[@]}"; do
+    [[ "$a" == --skip-win-chain-verify ]] || signer_prod+=("$a")
+  done
+  expect_attach_fail \
+    "windows_signer: without the test-only skip flag, release-attach refuses a matching, currently valid signature that carries no timestamp" \
+    "no verified RFC 3161 timestamp" "$e2e/attach-signer-nots.out" \
+    "${signer_prod[@]}" "${signer_ids[@]}" --out-dir "$e2e/attached-signer-nots"
+  check "windows_signer: osslsigncode itself accepted that signature, so the timestamp check is what refused it" \
+    'grep -qx "Timestamp is not available" "$e2e/attach-signer-nots.out" && grep -qx "Signature verification: ok" "$e2e/attach-signer-nots.out" && [[ ! -e "$e2e/attached-signer-nots/signed-manifest.json" ]]'
+  wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
+  wv() { # wv <args>: windows-verify-pinned.sh on the attached installer; sets $wv_rc, output in $e2e/wv.out
+    wv_rc=0
+    "$here/windows-verify-pinned.sh" --exe "$wv_exe" "$@" > "$e2e/wv.out" 2>&1 || wv_rc=$?
+  }
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: accepts the installer under its leaf-hash pin" \
+    '[[ $wv_rc -eq 0 ]] && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: accepts the installer under its organization and EKU pin, reading the leaf from the installer" \
+    '[[ $wv_rc -eq 0 ]] && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt"
+  check "windows-verify-pinned: refuses that installer for want of a timestamp once the skip flag is gone" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "no verified RFC 3161 timestamp" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --skip-chain-verify
+  check "windows-verify-pinned: refuses an organization and EKU pin without pinned roots" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "needs --ca-file" "$e2e/wv.out"'
+  wv --leaf-hash "$e2e_leaf" --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt"
+  check "windows-verify-pinned: refuses both pins at once" '[[ $wv_rc -ne 0 ]] && grep -q "not both" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt" --skip-chain-verify \
+    --expect-leaf "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  check "windows-verify-pinned: refuses an installer whose signing leaf is not the detached signature's" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "is not the detached signature" "$e2e/wv.out"'
+  wv --leaf-hash "sha256:0000000000000000000000000000000000000000000000000000000000000000" --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: refuses another leaf" '[[ $wv_rc -ne 0 ]] && grep -q "Leaf hash match: failed" "$e2e/wv.out"'
+
   printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$e2e/work/garbage.pem"
   leaf_rc=0
   python3 "$here/windows-signer-leaf.py" "$e2e/work/garbage.pem" "Dash Core Test Org, Inc." 1.3.6.1.4.1.311.97.11.22.33.44 > "$e2e/leaf-garbage.out" 2>&1 || leaf_rc=$?
@@ -2093,6 +2131,35 @@ PY
 check "r4688012522: release.yml maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, DW_ALLOW_UNSIGNED_STABLE and DW_SIGN_RC on prepare and publish, passes DW_SIGN_RC to decide, gates signing inputs on detached and the updater on signed_stable" \
   '[[ $wiring_rc -eq 0 ]]'
 if [[ $wiring_rc -ne 0 ]]; then cat "$work/wiring.out" >&2; fi
+
+# --- release-sign.yml: the installer's publisher is checked before any other key is used
+order_rc=0
+python3 - "$here/../../.github/workflows/release-sign.yml" > "$work/sign-order.out" 2>&1 <<'PY' || order_rc=$?
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+sign = text[text.index("\n  sign:\n"):text.index("\n  publish:\n")]
+steps = sign.split("\n      - ")[1:]
+
+def step(needle):
+    hits = [i for i, s in enumerate(steps) if needle in s]
+    assert len(hits) == 1, f"{needle!r} is in {len(hits)} steps of the sign job, expected 1"
+    return hits[0]
+
+pinned = step("ci/github/windows-verify-pinned.sh")
+for before in ("ci/release/sign-windows.sh", "osslsigncode attach-signature"):
+    assert step(before) < pinned, f"the publisher check must come after {before}"
+for after in ("ci-signing-keys.sh apple", "ci/release/sign-macos.sh", "ci-signing-keys.sh pgp", "ci/release/sign-checksums.sh"):
+    assert pinned < step(after), f"the publisher check must come before {after}"
+assert "if:" not in steps[pinned], "the publisher check must run for both Windows key holders"
+assert "--skip-chain-verify" not in text, "no workflow may pass the test-only skip flag"
+PY
+check "release-sign.yml: the pinned Windows publisher is verified after either Windows step and before the Apple and PGP keys are used" \
+  '[[ $order_rc -eq 0 ]]'
+if [[ $order_rc -ne 0 ]]; then cat "$work/sign-order.out" >&2; fi
+check "release-publish-signed.yml passes no test-only Windows flag to release-attach.sh" \
+  '! grep -qE -- "--skip-win-chain-verify|--allow-non-darwin" "$here/../../.github/workflows/release-publish-signed.yml"'
 
 # --- release-version.sh
 cd "$here/../.."

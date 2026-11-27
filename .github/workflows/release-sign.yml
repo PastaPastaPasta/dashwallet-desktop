@@ -240,6 +240,22 @@ jobs:
           cp "$pem" "$SIGS/win/$exe.pem"
           osslsigncode attach-signature -in "$UNSIGNED/$exe" -sigin "$SIGS/win/$exe.pem" -out "$OUT/dist/$exe"
 
+      # Before anything else is signed: SHA256SUMS.asc must never cover an installer another publisher signed.
+      # The publish job asks the same question again, with the same script.
+      - name: Windows, the signed installer is the pinned publisher's
+        env:
+          INPUT_WIN_REF: ${{ inputs.windows_sig_ref }}
+        run: |
+          ids=docs/release/signing-identities.json
+          args=(--exe "$OUT/dist/dash-wallet-$VERSION-windows-x64-setup.exe")
+          if [[ -z "$INPUT_WIN_REF" ]]; then
+            args+=(--signer-org "$(jq -r .windows_signer.organization "$ids")" --signer-eku "$(jq -r .windows_signer.eku "$ids")")
+          else
+            args+=(--leaf-hash "$(jq -r .windows_leaf_sha256 "$ids" | tr '[:upper:]' '[:lower:]')")
+          fi
+          [[ -z "${WIN_CA:-}" ]] || args+=(--ca-file "$WIN_CA")
+          ci/github/windows-verify-pinned.sh "${args[@]}"
+
       - name: macOS, import the Developer ID certificate and the notarization key
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

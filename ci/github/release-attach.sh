@@ -235,7 +235,6 @@ win_signed="$dist_out/$win_name"
 command -v osslsigncode >/dev/null 2>&1 || die "osslsigncode is required to attach/verify Windows signatures"
 
 attach_help=$(osslsigncode attach-signature --help 2>&1 || true)
-verify_help=$(osslsigncode verify --help 2>&1 || true)
 
 # windows_signer: the one certificate in the signature that names the pinned organization and carries the
 # Code Signing usage and the pinned EKU becomes the required leaf, so osslsigncode proves below that it is
@@ -247,7 +246,12 @@ if [[ "$win_pin" == signer ]]; then
 fi
 
 attach_args=(attach-signature -in "$win_unsigned" -sigin "$win_sig" -out "$win_signed")
-verify_args=(verify -in "$win_signed" -require-leaf-hash "$win_leaf_hash")
+pin_args=(--exe "$win_signed")
+if [[ "$win_pin" == signer ]]; then
+  pin_args+=(--signer-org "$win_signer_org" --signer-eku "$win_signer_eku" --expect-leaf "$win_leaf_hash")
+else
+  pin_args+=(--leaf-hash "$win_leaf_hash")
+fi
 if [[ -n "$win_ca_file" ]]; then
   [[ -f "$win_ca_file" && ! -L "$win_ca_file" ]] || die "--win-ca-file not found or is a symlink: $win_ca_file"
   if ! { grep -qx -- '-----BEGIN CERTIFICATE-----' "$win_ca_file" &&
@@ -269,19 +273,13 @@ PY
   # osslsigncode <= 2.13 verifies the cert chain inside attach-signature and requires -CAfile there;
   # >= 2.14 does digest-only attach and accepts -CAfile/-require-leaf-hash on verify only.
   [[ "$attach_help" == *"-CAfile"* ]] && attach_args+=(-CAfile "$win_ca_file")
-  verify_args+=(-CAfile "$win_ca_file")
+  pin_args+=(--ca-file "$win_ca_file")
   if [[ "$win_pin" == signer ]]; then
-    [[ "$verify_help" == *"-TSA-CAfile"* ]] || die "this osslsigncode cannot pin the timestamp root (-TSA-CAfile), which windows_signer needs"
     [[ "$attach_help" == *"-TSA-CAfile"* ]] && attach_args+=(-TSA-CAfile "$win_ca_file")
-    verify_args+=(-TSA-CAfile "$win_ca_file")
   fi
 fi
 [[ "$attach_help" == *"-require-leaf-hash"* ]] && attach_args+=(-require-leaf-hash "$win_leaf_hash")
-if ((skip_win_chain_verify)); then
-  verify_args+=(-ignore-timestamp)
-  # -ignore-crl was added in osslsigncode 2.9 (Ubuntu 24.04 ships 2.8-2).
-  [[ "$verify_help" == *"-ignore-crl"* ]] && verify_args+=(-ignore-crl)
-fi
+((!skip_win_chain_verify)) || pin_args+=(--skip-chain-verify)
 
 echo "release-attach: attaching detached Authenticode signature to $win_name"
 osslsigncode "${attach_args[@]}"
@@ -290,7 +288,7 @@ if [[ "$win_pin" == signer ]]; then
 else
   echo "release-attach: verifying signed $win_name (pinned leaf $win_leaf_hash)"
 fi
-osslsigncode "${verify_args[@]}"
+"$here/windows-verify-pinned.sh" "${pin_args[@]}"
 
 # 4. macOS .app: extract unsigned .app, attach detached signatures, verify, pack deterministic .app.tar.gz.
 mac_unsigned_tar="$unsigned_dir/dash-wallet-$version-macos-unsigned.tar.gz"
