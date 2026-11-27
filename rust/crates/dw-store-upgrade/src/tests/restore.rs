@@ -46,7 +46,7 @@ impl Upgraded {
     }
 
     fn run(&self, at: SystemTime) -> crate::Result<Option<RestoreInfo>> {
-        run_pending_restore(&self.net, at, &|_| Ok(()))
+        run_pending_restore(&self.net, at, &|_, _| Ok(()))
     }
 
     fn live(&self) -> Hashes {
@@ -238,6 +238,100 @@ fn fresh_restore_marks_the_before_sets_pending_payments() {
     u.run(now()).unwrap().unwrap();
     assert!(mark_lists(&u, &txid, &outpoint));
     assert_eq!(restored_mark(&u.net).unwrap().unwrap().pending.len(), 1);
+}
+
+#[test]
+fn fresh_restore_marks_a_payment_written_after_the_snapshot() {
+    let u = upgraded();
+    let (txid, outpoint) = pay(&Connection::open(u.wallet()).unwrap());
+    u.request();
+    u.run(now()).unwrap().unwrap();
+    assert!(mark_lists(&u, &txid, &outpoint));
+    assert!(!payment_visible(&u.wallet(), &txid));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_upgrade_marker_leaves_a_planted_partial_link_alone() {
+    let u = upgraded();
+    let target = u.net.join("untouched");
+    fs::write(&target, b"unchanged").unwrap();
+    let partial = u.root().join("RESTORE-REQUESTED.partial");
+    std::os::unix::fs::symlink(&target, &partial).unwrap();
+    let _ = request_restore(&u.net, &u.snapshot);
+    assert_eq!(fs::read(&target).unwrap(), b"unchanged");
+    assert_eq!(fs::read_link(partial).unwrap(), target);
+}
+
+fn assert_live_app_payment_is_marked(prefix: &str) {
+    let u = upgraded();
+    let (wallet, input) = Connection::open(u.wallet())
+        .unwrap()
+        .query_row(
+            "SELECT wallet_id, outpoint FROM core_utxos LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?)),
+        )
+        .unwrap();
+    let input: dashcore::OutPoint =
+        bincode::serde::decode_from_slice(&input, bincode::config::standard())
+            .unwrap()
+            .0;
+    let txid = dashcore::Txid::from_byte_array([61; 32]);
+    let wallet: String = wallet.iter().map(|b| format!("{b:02x}")).collect();
+    Connection::open(u.net.join("app.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, ?3)",
+            (wallet, format!("{prefix}{txid}"), input.to_string()),
+        )
+        .unwrap();
+    u.request();
+    u.run(now()).unwrap().unwrap();
+    assert!(
+        restored_mark(&u.net)
+            .unwrap()
+            .unwrap()
+            .pending
+            .iter()
+            .any(|payment| { payment.txid == txid && payment.inputs == [input] })
+    );
+}
+
+#[test]
+fn fresh_restore_marks_a_payment_only_in_the_live_sent_mark() {
+    assert_live_app_payment_is_marked("sent:");
+}
+
+#[test]
+fn fresh_restore_marks_a_hold_that_outlived_an_earlier_restore_mark() {
+    assert_live_app_payment_is_marked("restore_hold:");
+}
+
+#[test]
+fn previous_release_pending_payment_inputs_are_found_without_spend_links() {
+    let wallet = repo_root().join(concat!(
+        "rust/crates/dw-engine/tests/fixtures/main-store-f057bee77/",
+        "data/regtest/wallet.sqlite"
+    ));
+    let db = crate::sql::open_immutable(&wallet).unwrap();
+    let spent = db
+        .query_row(
+            "SELECT outpoint FROM core_utxos WHERE spent = 1 AND spent_in_txid IS NULL",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap();
+    let payments = crate::restore::pending_payments_in(&db).unwrap();
+    assert_eq!(payments.len(), 1);
+    assert_eq!(
+        payments[0].inputs,
+        vec![
+            bincode::serde::decode_from_slice(&spent, bincode::config::standard())
+                .unwrap()
+                .0
+        ]
+    );
 }
 
 /// Each injected stop, started again, ends where an uninterrupted run does,
@@ -456,22 +550,68 @@ fn s4_untouched_finishes_normally() {
 
 /// One unmined payment spending a wallet coin: its txid and the coin.
 fn pay(conn: &Connection) -> (Vec<u8>, Vec<u8>) {
-    let (wid, outpoint): (Vec<u8>, Vec<u8>) = conn
+    use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
+    use key_wallet::AccountType;
+    use key_wallet::account::StandardAccountType;
+    use key_wallet::managed_account::transaction_record::{
+        InputDetail, TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{TransactionContext, TransactionType};
+
+    let (wallet, outpoint, value, script): (Vec<u8>, Vec<u8>, i64, Vec<u8>) = conn
         .query_row(
-            "SELECT wallet_id, outpoint FROM core_utxos ORDER BY spent, outpoint LIMIT 1",
+            "SELECT wallet_id, outpoint, value, script FROM core_utxos ORDER BY spent, outpoint LIMIT 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
-    let txid: Vec<u8> = (1u8..=32).collect();
+    let previous_output: OutPoint =
+        bincode::serde::decode_from_slice(&outpoint, bincode::config::standard())
+            .unwrap()
+            .0;
+    let script = ScriptBuf::from_bytes(script);
+    let address = Address::from_script(&script, Network::Regtest).unwrap();
+    let tx = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![TxIn {
+            previous_output,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: u64::try_from(value).unwrap() / 2,
+            script_pubkey: script,
+        }],
+        special_transaction_payload: None,
+    };
+    let record = TransactionRecord::new(
+        tx,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::Mempool,
+        TransactionType::Standard,
+        TransactionDirection::Outgoing,
+        vec![InputDetail {
+            index: 0,
+            value: u64::try_from(value).unwrap(),
+            address,
+        }],
+        Vec::new(),
+        -value,
+    );
+    let txid = dashcore::consensus::serialize(&record.txid);
+    let blob = bincode::serde::encode_to_vec(&record, bincode::config::standard()).unwrap();
     conn.execute(
-        "INSERT INTO core_transactions (wallet_id, txid, height, finalized) VALUES (?1, ?2, NULL, 0)",
-        (&wid, &txid),
+        "INSERT INTO core_transactions (wallet_id, txid, height, finalized, record_blob)
+         VALUES (?1, ?2, NULL, 0, ?3)",
+        (&wallet, &txid, blob),
     )
     .unwrap();
     conn.execute(
-        "UPDATE core_utxos SET spent = 1, spent_in_txid = ?1 WHERE wallet_id = ?2 AND outpoint = ?3",
-        (&txid, &wid, &outpoint),
+        "UPDATE core_utxos SET spent = 1 WHERE wallet_id = ?1 AND outpoint = ?2",
+        (&wallet, &outpoint),
     )
     .unwrap();
     (txid, outpoint)
@@ -1468,7 +1608,8 @@ fn a_hold_check_that_refuses_moves_nothing_and_keeps_the_request() {
     u.request();
     let before = tree(&u.net);
     let seen = std::cell::Cell::new(None);
-    let err = run_pending_restore(&u.net, now(), &|dir| {
+    let err = run_pending_restore(&u.net, now(), &|dir, snapshot| {
+        assert_eq!(snapshot.dir(), u.snapshot.dir());
         seen.set(Some((dir.to_path_buf(), hashes_in(dir), tree(dir))));
         Err("held".into())
     })
@@ -1512,7 +1653,7 @@ fn a_resume_never_runs_the_hold_check() {
         u.request();
         let calls = std::cell::Cell::new(0);
         arm_fault(point, skip);
-        let err = run_pending_restore(&u.net, now(), &|_| {
+        let err = run_pending_restore(&u.net, now(), &|_, _| {
             calls.set(calls.get() + 1);
             Ok(())
         })
@@ -1520,15 +1661,66 @@ fn a_resume_never_runs_the_hold_check() {
         disarm_fault();
         assert_eq!(calls.get(), 1, "{point}: {err:?}");
         let journal = fs::read_to_string(u.root().join(RESTORE_JOURNAL)).unwrap();
-        assert!(journal.contains("\nholds checked\n"), "{journal}");
-        let refuse =
-            |_: &Path| -> std::result::Result<(), String> { panic!("a resume ran the hold check") };
+        assert!(journal.contains("\nholds checked core v1\n"), "{journal}");
+        let refuse = |_: &Path, _: &SnapshotInfo| -> std::result::Result<(), String> {
+            panic!("a resume ran the hold check")
+        };
         let info = run_pending_restore(&u.net, later(60), &refuse)
             .unwrap()
             .expect("resumed");
         assert_restored(&u, &was_live, &info);
         assert!(info.resumed, "{point}");
     }
+}
+
+#[test]
+fn a_legacy_journal_rechecks_verified_after_data_before_resuming() {
+    let u = upgraded();
+    let (txid, input) = pay(&Connection::open(u.wallet()).unwrap());
+    let was_live = u.live();
+    u.request();
+    arm_fault("restore.after_journal", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    let path = u.root().join(RESTORE_JOURNAL);
+    let current = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        current.replace("holds checked core v1\n", "holds checked\n"),
+    )
+    .unwrap();
+    let mark = u.root().join(RESTORED_MARK);
+    fs::write(&mark, "dw-store-upgrade restored\nformat 1\n").unwrap();
+    let before = tree(&u.net);
+
+    let check_source = |after: &Path, snapshot: &SnapshotInfo| {
+        assert!(file_name(after).starts_with("after-upgrade-"));
+        assert_eq!(hashes_in(after), was_live);
+        assert_eq!(snapshot.dir(), u.snapshot.dir());
+    };
+    let err = run_pending_restore(&u.net, later(60), &|after, snapshot| {
+        check_source(after, snapshot);
+        Err("a possibly sent asset lock".into())
+    })
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        StoreUpgradeError::RestoreIncomplete {
+            cause: IncompleteCause::HoldsUnchecked,
+            journal_written: true,
+            ..
+        }
+    ));
+    assert_eq!(tree(&u.net), before);
+
+    let info = run_pending_restore(&u.net, later(120), &|after, snapshot| {
+        check_source(after, snapshot);
+        Ok(())
+    })
+    .unwrap()
+    .unwrap();
+    assert_restored(&u, &was_live, &info);
+    assert!(mark_lists(&u, &txid, &input));
 }
 
 /// A journal with no record of the check (an earlier build's) is not
@@ -1543,7 +1735,7 @@ fn a_journal_without_the_hold_record_is_not_resumed() {
     disarm_fault();
     let path = u.root().join(RESTORE_JOURNAL);
     let text = fs::read_to_string(&path).unwrap();
-    fs::write(&path, text.replace("holds checked\n", "")).unwrap();
+    fs::write(&path, text.replace("holds checked core v1\n", "")).unwrap();
     let mid = u.live();
     assert_eq!(mid, was_live, "stopped before the first replace");
     let mark = u.root().join(RESTORED_MARK);
@@ -1551,7 +1743,8 @@ fn a_journal_without_the_hold_record_is_not_resumed() {
         fs::remove_file(&mark).unwrap();
     }
     let before = tree(&u.net);
-    let err = u.run(later(60)).unwrap_err();
+    let err = run_pending_restore(&u.net, later(60), &|_, _| Err("no hold check ran".into()))
+        .unwrap_err();
     assert!(
         matches!(
             err,

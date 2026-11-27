@@ -288,11 +288,19 @@ impl RestoreGate {
         true
     }
 
-    fn pending(&self) -> Vec<dw_store_upgrade::PendingPayment> {
-        self.pending
+    fn pending_for(&self, wallet: WalletId) -> BTreeMap<Txid, BTreeSet<OutPoint>> {
+        let mut pending = BTreeMap::<_, BTreeSet<_>>::new();
+        for p in self
+            .pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
+            .iter()
+        {
+            if p.wallet.is_none_or(|owner| owner == wallet.0) {
+                pending.entry(p.txid).or_default().extend(&p.inputs);
+            }
+        }
+        pending
     }
 
     pub(crate) fn note_platform_pass(&self) {
@@ -442,14 +450,11 @@ pub(crate) fn hold_keys<'a>(txids: impl IntoIterator<Item = &'a Txid>) -> Vec<St
 impl WalletHistory {
     /// Whether the hold of `txid` holds anything: its payment is in no
     /// block and not abandoned (a row on an abandoned payment may stay,
-    /// H2). One the history lacks holds only while the
-    /// history may be short (its load missed a record, or the holds didn't
-    /// read).
+    /// H2). Its record may be absent after restoring an older snapshot.
     fn hold_in_effect(&self, txid: &Txid) -> bool {
-        match self.txs.get(txid) {
-            Some(e) => e.context.block_info().is_none() && !e.is_abandoned(),
-            None => self.load_incomplete || self.restore_holds_unread,
-        }
+        self.txs
+            .get(txid)
+            .is_none_or(|e| e.context.block_info().is_none() && !e.is_abandoned())
     }
 
     /// The wallet's own payments in no block and not abandoned, with the
@@ -475,13 +480,29 @@ impl WalletHistory {
     /// The holds in effect, with their inputs. Holds that didn't read hold
     /// every candidate (fail closed).
     pub(crate) fn restore_holds_in_effect(&self) -> BTreeMap<Txid, BTreeSet<OutPoint>> {
-        if self.restore_holds_unread {
-            return self.restore_hold_candidates();
-        }
-        (self.restore_holds.iter())
+        let mut held: BTreeMap<_, _> = (self.restore_holds.iter())
             .filter(|(t, _)| self.hold_in_effect(t))
             .map(|(t, i)| (*t, i.clone()))
-            .collect()
+            .collect();
+        if self.restore_holds_unread {
+            for (txid, inputs) in self.restore_hold_candidates() {
+                held.entry(txid).or_default().extend(inputs);
+            }
+        }
+        if held.keys().any(|txid| !self.txs.contains_key(txid)) {
+            let spent_in_blocks: HashSet<_> = self
+                .txs
+                .values()
+                .filter(|entry| entry.context.block_info().is_some())
+                .flat_map(|entry| entry.tx.input.iter().map(|input| input.previous_output))
+                .collect();
+            // Keep the durable row so a reorg can reactivate the hold.
+            held.retain(|txid, inputs| {
+                self.txs.contains_key(txid)
+                    || !inputs.iter().any(|input| spent_in_blocks.contains(input))
+            });
+        }
+        held
     }
 
     /// The coins the holds in effect keep back: each held payment's
@@ -553,8 +574,8 @@ impl crate::events::SessionHub {
     }
 
     /// Writes the holds H3 builds for `wallet` that don't exist yet, in one
-    /// durable write: its candidates, and the restored mark's payments the
-    /// history holds unmined and not abandoned (the cross-check). Returns
+    /// durable write: its candidates and unresolved payments in the
+    /// restored mark, including ones missing from the history. Returns
     /// whether the holds are all written.
     ///
     /// `at_load`: the build of a complete load, which alone counts as built
@@ -566,21 +587,22 @@ impl crate::events::SessionHub {
         wallet: WalletId,
         at_load: bool,
     ) -> bool {
-        let pending = self.restore.pending();
+        let pending = self.restore.pending_for(wallet);
         let new = self.history.read_wallet(&wallet, |h| {
             let mut want = h.restore_hold_candidates();
-            for p in &pending {
-                match h.txs.get(&p.txid) {
-                    Some(e) if e.context.block_info().is_none() && !e.is_abandoned() => {
-                        want.entry(p.txid).or_default().extend(p.inputs.iter().copied());
-                    }
-                    Some(_) => {}
-                    None => {
-                        tracing::warn!(%wallet, txid = %p.txid, "restore: a pending payment of the restored set is not in the history")
-                    }
+            for (txid, inputs) in pending {
+                if h.hold_in_effect(&txid) {
+                    want.entry(txid).or_default().extend(inputs);
                 }
             }
-            want.retain(|t, _| !h.restore_holds.contains_key(t));
+            want.retain(|txid, inputs| {
+                if let Some(held) = h.restore_holds.get(txid) {
+                    inputs.extend(held);
+                    &*inputs != held
+                } else {
+                    true
+                }
+            });
             want
         });
         if !new.is_empty() || at_load {
@@ -1241,9 +1263,27 @@ impl NetworkSession {
         let unloaded: Vec<WalletId> = live.store.unloaded().into_iter().map(WalletId).collect();
         if !unloaded.is_empty() {
             let appdb = Arc::clone(&live.appdb);
+            let pending: Vec<_> = unloaded
+                .into_iter()
+                .map(|wallet| (wallet, self.hub.restore.pending_for(wallet)))
+                .collect();
             tokio::task::spawn_blocking(move || {
-                (unloaded.iter()).try_for_each(|w| {
-                    appdb.set_settings_durable(&w.to_string(), &[(RESTORE_BUILD_PENDING, Some(""))])
+                pending.into_iter().try_for_each(|(wallet, pending)| {
+                    let mut holds = read_holds(&appdb, wallet)?;
+                    let rows: Vec<_> = pending
+                        .into_iter()
+                        .map(|(txid, inputs)| {
+                            let mut held = holds.remove(&txid).unwrap_or_default();
+                            held.extend(inputs);
+                            (format!("{RESTORE_HOLD_PREFIX}{txid}"), encode(&held))
+                        })
+                        .collect();
+                    let writes: Vec<_> = rows
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), Some(value.as_str())))
+                        .chain([(RESTORE_BUILD_PENDING, Some(""))])
+                        .collect();
+                    appdb.set_settings_durable(&wallet.to_string(), &writes)
                 })
             })
             .await

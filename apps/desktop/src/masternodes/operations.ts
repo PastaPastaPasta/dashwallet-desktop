@@ -27,6 +27,7 @@ export function lastErrorText(code: string | null): string | null {
 
 /** A shared dissolution's send result: the warning when the network didn't take it, `null` once sent. */
 export function handoffRefusedText(o: ProTxOperation): string | null {
+  if (o.state.kind === "sent" && o.lastError === "send.broadcast_unknown") return t("masternodes.shared.dissolve.handoffUnknown");
   if (o.state.kind !== "not_sent" && o.state.kind !== "signed") return null;
   return t(o.lastError === "send.no_peers" ? "masternodes.shared.dissolve.notSentOffline" : "masternodes.shared.dissolve.notSent");
 }

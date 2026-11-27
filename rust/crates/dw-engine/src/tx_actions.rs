@@ -1252,6 +1252,7 @@ struct Facts {
     depth: u32,
     chain_locked: bool,
     instant_locked: bool,
+    uncertain_fork: bool,
     /// [`chainlock_beaten`]: a block under the wallet's ChainLock spends
     /// one of its inputs.
     chainlock_beaten: bool,
@@ -1536,6 +1537,14 @@ fn add_locked_without_record(
 /// entry for the same transaction set.
 fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &ManagedWalletInfo) {
     add_known(known, &h.txs, core);
+    for t in &h.session_locks {
+        if h.txs
+            .get(t)
+            .is_none_or(|entry| h.knows_instant_lock(t, entry))
+        {
+            known.entry(*t).or_default().settled = true;
+        }
+    }
     add_locked_without_record(known, &h.lock_parents);
 }
 
@@ -2075,6 +2084,7 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>, proof: &ChainProof) -> Facts {
         depth,
         chain_locked: status.chain_locked,
         instant_locked: status.instant_locked,
+        uncertain_fork: false,
         chainlock_beaten: status.instant_locked
             && depth == 0
             && !proof.blocked.contains(&entry.tx.txid())
@@ -2115,6 +2125,8 @@ impl Facts {
             Some(TxActionRefusal::Confirmed)
         } else if self.instant_locked && !self.chainlock_beaten {
             Some(TxActionRefusal::InstantLocked)
+        } else if self.uncertain_fork {
+            Some(TxActionRefusal::RescanFirst)
         } else if self.settled_descendant {
             Some(TxActionRefusal::SettledDescendant)
         } else if self.coinbase {
@@ -2136,6 +2148,8 @@ impl Facts {
             Some(TxActionRefusal::Coinbase)
         } else if self.instant_locked {
             Some(TxActionRefusal::InstantLocked)
+        } else if self.uncertain_fork {
+            Some(TxActionRefusal::RescanFirst)
         } else if self.from_me == 0 {
             Some(TxActionRefusal::NotSentByWallet)
         } else {
@@ -2232,6 +2246,10 @@ impl NetworkSession {
             })
             .await?
             .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))?;
+        f.uncertain_fork = self
+            .hub
+            .history
+            .read_wallet(&wallet, |h| h.uncertain_fork_spends.contains_key(&txid));
         if offer {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -2929,6 +2947,7 @@ impl NetworkSession {
                     e.abandoned = true;
                     if overridden && *t == root {
                         e.instant_locked = false;
+                        h.fork_kept_locks.remove(t);
                         if matches!(e.context, TransactionContext::InstantSend(_)) {
                             e.context = TransactionContext::Mempool;
                         }
@@ -3776,6 +3795,11 @@ impl NetworkSession {
                         || locked_unread.contains(o)
                 },
                 dead_for_good: &dead_for_good,
+                drop_dead: &|t| {
+                    let ancestor =
+                        |p: &Txid| drops.contains_key(p) || deaths.swept_by.contains_key(p);
+                    crate::history::chain_dead_for_good(t, &deaths, ancestor, dead_for_good)
+                },
             };
             // A coin out of `held` for a spend in a block not yet final
             // awaits that block (#749).
@@ -4294,17 +4318,40 @@ impl NetworkSession {
         if matches!(settled.direct.get(&root), Some(TxActionRefusal::Confirmed)) {
             return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
         }
+        let uncertain = self.hub.history.read_wallet(&wallet, |h| {
+            std::iter::once(&root)
+                .chain(&planned)
+                .any(|t| h.uncertain_fork_spends.contains_key(t))
+        });
+        if uncertain {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::RescanFirst));
+        }
         // key-wallet holds no record of a payment restored at load, so
         // it cannot see the InstantSend lock rehydrated for it.
         let overridden =
             self.lock_override(wallet, &root, &planned, proof, core, &trial, &settled.under)?;
         let exempt = |t: &Txid| overridden.is_some() && *t == root;
-        if let Some(refusal) = std::iter::once(&root)
-            .chain(&planned)
-            .filter(|t| !exempt(t))
-            .find_map(|t| settled.direct.get(t).copied())
-        {
-            return Err(EngineError::TxActionRefused(refusal));
+        let (mined, held_locked) = self.hub.history.read_wallet(&wallet, |h| {
+            let mut mined = false;
+            let mut held_locked = false;
+            for t in std::iter::once(&root)
+                .chain(&planned)
+                .filter(|t| !exempt(t))
+            {
+                mined |= settled.direct.get(t) == Some(&TxActionRefusal::Confirmed);
+                held_locked |= settled.direct.get(t) == Some(&TxActionRefusal::InstantLocked)
+                    || core.instant_send_locks().contains(t)
+                    || h.txs
+                        .get(t)
+                        .is_some_and(|entry| h.knows_instant_lock(t, entry));
+            }
+            (mined, held_locked)
+        });
+        if mined {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
+        }
+        if held_locked {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
         }
         // While a stored record of any loaded wallet failed to read, what
         // descends from the root is not known: one settled could be behind
@@ -4331,14 +4378,12 @@ impl NetworkSession {
     }
 
     /// [`Self::chain_proof`] when `root` is InstantSend-locked, in the
-    /// history or by key-wallet's locks: only then does the exception read
-    /// it.
+    /// history, the session's verified locks or by key-wallet's locks:
+    /// only then does the exception read it.
     async fn root_proof(&self, manager: &Manager, wallet: WalletId, root: Txid) -> ChainProof {
-        let locked = match self
-            .hub
-            .history
-            .read(&wallet, |txs| txs.get(&root).map(locked))
-        {
+        let locked = match self.hub.history.read_wallet(&wallet, |h| {
+            h.txs.get(&root).map(|e| h.knows_instant_lock(&root, e))
+        }) {
             None => false,
             Some(true) => true,
             Some(false) => {
@@ -4412,13 +4457,12 @@ impl NetworkSession {
         under: &HashSet<Txid>,
     ) -> Result<Option<Vec<OutPoint>>, EngineError> {
         let refused = Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
-        let (incomplete, claimed) =
-            (self.hub.history).with_wallet(wallet, |h| (h.load_incomplete, h.claimed.clone()));
-        self.hub.history.read(&wallet, |txs| {
+        self.hub.history.read_wallet(&wallet, |h| {
+            let txs = &h.txs;
             let Some(e) = txs.get(root) else {
                 return Ok(None);
             };
-            if !locked(e) && !core.instant_send_locks().contains(root) {
+            if !h.knows_instant_lock(root, e) && !core.instant_send_locks().contains(root) {
                 return Ok(None);
             }
             let synced = core.synced_height();
@@ -4431,7 +4475,7 @@ impl NetworkSession {
             if !chainlock_beaten(txs, root, proof.chainlock, &proof.active)
                 || !live.iter().all(|t| planned.contains(t))
                 || override_blocked(under, core)(root)
-                || incomplete
+                || h.load_incomplete
                 || synced < chainlock
                 || state.replaying_at(synced)
                 || !planned.iter().all(|t| txs.contains_key(t))
@@ -4465,7 +4509,7 @@ impl NetworkSession {
                     Some(true) => {}
                     Some(false) => return refused,
                     None if held.contains(&o) => free.push(o),
-                    None if claimed.get(&o) == Some(root) => claim_held = true,
+                    None if h.claimed.get(&o) == Some(root) => claim_held = true,
                     None => return refused,
                 }
             }
@@ -4530,9 +4574,10 @@ impl NetworkSession {
             let Some(chainlock) = chainlock.filter(|c| scanned && synced >= c.block_height) else {
                 return ChainProof::default();
             };
-            let roots: Vec<Txid> = self.hub.history.read(&wallet, |txs| {
-                (txs.iter())
-                    .filter(|(_, e)| locked(e) && e.context.block_info().is_none())
+            let roots: Vec<Txid> = self.hub.history.read_wallet(&wallet, |h| {
+                h.txs
+                    .iter()
+                    .filter(|(t, e)| e.context.block_info().is_none() && h.knows_instant_lock(t, e))
                     .map(|(t, _)| *t)
                     .collect()
             });
@@ -5626,6 +5671,7 @@ mod tests {
             depth: 0,
             chain_locked: false,
             instant_locked: false,
+            uncertain_fork: false,
             chainlock_beaten: false,
             settled_descendant: false,
             coinbase: false,

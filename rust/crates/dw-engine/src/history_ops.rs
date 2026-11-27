@@ -802,7 +802,7 @@ impl NetworkSession {
                 None => HashSet::new(),
             };
             let seen: HashMap<String, u64> = seen.into_iter().collect();
-            self.hub.history.with_wallet(wallet, |h| {
+            self.hub.history.with_wallet_records(wallet, |h, locks| {
                 h.set_loaded_coins(loaded_coins);
                 h.load_incomplete = !complete;
                 h.loaded = true;
@@ -810,7 +810,7 @@ impl NetworkSession {
                 h.put_back = put_back.unwrap_or_default();
                 h.lock_parents = lock_parents;
                 for r in records.iter().chain(&in_memory) {
-                    h.upsert(r, None);
+                    h.upsert_with_locks(r, None, locks);
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
@@ -827,6 +827,9 @@ impl NetworkSession {
                 }
                 if complete {
                     h.add_unrecorded_sends(&sent, &settled, self.network.core_network());
+                    for txid in sent.keys() {
+                        h.remember_if_buffered(txid, locks);
+                    }
                 }
                 // Stored apart from the records, which can still say mempool.
                 for t in info

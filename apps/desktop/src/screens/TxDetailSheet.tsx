@@ -191,7 +191,7 @@ export function actionOffer(applies: boolean, walletRestored: boolean | undefine
  * refusal, why a `settledDescendant` or `platformFunding` one can't be abandoned, which open wallet (of `wallets`)
  * a `recordUnreadable` one names, and that an Abandon refused while the wallet catches up can be
  * tried once it has, from the catalog. */
-export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = [], what: "abandon" | "resend" = "abandon"): string {
+export function actionProblem(e: unknown, what: "abandon" | "resend", wallets: readonly WalletSummary[] = []): string {
   const unreadable = unreadableWallet(e);
   if (unreadable !== undefined) return recordUnreadableText(unreadable, wallets);
   if (what === "abandon" && hasCode(e, "rescan_in_progress")) return t("activity.abandon.catchingUp");
@@ -281,7 +281,8 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
       const wallets = await b.listWallets().catch(() => []);
-      setNote({ text: actionProblem(e, wallets, what), problem: true });
+      if (what === "abandon" && hasCode(e, "rescan_in_progress")) setConfirming(false);
+      setNote({ text: actionProblem(e, what, wallets), problem: true });
     } finally {
       setBusy(false);
     }

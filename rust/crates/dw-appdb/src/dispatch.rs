@@ -533,7 +533,7 @@ pub enum DiskState {
 }
 
 impl DiskState {
-    fn from_db(v: i64) -> Result<Self> {
+    pub fn from_db(v: i64) -> Result<Self> {
         match v {
             0 => Ok(Self::Unsent),
             1 => Ok(Self::Dispatching),
@@ -1245,6 +1245,41 @@ pub fn standing_calls(
             .cloned()
             .collect(),
     }
+}
+
+/// Whether the journal still holds an asset lock a Mode B call could send.
+pub fn unresolved_signed_locks_in(conn: &Connection) -> Result<bool> {
+    let has_table = |table: &str| -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |r| r.get(0),
+        )
+    };
+    if !has_table("signed_lock")? {
+        return Ok(false);
+    }
+    let signed_locks = signed_lock_rows(conn)?;
+    if signed_locks.is_empty() {
+        return Ok(false);
+    }
+    let log = step_log(conn)?;
+    let tombstones = if has_table("funding_tombstone")? {
+        tombstone_rows(conn)?
+    } else {
+        Vec::new()
+    };
+    let calls = standing_calls(&log, &[], &[], &signed_locks, &tombstones, &[]);
+    let sent: HashSet<_> = standing(&log)
+        .into_iter()
+        .filter(|step| step.sent)
+        .map(|step| (step.wallet, step.artifact))
+        .collect();
+    let resolved: HashSet<_> = calls.tombstones.iter().map(|row| row.marker).collect();
+    Ok(calls
+        .signed_locks
+        .iter()
+        .any(|row| !sent.contains(&(row.wallet, row.artifact)) && !resolved.contains(&row.marker)))
 }
 
 /// What `register` found.
