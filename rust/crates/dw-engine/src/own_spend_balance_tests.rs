@@ -1835,6 +1835,44 @@ fn an_interrupted_abandon_keeps_the_pending_parent_output_spent() {
     assert!(!spendable(&engine, &session, id, change));
 }
 
+#[test]
+fn an_interrupted_abandon_keeps_the_coin_if_another_wallet_stored_the_payment_mined() {
+    use super::own_spend_disk_tests::send_to;
+
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let p = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        &to,
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let txid = p.txid();
+    wait_stored(&session, id, &[txid]);
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(abandon_marked(&session, id, txid));
+
+    mined(&engine, &session, other, TIP + 1, vec![p]);
+    eventually("the recipient stores the mined payment", || {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        (session.live().unwrap().persister)
+            .get_core_tx_record(other.0, &txid)
+            .unwrap()
+            .is_some_and(|r| r.context.block_info().is_some())
+    });
+    finish_now(&session, id).unwrap();
+    assert!(record_stored(&session, id, txid));
+    assert_eq!(stored_spent(&session, id, a), Some(true));
+    assert!(!spendable(&engine, &session, id, a));
+}
+
 /// An abandoned payment relayed again unlocked by a peer is ignored. Its
 /// record can still be stored again while its sent mark stands (the abandon
 /// sweeps the record, not the mark), as a relay after a restart stores it.

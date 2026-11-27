@@ -1033,6 +1033,34 @@ fn release_mark(
     (format!("{ABANDON_RELEASE_PREFIX}{txid}"), Some(coins))
 }
 
+fn settled_in_store(
+    persister: &platform_wallet_storage::SqlitePersister,
+    wallets: &HashMap<[u8; 32], crate::history_ops::Persisted>,
+    wallet: WalletId,
+    candidates: &HashSet<Txid>,
+) -> Result<HashSet<Txid>, platform_wallet::changeset::PersistenceError> {
+    let mut settled = HashSet::new();
+    for (id, other) in wallets.iter().filter(|(id, _)| **id != wallet.0) {
+        settled.extend(
+            other
+                .recordless
+                .difference(&other.unconfirmed)
+                .chain(other.lock_parents.keys())
+                .filter(|t| candidates.contains(*t))
+                .copied(),
+        );
+        for t in other.records.iter().filter(|t| candidates.contains(*t)) {
+            if persister.get_core_tx_record(*id, t)?.is_some_and(|record| {
+                record.context.block_info().is_some()
+                    || matches!(record.context, TransactionContext::InstantSend(_))
+            }) {
+                settled.insert(*t);
+            }
+        }
+    }
+    Ok(settled)
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
@@ -1088,6 +1116,8 @@ pub(crate) fn finish_marked_abandons(
         };
         let persisted = all.get(&wallet.0).cloned().unwrap_or_default();
         let marked: HashSet<_> = marks.keys().copied().collect();
+        let settled_elsewhere =
+            settled_in_store(persister, all, wallet, &marked).map_err(|e| storage(&e))?;
         let (outputs, locked) = crate::history_ops::txids_with_outputs_and_locks(
             db_path,
             wallet,
@@ -1097,7 +1127,7 @@ pub(crate) fn finish_marked_abandons(
         let mut pending: BTreeMap<Txid, Option<Transaction>> = BTreeMap::new();
         for (t, copy) in marks {
             let mined = persisted.recordless.contains(&t) && !persisted.unconfirmed.contains(&t);
-            if mined || locked.contains(&t) {
+            if mined || locked.contains(&t) || settled_elsewhere.contains(&t) {
                 continue;
             }
             if !persisted.records.contains(&t) {
