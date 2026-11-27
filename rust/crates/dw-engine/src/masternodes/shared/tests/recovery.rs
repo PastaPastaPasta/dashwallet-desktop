@@ -263,10 +263,11 @@ fn assert_reserved_coin_excluded(f: &Fx, coin: OutPoint, reason: ExclusionReason
 
 fn assert_abandon_cannot_spend(f: &Fx, id: &str) {
     let offered = abandon_action(&f.recovery(1, id));
+    let sent_before = f.net.sent().len();
     let result = f.abandon(1, id);
     let signed = f.row(1, id).abandon_tx.is_some();
     let sent = f.net.sent().len();
-    assert_eq!((offered, signed, sent), (None, false, 0));
+    assert_eq!((offered, signed, sent), (None, false, sent_before));
     assert_stage(result.unwrap_err(), "funding_signed");
 }
 
@@ -329,6 +330,40 @@ fn test_recovery_rechecks_a_rescan_hold_before_signing() {
     assert_eq!((f.row(1, &id).abandon_tx, f.net.sent().len()), (None, 0));
     assert_stage(result.unwrap_err(), "funding_signed");
     assert_eq!(f.locked(1), HashSet::from([coin]));
+}
+
+#[test]
+fn test_recovery_excludes_a_reservation_held_by_a_fork_kept_lock() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let tx = f.net.sent().pop().unwrap();
+    let txid = tx.txid();
+    assert!(tx.input.iter().any(|i| i.previous_output == coin));
+    f.session.hub.history.with_wallet(wallet, |h| {
+        h.txs.insert(
+            txid,
+            crate::history::TxEntry {
+                tx,
+                context: TransactionContext::InBlock(BlockInfo::new(
+                    2,
+                    dashcore::BlockHash::all_zeros(),
+                    0,
+                )),
+                instant_locked: false,
+                first_seen: None,
+                own_inputs: BTreeMap::new(),
+                abandoned: false,
+            },
+        );
+        h.session_locks.insert(txid);
+        assert_eq!(h.truncate(&[txid], &[], false), [txid]);
+    });
+    assert_reserved_coin_excluded(&f, coin, ExclusionReason::ForkKeptLock);
+    assert_abandon_cannot_spend(&f, &id);
 }
 
 #[test]
