@@ -445,7 +445,7 @@ async fn owner_payout_p2sh_now(
     let Ok(pro_tx_hash) = parse_pro_tx_hash(&row.signed.pro_tx_hash) else {
         return true;
     };
-    let changes = env.payout_changes(&pro_tx_hash);
+    let changes = env.payout_changes(&pro_tx_hash).await;
     if !any_is_p2sh(&changes) {
         return false;
     }

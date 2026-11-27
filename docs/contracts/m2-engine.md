@@ -139,6 +139,14 @@ where noted. **R2 (§2.6–2.8) works**: see the status notes under those tables
 | `export_history_csv(id, filter, sort, unit, type_names, utc_offset_secs)` | async | dash-qt §4.7 bytes: columns `Confirmed`, `Watch-only` (watch-only wallets only), `Date` (`yyyy-MM-ddTHH:mm:ss` at `utc_offset_secs`), `Type`, `Label`, `Address`, `Amount (<unit name>)`, `ID`. Every field quoted, `"` doubled, `,` separators, `\n` line ends, signed amounts with no separators. `type_names` = 19 localized `TxType` strings in enum order; empty = dash-qt English. Golden vectors: `testdata/csv_export.json` (R1 adds them). | `history.invalid_query` (filter, or `type_names` count not 0 or 19) | QT-093 |
 | `tx_notices(id, txids)` | async | `[TxNotice { txid, record_index, amount, timestamp, tx_type, address, label, coinjoin_internal }]` for a `NewTransactions` event: one per dash-qt record. Unknown txids are skipped. | — | QT-031…033, IOS-116 |
 
+When a fork removes a payment whose verified InstantSend lock this wallet learned during the session, Desktop
+keeps its Activity record pending and locked. It excludes any inputs returned to the wallet from balances and
+coin selection, and `abandon_transaction` applies the InstantSend refusal and its ChainLock exception. This
+fallback lasts until the session ends. Desktop buffers up to 4,096 verified locks and 65,536 input references
+per session, matching each lock when the wallet learns its transaction or an output it spends. After any
+eviction or a lock too large for the buffer, a forked-out payment spending the wallet's own coins whose lock
+status is unknown stays pending. Its inputs stay excluded for the session, and Abandon and Resend refuse it.
+
 ### 2.3 Fees and coin control (`fees.rs`) — owner R1
 
 | Call | Kind | Semantics | Errors | Serves |

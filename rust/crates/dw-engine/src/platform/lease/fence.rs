@@ -629,6 +629,27 @@ pub(crate) enum Reg {
     Revoked,
 }
 
+impl Reg {
+    pub(crate) fn from_disk(state: dw_appdb::dispatch::DiskState, origin: Option<LeaseId>) -> Self {
+        use dw_appdb::dispatch::DiskState;
+        match state {
+            DiskState::Unsent => Self::Unsent {
+                origin,
+                charge: None,
+            },
+            DiskState::Dispatching => Self::Dispatching,
+            DiskState::PreFence => Self::PreFence,
+        }
+    }
+
+    pub(crate) fn possibly_sent(self) -> bool {
+        matches!(
+            self,
+            Self::Committing { .. } | Self::Dispatching | Self::Ambiguous | Self::PreFence
+        )
+    }
+}
+
 /// A resumable step's marker for one artifact (§7.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mark {
@@ -2210,7 +2231,6 @@ impl LeaseTable {
         steps: Vec<dw_appdb::dispatch::StepRow>,
         calls: CallRows,
     ) {
-        use dw_appdb::dispatch::DiskState;
         let ready = backend.is_some();
         self.journal.set(backend);
         // Outside J: a subscriber may do I/O (H1).
@@ -2238,14 +2258,7 @@ impl LeaseTable {
                 return;
             }
             for row in rows {
-                let reg = match row.state {
-                    DiskState::Unsent => Reg::Unsent {
-                        origin: row.origin_lease,
-                        charge: None,
-                    },
-                    DiskState::Dispatching => Reg::Dispatching,
-                    DiskState::PreFence => Reg::PreFence,
-                };
+                let reg = Reg::from_disk(row.state, row.origin_lease);
                 i.fence
                     .entries
                     .insert((WalletId(row.wallet), ArtifactId(row.txid)), reg);
@@ -4436,13 +4449,10 @@ impl LeaseTable {
     /// wiping removal keeps its `dispatch` rows then (§6.5).
     fn wallet_dispatch_possibly_sent(&self, wallet: &WalletId) -> bool {
         self.with_j(|i, _| {
-            i.fence.entries.iter().any(|((w, _), r)| {
-                w == wallet
-                    && matches!(
-                        r,
-                        Reg::Committing { .. } | Reg::Dispatching | Reg::Ambiguous | Reg::PreFence
-                    )
-            })
+            i.fence
+                .entries
+                .iter()
+                .any(|((w, _), r)| w == wallet && r.possibly_sent())
         })
     }
 

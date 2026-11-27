@@ -39,8 +39,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use dw_appdb::APP_DB_FILE;
-use dw_appdb::dispatch::{DISPATCH_DB_FILE, DISPATCH_SCHEMA, ForkHold};
-use dw_store_upgrade::SnapshotState;
+use dw_appdb::dispatch::{
+    DISPATCH_DB_FILE, DISPATCH_SCHEMA, DiskState, ForkHold, unresolved_signed_locks_in,
+};
+use dw_store_upgrade::{SnapshotInfo, SnapshotState};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use super::shielded_pool::{self, SHIELDED_DB_FILE};
@@ -64,8 +66,11 @@ pub(crate) struct JournalHolds {
 /// spend, a registered artifact), or one a confirmation alone does not
 /// clear ([`ShieldedHold::CarriedOver`]: a marker, a fork hold, any other
 /// open artifact, or a store or journal that does not read).
-pub(crate) fn restore_hold(network_dir: &Path) -> Option<ShieldedHold> {
-    match read_restore_hold(network_dir) {
+pub(crate) fn restore_hold(
+    network_dir: &Path,
+    snapshot: Option<&SnapshotInfo>,
+) -> Option<ShieldedHold> {
+    match read_restore_hold(network_dir, snapshot) {
         Ok(hold) => hold,
         Err(e) => {
             tracing::warn!(folder = %network_dir.display(), error = %e,
@@ -75,7 +80,37 @@ pub(crate) fn restore_hold(network_dir: &Path) -> Option<ShieldedHold> {
     }
 }
 
-fn read_restore_hold(network_dir: &Path) -> Result<Option<ShieldedHold>, String> {
+pub(crate) fn check_core_dispatch(network_dir: &Path) -> Result<(), String> {
+    let Some(db) = open_read_only(&network_dir.join(DISPATCH_DB_FILE))? else {
+        return Ok(());
+    };
+    let unresolved = || "An asset lock may have been sent and is still unresolved.".to_string();
+    if unresolved_signed_locks_in(&db).map_err(|e| e.to_string())? {
+        return Err(unresolved());
+    }
+    if !has_table(&db, "dispatch")? {
+        return Ok(());
+    }
+    let mut stmt = db
+        .prepare("SELECT DISTINCT state FROM dispatch")
+        .map_err(|e| e.to_string())?;
+    let states = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    for state in states {
+        let state =
+            DiskState::from_db(state.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if super::lease::fence::Reg::from_disk(state, None).possibly_sent() {
+            return Err(unresolved());
+        }
+    }
+    Ok(())
+}
+
+fn read_restore_hold(
+    network_dir: &Path,
+    snapshot: Option<&SnapshotInfo>,
+) -> Result<Option<ShieldedHold>, String> {
     #[cfg(test)]
     if crate::keys::take_test_failure(&shielded_pool::FAIL_DISK_READ_IN, network_dir) {
         return Err("test: the shielded store does not read".into());
@@ -92,26 +127,67 @@ fn read_restore_hold(network_dir: &Path) -> Result<Option<ShieldedHold>, String>
             held = Some(ShieldedHold::InFlight);
         }
     }
+    let mut snapshot = snapshot.cloned();
     if let Some(db) = open_read_only(&network_dir.join(DISPATCH_DB_FILE))? {
-        let journal = journal_holds_in(&db, network_dir, None)?;
+        let mut journal = journal_holds_in(&db, network_dir, None, None)?;
+        if snapshot.is_none() && (journal.unsettled || journal.open || journal.marked) {
+            snapshot = verified_snapshot(network_dir).ok();
+        }
+        if let Some(before) = &snapshot
+            && let Some(backup) = open_read_only(&before.dir().join(DISPATCH_DB_FILE))?
+            && has_table(&backup, "meta")?
+            && backup
+                .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|e| e.to_string())?
+                < 11
+        {
+            journal = journal_holds_in(&db, network_dir, None, Some(&backup))?;
+            if journal.marked {
+                let backed = if has_table(&backup, "shielded_unrecorded")? {
+                    marker_notes_in(&backup)?
+                } else {
+                    BTreeSet::new()
+                };
+                carried.extend(
+                    marker_notes_in(&db)?
+                        .into_iter()
+                        .filter(|notes| !covers_notes(&backed, notes)),
+                );
+            }
+        } else if journal.marked {
+            carried.extend(marker_notes_in(&db)?);
+        }
         if journal.unsettled {
             return Ok(Some(ShieldedHold::CarriedOver));
-        }
-        if journal.marked {
-            carried.extend(marker_notes_in(&db)?);
         }
         if journal.open {
             held = Some(ShieldedHold::InFlight);
         }
     }
-    if !carried.is_empty() && !carried.is_subset(&snapshot_fork_notes(network_dir)?) {
-        return Ok(Some(ShieldedHold::CarriedOver));
+    if !carried.is_empty() {
+        let snapshot = match snapshot {
+            Some(snapshot) => snapshot,
+            None => verified_snapshot(network_dir)?,
+        };
+        let backed = snapshot_fork_notes(snapshot.dir())?;
+        if carried.iter().any(|notes| !covers_notes(&backed, notes)) {
+            return Ok(Some(ShieldedHold::CarriedOver));
+        }
     }
     Ok(held)
 }
 
 /// A hold's wallet and activity, with the nullifiers it keeps.
 type HeldNotes = ([u8; 32], [u8; 32], BTreeSet<[u8; 32]>);
+
+fn covers_notes(backed: &BTreeSet<HeldNotes>, (wallet, activity, notes): &HeldNotes) -> bool {
+    !notes.is_empty()
+        && backed
+            .iter()
+            .any(|(w, a, n)| w == wallet && a == activity && notes.is_subset(n))
+}
 
 fn fork_notes(hold: ForkHold) -> HeldNotes {
     (
@@ -139,7 +215,7 @@ fn marker_notes_in(db: &Connection) -> Result<BTreeSet<HeldNotes>, String> {
     }
     if has_table(db, "shielded_unrecorded_nullifier")? {
         let mut stmt = db
-            .prepare("SELECT wallet, activity, nullifier FROM shielded_unrecorded_nullifier")
+            .prepare("SELECT wallet, activity, nullifier FROM shielded_unrecorded_nullifier WHERE spent = 0")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -162,12 +238,15 @@ fn marker_notes_in(db: &Connection) -> Result<BTreeSet<HeldNotes>, String> {
 /// `shielded.sqlite`, the before set a restore puts back; none when the
 /// snapshot has no shielded store. No verified snapshot, or a store in it
 /// that does not read, is an error.
-fn snapshot_fork_notes(network_dir: &Path) -> Result<BTreeSet<HeldNotes>, String> {
-    let info = match dw_store_upgrade::snapshot_state(network_dir).map_err(|e| e.to_string())? {
-        SnapshotState::Verified(info) => info,
-        _ => return Err("no verified snapshot to restore".into()),
-    };
-    let Some(db) = open_read_only(&info.dir().join(SHIELDED_DB_FILE))? else {
+fn verified_snapshot(network_dir: &Path) -> Result<dw_store_upgrade::SnapshotInfo, String> {
+    match dw_store_upgrade::snapshot_state(network_dir).map_err(|e| e.to_string())? {
+        SnapshotState::Verified(info) => Ok(info),
+        _ => Err("no verified snapshot to restore".into()),
+    }
+}
+
+fn snapshot_fork_notes(snapshot: &Path) -> Result<BTreeSet<HeldNotes>, String> {
+    let Some(db) = open_read_only(&snapshot.join(SHIELDED_DB_FILE))? else {
         return Ok(BTreeSet::new());
     };
     let (holds, _) = shielded_pool::fork_holds_in(&db)?;
@@ -178,7 +257,7 @@ fn snapshot_fork_notes(network_dir: &Path) -> Result<BTreeSet<HeldNotes>, String
 /// read only; nothing with no journal.
 pub(crate) fn journal_holds(network_dir: &Path, wallet: WalletId) -> Result<JournalHolds, String> {
     match open_read_only(&network_dir.join(DISPATCH_DB_FILE))? {
-        Some(db) => journal_holds_in(&db, network_dir, Some(wallet)),
+        Some(db) => journal_holds_in(&db, network_dir, Some(wallet), None),
         None => Ok(JournalHolds::default()),
     }
 }
@@ -226,10 +305,58 @@ fn has_table(db: &Connection, name: &str) -> Result<bool, String> {
 /// consumed ([`unmarked_creates`]) or its proof in `network_dir`'s
 /// `app.sqlite` reads consumed ([`creates_consumed`]); the mark outlives
 /// the proof a removal stopped before its archive deleted.
+struct Import<'a> {
+    origin: &'a str,
+    wallet: &'a [u8],
+    activity: &'a [u8],
+    transition: Option<&'a [u8]>,
+    anchor: Option<&'a [u8]>,
+}
+
+fn reimported(db: &Connection, backup: &Connection, import: Import<'_>) -> Result<bool, String> {
+    let (table, field, key) = match import.origin {
+        "imported_redrive" => ("shielded_redrive", "transition", import.transition),
+        "imported_marker" => ("shielded_unrecorded", "anchor", import.anchor),
+        _ => return Ok(false),
+    };
+    if key.is_none_or(|key| key.len() != 32) || !has_table(backup, table)? {
+        return Ok(false);
+    }
+    let present: bool = backup
+        .query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM {table}
+         WHERE wallet = ?1 AND activity = ?2 AND {field} = ?3)"
+            ),
+            rusqlite::params![import.wallet, import.activity, key],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !present {
+        return Ok(false);
+    }
+    let notes =
+        |db: &Connection, table: &str| -> Result<BTreeSet<[u8; 32]>, String> {
+            if !has_table(db, table)? {
+                return Ok(BTreeSet::new());
+            }
+            let mut stmt = db.prepare(&format!(
+            "SELECT nullifier FROM {table} WHERE wallet = ?1 AND activity = ?2 AND spent = 0"
+        )).map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([import.wallet, import.activity], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.map(|row| row.map_err(|e| e.to_string())).collect()
+        };
+    Ok(notes(db, "shielded_artifact_note")?
+        .is_subset(&notes(backup, "shielded_unrecorded_nullifier")?))
+}
+
 fn journal_holds_in(
     db: &Connection,
     network_dir: &Path,
     wallet: Option<WalletId>,
+    backup: Option<&Connection>,
 ) -> Result<JournalHolds, String> {
     let tables: bool = db
         .query_row(
@@ -271,7 +398,7 @@ fn journal_holds_in(
     }
     let mut stmt = db
         .prepare(
-            "SELECT status, status_reason, st_hash, kind, wallet FROM shielded_artifact \
+            "SELECT status, status_reason, st_hash, kind, wallet, origin, activity, anchor FROM shielded_artifact \
              WHERE ?1 IS NULL OR wallet = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -283,14 +410,36 @@ fn journal_holds_in(
                 r.get::<_, Option<Vec<u8>>>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+                r.get::<_, Option<Vec<u8>>>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut spent_creates = Vec::new();
     for row in rows {
-        match row.map_err(|e| e.to_string())? {
-            (status, _, _, _, _)
-                if matches!(status.as_str(), "archived" | "executed" | "not_executed") => {}
+        let (status, reason, st_hash, kind, wallet, origin, activity, anchor) =
+            row.map_err(|e| e.to_string())?;
+        if matches!(status.as_str(), "archived" | "executed" | "not_executed") {
+            continue;
+        }
+        if matches!(status.as_str(), "unclassified" | "unresolved")
+            && let Some(backup) = backup
+            && reimported(
+                db,
+                backup,
+                Import {
+                    origin: &origin,
+                    wallet: &wallet,
+                    activity: &activity,
+                    transition: st_hash.as_deref(),
+                    anchor: anchor.as_deref(),
+                },
+            )?
+        {
+            continue;
+        }
+        match (status, reason, st_hash, kind, wallet) {
             (status, None, Some(st_hash), kind, wallet)
                 if status == "unresolved" && kind.as_deref() == Some("identity_create") =>
             {
