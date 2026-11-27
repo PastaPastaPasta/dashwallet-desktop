@@ -5457,8 +5457,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     it; a dispatch it cannot record is settled not sent. A create the library sends again from its store records the
     dispatch first, and is refused if it cannot. The step reads the notes and their rest only once no shielded pass
     runs. A named row settles by evidence alone. The decisive Platform reads obey the SPV provenance policy.
-    The identity proved present, with the engine's proof written and its registration keys proved to match the row's
-    index, is `IdentityRegistered`. An unproved index or mismatched keys leave the payment `payment_unknown`.
+    The engine verifies that a present identity's proved registration keys match the row's index before recording
+    the create as executed and advancing to `IdentityRegistered`. An unproved index or mismatched keys leave the
+    payment `payment_unknown`.
     A library `not_executed` result for an unpadded create also checks for the identity before offering a retry.
     A retry requires a fully spent nullifier proof and an absence proof at or above its height. An unspent,
     partially spent, or older absence proof leaves the payment pending. A proved-unsent artifact,

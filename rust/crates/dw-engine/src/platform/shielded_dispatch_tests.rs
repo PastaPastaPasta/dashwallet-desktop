@@ -2408,6 +2408,7 @@ struct Evidence {
     recorded_at: std::sync::Mutex<u64>,
     identity: std::sync::Mutex<(bool, u64)>,
     identity_fails: std::sync::Mutex<bool>,
+    wrong_index: std::sync::Mutex<bool>,
     unverified: std::sync::Mutex<bool>,
     reads: std::sync::Mutex<Vec<&'static str>>,
 }
@@ -2453,6 +2454,16 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
             return Err(crate::platform::PlatformError::Unavailable);
         }
         Ok(*self.identity.lock().unwrap())
+    }
+
+    async fn identity_matches_index(
+        &self,
+        _: (&crate::NetworkSession, crate::WalletId),
+        _: &ShieldedAsk,
+        _: &str,
+        _: Option<&crate::platform::lease::Lease>,
+    ) -> Result<bool, crate::platform::PlatformError> {
+        Ok(!*self.wrong_index.lock().unwrap())
     }
 }
 
@@ -3212,6 +3223,31 @@ fn an_unpadded_create_spent_elsewhere_reads_its_identity() {
         !reads.contains(&"identity") && !reads.contains(&"spent"),
         "padded: {reads:?}"
     );
+}
+
+#[test]
+fn a_proved_identity_at_another_index_does_not_settle_the_create() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    h.rewrite(12, "status = 'unresolved'");
+    let hash = h.artifact(12).unwrap().st_hash.unwrap();
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (true, 101);
+    *ev.wrong_index.lock().unwrap() = true;
+
+    let outcome = h.evidence(draft, &id, &ev);
+
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(hash))),
+        None
+    );
+    assert_eq!(
+        h.artifact(12).unwrap().status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    assert_eq!(outcome, ShieldedOutcome::Unknown);
+    assert!(h.refunds().is_empty());
 }
 
 /// F12: a create of two or more notes read spent registers when its

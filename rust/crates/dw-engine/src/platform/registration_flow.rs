@@ -454,6 +454,7 @@ pub(crate) trait RegistrationLib: Send + Sync {
 
     /// One funding pass of a Shielded-funded row (C-funding F11, F12, F16):
     /// the evidence of a create the row named, else a create under `lease`.
+    /// A registered outcome already proves the create's identity key index.
     fn shielded_fund(
         &self,
         ask: ShieldedAsk,
@@ -2869,6 +2870,22 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
+    async fn record_shielded_identity(
+        &self,
+        row: &RegistrationRow,
+        identity: String,
+    ) -> Result<Step, PlatformError> {
+        self.advance(
+            row,
+            RegistrationChange {
+                phase: Some(Phase::IdentityRegistered.as_str().into()),
+                identity: Some(identity),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
     async fn adopt_shielded_identity(
         &self,
         row: &RegistrationRow,
@@ -2881,17 +2898,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             .shielded_identity_matches_index((row.id, &identity), index, lease)
             .await
         {
-            Ok(true) => {
-                self.advance(
-                    row,
-                    RegistrationChange {
-                        phase: Some(Phase::IdentityRegistered.as_str().into()),
-                        identity: Some(identity),
-                        ..Default::default()
-                    },
-                )
-                .await
-            }
+            Ok(true) => self.record_shielded_identity(row, identity).await,
             Err(error @ PlatformError::Storage { .. }) => Err(error),
             Ok(false) | Err(_) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
         }
@@ -2958,8 +2965,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         };
         match outcome {
             Ok(ShieldedOutcome::Registered(identity)) => {
-                self.adopt_shielded_identity(row, index, identity, lease.as_ref())
-                    .await
+                self.record_shielded_identity(row, identity).await
             }
             Ok(ShieldedOutcome::Unknown) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
             // F12, F13: Platform refused the keys and refunded the payment;

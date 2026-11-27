@@ -354,6 +354,14 @@ pub(crate) trait CreateEvidence: Send + Sync {
         &self,
         id: Identifier,
     ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
+
+    fn identity_matches_index(
+        &self,
+        wallet: (&NetworkSession, WalletId),
+        ask: &ShieldedAsk,
+        identity: &str,
+        lease: Option<&Lease>,
+    ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
 }
 
 struct CheckedEvidence<'a, N> {
@@ -383,6 +391,24 @@ impl<N: CreateEvidence> CreateEvidence for CheckedEvidence<'_, N> {
 
     async fn identity(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
         checked_read(self.trust, self.net.identity(id)).await
+    }
+
+    async fn identity_matches_index(
+        &self,
+        wallet: (&NetworkSession, WalletId),
+        ask: &ShieldedAsk,
+        identity: &str,
+        lease: Option<&Lease>,
+    ) -> Result<bool, PlatformError> {
+        match self
+            .net
+            .identity_matches_index(wallet, ask, identity, lease)
+            .await
+        {
+            Ok(matches) => Ok(matches),
+            Err(error @ PlatformError::Storage { .. }) => Err(error),
+            Err(_) => Ok(false),
+        }
     }
 }
 
@@ -501,6 +527,24 @@ pub(super) async fn unattended_index_matches(
 pub(crate) struct SdkEvidence(pub(crate) Arc<dash_sdk::Sdk>);
 
 impl CreateEvidence for SdkEvidence {
+    async fn identity_matches_index(
+        &self,
+        (session, wallet): (&NetworkSession, WalletId),
+        ask: &ShieldedAsk,
+        identity: &str,
+        lease: Option<&Lease>,
+    ) -> Result<bool, PlatformError> {
+        identity_matches_index(
+            session,
+            wallet,
+            &self.0,
+            (ask.draft, identity),
+            ask.index,
+            lease,
+        )
+        .await
+    }
+
     async fn nullifiers(&self, nullifiers: &[[u8; 32]]) -> Result<NullifierRead, PlatformError> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::query_types::{ShieldedNullifierStatuses, ShieldedNullifiersQuery};
@@ -573,7 +617,7 @@ pub(crate) async fn fund(
         trust: &session.trust,
     };
     if let Some(identity) = &ask.identity {
-        return evidence(session, wallet, (lib, net), &ask, identity).await;
+        return evidence(session, wallet, (lib, net), &ask, identity, lease).await;
     }
     if lib.network() == dpp::dashcore::Network::Mainnet {
         return Err(PlatformError::FeatureOff {
@@ -660,6 +704,12 @@ pub(crate) async fn fund(
     let id = Identifier::new(identity);
     let name = b58(&id);
     if let Ok((true, _)) = net.identity(id).await {
+        if !net
+            .identity_matches_index((session, wallet), &ask, &name, Some(lease))
+            .await?
+        {
+            return Ok(ShieldedOutcome::Unknown);
+        }
         let proved = match session.leases.shielded_artifacts(wallet).await {
             Ok(artifacts) => match create_artifact(&artifacts, &id) {
                 Some(artifact) => proved_executed(session, wallet, artifact).await,
@@ -672,7 +722,7 @@ pub(crate) async fn fund(
         }
     }
     // A create the hook named and then refused is not signed again at once.
-    match evidence(session, wallet, (lib, net), &ask, &name).await? {
+    match evidence(session, wallet, (lib, net), &ask, &name, Some(lease)).await? {
         ShieldedOutcome::Cleared if sent.is_err() => Ok(ShieldedOutcome::Unsent),
         outcome => Ok(outcome),
     }
@@ -697,6 +747,7 @@ async fn evidence(
     (lib, net): (&impl ShieldedLib, &impl CreateEvidence),
     ask: &ShieldedAsk,
     identity: &str,
+    lease: Option<&Lease>,
 ) -> Result<ShieldedOutcome, PlatformError> {
     let id = parse_identity(identity)?;
     let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await else {
@@ -715,7 +766,11 @@ async fn evidence(
             Ok((Some(_), None)) => ShieldedOutcome::Cleared,
             // Named on another install (a restore): only the identity says.
             Ok((None, None)) => match net.identity(id).await {
-                Ok((true, _)) => {
+                Ok((true, _))
+                    if net
+                        .identity_matches_index((session, wallet), ask, identity, lease)
+                        .await? =>
+                {
                     let key = restored_create_registered_key(ask.draft, identity);
                     let scope = dw_appdb::local_scope(&wallet.to_string());
                     session
@@ -741,6 +796,13 @@ async fn evidence(
         (artifact, named_at),
     )
     .await?;
+    if matches!(outcome, ShieldedOutcome::Registered(_))
+        && !net
+            .identity_matches_index((session, wallet), ask, identity, lease)
+            .await?
+    {
+        return Ok(ShieldedOutcome::Unknown);
+    }
     let executed = matches!(
         outcome,
         ShieldedOutcome::Registered(_) | ShieldedOutcome::Fallback(_)

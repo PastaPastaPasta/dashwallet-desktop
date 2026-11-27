@@ -1346,8 +1346,10 @@ impl RegistrationLib for Fake {
     async fn shielded_fund(
         &self,
         ask: super::registration_shielded::ShieldedAsk,
-        _lease: Option<&Lease>,
+        lease: Option<&Lease>,
     ) -> Result<super::registration_shielded::ShieldedOutcome, PlatformError> {
+        use super::registration_shielded::ShieldedOutcome;
+
         let (names, end) = {
             let mut w = self.w();
             w.shielded_asks.push(ask.clone());
@@ -1384,6 +1386,13 @@ impl RegistrationLib for Fake {
             if w.shielded_records_named {
                 w.identities.push((ask.index, identity_of(&funding)));
             }
+        }
+        if let Ok(ShieldedOutcome::Registered(identity)) = &end
+            && !self
+                .shielded_identity_matches_index((ask.draft, identity), ask.index, lease)
+                .await?
+        {
+            return Ok(ShieldedOutcome::Unknown);
         }
         end
     }
