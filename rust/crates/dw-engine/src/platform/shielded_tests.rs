@@ -222,6 +222,48 @@ fn entry(kind: Kind, amount: u64, status: Status) -> ShieldedActivityEntry {
     }
 }
 
+/// The library's spend kinds the wallet does not make show as own spends,
+/// with credits only where the entry's amount is credits: a token amount
+/// (in the token's units) never reads as credits, and a private document's
+/// or contact request's amount, its fee, is shown as the fee, not as
+/// credits moved besides it.
+#[test]
+fn a_spend_shows_credits_only_where_its_amount_is_credits() {
+    let shown = |kind: Kind, amount: u64, fee: u64| {
+        let row = pool::activity(
+            ShieldedActivityEntry {
+                fee: Some(fee),
+                ..entry(kind.clone(), amount, Status::Confirmed)
+            },
+            Network::Testnet,
+        );
+        assert_eq!(row.kind, ShieldedActivityKind::Spend, "{kind:?}");
+        (row.credits, row.fee_credits)
+    };
+    let fee = 20_000_000;
+    assert_eq!(
+        shown(Kind::TokenPurchase, 500_000_000, fee),
+        (500_000_000, Some(fee))
+    );
+    assert_eq!(shown(Kind::ShieldedSpend, 0, fee), (0, Some(fee)));
+    for kind in [
+        Kind::TokenShieldedTransfer,
+        Kind::TokenUnshield { identity_id: None },
+        Kind::TokenUnshield {
+            identity_id: Some([3; 32]),
+        },
+    ] {
+        assert_eq!(
+            shown(kind, 7, fee),
+            (0, Some(fee)),
+            "tokens are not credits"
+        );
+    }
+    for kind in [Kind::PrivateDocumentCreate, Kind::PrivateContactRequest] {
+        assert_eq!(shown(kind, fee, fee), (0, Some(fee)), "the fee once");
+    }
+}
+
 fn lock(n: u8, status: LockStatus) -> LockInfo {
     LockInfo {
         outpoint: OutPoint::new(Txid::from_byte_array([n; 32]), 0),
@@ -3814,6 +3856,122 @@ fn the_viewing_key_binds_once_and_from_storage_after_a_restart() {
     let (account, address) = bound_address(&fresh.engine, &fresh.session, fresh.wallet);
     assert_eq!(account, ShieldedAccount::Bound);
     assert!(address.is_some(), "the address reads once bound");
+}
+
+/// Puts an identity (no keys) at `index` on file for `wallet`.
+fn add_identity(f: &super::topup_tests::Fixture, wallet: crate::WalletId, index: u32) {
+    use dpp::identity::Identity;
+    use dpp::identity::v0::IdentityV0;
+    let manager = f.session.manager().unwrap();
+    f.engine.block_on(async move {
+        let pw = manager.get_wallet(&wallet.0).await.unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&wallet.0).unwrap();
+        let identity = Identity::V0(IdentityV0 {
+            id: [index as u8 + 7; 32].into(),
+            public_keys: Default::default(),
+            balance: 0,
+            revision: 0,
+        });
+        (info.identity_manager)
+            .add_identity(identity, index, wallet.0, pw.persister())
+            .unwrap();
+    });
+}
+
+/// The wallet's accounts the coordinator scans.
+fn registered(f: &super::topup_tests::Fixture, wallet: crate::WalletId) -> Vec<u32> {
+    let (s, manager) = (Arc::clone(&f.session), f.session.manager().unwrap());
+    f.engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let mut accounts: Vec<u32> = (coordinator.registered_subwallets().await)
+            .into_iter()
+            .filter(|s| s.wallet_id == wallet.0)
+            .map(|s| s.account_index)
+            .collect();
+        accounts.sort();
+        accounts
+    })
+}
+
+/// platform-wallet's seedless bind also takes each identity's tip account
+/// (`SHIELDED_IDENTITY_ACCOUNT_BASE` plus its index): a wallet with an
+/// identity binds both from the vault, and after a restart from storage
+/// with the vault locked; account 0's key and address stay as they were.
+#[test]
+fn a_wallet_with_an_identity_binds_its_tip_account_and_again_after_a_restart() {
+    use super::topup_tests::{fixture, options};
+    let tip = platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE;
+    let mut f = fixture(true);
+    let fvk = f.session.vault.shielded_viewing_key(&f.wallet.0).unwrap();
+    add_identity(&f, f.wallet, 0);
+    let (account, want) = bound_address(&f.engine, &f.session, f.wallet);
+    assert_eq!(account, ShieldedAccount::Bound);
+    assert_eq!(registered(&f, f.wallet), [0, tip]);
+
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    f.session = (f.engine)
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    f.session.vault.lock();
+    assert_eq!(
+        bound_address(&f.engine, &f.session, f.wallet),
+        (ShieldedAccount::Bound, want)
+    );
+    assert_eq!(registered(&f, f.wallet), [0, tip]);
+    unlock_full(&f);
+    assert_eq!(f.session.vault.shielded_viewing_key(&f.wallet.0), Ok(fvk));
+}
+
+fn unlock_full(f: &super::topup_tests::Fixture) {
+    let session = Arc::clone(&f.session);
+    (f.engine)
+        .block_on(
+            session
+                .vault_op(move |v| v.unlock(super::topup_tests::PASS, dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+}
+
+/// An identity found after the bind (registered, restored or discovered)
+/// has its tip account bound at the next periodic pass, beside account 0,
+/// whose address does not change; once the vault gives no key, the next
+/// one after an unlock. A second run changes nothing.
+#[test]
+fn an_identity_found_after_the_bind_binds_its_tip_account_at_the_next_pass() {
+    let tip = platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE;
+    let f = super::topup_tests::fixture(true);
+    let (account, want) = bound_address(&f.engine, &f.session, f.wallet);
+    assert_eq!(account, ShieldedAccount::Bound);
+    assert_eq!(registered(&f, f.wallet), [0]);
+    let next_pass = || {
+        let (s, manager) = (Arc::clone(&f.session), f.session.manager().unwrap());
+        f.engine
+            .block_on(async move { pool::bind_new_tip_accounts(&s, &manager).await });
+    };
+
+    add_identity(&f, f.wallet, 1);
+    f.session.vault.lock();
+    next_pass();
+    assert_eq!(registered(&f, f.wallet), [0], "no key while locked");
+    assert_eq!(
+        bound_address(&f.engine, &f.session, f.wallet),
+        (ShieldedAccount::Bound, want.clone()),
+        "account 0 stays bound"
+    );
+
+    unlock_full(&f);
+    next_pass();
+    assert_eq!(registered(&f, f.wallet), [0, tip + 1]);
+    next_pass();
+    assert_eq!(registered(&f, f.wallet), [0, tip + 1]);
+    assert_eq!(
+        bound_address(&f.engine, &f.session, f.wallet),
+        (ShieldedAccount::Bound, want)
+    );
 }
 
 /// Review: a pass holds the note store for the whole of a first scan. The

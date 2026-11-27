@@ -2916,7 +2916,7 @@ mod tests {
         // has scanned it this session (Platform is not started here).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":false,"account":"bound","scan":null,"last_pass_failed":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":14,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":false,"account":"bound","scan":null,"last_pass_failed":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
         // This build cannot spend from Shielded: no receive address is
@@ -2946,9 +2946,10 @@ mod tests {
     /// `I` is not an identity id, as the credits and identity calls word it.
     const NOT_IDENTIFIER: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: identity is not a base58 identifier","params":{"detail":"identity is not a base58 identifier"}}}"#;
 
-    /// The cost table at the SDK's seed protocol version (13), priced at
+    /// The cost table at the SDK's seed protocol version (14, the floor
+    /// `dash_sdk::sdk::min_protocol_version` sets on every network), priced at
     /// its fee version.
-    const COSTS: &str = r#"{"ok":true,"result":{"protocol_version":13,"contact_request":139638280,"profile_update":222187240,"contact_info":230453000,"enable_dashpay_keys":98301600,"credits_per_duff":1000,"top_up_fee":50500000,"top_up_min_duffs":1000000,"low_credits":2221872400,"empty_credits":222187240}}"#;
+    const COSTS: &str = r#"{"ok":true,"result":{"protocol_version":14,"contact_request":139638280,"profile_update":228255720,"contact_info":230453000,"enable_dashpay_keys":98301600,"credits_per_duff":1000,"top_up_fee":50500000,"top_up_min_duffs":1000000,"low_credits":2282557200,"empty_credits":228255720}}"#;
 
     /// `SECRET`'s `dapk` is not Base58; the error does not quote it.
     const NOT_A_CODE: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a DashPay contact code","params":{"detail":"not a DashPay contact code"}}}"#;

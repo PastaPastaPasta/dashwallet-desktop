@@ -1,5 +1,6 @@
 //! Upstream's own tables of the unreleased fork tables' names, pinned as
-//! written by platform 3ab0f0f54c48 (V025, V026). `shapes::check` accepts
+//! written by platform 3ab0f0f54c48 (V025, V026), byte-identical at
+//! 7f0a1b0c378c. `shapes::check` accepts
 //! such a table only when it is this build's fresh one, so a repin that
 //! changes either shape fails here and must bring a version-aware comparison.
 
