@@ -1588,10 +1588,11 @@ export const masternodes = {
       /** A dissolution, alone, together or standby, the network didn't take. */
       notSent: "The network didn't accept it. Send it again from In progress.",
       notSentOffline: "Dash Wallet isn't connected to the Dash network, so this wasn't sent. Send it again from In progress.",
+      handoffUnknown: "Dash Wallet couldn't confirm that the dissolution reached the network. It may still confirm. You can send it again from In progress.",
       noSession: "Leave now: create a standby dissolution, then send it now and pay the {penalty} penalty.",
       noSessionFull: "Leave now: create a standby dissolution, then send its full refund.",
       togetherText: "Every owner signs one dissolution, and nobody pays a penalty. You pay the network fee from your share.",
-      togetherFeeHelp: "At least {min} for {count} shares",
+      togetherFeeHelp: "Suggested fee for {count} shares: {fee}",
       togetherStart: "Start",
       togetherAsk: "Enter your passphrase to sign your share of the dissolution.",
       noStandby: "No standby dissolution is saved yet.",

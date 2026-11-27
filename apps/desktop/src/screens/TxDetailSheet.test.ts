@@ -83,27 +83,27 @@ describe("a refused abandon", () => {
   const refused = (refusal: string, message: string) => ({ code: "tx_action_refused", message, data: { kind: "txAction", refusal } });
 
   it("gives a rescanFirst refusal's steps from the catalog, not the engine's text", () => {
-    expect(actionProblem(refused("rescanFirst", "engine text"))).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    expect(actionProblem(refused("rescanFirst", "engine text"), "abandon")).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
   });
 
   it("says an Abandon refused while the wallet catches up after a fork can be tried once it has", () => {
-    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null })).toBe(
-      "The wallet is catching up with the network. You can abandon this payment once it has finished.",
+    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null }, "abandon")).toBe(
+      "The wallet is catching up with the network. Try again once it has finished.",
     );
   });
 
   it("keeps the engine's text for a Resend refused while the wallet catches up", () => {
-    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null }, [], "resend")).toBe("a rescan is in progress");
+    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null }, "resend")).toBe("a rescan is in progress");
   });
 
   it("says why a payment with a locked or confirmed later payment can't be abandoned, from the catalog", () => {
-    expect(actionProblem(refused("settledDescendant", "engine text"))).toBe(
+    expect(actionProblem(refused("settledDescendant", "engine text"), "abandon")).toBe(
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
     );
   });
 
   it("says why a payment funding an unfinished Platform transfer can't be abandoned, from the catalog", () => {
-    expect(actionProblem(refused("platformFunding", "engine text"))).toBe(
+    expect(actionProblem(refused("platformFunding", "engine text"), "abandon")).toBe(
       "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
     );
   });
@@ -111,15 +111,15 @@ describe("a refused abandon", () => {
   it("names the wallet whose saved transaction doesn't read, and what to do, from the catalog", () => {
     const unreadable = { ...refused("recordUnreadable", "engine text"), data: { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A } };
     const savings = summary(WALLET_A, "Savings");
-    expect(actionProblem(unreadable, [savings, summary("b2".repeat(32), "Spending")])).toBe(
+    expect(actionProblem(unreadable, "abandon", [savings, summary("b2".repeat(32), "Spending")])).toBe(
       "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     );
-    expect(actionProblem(unreadable, [savings])).toBe(
+    expect(actionProblem(unreadable, "abandon", [savings])).toBe(
       "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Savings, and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed. You can remove the extra wallet afterwards.",
     );
   });
 
   it("gives any other refusal the engine's message", () => {
-    expect(actionProblem(refused("instantLocked", "transaction action refused: InstantLocked"))).toBe("transaction action refused: InstantLocked");
+    expect(actionProblem(refused("instantLocked", "transaction action refused: InstantLocked"), "abandon")).toBe("transaction action refused: InstantLocked");
   });
 });
