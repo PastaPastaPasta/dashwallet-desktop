@@ -2690,11 +2690,12 @@ fn completed_disconnect_is_terminal_after_restart_with_lagging_proofs() {
     let choice = Fixture::choice();
     let approval = f.quoted_grant(&link, &choice);
     f.approve(&link, &choice, &approval).unwrap();
+    let before_nonce = 8;
+    f.net.nonces.lock().unwrap().insert(id(ME), before_nonce);
     let request = hex::encode(link.request.request_hash());
     let quote = f.disconnect_quote(&owner, &request).unwrap();
     let first = f.disconnect_grant(quote.request, quote.max_credits);
     let before = f.net.me();
-    let before_nonce = f.net.nonces.lock().unwrap()[&id(ME)];
     let done = f.disconnect(&owner, &request, &first).unwrap();
     assert_eq!(done.keys_disabled, quote.keys);
     assert_eq!(first_record(&f).state, RecordState::Disconnected);
@@ -2706,11 +2707,11 @@ fn completed_disconnect_is_terminal_after_restart_with_lagging_proofs() {
     let retry = f.disconnect_grant(quote.request, quote.max_credits);
     let signed = f.net.signed_disables.lock().unwrap().len();
     let broadcast = f.net.broadcast_disables.lock().unwrap().len();
-    let done = f.disconnect(&owner, &request, &retry).unwrap();
-    assert!(done.keys_disabled.is_empty());
-    assert_eq!(f.disconnect_quote(&owner, &request).unwrap().max_credits, 0);
+    let repeated = f.disconnect(&owner, &request, &retry);
     assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed);
     assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), broadcast);
+    assert!(repeated.unwrap().keys_disabled.is_empty());
+    assert_eq!(f.disconnect_quote(&owner, &request).unwrap().max_credits, 0);
     assert!(f.disconnect_grant_unused(&retry));
 }
 
