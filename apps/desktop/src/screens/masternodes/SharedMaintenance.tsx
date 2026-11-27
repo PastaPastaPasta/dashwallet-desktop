@@ -383,12 +383,11 @@ function Together({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
   const b = useBackend();
   const { shown, dash } = useSharedText(c.network);
   const n = c.shares.shares.length;
-  const least = togetherFee(n);
-  const amount = useAmountField(shown, shown.full(least));
+  const suggested = togetherFee(n);
+  const amount = useAmountField(shown, shown.full(suggested));
   const id = useId();
   const g = useGranted(c, t(`${P}.dissolve.togetherAsk`));
-  const below = typeof amount.duffs === "number" && amount.duffs < least;
-  const fee = amount.settled && typeof amount.duffs === "number" && !below ? amount.duffs : null;
+  const fee = amount.settled && typeof amount.duffs === "number" ? amount.duffs : null;
   const share = mineOf(c)[0]?.index ?? null;
   const ready = fee !== null && share !== null && g.credential.ready && !g.busy && !c.wallet.watchOnly;
   const start = async () => {
@@ -409,7 +408,7 @@ function Together({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
       }}
     >
       <p className="mg-muted">{t(`${P}.dissolve.togetherText`)}</p>
-      <div className={`form-field ${below || amount.error ? "has-error" : ""}`}>
+      <div className={`form-field ${amount.error ? "has-error" : ""}`}>
         <label htmlFor={id}>{t(`${P}.dissolve.fee`)}</label>
         <span className="mg-field-row">
           <input
@@ -417,7 +416,7 @@ function Together({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
             inputMode="decimal"
             placeholder={shown.placeholder}
             data-testid="sh-together-fee"
-            aria-invalid={below || !!amount.error}
+            aria-invalid={!!amount.error}
             value={amount.text}
             onChange={(e) => amount.setText(e.target.value)}
           />
@@ -428,8 +427,8 @@ function Together({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
             {amount.error}
           </span>
         ) : (
-          <span className={below ? "mg-field-error" : "mg-field-help"} role={below ? "alert" : undefined} data-testid="sh-together-fee-help">
-            {t(`${P}.dissolve.togetherFeeHelp`, { min: dash(least), count: n })}
+          <span className="mg-field-help" data-testid="sh-together-fee-help">
+            {t(`${P}.dissolve.togetherFeeHelp`, { fee: dash(suggested), count: n })}
           </span>
         )}
       </div>

@@ -264,6 +264,7 @@ function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
       watchOnly: false,
       hasMnemonic: true,
       legacyIssued: false,
+      raisedLookahead: false,
       hd: true,
       birthHeight: 1_200_000,
       createdAt: null,

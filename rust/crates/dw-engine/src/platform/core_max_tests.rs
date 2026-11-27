@@ -492,6 +492,7 @@ fn core_max_leaves_other_accounts() {
             user_locked: false,
             dust_locked: false,
             reserved: false,
+            mixing_held: false,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,

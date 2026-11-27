@@ -688,12 +688,12 @@ impl Masternodes {
             }
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
-            let (history, unspent) = s.op_view(wallet).await?;
+            let (history, unspent, beats) = s.op_view(wallet).await?.with_beats();
             let abandoned = s.abandoned_txids(wallet).await?;
             let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
                 .map(|r| {
-                    let state = list_settled(r, state_of(r, &history, &unspent), &view);
+                    let state = list_settled(r, state_of(r, &history, &unspent, &beats), &view);
                     operation_of(
                         r,
                         abandon_settled(r, state, &history, &abandoned),

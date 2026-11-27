@@ -187,7 +187,9 @@ export const settings = {
     removeTitle: "Remove wallet",
     removeConfirm: "Remove wallet",
     removeQuestion:
-      "Remove the wallet {name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back.",
+      "Remove the wallet {name} from this computer? Its keys, history and settings are deleted. Keep its recovery phrase and its BIP39 passphrase, if you set one, to restore its signing keys. A wallet backup or export made before removal can restore the wallet and its saved settings.",
+    removeBackupQuestion:
+      "Remove the wallet {name} from this computer? Its keys, history and settings are deleted. Only a wallet backup or export made before removal can restore it. Make one before removing the wallet.",
     removeWatchOnlyQuestion: "Remove the watch-only wallet {name} from this computer? Its history and settings are deleted. Its extended public key adds it again.",
     removed: "{name} was removed.",
     removeHeldTitle: "This wallet can't be removed yet",

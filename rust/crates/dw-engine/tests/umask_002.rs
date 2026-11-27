@@ -109,12 +109,21 @@ fn data_roots_open_under_umask_002() {
     assert_eq!(mode(&net.join("backups/auto")), 0o700);
     assert_eq!(mode(&net.join("avatars")), 0o700);
 
-    // An existing install whose network directory and app database an older
-    // build left group-writable: the engine owns both and restricts them.
-    // The avatar directory is the engine's too.
+    // An existing network directory others can write to is refused before
+    // any store is opened. The app database and avatar directory are
+    // restricted once the network directory is safe again.
     chmod(&net, 0o775);
     chmod(&net.join(APP_DB_FILE), 0o664);
     chmod(&net.join("avatars"), 0o775);
+    let err = open_regtest(&root).expect_err("a group-writable network directory is refused");
+    assert!(
+        err.contains(&net.display().to_string()) && err.contains("group/other-writable"),
+        "{err}"
+    );
+    assert_eq!(mode(&net), 0o775);
+    assert_eq!(mode(&net.join(APP_DB_FILE)), 0o664);
+    assert_eq!(mode(&net.join("avatars")), 0o775);
+    chmod(&net, 0o700);
     open_regtest(&root).expect("an existing data root reopens");
     assert_eq!(mode(&net), 0o700);
     assert_eq!(mode(&net.join(APP_DB_FILE)), 0o600);

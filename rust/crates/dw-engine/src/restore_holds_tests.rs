@@ -798,11 +798,10 @@ fn a_corrupt_mark_entry_opens_the_wallet_with_the_gate_closed() {
     assert_change_held(&engine, &session, id, &p, "the gate off");
 }
 
-/// Q102 102-4: an entry of the mark whose payment the live history lacks
-/// (a foreign set kept live) holds nothing, and its coin is offered once
-/// the mark clears.
+/// A payment made after the snapshot can still be mined even when no peer
+/// relays it after restoring. Its input stays held across clear and restart.
 #[test]
-fn a_mark_entry_the_history_lacks_holds_nothing() {
+fn a_payment_missing_from_restored_history_keeps_its_input_held() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let foreign_payment = Txid::from_byte_array([0x42; 32]);
     let c = OutPoint::new(paid.txid(), 3);
@@ -811,13 +810,63 @@ fn a_mark_entry_the_history_lacks_holds_nothing() {
         .unwrap()
         .unwrap();
     assert_eq!(mark.pending.len(), 1);
-    assert!(holds(&session, id).is_empty(), "{:?}", holds(&session, id));
+    assert_eq!(
+        holds(&session, id).get(&foreign_payment),
+        Some(&BTreeSet::from([c]))
+    );
     let row = utxo_row(&engine, &session, id, c).expect("listed");
-    assert!(!row.pending_unproven, "{row:?}");
+    assert!(row.pending_unproven, "{row:?}");
     cleared(&session);
-    assert!(spendable(&engine, &session, id, c), "the coin is offered");
+    assert!(!spendable(&engine, &session, id, c), "the coin is offered");
     let session = reopen(&engine, session);
-    assert!(spendable(&engine, &session, id, c), "after a restart");
+    assert!(!spendable(&engine, &session, id, c), "after a restart");
+}
+
+#[test]
+fn a_confirmed_conflict_suppresses_a_missing_payments_hold_until_reorg() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let payment = Txid::from_byte_array([0x42; 32]);
+    let input = OutPoint::new(paid.txid(), 0);
+    let other = OutPoint::new(paid.txid(), 3);
+    let session = restored(&engine, session, &[(payment, input), (payment, other)]);
+    let winner = rival(&engine, &session, id, &paid, 0);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    cleared(&session);
+    assert!(!spendable(&engine, &session, id, other));
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    eventually("the confirmed conflict releases the other input", || {
+        spendable(&engine, &session, id, other)
+    });
+    super::deliver(&engine, &session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.truncate_above(TIP).unwrap();
+        })
+    });
+    eventually("the reorg reactivates the missing payment's hold", || {
+        !spendable(&engine, &session, id, other)
+    });
+}
+
+#[test]
+fn an_unloaded_wallet_keeps_marked_inputs_after_clear_and_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let payment = Txid::from_byte_array([0x42; 32]);
+    let input = OutPoint::new(paid.txid(), 3);
+    let _other = engine.block_on(session.create_wallet(12)).unwrap();
+    engine
+        .block_on(session.set_load_on_startup(id, false))
+        .unwrap();
+    let session = restored(&engine, session, &[(payment, input)]);
+    assert!(session.live().unwrap().store.is_unloaded(&id.0));
+    cleared(&session);
+    let session = reopen(&engine, session);
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert_eq!(
+        holds(&session, id).get(&payment),
+        Some(&BTreeSet::from([input]))
+    );
+    assert!(!spendable(&engine, &session, id, input));
 }
 
 /// A wallet registered but not loaded while the mark was set: the clear

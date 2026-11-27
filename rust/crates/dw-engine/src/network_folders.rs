@@ -14,7 +14,7 @@
 //! atomically and durably, after the new folder is durable.
 
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::{DashNetwork, EngineError};
@@ -27,6 +27,7 @@ const RECOVERED: &str = "-recovered-";
 
 /// The highest `n` a recovery folder may take.
 const MAX_RECOVERED: u32 = 10_000;
+const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 
 type Folders = BTreeMap<String, String>;
 
@@ -50,11 +51,19 @@ fn is_recovery_folder(dir_name: &str, folder: &str) -> bool {
 
 /// The record in `root`: empty when there is none.
 fn read(root: &Path) -> Result<Folders, EngineError> {
-    let bytes = match std::fs::read(record_path(root)) {
-        Ok(bytes) => bytes,
+    crate::fsutil::refuse_insecure_dir(root)?;
+    let file = match dw_fs::open_owner_only(&record_path(root)) {
+        Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Folders::new()),
         Err(e) => return Err(damaged(e)),
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(damaged)?;
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(damaged("the record exceeds 1 MiB"));
+    }
     let folders: Folders = serde_json::from_slice(&bytes).map_err(damaged)?;
     let plain = |name: &str| {
         !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\', '\0'])
@@ -247,6 +256,25 @@ fn write(root: &Path, folders: &Folders) -> Result<(), EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_redirect_file_must_be_regular_and_cannot_be_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let root = dw_testutil::private_tempdir();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"{}").unwrap();
+        let record = record_path(root.path());
+        symlink(&target, &record).unwrap();
+        assert!(resolve(root.path(), &DashNetwork::Regtest).is_err());
+        std::fs::remove_file(&record).unwrap();
+
+        use std::os::unix::ffi::OsStrExt;
+        let record = std::ffi::CString::new(record.as_os_str().as_bytes()).unwrap();
+        // SAFETY: record is a valid NUL-terminated path in the private fixture.
+        assert_eq!(unsafe { libc::mkfifo(record.as_ptr(), 0o600) }, 0);
+        assert!(resolve(root.path(), &DashNetwork::Regtest).is_err());
+    }
 
     fn names(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(dir)

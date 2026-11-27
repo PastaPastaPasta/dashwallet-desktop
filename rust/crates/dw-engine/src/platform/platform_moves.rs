@@ -1579,16 +1579,30 @@ pub(crate) type Exits = BTreeMap<String, bool>;
 /// they were and hold.
 pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) -> BTreeSet<usize> {
     let mut changed = BTreeSet::new();
-    let landed: BTreeSet<Vec<(String, u32)>> = (moves.iter())
-        .filter(|m| m.holds() && m.reached(seen))
+    let touched: BTreeSet<Vec<(String, u32)>> = (moves.iter())
+        .filter(|m| m.holds() && m.touched(seen))
         .map(MoveRecord::key)
         .collect();
     // A payout's group settles on its withdrawals' documents (P8).
     let paying = paying_keys(moves);
-    for key in landed.into_iter().filter(|k| !paying.contains(k)) {
+    for key in touched.into_iter().filter(|k| !paying.contains(k)) {
         let group: Vec<usize> = (0..moves.len())
             .filter(|&i| moves[i].holds() && moves[i].key() == key)
             .collect();
+        if key
+            .iter()
+            .any(|(a, k)| seen.nonce(a).is_some_and(|n| n < *k))
+        {
+            for &i in &group {
+                moves[i].state = PlatformActivityState::Failed;
+                moves[i].can_land = false;
+            }
+            changed.extend(group);
+            continue;
+        }
+        if !group.iter().any(|&i| moves[i].reached(seen)) {
+            continue;
+        }
         let order = |i: usize| (moves[i].at, moves[i].id.clone());
         let Some(newest) = group.iter().copied().max_by_key(|&i| order(i)) else {
             continue;
@@ -1824,20 +1838,23 @@ async fn documents(
         if !group.clone().any(|m| m.touched(seen)) {
             continue;
         }
+        let mut by_document = BTreeMap::<_, Vec<_>>::new();
         for m in group {
-            let Some(id) = withdrawal_id(m, network) else {
-                continue;
-            };
+            if let Some(id) = withdrawal_id(m, network) {
+                by_document.entry(id).or_default().push(&m.id);
+            }
+        }
+        for (id, members) in by_document {
             let (read, tally) = trust::scoped(net.withdrawal(id)).await;
             let gated = session.trust.rule_5() == Rule5::Enforce
                 && provenance.as_ref().is_some_and(|p| p.fallback_used());
             match read {
                 Ok(_) if gated && !tally.verified() => {}
                 Ok((present, height)) if present || height >= seen.height => {
-                    docs.insert(m.id.clone(), present);
+                    docs.extend(members.into_iter().map(|id| (id.clone(), present)));
                 }
                 Ok(_) => {}
-                Err(e) => tracing::info!(id = %m.id, "reading a withdrawal's document: {e}"),
+                Err(e) => tracing::info!(%id, "reading a withdrawal's document: {e}"),
             }
         }
     }
@@ -1847,8 +1864,9 @@ async fn documents(
 /// Settles each holding payout's group with a nonce `seen` shows taken, on
 /// `docs` (C-funding P8): the payout's document present, it is `done` and
 /// the others `failed`; absent, the member whose document is present is
-/// `done`, or with none present every member is `failed`. While a document
-/// it needs is unknown, the group holds. The indices it changed.
+/// `done`, or the newest present member is done for the group when their
+/// terms differ. With none present every member is `failed` unless a cancel
+/// can be settled. While a required document is unknown, the group holds.
 pub(crate) fn settle_payouts(
     moves: &mut [MoveRecord],
     seen: &Seen,
@@ -1870,7 +1888,35 @@ pub(crate) fn settle_payouts(
         else {
             continue;
         };
-        let present = group.iter().copied().find(|&i| doc(i) == Some(true));
+        let order = |i: usize| (moves[i].at, moves[i].id.clone());
+        let present: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&i| i != payout && doc(i) == Some(true))
+            .collect();
+        let unknown_winner = present
+            .iter()
+            .copied()
+            .max_by_key(|&i| order(i))
+            .filter(|&newest| {
+                let terms = moves[newest].terms();
+                doc(payout) != Some(true) && present.iter().any(|&i| moves[i].terms() != terms)
+            });
+        let to = unknown_winner.and_then(|i| {
+            present
+                .iter()
+                .all(|&j| moves[j].to == moves[i].to)
+                .then(|| moves[i].to.clone())
+        });
+        let confirmed = unknown_winner
+            .or_else(|| {
+                present
+                    .iter()
+                    .copied()
+                    .filter(|&i| moves[i].answered)
+                    .max_by_key(|&i| order(i))
+            })
+            .or_else(|| present.iter().copied().min_by_key(|&i| order(i)));
         // A cancel leaves no document (#762): every withdrawal's absent, it
         // is the one that executed.
         let cancel = (group.iter().copied())
@@ -1879,7 +1925,7 @@ pub(crate) fn settle_payouts(
         let absent = (group.iter().copied())
             .filter(|&i| moves[i].kind.withdraws())
             .all(|i| doc(i) == Some(false));
-        let winner = match (doc(payout), present) {
+        let winner = match (doc(payout), confirmed) {
             (Some(true), _) => Some(payout),
             (_, Some(exit)) => Some(exit),
             (Some(false), None) if absent && cancel.is_some() => cancel,
@@ -1890,11 +1936,16 @@ pub(crate) fn settle_payouts(
             _ => continue,
         };
         for &i in &group {
-            if Some(i) == winner {
+            if Some(i) == unknown_winner {
+                moves[i].done_for_group(seen, to.clone());
+            } else if Some(i) == winner {
                 moves[i].done(seen);
             } else {
                 moves[i].state = PlatformActivityState::Failed;
                 moves[i].can_land = false;
+            }
+            if unknown_winner.is_some() && present.contains(&i) {
+                moves[i].unattributed = true;
             }
         }
         changed.extend(group);
@@ -2528,8 +2579,8 @@ async fn pre_check(
     use dpp::state_transition::identity_topup_from_addresses_transition::methods::IdentityTopUpFromAddressesTransitionMethodsV0;
     let refusal = |e: dpp::ProtocolError| refused(e, target.kind(), version, network);
     let inputs = inputs.clone();
-    let built = match (target, script) {
-        (Target::Platform(to) | Target::Cancel(to), _) => {
+    let built = match target {
+        Target::Platform(to) | Target::Cancel(to) => {
             AddressFundsTransferTransition::try_from_inputs_with_signer(
                 inputs,
                 [(to, credits)].into(),
@@ -2540,21 +2591,22 @@ async fn pre_check(
             )
             .await
         }
-        (Target::Core(_), Some(script)) => {
+        Target::Core(_) | Target::Contact => {
+            let script = script.cloned().unwrap_or_else(withdrawal::p2pkh_probe);
             AddressCreditWithdrawalTransition::try_from_inputs_with_signer(
                 inputs,
                 None,
                 fee_strategy,
                 CORE_FEE_PER_BYTE,
                 dpp::withdrawal::Pooling::Never,
-                script.clone(),
+                script,
                 &Placeholder,
                 0,
                 version,
             )
             .await
         }
-        (Target::Identity(identity), _) => {
+        Target::Identity(identity) => {
             IdentityTopUpFromAddressesTransition::try_from_inputs_with_signer(
                 identity,
                 inputs,
@@ -2565,9 +2617,6 @@ async fn pre_check(
             )
             .await
         }
-        // A payout's script is claimed later, and it has its own way out
-        // (C-funding P8).
-        (Target::Core(_), None) | (Target::Contact, _) => return Ok(()),
     };
     let transition = built.map_err(refusal)?;
     ensure_valid_state_transition_structure(&transition, version).map_err(|e| match e {
@@ -3934,6 +3983,7 @@ pub(crate) async fn cancel_quote(
     // A cancel of it that holds is offered again as it was signed: its
     // exact re-send, whatever the fee or the receive address is now.
     let resend = held.held_cancel(&moves);
+    check_cancel_links(&moves, held, resend)?;
     let at_key = |m: &MoveRecord| {
         m.key() == held.key()
             && (m.kind.withdraws() || resend.is_some_and(|c| c.terms() == m.terms()))
@@ -3965,6 +4015,30 @@ pub(crate) async fn cancel_quote(
             max_credits: credits,
         },
     })
+}
+
+fn check_cancel_links(
+    moves: &[MoveRecord],
+    held: &MoveRecord,
+    resend: Option<&MoveRecord>,
+) -> Result<(), CreditsError> {
+    if held.link_conflict {
+        return Err(CreditsError::MovePending {
+            id: held.id.clone(),
+        });
+    }
+    if resend.is_none() {
+        let key = held.key();
+        if let Some(conflict) = moves
+            .iter()
+            .find(|m| m.link_conflict && m.holds() && m.key() == key)
+        {
+            return Err(CreditsError::MovePending {
+                id: conflict.id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// `DashPay::platform_cancel` (#762): the quote's cancel of `of` to `to`,
@@ -4671,7 +4745,9 @@ pub(crate) async fn run(
                     // Re-sent, it signs that cancel's terms, at any protocol
                     // version: of equal terms, whichever executes pays the
                     // same.
-                    match h.held_cancel(&moves) {
+                    let resend = h.held_cancel(&moves);
+                    check_cancel_links(&moves, h, resend)?;
+                    match resend {
                         Some(c) => c.replan(&balances).ok_or(PlatformError::Unavailable.into()),
                         None if off => Err(flag()),
                         None => Ok(cancel_plan(h, &limits)?),
@@ -4824,10 +4900,9 @@ pub(crate) async fn run(
             CreditsError::QuoteChanged
         });
     }
-    // Beside an exit or a cancel, any other hold blocks it as it would
-    // block a move.
-    let mut others =
-        (moves.iter()).filter(|m| m.holds() && exit_of.or(cancel_of).is_some_and(|id| m.id != id));
+    let mut others = moves.iter().filter(|m| {
+        m.holds() && (matches!(target, Target::Core(_)) || cancel_of.is_some_and(|id| m.id != id))
+    });
     if let Some(held) = held.filter(blocks).or_else(|| others.find(blocks)) {
         // A held send has no exit but its retry: it holds as before.
         if off && (retry_of.is_some() || held.kind != MoveKind::Transfer) {
@@ -5016,7 +5091,20 @@ pub(crate) async fn run(
     if cannot_land && let Err(e) = call {
         return Err(PlatformError::from(e).into());
     }
-    Ok((moves.swap_remove(at), balance))
+    let record = &moves[at];
+    let settled = if record.cancel_of.is_some()
+        && record.state != PlatformActivityState::Done
+        && !record.can_land
+    {
+        moves.iter().position(|m| {
+            m.state == PlatformActivityState::Done
+                && m.cancel_of == record.cancel_of
+                && m.terms() == record.terms()
+        })
+    } else {
+        None
+    };
+    Ok((moves.swap_remove(settled.unwrap_or(at)), balance))
 }
 
 /// `to` as the script of one of the wallet's Core receiving addresses on

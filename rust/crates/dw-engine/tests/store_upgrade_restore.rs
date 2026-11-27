@@ -637,6 +637,9 @@ fn child_steps() {
                 }
                 Err(e) => err(e),
             },
+            "open-testnet" => engine
+                .block_on(engine.open_network(DashNetwork::Testnet, local_opts()))
+                .map_or_else(err, |_| "ok".to_string()),
             "close" => engine
                 .block_on(engine.close_network(net.clone()))
                 .map_or_else(err, |closed| format!("closed {closed}")),
@@ -684,6 +687,41 @@ fn steps_in_child(root: &Path, steps: &[&str]) -> Vec<String> {
 }
 
 const RESTORE_SCREEN: &str = "refused Restore storeUpgrade.refused.restore storeUpgrade.refused.report storeUpgrade.refused.quit";
+
+#[test]
+fn cancelling_restore_works_after_another_network_opened() {
+    let f = upgraded();
+    break_history(&f);
+    let got = steps_in_child(&f.root, &["open-testnet", "open", "request", "cancel"]);
+    assert_eq!(got, ["ok", RESTORE_SCREEN, "requested", "cancelled"]);
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+    assert_eq!(after_dirs(&f), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_a_group_writable_network_before_running_restore() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = upgraded();
+    request(&f);
+    std::fs::set_permissions(&f.net, std::fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(open_in_child(&f.root).starts_with("err storage_not_private"));
+    assert_eq!(after_dirs(&f), 0);
+    assert!(backups(&f).join("RESTORE-REQUESTED").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_a_symlinked_upgrade_backups_folder() {
+    let f = upgraded();
+    let outside = f.root.join("moved-upgrade-backups");
+    std::fs::rename(backups(&f), &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, backups(&f)).unwrap();
+    let before = tree(&outside);
+    let result = open_in_child(&f.root);
+    assert!(result.starts_with("err "), "{result}");
+    assert_eq!(tree(&outside), before);
+}
 const RESTORE_HELD_SCREEN: &str = "refused Restore storeUpgrade.refused.restore \
      storeUpgrade.refused.recover storeUpgrade.refused.report storeUpgrade.refused.quit";
 
@@ -823,6 +861,10 @@ fn a_swap_refused_for_a_hold_offers_starting_over_after_cancel_restore() {
 /// `[n; 32]`, written as a fresh fork store over the live one: the store as
 /// an open that stopped before its drain leaves it.
 fn live_fork_store(f: &Fixture, n: u8) {
+    live_fork_store_with_notes(f, &[[n; 32]]);
+}
+
+fn live_fork_store_with_notes(f: &Fixture, notes: &[[u8; 32]]) {
     use dw_shielded_drain::test_support::{ForkRow, fork_store};
     let shielded = f.net.join("shielded.sqlite");
     for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -836,7 +878,7 @@ fn live_fork_store(f: &Fixture, n: u8) {
             st: 2,
             kind: "unresolved",
             reason: Some("purged"),
-            nullifiers: vec![[n; 32]],
+            nullifiers: notes.to_vec(),
         }],
     )
     .unwrap();
@@ -920,6 +962,95 @@ fn a_fork_hold_the_snapshot_carries_does_not_hold_the_restore() {
         [vec![102u8; 32]],
         "held again after the restore"
     );
+}
+
+#[test]
+fn a_fork_marker_can_hold_fewer_notes_than_the_snapshot() {
+    let f = fixture("v0.1.0");
+    live_fork_store_with_notes(&f, &[[102; 32], [103; 32]]);
+    assert_eq!(open_in_child(&f.root), "ok");
+    fork_marker(&f, 102);
+    request(&f);
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert_eq!(after_dirs(&f), 1);
+    let mut notes = drained_holds(&f);
+    notes.sort();
+    assert_eq!(notes, [vec![102u8; 32], vec![103; 32]]);
+}
+
+#[test]
+fn an_imported_redrive_only_allows_restore_when_the_snapshot_can_reimport_it() {
+    for same_transition in [false, true] {
+        let f = fixture("v0.1.0");
+        let dispatch = f.net.join("dispatch.sqlite");
+        exec(
+            &dispatch,
+            &format!("INSERT INTO shielded_redrive VALUES ({MAIN}, zeroblob(32), zeroblob(32), 1)"),
+        );
+        assert_eq!(open_in_child(&f.root), "ok");
+        if !same_transition {
+            exec(
+                &dispatch,
+                "UPDATE shielded_artifact SET st_hash = randomblob(32)",
+            );
+        }
+        let got = request_got(&f);
+        if same_transition {
+            got.unwrap();
+            assert_eq!(open_in_child(&f.root), "ok");
+            assert_eq!(after_dirs(&f), 1);
+            let conn = rusqlite::Connection::open(&dispatch).unwrap();
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM shielded_artifact WHERE origin = 'imported_redrive'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "unresolved");
+        } else {
+            assert!(
+                matches!(got, Err(EngineError::ShieldedSpendHeld(_))),
+                "{got:?}"
+            );
+            assert_eq!(after_dirs(&f), 0);
+        }
+    }
+}
+
+#[test]
+fn an_imported_marker_only_allows_restore_when_the_snapshot_keeps_its_notes() {
+    for backed in [false, true] {
+        let f = fixture("v0.1.0");
+        marker(&f, 2, &[102]);
+        assert_eq!(open_in_child(&f.root), "ok");
+        let dispatch = f.net.join("dispatch.sqlite");
+        if !backed {
+            exec(
+                &dispatch,
+                "UPDATE shielded_artifact_note SET nullifier = randomblob(32)",
+            );
+        }
+        let got = request_got(&f);
+        if backed {
+            got.unwrap();
+            assert_eq!(open_in_child(&f.root), "ok");
+            let conn = rusqlite::Connection::open(dispatch).unwrap();
+            let count: usize = conn.query_row(
+                "SELECT COUNT(*) FROM shielded_artifact a
+                 JOIN shielded_artifact_note n ON n.wallet = a.wallet AND n.activity = a.activity
+                 WHERE a.origin = 'imported_marker' AND a.status_reason = 'unrecorded' AND n.spent = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap().try_into().unwrap();
+            assert_eq!(count, 1);
+        } else {
+            assert!(
+                matches!(got, Err(EngineError::ShieldedSpendHeld(_))),
+                "{got:?}"
+            );
+        }
+    }
 }
 
 /// R-1 (N): a fork hold only the live stores have, or one the snapshot's
