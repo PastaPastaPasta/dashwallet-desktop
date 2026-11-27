@@ -17,8 +17,8 @@ mixing counterparties, nodes 3..6 masternodes. Real time (no mocktime): our clie
 `dsq` timestamps against the wall clock as Core checks them against adjusted time.
 
 Checks, in order:
- 1. stop releases reservations: mixing stops while a session holds coins and no coin stays
-    reserved afterwards (`after_stop reserved=0`);
+ 1. stopping an open session releases temporary reservations and keeps any collateral
+    already sent to its coordinator held;
  2. mixing reaches 1 round;
  3. restart resumes: a new dwcli process (new session, same data dir) continues from the rounds
     already earned and reaches 2 rounds with a fully mixed balance, the progress above what
@@ -212,10 +212,10 @@ class DwdCoinJoinClient(DashTestFramework):
             def progress(lines):
                 return [float(field(l, "progress")) for l in lines if l.startswith("cjstatus")]
 
-            # 1. stop releases reservations (stopped while a session holds coins).
+            # 1. Stop an open session. If collateral was handed out, its hold survives.
             lines = self.mix("--until-session-entry", timeout=900)
             after = [l for l in lines if l.startswith("after_stop")][-1]
-            assert_equal(field(after, "reserved"), "0")
+            assert int(field(after, "reserved")) <= 1, after
             # Denominating alone is 1 of (3 + rounds) weighted parts of the progress.
             denominated_only = max(progress(lines))
 

@@ -493,6 +493,7 @@ fn core_max_leaves_other_accounts() {
             dust_locked: false,
             reserved: false,
             mixing_held: false,
+            coinjoin_handoff: None,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,

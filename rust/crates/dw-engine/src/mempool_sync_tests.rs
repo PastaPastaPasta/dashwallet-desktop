@@ -145,6 +145,9 @@ fn engine_wallet_recorded() -> (
             },
         ))
         .unwrap();
+    engine
+        .block_on(session.mark_coinjoin_handoffs_tracked(id))
+        .unwrap();
     (dir, engine, session, id, recorder)
 }
 

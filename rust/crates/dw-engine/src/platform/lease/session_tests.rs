@@ -136,6 +136,9 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
             },
         ))
         .unwrap();
+    engine
+        .block_on(session.mark_coinjoin_handoffs_tracked(wallet))
+        .unwrap();
     let chain = Arc::new(TestChain::default());
     chain.install(&session);
     Fixture {

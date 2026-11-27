@@ -1,5 +1,7 @@
 # M3 engine contract (`dw-ffi`)
 
+Contract-Version: 1
+
 Status: **contract**, 2026-10-07. Milestone M3 "CoinJoin and the iOS Masternode Keys tool" (DESIGN-opus §5.1).
 Code: `rust/crates/dw-ffi/src/api/{coinjoin,network_stats,masternode_keys}.rs`, the engine modules
 `rust/crates/dw-engine/src/{coinjoin,masternode_keys}.rs`, the crates `dw-p2p` and `dw-coinjoin`, and the event of
@@ -104,7 +106,7 @@ Status of every call: **works** unless marked otherwise. "In-memory read" calls 
 | `set_coinjoin_settings(s)` | async | **works**. Validates, applies live, stores. `enabled = false` stops every wallet (`stop_reason = Disabled`). Rounds/target changes take effect at the next session. | `invalid_argument` | QT-046 |
 | `coinjoin_status(wallet)` | sync | **works**. `CoinJoinStatus` (below). In-memory read of the status the engine refreshes once a second (the first read of a wallet computes it); re-query on `CoinJoin`. | — | QT-041…043, 048, 050 |
 | `start_mixing(wallet)` | async | **works**. Idempotent. Needs `enabled`, a wallet with keys, balance ≥ 0.00140001 DASH and a vault that is unencrypted, unlocked or unlocked for mixing only. Runs while SPV syncs (status `SyncInProgress`, as Core). Refused while a move of the wallet's mixed coins (or its consolidation, or its move to Shielded, m4 `shield_mixed_coins`) runs, through its last broadcast: the move and mixing claim the CoinJoin account under one lock, so exactly one starts. | `coinjoin.disabled`, `coinjoin.watch_only`, `coinjoin.insufficient_funds{min_duffs}`, `coinjoin.vault_locked`, `coinjoin.move_running` | QT-044, QT-112 |
-| `stop_mixing(wallet)` | async | **works**. `resetPool` then stop: open sessions are left, reserved coins released, except the inputs of a session whose signatures already went out (`dss` sent, no `dsc`): the masternode may still broadcast the mixing transaction, so they stay held, as a successful session's, until the wallet sees them spent or the one-hour observation timeout (`COINJOIN_PENDING_OBSERVATION_TIMEOUT`). Idempotent. | — | QT-044 |
+| `stop_mixing(wallet)` | async | **works**. Ends open sessions and releases coins whose signatures stayed in the wallet. Before handing off collateral or final-input signatures, the engine durably records their inputs. Those holds survive Stop, the observation timeout, and restart. Legacy CoinJoin denominations and collateral without tracked provenance receive the same protection. Idempotent. | — | QT-044 |
 | `coinjoin_salt(wallet)` / `set_coinjoin_salt(wallet, hex)` / `generate_coinjoin_salt(wallet)` | async | Core `coinjoinsalt get/set/generate`. The salt is created at first use, imported from `cj_salt` with a Dash Core wallet (R1 adds this to `import_wallet_dat`), stored in app.sqlite. `set` is refused while mixing (`invalid_argument`). **works** (the wallet.dat import keeps `cj_salt`, or the older `ps_salt`). | `invalid_argument` | QT-043, QT-145 |
 | `coinjoin_recovery_scan(wallet)` | async | **works**. IOS-057: raises the DIP9 CoinJoin account's lookahead and the BIP44 chains' to 1000, rescans from the birth height (a normal rescan: `rescan_progress`, `cancel_rescan`), returns `CoinJoinRecoveryReport { coinjoin_addresses_scanned, bip44_addresses_scanned, coinjoin_balance, new_transactions }` once the wallet's replay has ended as sends see it (the engine's report also carries `fully_mixed`; the desktop's carries `fully_mixed` and no `coinjoin_balance`). | `coinjoin.spv_not_running`; `invalid_argument` while another rescan runs; `rescan_interrupted` when its rescan is cancelled, also when a rescan started since has replaced it (dw-ffi reports it as `internal` until #694) | IOS-057 |
 | `mixed_coins_sweep_plan(wallet, dest)` | async | **works**. Chunks of ≤ 500 inputs of the CoinJoin account's confirmed coins above 1000 duffs, with fees, and the total split into `fully_mixed` and `not_fully_mixed` (the move takes both); `unconfirmed` counts the account's coins that wait for a confirmation. No chunk spends a coin with unconfirmed parents: with up to 500 inputs it could pass Core's ancestor limits (25 transactions, 101 kvB), and the wallet cannot count a mixing transaction's foreign parents. Reads coins only. Refused while the wallet mixes. `Shielded`: M4. | `coinjoin.nothing_to_move`, `coinjoin.mixing_active` | IOS-057 |
@@ -134,6 +136,19 @@ Status of every call: **works** unless marked otherwise. "In-memory read" calls 
   pro_tx_hash, service, denomination, state (PoolState), entries, last_message (PoolMessage) }`, `status`
   (Core's `strAutoDenomResult` as `CoinJoinStatusCode`, with `Masternode{message}` for "Masternode: …"),
   `queue_size`, `keys_left` (`None`: HD wallets have no keypool).
+
+Coordinator handoffs are recorded in the wallet's local database before any signed bytes leave.
+A session may reuse the exact collateral transaction while its input is still unspent. It cannot
+sign another collateral transaction with that input. The one-hour observation timer cleans up
+session claims and leaves the durable records in place. Funding transactions use the durable
+sweep journal so their inputs also survive a lost broadcast response or restart.
+
+`return_from_mixing_plan(wallet)` and `return_from_mixing(wallet, quote, grant)` are the engine's
+explicit recovery path, exposed by `dwcli move-mixed --held`. The quote covers only confirmed
+CoinJoin inputs held for a possible coordinator spend, with the same fee, approval and freshness
+checks as a regular sweep. Session activity, other reservations, locks and exclusions still apply.
+The return pays fresh Core addresses of the same wallet. Its outputs wait for confirmation before
+Core selection can use them. Only observed network spends or a confirmed return resolve the coins.
 
 ### 2.2 Governance — owner R2
 
