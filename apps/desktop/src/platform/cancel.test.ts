@@ -24,6 +24,13 @@ const amount = (d: number) => `${d / 1e8} tDASH`;
 afterEach(() => resetPlatformCancels());
 
 describe("which way out a held item offers", () => {
+  it("tells the user the earlier item can still go through and when to cancel again", () => {
+    for (const kind of ["move", "payment"] as const) {
+      expect(CANCEL_COPY.restoreRefusal(kind)).toContain(`The earlier ${kind} can still go through.`);
+      expect(CANCEL_COPY.restoreRefusal(kind)).toContain("Once it has finished, choose Cancel again.");
+    }
+  });
+
   it("a held send: Move to Dash wallet, never a cancel; a cancel row is no send to move", () => {
     const send = held("ps-1", "send", { to: PAYEE });
     expect([isHeldSend(send), cancelOf(send, [send])]).toEqual([true, null]);
@@ -75,7 +82,8 @@ const outcome = { id: "pm-3", credits: "30000000000", expectedDuffs: 29_998_000,
 
 describe("the move out of a held send", () => {
   const send = held("ps-1", "send", { to: PAYEE });
-  const paid = held("ps-1", "send", { contact: ALICE, to: PAYEE });
+  const contactSend = { ...send, contact: ALICE };
+  const paid = { ...contactSend, state: "done" as const, mayLand: false };
 
   it("says the recipient wasn't paid once it went through, and was paid once the payment did", () => {
     expect(moveOutcomeCopy(outcome, false, credits, amount, moveExit([send], "ps-1"))).toEqual({ title: MOVE_COPY.done.title, text: "Moved to Dash wallet. The payment to tdash1kq7r3m…8p0s2a4d6f8h didn't go through, so tdash1kq7r3m…8p0s2a4d6f8h wasn't paid." });
@@ -83,7 +91,13 @@ describe("the move out of a held send", () => {
   });
 
   it("says nothing of the payment while neither is known", () => {
-    expect(moveOutcomeCopy({ ...outcome, state: "pending" }, false, credits, amount, moveExit([paid], "ps-1")).title).toBe(MOVE_COPY.pending.title);
+    expect(moveOutcomeCopy({ ...outcome, state: "pending" }, false, credits, amount, moveExit([contactSend], "ps-1")).title).toBe(MOVE_COPY.pending.title);
+  });
+
+  it("does not name the payment after an exit failed unless Activity confirms it", () => {
+    for (const row of [contactSend, { ...paid, winnerKnown: false }]) {
+      expect(moveOutcomeCopy({ ...outcome, state: "failed" }, true, credits, amount, moveExit([row], "ps-1"))).toEqual(MOVE_COPY.failed);
+    }
   });
 
   it("names the payment, its amount and recipient, on Confirm", () => {

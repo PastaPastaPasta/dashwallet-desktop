@@ -926,7 +926,8 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"5b".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
-    await expect(page.getByTestId("tx-action-note")).toHaveText("The wallet is catching up with the network. You can abandon this payment once it has finished.");
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The wallet is catching up with the network. Try again once it has finished.");
+    await expect(page.getByTestId("tx-abandon-confirm")).toHaveCount(0);
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
   });

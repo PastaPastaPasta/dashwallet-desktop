@@ -166,7 +166,7 @@ describe("the RESTORED money gate", () => {
     expect(html).not.toContain('data-testid="tx-resend"');
     const refusal = await cmd.abandonTransaction(W, P).catch((e: unknown) => e);
     expect(refusal).toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "restored" } });
-    expect(actionProblem(refusal)).toBe(t("activity.abandon.restoredGate"));
+    expect(actionProblem(refusal, "abandon")).toBe(t("activity.abandon.restoredGate"));
     await expect(cmd.resendTransaction(W, P)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "restored" } });
     expect((await coinsOf()).some((u) => u.pendingUnproven)).toBe(true);
   });

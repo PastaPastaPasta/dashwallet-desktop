@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -32,6 +33,14 @@ use crate::platform::trust::{self, SharedContext, TrustProvider};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
 pub(crate) type Manager = PlatformWalletManager<crate::store::WalletStore>;
+
+fn configure_spv_masternodes(
+    config: &mut ClientConfig,
+    regtest_opt_in: impl FnOnce() -> Option<OsString>,
+) {
+    config.enable_masternodes = config.network != dashcore::Network::Regtest
+        || regtest_opt_in().is_some_and(|value| value == "1");
+}
 
 /// File name of the platform-wallet SQLite database inside a network dir.
 pub const WALLET_DB_FILE: &str = "wallet.sqlite";
@@ -1373,15 +1382,16 @@ impl NetworkSession {
     }
 
     /// The configuration dash-spv is started with: storage under
-    /// `<network dir>/spv`, masternode sync on (InstantSend/ChainLock
-    /// handling depends on it), restricted to the configured peers when any
-    /// were given. Counterpart: `platform_wallet_manager_spv_start`
+    /// `<network dir>/spv` and restricted to the configured peers when any
+    /// were given. Plain regtest nodes cannot answer QRInfo, which can stall
+    /// filter sync. Regtest networks with masternodes can opt in with
+    /// `DWD_REGTEST_MASTERNODES=1`. Counterpart: `platform_wallet_manager_spv_start`
     /// (rs-platform-wallet-ffi/src/spv.rs:408, config built at :519-551).
     pub(crate) fn spv_config(&self) -> Result<ClientConfig, EngineError> {
         let mut config = ClientConfig::new(self.network.core_network())
             .with_storage_path(self.data_dir.join(SPV_DIR))
             .with_user_agent(crate::tools::USER_AGENT);
-        config.enable_masternodes = true;
+        configure_spv_masternodes(&mut config, || std::env::var_os("DWD_REGTEST_MASTERNODES"));
         // A payment and its InstantSend lock reach the wallet while the
         // filters still sync, not only once they are done.
         config = config.with_mempool_during_sync(true);
@@ -1981,6 +1991,28 @@ async fn init_quorum_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spv_masternodes_require_opt_in_on_regtest() {
+        let mut config = ClientConfig::regtest();
+        for (opt_in, enabled) in [(None, false), (Some("0"), false), (Some("1"), true)] {
+            configure_spv_masternodes(&mut config, || opt_in.map(OsString::from));
+            assert_eq!(config.enable_masternodes, enabled, "{opt_in:?}");
+        }
+    }
+
+    #[test]
+    fn spv_masternodes_ignore_regtest_opt_in_on_other_networks() {
+        for network in [
+            dashcore::Network::Mainnet,
+            dashcore::Network::Testnet,
+            dashcore::Network::Devnet,
+        ] {
+            let mut config = ClientConfig::new(network);
+            configure_spv_masternodes(&mut config, || panic!("read regtest opt-in on {network}"));
+            assert!(config.enable_masternodes, "{network}");
+        }
+    }
 
     #[test]
     fn wallet_id_hex_round_trip() {

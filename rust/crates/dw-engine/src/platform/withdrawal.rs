@@ -724,7 +724,7 @@ pub(crate) fn expected_duffs(
 }
 
 /// A P2PKH script, the address kind with the higher dust threshold.
-fn p2pkh_probe() -> CoreScript {
+pub(super) fn p2pkh_probe() -> CoreScript {
     CoreScript::new_p2pkh([0; 20])
 }
 
