@@ -5472,9 +5472,11 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     cancel's terms, resolves a cancel that was lost, never reached Platform, or was refused for a while (a node's
     error): once the re-send or the withdrawal or payout beside it executes, the nonces are proved taken and the
     group settles on its documents. A cancel whose terms Drive refuses for good stays held while the withdrawal or
-    payout beside it may still execute. Only a later protocol can refuse those terms, and this build refuses every
-    Platform send under a later protocol, so that cancel's way out is a newer build that ships the exit beside a
-    held cancel (#1006), which the repin check below requires.
+    payout beside it may still execute, and while it holds, the wallet's other Platform sends, moves and top-ups are
+    refused (`credits.move_pending`). Only a later network protocol can refuse those terms. This build still signs
+    under the latest rules it knows, so it cannot resolve such a cancel itself: the way out is a newer build that
+    ships the exit beside a held cancel (#1006). A repin that changes the rules for address transfers or withdrawals
+    checks this again (below).
     Both rely on Drive refusing a transition at a taken nonce unpaid, and on no `BumpAddressInputNonces` for a
     transfer, a withdrawal or a top-up from addresses, at the pinned platform revision (as item 103 does); a repin
     checks both again. A repin that changes the rules for address transfers or withdrawals also either ships the exit
