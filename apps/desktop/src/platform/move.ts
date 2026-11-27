@@ -212,6 +212,18 @@ export function moveExit(activity: readonly PlatformActivity[] | null | undefine
   return null;
 }
 
+/** The record an Activity row is "Move to Dash wallet" out of: the engine keeps that link in the exit's id
+ * (`exit-of-<id>-at-…`). `null` for every other row. */
+export function exitLinkOf(id: string): string | null {
+  const rest = id.startsWith("exit-of-") ? id.slice("exit-of-".length) : null;
+  const at = rest?.lastIndexOf("-at-") ?? -1;
+  return rest && at > 0 ? rest.slice(0, at) : null;
+}
+
+/** Whether the quote names a held record (`exitOf`) that Activity's rows do not show yet: Confirm cannot say
+ * what the move replaces, so Go waits. A top-up's exit has its row, though `moveExit` gives it no line. */
+export const exitUnresolved = (activity: readonly PlatformActivity[] | null | undefined, exitOf: string | null | undefined): boolean => !!exitOf && !activity?.some((a) => a.id === exitOf);
+
 /** Confirm's line for the move out of `exit`: what may still go through, and that only one does. */
 export function moveExitLine(exit: MoveExit, credits: (c: string) => string): string {
   const C = MOVE_COPY;

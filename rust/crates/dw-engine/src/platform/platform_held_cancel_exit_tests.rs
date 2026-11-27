@@ -52,6 +52,20 @@ fn held_and_cancel(w: &World, payout: bool) -> (MoveToCoreOutcome, PlatformSendO
     (held, out)
 }
 
+/// `held`'s held cancel sent again on its own terms and lost too, then a
+/// version that refuses those terms: the cancel and its identical re-send
+/// both hold, and neither can be sent again.
+fn resend_held(w: &World, held: &str) -> PlatformSendOutcome {
+    let q = w.cancel_quote_of(held).unwrap();
+    w.net.then(Act::Lost);
+    let again = w.cancel_as(held, &q.to, &w.f.grant(q.credits)).unwrap();
+    w.net.tick();
+    w.activity();
+    assert!(w.record(&again.id).holds());
+    *w.net.version.lock().unwrap() = raised_transfer_minimum();
+    again
+}
+
 impl World {
     /// `DashPay::platform_move_to_core` on this world's net: the restore's
     /// Platform gate, then the quote's move.
@@ -134,10 +148,17 @@ enum Winner {
 /// W, C and X all held, then the winner's transition executes. Each
 /// document read lags the nonces' proof first: nothing settles. Read at the
 /// proof, the winner is done and the other two failed, unable to land,
-/// never replaced; only the winner's effect is seen.
-fn settles_for(payout: bool, winner: Winner) {
+/// never replaced; only the winner's effect is seen. With `resend`, C's
+/// identical re-send C2 holds beside it, its terms refused: the exit runs
+/// beside both, and C2, the newest, carries a cancel's win, C no longer
+/// holding.
+fn settles_for(payout: bool, winner: Winner, resend: bool) {
     let w = World::new();
     let (held, cancel) = held_and_cancel(&w, payout);
+    let again = resend.then(|| resend_held(&w, &held.id));
+    if let Some(c2) = &again {
+        assert_eq!(w.record(&c2.id).terms(), w.record(&cancel.id).terms());
+    }
     let q = w.quote(WithdrawAmount::All).unwrap();
     assert_eq!(q.exit_of.as_deref(), Some(cancel.id.as_str()));
     w.net.then(Act::Lost);
@@ -147,7 +168,7 @@ fn settles_for(payout: bool, winner: Winner) {
     let n = match winner {
         Winner::Held => 0,
         Winner::Cancel => 1,
-        Winner::Exit => 2,
+        Winner::Exit => 2 + usize::from(resend),
     };
     assert!(w.net.execute_sent(n));
     // A present payout document is final whenever it is read; an absent one
@@ -157,7 +178,10 @@ fn settles_for(payout: bool, winner: Winner) {
         w.net.document_lag.store(5, Ordering::SeqCst);
         w.activity();
         w.activity();
-        for id in [&held.id, &cancel.id, &exit.id] {
+        for id in [&held.id, &cancel.id, &exit.id]
+            .into_iter()
+            .chain(again.as_ref().map(|c| &c.id))
+        {
             assert!(
                 w.record(id).holds(),
                 "{winner:?} {payout}: a read behind decides nothing"
@@ -170,9 +194,22 @@ fn settles_for(payout: bool, winner: Winner) {
     w.activity();
     let ids = [
         (Winner::Held, &held.id),
-        (Winner::Cancel, &cancel.id),
+        (Winner::Cancel, again.as_ref().map_or(&cancel.id, |c| &c.id)),
         (Winner::Exit, &exit.id),
     ];
+    if again.is_some() {
+        let c = w.record(&cancel.id);
+        let lost = [
+            PlatformActivityState::Failed,
+            PlatformActivityState::Replaced,
+        ];
+        assert!(!c.holds() && !c.can_land, "{winner:?} {payout}");
+        assert_eq!(
+            c.state,
+            lost[usize::from(winner == Winner::Cancel && !payout)],
+            "{winner:?} {payout}"
+        );
+    }
     for (who, id) in ids {
         let r = w.record(id);
         let expected = match who == winner {
@@ -194,7 +231,9 @@ fn settles_for(payout: bool, winner: Winner) {
     };
     assert_eq!(w.net.credits(own), cancelled, "{winner:?} {payout}");
     assert!(w.moves().iter().all(|m| !m.holds()));
-    never_replaced(&w);
+    if !(resend && winner == Winner::Cancel) {
+        never_replaced(&w);
+    }
 }
 
 /// Beside a held withdrawal's cancel: X's document present, X is done;
@@ -202,7 +241,7 @@ fn settles_for(payout: bool, winner: Winner) {
 #[test]
 fn the_exit_of_a_held_cancel_settles_on_the_documents() {
     for winner in [Winner::Exit, Winner::Held, Winner::Cancel] {
-        settles_for(false, winner);
+        settles_for(false, winner, false);
     }
 }
 
@@ -211,8 +250,121 @@ fn the_exit_of_a_held_cancel_settles_on_the_documents() {
 #[test]
 fn the_exit_of_a_held_payouts_cancel_settles_on_the_documents() {
     for winner in [Winner::Exit, Winner::Held, Winner::Cancel] {
-        settles_for(true, winner);
+        settles_for(true, winner, false);
     }
+}
+
+/// A held cancel sent again on its own terms, the re-send held too, both
+/// refused by a newer version: the quote names one of them, the exit runs
+/// beside both and settles on the documents, beside a withdrawal and
+/// beside a payout.
+#[test]
+fn the_exit_beside_a_held_cancel_and_its_resend_settles_on_the_documents() {
+    for payout in [false, true] {
+        for winner in [Winner::Exit, Winner::Held, Winner::Cancel] {
+            settles_for(payout, winner, true);
+        }
+    }
+}
+
+/// Beside a held cancel only its identical re-sends leave the exit free: a
+/// cancel of other terms, a cancel of another record on the same terms, or
+/// a transfer on them that cancels nothing holds it, quoted before or
+/// after, with nothing signed. The quote reads only cancels, as before: a
+/// transfer that cancels nothing is refused by the move.
+#[test]
+fn an_exit_beside_a_transfer_that_is_not_its_cancels_resend_is_refused() {
+    type Change = fn(&World, &MoveRecord, &mut MoveRecord);
+    let changes: [Change; 3] = [
+        |w, c, other| {
+            other.id = format!("{}-9", c.id);
+            other.to = bech32m(&w.address(5), w.network());
+        },
+        |_, c, other| {
+            let at = c.id.rsplit_once("-at-").unwrap().1;
+            other.id = format!("cancel-of-move-9-9-at-{at}-9");
+            other.cancel_of = Some("move-9-9".into());
+        },
+        |_, _, other| {
+            other.id = "move-1-9".into();
+            other.cancel_of = None;
+        },
+    ];
+    for (i, change) in changes.into_iter().enumerate() {
+        let w = World::new();
+        let (_, cancel) = held_and_cancel(&w, false);
+        let q = w.quote(WithdrawAmount::All).unwrap();
+        let c = w.record(&cancel.id);
+        let mut other = c.clone();
+        other.at += 1;
+        change(&w, &c, &mut other);
+        w.store(&[other.clone()]);
+        assert_eq!(w.record(&other.id).cancel_of, other.cancel_of, "{i}");
+        let refused = CreditsError::MovePending {
+            id: other.id.clone(),
+        };
+        let grant = w.f.grant(q.credits);
+        assert_eq!(w.exit_as(&q, &grant).unwrap_err(), refused, "{i}");
+        if other.cancel_of.is_some() {
+            assert_eq!(w.quote(WithdrawAmount::All).unwrap_err(), refused, "{i}");
+        }
+        assert!(w.f.unused(&grant));
+        assert_eq!(w.sent_count(), 2, "{i}");
+    }
+}
+
+/// A re-send of the cancel that Platform has not answered holds the quote,
+/// as it holds the move: nothing is offered until it is answered.
+#[test]
+fn a_pending_resend_of_the_cancel_holds_the_exit() {
+    let w = World::new();
+    let (held, cancel) = held_and_cancel(&w, false);
+    let q = w.cancel_quote_of(&held.id).unwrap();
+    w.net.then(Act::Lost);
+    let again = w.cancel_as(&held.id, &q.to, &w.f.grant(q.credits)).unwrap();
+    let c2 = w.record(&again.id);
+    assert_eq!(c2.state, PlatformActivityState::Pending);
+    assert_eq!(c2.terms(), w.record(&cancel.id).terms());
+    let refused = CreditsError::MovePending {
+        id: again.id.clone(),
+    };
+    assert_eq!(w.quote(WithdrawAmount::All).unwrap_err(), refused);
+}
+
+/// The exit named on the cancel's re-send, an exit named on the cancel
+/// itself held too, pays that one's address and never the withdrawal's.
+/// It executes, and every other member fails, unable to land.
+#[test]
+fn an_exit_named_on_a_cancels_resend_pays_the_cancels_exits_address() {
+    let w = World::new();
+    let (held, cancel) = held_and_cancel(&w, false);
+    let first = w.quote(WithdrawAmount::All).unwrap();
+    w.net.then(Act::Lost);
+    let lost = w.exit_as(&first, &w.f.grant(first.credits)).unwrap();
+    w.net.tick();
+    w.activity();
+    assert!(w.record(&lost.id).holds());
+    let again = resend_held(&w, &held.id);
+    // The re-send first in the store: the next quote names it.
+    let mut c = w.record(&cancel.id);
+    c.at = w.record(&again.id).at + 1;
+    w.store(&[c]);
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of.as_deref(), Some(again.id.as_str()));
+    assert_eq!(q.to, first.to);
+    assert_ne!(q.to, w.record(&held.id).to);
+    let exit = w.exit_as(&q, &w.f.grant(q.credits)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Done);
+    assert_eq!(w.documents(), 1);
+    for id in [&held.id, &cancel.id, &again.id, &lost.id] {
+        let r = w.record(id);
+        assert_eq!(
+            (r.state, r.can_land),
+            (PlatformActivityState::Failed, false),
+            "{id}"
+        );
+    }
+    assert!(w.moves().iter().all(|m| !m.holds()));
 }
 
 /// The exit of a held cancel pays an address no withdrawal at its inputs
@@ -426,7 +578,9 @@ fn a_move_whose_held_item_gained_or_lost_its_cancel_is_refused() {
 /// The restore's Platform hold refuses the exit of a held cancel, or of a
 /// held item too small to cancel, unsigned: its grant unredeemed and every
 /// record held. Once the restore's check clears the wallet's row, the same
-/// call is done.
+/// call is done. `gated_exit` composes the facade's gate and the move; that
+/// the facade calls the gate for a named exit is `restore_holds_tests`' C6
+/// row.
 #[test]
 fn an_exit_the_restore_hold_refused_goes_through_once_the_hold_clears() {
     for too_small in [false, true] {

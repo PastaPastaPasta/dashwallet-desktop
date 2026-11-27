@@ -3801,9 +3801,13 @@ pub(crate) async fn quote(
     if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    // A held cancel is exited only by a move named its exit.
+    // A held cancel is exited only by a move named its exit, or the exit of
+    // its identical re-send that Platform answered.
     if let Some(c) = (moves.iter()).find(|m| {
-        m.cancel_of.is_some() && m.holds() && !m.reached(&seen) && held.is_none_or(|h| h.id != m.id)
+        m.cancel_of.is_some()
+            && m.holds()
+            && !m.reached(&seen)
+            && (m.state == PlatformActivityState::Pending || held.is_none_or(|h| !resends(h, m)))
     }) {
         return Err(CreditsError::MovePending { id: c.id.clone() });
     }
@@ -3871,16 +3875,25 @@ fn uncancellable(held: &MoveRecord, version: &PlatformVersion) -> bool {
 }
 
 /// The addresses the held withdrawals and payouts at `cancel`'s inputs pay,
-/// but for its own exits. The exit beside a held cancel pays none of them,
-/// as its quote picks its address, so its document is its own (#1006); a
-/// second exit pays the first one's, as exits paying one address share one
-/// document.
+/// but for its own exits and those of its identical re-sends. The exit
+/// beside a held cancel pays none of them, as its quote picks its address,
+/// so its document is its own (#1006); a second exit may pay the first
+/// one's, as exits paying one address share one document.
 fn paid_at<'m>(moves: &'m [MoveRecord], cancel: &'m MoveRecord) -> impl Iterator<Item = &'m str> {
     let key = cancel.key();
+    let own = move |id: &str| (moves.iter()).any(|c| c.id == id && resends(cancel, c));
     (moves.iter())
         .filter(move |m| m.holds() && m.kind.withdraws() && m.key() == key)
-        .filter(|m| m.exit_of.as_deref() != Some(cancel.id.as_str()))
+        .filter(move |m| !m.exit_of.as_deref().is_some_and(own))
         .map(|m| m.to.trim())
+}
+
+/// `m` is the transfer `named` signed again: itself, its identical retry,
+/// or, of a cancel, its identical re-send of the same record (#762, #1006).
+/// The exit of `named` follows these, and no other member that leaves no
+/// document.
+fn resends(named: &MoveRecord, m: &MoveRecord) -> bool {
+    named.kind == MoveKind::Transfer && m.cancel_of == named.cancel_of && m.terms() == named.terms()
 }
 
 /// The move beside `held` is its named exit: beside a record that leaves
@@ -4591,14 +4604,17 @@ pub(crate) async fn run(
                     id: pending.id.clone(),
                 });
             }
-            // A held cancel is exited only by a move named its exit
-            // (#1006), and a cancel of a record that has one holding is only
-            // its exact re-send, as the quotes offer them.
+            // A held cancel is exited only by a move named its exit, or the
+            // exit of its identical re-send (#1006), and a cancel of a record
+            // that has one holding is only its exact re-send, as the quotes
+            // offer them.
             let cancel = (moves.iter()).find(|m| {
                 m.cancel_of.is_some()
                     && m.holds()
                     && match target {
-                        Target::Core(_) => exit_of != Some(m.id.as_str()) && !m.reached(&seen),
+                        Target::Core(_) => {
+                            !exited.is_some_and(|e| resends(e, m)) && !m.reached(&seen)
+                        }
                         Target::Cancel(to) => {
                             m.cancel_of.as_deref() == cancel_of && m.to != bech32m(&to, network)
                         }
@@ -4786,9 +4802,7 @@ pub(crate) async fn run(
     // document to tell them apart. The named exit follows its transfer and
     // that one's identical retries or re-sends only, so the key keeps one
     // member that leaves no document.
-    let follows = |h: &MoveRecord| {
-        exited.is_some_and(|e| e.kind == MoveKind::Transfer && e.terms() == h.terms())
-    };
+    let follows = |h: &MoveRecord| exited.is_some_and(|e| resends(e, h));
     let blocks = |h: &&MoveRecord| {
         if h.key() != record.key() {
             return true;

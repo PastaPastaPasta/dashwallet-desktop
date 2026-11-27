@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // The way out of a held Platform item, on the fixture backend: a payment that may still go through
@@ -243,4 +244,45 @@ test.describe("A held cancel, or a held item too small to cancel: Move to Dash w
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Moved to Dash wallet. The payment to Bob Builder didn't go through, so Bob Builder wasn't paid.");
   });
+});
+
+test.describe("A cancel's result, reopened after Move to Dash wallet went through in its place", () => {
+  for (const theme of THEMES) {
+    test(`says the move went through and the contact wasn't paid (${theme})`, async ({ page }) => {
+      await page.clock.install({ time: FIXTURE_NOW });
+      const errors = await details(page, "platform-payout-failed-may-land", "platform:contactPayment:cp-held:mayland", theme);
+      await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await expect(page.getByTestId("platform-cancel-outcome")).toHaveAttribute("data-result", "pending");
+      // Leaving the details keeps the cancel's result for when the payment is shown again.
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("source-detail")).toHaveCount(0);
+      // Platform answers that the cancel's nonces are not taken: it may still go through, and Activity's next read shows it.
+      const cancel = await page.evaluate(() => {
+        const p = window.__dwFixture!.world.pending.platform!;
+        const c = p.activity.find((a) => a.cancels === "cp-held")!;
+        c.state = "failed";
+        p.nextMove = "done";
+        return c.id;
+      });
+      await page.clock.runFor(31_000);
+      await page.locator(`button[data-txid="platform:cancelPayment:${cancel}:mayland"]`).click();
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-go").click();
+      await authorize(page);
+      await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Moved to Dash wallet. The cancel and the payment to Bob Builder didn't go through, so Bob Builder wasn't paid.");
+      await page.getByTestId("platform-move-done").click();
+      await page.getByTestId("sidebar-activity").click();
+      await page.locator('button[data-txid="platform:contactPayment:cp-held"]').click();
+      const result = page.getByTestId("platform-cancel-outcome");
+      await expect(result).toHaveAttribute("data-result", "exited");
+      await expect(result).toContainText("Moved to Dash wallet. The cancel and the payment to Bob Builder didn't go through, so Bob Builder wasn't paid.");
+      await expect(result).not.toContainText("Bob Builder was paid");
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
 });

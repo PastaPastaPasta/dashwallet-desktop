@@ -9,7 +9,7 @@ import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import { platformRow, sourceRowTitle } from "../history/sourceRows";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { cancelFor, cancelResult, CANCEL_COPY, PlatformCancelFlow, recipientOf, resetPlatformCancels } from "./cancel";
+import { cancelFor, cancelResult, cancelResultText, CANCEL_COPY, PlatformCancelFlow, recipientOf, resetPlatformCancels } from "./cancel";
 import { cancelOf, isHeldCancel, isHeldSend, MOVE_COPY, moveErrorText, moveExit, moveExitLine, moveOutcomeCopy } from "./move";
 
 const PAYEE = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
@@ -157,13 +157,81 @@ describe("the move out of a held cancel, or of an item too small to cancel", () 
 });
 
 describe("the cancel's outcome", () => {
-  it("is done only once Activity shows the cancel done, lost once it failed for good, else waiting", () => {
-    expect(cancelResult(OUT, { ...held("pc-2", "send", { cancels: "pm-1" }), state: "done", mayLand: false })).toBe("done");
-    expect(cancelResult(OUT, { ...held("pc-2", "send", { cancels: "pm-1" }), mayLand: false })).toBe("lost");
-    expect(cancelResult(OUT, held("pc-2", "send", { cancels: "pm-1" }))).toBe("pending");
-    expect(cancelResult({ ...OUT, state: "pending", mayLand: true }, undefined)).toBe("pending");
+  const settled = { mayLand: false } as const;
+  const won = { state: "done", mayLand: false } as const;
+  const failed: PlatformSendOutcome = { ...OUT, state: "failed", mayLand: false };
+  const move = held("pm-1", "moveToCore");
+  const payout = held("cp-1", "contactPayment", { to: PAYEE });
+  const recipient = recipientOf(payout);
+  const cancelRow = (of: string, extra: Partial<PlatformActivity> = {}) => held("pc-2", "send", { to: OWN, cancels: of, ...extra });
+  const exitRow = (of: string, extra: Partial<PlatformActivity> = {}) => held(`exit-of-${of}-at-7-1`, "moveToCore", extra);
+
+  it("is done once a cancel of the item went through, and waits while any of them may still go through", () => {
+    expect(cancelResult(OUT, [cancelRow("pm-1", won), { ...move, ...settled }], "pm-1")).toBe("done");
+    // Its identical re-send went through in its place.
+    expect(cancelResult(failed, [{ ...held("pc-3", "send", { to: OWN, cancels: "pm-1" }), ...won }, cancelRow("pm-1", { state: "replaced", mayLand: false }), { ...move, ...settled }], "pm-1")).toBe("done");
+    expect(cancelResult(OUT, [cancelRow("pm-1"), move], "pm-1")).toBe("pending");
+    expect(cancelResult(failed, [cancelRow("pm-1", settled), { ...exitRow("pc-2"), state: "pending" }, { ...move, ...settled }], "pm-1")).toBe("pending");
+    expect(cancelResult({ ...OUT, state: "pending", mayLand: true }, undefined, "pm-1")).toBe("pending");
+    // Before Activity shows it, a failed cancel says nothing of which went through.
+    expect(cancelResult(failed, undefined, "pm-1")).toBe("pending");
+    // Activity without the cancel's row yet: what the call returned.
+    expect(cancelResult(OUT, [move], "pm-1")).toBe("done");
+    expect(cancelResult({ ...OUT, state: "pending", mayLand: true }, [{ ...move, ...settled }], "pm-1")).toBe("pending");
     // A group settled with no evidence of which went through is no proof the cancel did.
-    expect(cancelResult(OUT, { ...held("pc-2", "send", { cancels: "pm-1" }), state: "done", mayLand: false, winnerKnown: false })).toBe("pending");
+    expect(cancelResult(OUT, [cancelRow("pm-1", { ...won, winnerKnown: false }), { ...move, ...settled, winnerKnown: false }], "pm-1")).toBe("unknown");
+  });
+
+  it("names no winner of a group settled without evidence of which went through", () => {
+    expect(cancelResult(failed, [cancelRow("cp-1", { state: "replaced", mayLand: false, winnerKnown: false }), { ...payout, ...won, winnerKnown: false }], "cp-1")).toBe("unknown");
+    expect(cancelResult(failed, [{ ...exitRow("pc-2"), ...won, winnerKnown: false }, cancelRow("cp-1", { ...settled, winnerKnown: false }), { ...payout, ...settled, winnerKnown: false }], "cp-1")).toBe("unknown");
+    // A row whose id names a link it does not carry is no exit (the engine reads it as a contact payout).
+    expect(cancelResult(failed, [{ ...exitRow("pc-2"), kind: "contactPayment", ...won }, cancelRow("cp-1", settled), { ...payout, ...settled }], "cp-1")).toBe("unknown");
+  });
+
+  it("is the exit's once Move to Dash wallet went through: the contact wasn't paid", () => {
+    const rows = [{ ...exitRow("pc-2"), ...won }, cancelRow("cp-1", settled), { ...payout, ...settled }];
+    expect(cancelResult(failed, rows, "cp-1")).toBe("exited");
+    expect(cancelResultText("exited", "payment", recipient)).toBe(`Moved to Dash wallet. The cancel and the payment to ${recipient} didn't go through, so ${recipient} wasn't paid.`);
+    expect(cancelResultText(cancelResult(failed, rows, "cp-1"), "payment", recipient)).not.toContain(`${recipient} was paid`);
+    // The exit named on the cancel's identical re-send.
+    const resent = [{ ...exitRow("pc-3"), ...won }, { ...held("pc-3", "send", { to: OWN, cancels: "cp-1" }), ...settled }, cancelRow("cp-1", settled), { ...payout, ...settled }];
+    expect(cancelResult(failed, resent, "cp-1")).toBe("exited");
+    // An exit of another record says nothing of this one.
+    expect(cancelResult(failed, [{ ...exitRow("pc-9"), ...won }, cancelRow("cp-1", settled), { ...payout, ...settled }], "cp-1")).toBe("unknown");
+  });
+
+  it("is the exit's once Move to Dash wallet went through in place of a cancelled move", () => {
+    const rows = [{ ...exitRow("pc-2"), ...won }, cancelRow("pm-1", settled), { ...move, ...settled }];
+    expect(cancelResult(failed, rows, "pm-1")).toBe("exited");
+    expect(cancelResultText("exited", "move", "")).toBe("Moved to Dash wallet. The cancel and the earlier move didn't go through.");
+  });
+
+  it("says none of them is known to have gone through once all failed", () => {
+    for (const rows of [
+      [cancelRow("cp-1", settled), { ...payout, ...settled }],
+      [{ ...exitRow("pc-2"), ...settled }, cancelRow("cp-1", settled), { ...payout, ...settled }],
+    ]) {
+      expect(cancelResult(failed, rows, "cp-1")).toBe("unknown");
+    }
+    expect(cancelResultText("unknown", "payment", recipient)).toBe(
+      "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
+    );
+    expect(cancelResultText("unknown", "payment", recipient)).not.toContain(`${recipient} was paid`);
+    expect(cancelResult(failed, [cancelRow("pm-1", settled), { ...move, ...settled }], "pm-1")).toBe("unknown");
+    expect(cancelResultText("unknown", "move", "")).toContain("Check your Platform balance and Dash wallet before moving again.");
+  });
+
+  it("is lost only once the cancelled payment or move went through: then the contact was paid", () => {
+    expect(cancelResult(failed, [cancelRow("cp-1", settled), { ...payout, ...won }], "cp-1")).toBe("lost");
+    expect(CANCEL_COPY.lost("payment", recipient)).toBe(`The payment went through before the cancel, so ${recipient} was paid. The cancel wasn't charged.`);
+    expect(cancelResult(failed, [cancelRow("pm-1", settled), { ...move, ...won }], "pm-1")).toBe("lost");
+  });
+
+  it("words each outcome", () => {
+    expect(cancelResultText("lost", "payment", recipient)).toBe(CANCEL_COPY.lost("payment", recipient));
+    expect(cancelResultText("done", "move", "")).toBe("Move cancelled. The amount is in your Platform balance, minus the fee.");
+    expect(cancelResultText("pending", "payment", recipient)).toBe(CANCEL_COPY.pending);
   });
 
   it("names the move or payment it cancels in Activity", () => {

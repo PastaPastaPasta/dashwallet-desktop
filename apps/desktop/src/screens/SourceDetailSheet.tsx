@@ -14,7 +14,7 @@ import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { detailDate, isProblem, rowDate, shownAmount } from "../format/tx";
 import { useModel } from "../onboarding/model";
-import { cancelFor, cancelResult, CANCEL_COPY, recipientOf, type CancelKind, type PlatformCancelFlow } from "../platform/cancel";
+import { cancelFor, cancelResult, cancelResultText, CANCEL_COPY, recipientOf, type CancelKind, type PlatformCancelFlow } from "../platform/cancel";
 import { addressSendsOff } from "../platform/mainnetOff";
 import { cancelOf, isHeldCancel, isHeldSend, MOVE_COPY, moveErrorText } from "../platform/move";
 import { moveToDashWallet } from "./dashpay/DashPayCard";
@@ -64,10 +64,10 @@ function CancelPanel({ flow, record, kind, activity, network, onMove }: { flow: 
       </p>
     );
   if (step === "done" && flow.outcome) {
-    const result = cancelResult(flow.outcome, activity?.find((a) => a.id === flow.outcome?.id));
+    const result = cancelResult(flow.outcome, activity, record.id);
     return (
       <div role="status" data-testid="platform-cancel-outcome" data-result={result}>
-        <p className="sheet-text">{result === "done" ? CANCEL_COPY.done(kind, recipient) : result === "lost" ? CANCEL_COPY.lost(kind, recipient) : CANCEL_COPY.pending}</p>
+        <p className="sheet-text">{cancelResultText(result, kind, recipient)}</p>
         <div className="sheet-actions">
           <DashButton variant="filledBlue" size="large" data-testid="platform-cancel-close" onClick={() => flow.close()}>
             {MOVE_COPY.close}

@@ -14,7 +14,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { onMoveSettledNotify } from "./move";
+import { exitLinkOf, MOVE_COPY, onMoveSettledNotify } from "./move";
 
 export type PlatformCancelApi = Pick<Backend, "platformCancelQuote" | "platformCancel" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -29,6 +29,10 @@ export const CANCEL_COPY = {
   confirm: (kind: CancelKind) => t(`platform.cancel.${kind}.confirm`),
   done: (kind: CancelKind, recipient: string) => t(`platform.cancel.${kind}.done`, { recipient }),
   lost: (kind: CancelKind, recipient: string) => t(`platform.cancel.${kind}.lost`, { recipient }),
+  /** "Move to Dash wallet" went through in place of the cancel and the held item. */
+  exited: (kind: CancelKind, recipient: string) => (kind === "payment" ? MOVE_COPY.exitCancel.done.payment(recipient) : MOVE_COPY.exitCancel.done.move),
+  /** The group settled, and Activity does not say which of its members went through. */
+  unknown: (kind: CancelKind) => t(kind === "payment" ? "pay.status.settledUnknown.text" : "transfer.status.settledUnknown.text"),
   /** The held item is too small to cancel (`credits.send_out_of_range`): Move to Dash wallet instead. */
   tooSmall: (kind: CancelKind, amount: string, recipient: string) => t(`platform.cancel.${kind}.tooSmall`, { amount, recipient }),
   get dismiss() {
@@ -39,15 +43,31 @@ export const CANCEL_COPY = {
   },
 };
 
-/** Where a cancel stands, from Activity's row of it (`row`) or what the call returned: `done` once it
- * went through, `lost` once the held item did (the cancel failed and can no longer land), else `pending`. */
-export function cancelResult(outcome: PlatformSendOutcome, row: PlatformActivity | undefined): "done" | "lost" | "pending" {
-  const state = row?.state ?? outcome.state;
-  const mayLand = row ? row.mayLand : outcome.mayLand;
-  if (state === "done" && row?.winnerKnown !== false && outcome.winnerKnown !== false) return "done";
-  if (state === "failed" && !mayLand) return "lost";
-  return "pending";
+export type CancelResult = "done" | "lost" | "exited" | "unknown" | "pending";
+
+/** Where the cancel of the held item `of` stands, from Activity's rows of its group (`activity`), else
+ * what the call returned: `done` once a cancel of `of` went through, `lost` once `of` did, `exited` once
+ * "Move to Dash wallet" out of one of its cancels did, `pending` while any of them may still go through,
+ * else `unknown`. A failed cancel alone never says which one went through. */
+export function cancelResult(outcome: PlatformSendOutcome, activity: readonly PlatformActivity[] | null | undefined, of: string): CancelResult {
+  const won = (a: Pick<PlatformActivity, "state" | "winnerKnown"> | undefined) => a?.state === "done" && a.winnerKnown !== false;
+  const own = activity?.find((a) => a.id === outcome.id);
+  if (!own && won(outcome)) return "done";
+  if (!activity) return "pending";
+  const cancels = activity.filter((a) => a.cancels === of);
+  const ids = cancels.map((c) => c.id);
+  const exits = activity.filter((a) => a.kind === "moveToCore" && ids.includes(exitLinkOf(a.id) ?? ""));
+  const held = activity.find((a) => a.id === of);
+  if (cancels.some(won)) return "done";
+  if (won(held)) return "lost";
+  if (exits.some(won)) return "exited";
+  const holds = (a: Pick<PlatformActivity, "state" | "mayLand">) => a.state === "pending" || a.mayLand;
+  return [...(held ? [held] : []), ...cancels, ...exits, ...(own ? [] : [outcome])].some(holds) ? "pending" : "unknown";
 }
+
+/** What the cancel's outcome says, by its `cancelResult`. `recipient`: the cancelled payment's. */
+export const cancelResultText = (result: CancelResult, kind: CancelKind, recipient: string): string =>
+  result === "pending" ? CANCEL_COPY.pending : result === "unknown" ? CANCEL_COPY.unknown(kind) : CANCEL_COPY[result](kind, recipient);
 
 export type CancelStep = "confirm" | "running" | "done" | "refused";
 

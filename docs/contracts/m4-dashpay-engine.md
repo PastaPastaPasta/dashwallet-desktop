@@ -5477,15 +5477,19 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     A held cancel has a way out beside its exact re-send (#1006; version 110): "Move to Dash wallet".
     `move_to_core_quote` beside a held cancel that is not `Pending` names the cancel in `exit_of`, plans on its inputs
     only, and pays the first unused receiving address that no withdrawal or payout at those inputs pays, other than
-    the cancel's own exits (a second exit pays the first one's address, whose document it shares), so each of them
-    leaves its own document; `move_to_core` with that `exit_of` signs a `ToCore` at the cancel's exact inputs and
-    nonces, and is `credits.quote_changed` with nothing signed once the cancel no longer holds or when `to` is an
-    address one of them pays (compared by its payout script). A plain move beside it stays `credits.move_pending{id}`. The group then holds the
-    withdrawal or payout W, its cancel C and the exit X, and C is still its only member that leaves no document:
-    `blocks` lets X follow C's terms, and their identical re-sends, only. Of the three only one executes, settled on
-    the documents: X's present, X is `Done` and W and C `Failed`; W's present, W is `Done` (a payout's group as
-    C-funding P8 settles it); every withdrawal's document proved absent at or above the height the nonces were proved
-    taken, C is `Done`; otherwise all three hold. X is stored as a send's exit is (`kind` `to_contact`, `exit_of` C's
+    the exits of the cancel and of its identical re-sends (a second exit may pay the first one's address, whose
+    document it then shares), so each of them leaves its own document; `move_to_core` with that `exit_of` signs a
+    `ToCore` at the cancel's exact inputs and nonces, and is `credits.quote_changed` with nothing signed once the
+    cancel no longer holds or when `to` is an address one of them pays (compared by its payout script). A plain move
+    beside it stays `credits.move_pending{id}`. A held identical re-send of the cancel (a transfer cancelling the same
+    record on the same terms) that Platform answered refuses neither the quote nor the exit; one still `Pending`
+    refuses both, as does a held cancel of other terms or of another record (`credits.move_pending{id}`). The group then holds the withdrawal or payout W, its cancel C (and
+    any of C's identical re-sends) and the exit X, and C's terms are still the only ones at the key that leave no
+    document: `blocks` lets X follow C's terms, and their identical re-sends, only. Of the three only one executes,
+    settled on the documents: X's present, X is `Done` and W and C `Failed`; W's present, W is `Done` (a payout's
+    group as C-funding P8 settles it); every withdrawal's document proved absent at or above the height the nonces
+    were proved taken, C is `Done` (of C and its re-sends the newest, the others `Replaced` beside a move, `Failed`
+    beside a payout); otherwise all three hold. X is stored as a send's exit is (`kind` `to_contact`, `exit_of` C's
     id, id `exit-of-<C id>-at-…`): a build of version 107 settles the group as this one does, and a build before it
     holds it unless a withdrawal's document settles it. A held withdrawal or payout that has no cancel (its amount
     below a transfer's least output plus the cancel's fee band: `platform_cancel_quote` and `platform_cancel` refuse
