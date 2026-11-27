@@ -37,7 +37,7 @@ import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCred
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
-import { buildWorld, type World } from "./scenarios";
+import { buildWorld, startOverInNewFolder, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 import { restoreFailure, STORE_SCREENS, storeRefusedError, storeRestoreError } from "./errors";
 import type { RestoreStatus } from "../api/generated/RestoreStatus";
@@ -294,14 +294,6 @@ function moveWorld(world: World, to: ChosenNetwork) {
   next.networkSwitch = left.networkSwitch;
   for (const key of Object.keys(world)) delete (world as unknown as Record<string, unknown>)[key];
   Object.assign(world, next);
-}
-
-export function recoverSwitchedNetwork(world: World, network: ChosenNetwork): boolean {
-  if (world.networkSwitch?.damaged !== network) return false;
-  moveWorld(world, network);
-  world.pending.networkChoice = { chosen: network, saved: true };
-  delete world.networkSwitch?.damaged;
-  return true;
 }
 
 const sum = (addresses: PlatformWorld["addresses"]) => addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
@@ -673,6 +665,18 @@ function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
 }
 
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
+  recover_in_fresh_folder: ({ network }: CommandArgs["recover_in_fresh_folder"], { world }: Ctx) => {
+    const refused = network == null ? world.openRefusal !== undefined : world.networkSwitch?.damaged === network;
+    if (!refused) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
+    if (network != null) {
+      moveWorld(world, network);
+      world.pending.networkChoice = { chosen: network, saved: true };
+      delete world.networkSwitch?.damaged;
+    }
+    (world.restoreCalls ??= []).push("recover");
+    startOverInNewFolder(world);
+    return null;
+  },
   // App::quit_app and restart_app, from the screens shown instead of the wallet. A restart frees a
   // store the session before held, and the page starts again.
   quit_app: (_: Record<string, never>, { world }: Ctx) => {

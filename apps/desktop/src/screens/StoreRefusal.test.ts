@@ -1304,7 +1304,7 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
   describe("the fixture", () => {
     type Ctx = Parameters<(typeof PENDING_HANDLERS)["restart_app"]>[1];
     const call = (handler: unknown) => handler as (args: object, ctx: Ctx) => unknown;
-    const [open, recover, restart] = [call(HANDLERS.open_network), call(HANDLERS.recover_in_fresh_folder), call(PENDING_HANDLERS.restart_app)];
+    const [open, recover, restart] = [call(HANDLERS.open_network), call(PENDING_HANDLERS.recover_in_fresh_folder), call(PENDING_HANDLERS.restart_app)];
 
     it("starts over only after a refused open, in an empty folder held as a restore", () => {
       const world = buildWorld("funded", null);
