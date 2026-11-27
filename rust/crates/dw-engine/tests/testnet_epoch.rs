@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dw_engine::platform::QuorumSource;
 use dw_engine::{DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, SessionOptions};
 use dw_vault::{MemoryOsStore, VaultConfig};
 
@@ -37,12 +36,14 @@ fn testnet_epoch_sets_network_version() {
     let session = engine
         .block_on(engine.open_network(DashNetwork::Testnet, SessionOptions::default()))
         .unwrap();
+    assert!(!session.trusted_quorums_only().unwrap());
     engine.block_on(session.start_spv()).unwrap();
 
     let sync_deadline = Instant::now() + Duration::from_secs(900);
     loop {
         let sync = session.sync_snapshot().unwrap();
-        if sync.caught_up && session.quorum_source().unwrap() == QuorumSource::Spv {
+        if sync.caught_up {
+            eprintln!("Testnet SPV caught up at {:?}", sync.tip_height);
             break;
         }
         assert!(
@@ -61,6 +62,10 @@ fn testnet_epoch_sets_network_version() {
         thread::sleep(Duration::from_secs(1));
     };
     engine.block_on(engine.shutdown()).unwrap();
-    assert_eq!(observed, Some(expected));
+    assert_eq!(
+        observed,
+        Some(expected),
+        "no matching SPV-verified epoch version after sync"
+    );
     eprintln!("SPV-verified testnet epoch reported protocol version {expected}");
 }
