@@ -524,6 +524,7 @@ fn an_app_disconnect_grant_issues_only_identity_signer_and_requires_passphrase()
         max_credits: 100_000_000,
         identity: [7u8; 32],
         request,
+        prior_conflict: None,
     };
     assert!(purpose.requires_credential());
     assert_eq!(purpose.quick_unlock_value(), None);

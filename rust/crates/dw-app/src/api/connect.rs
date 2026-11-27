@@ -225,6 +225,7 @@ pub struct DisconnectQuote {
 pub struct DisconnectDone {
     pub identity: String,
     pub keys_disabled: Vec<u32>,
+    pub keys_remaining: u32,
     /// True when an earlier sign-in response document for this approval was
     /// still in flight or confirmed on Platform, so a decryption key may
     /// already have reached the app despite the session keys being disabled.
@@ -398,6 +399,7 @@ impl From<engine::DisconnectDone> for DisconnectDone {
         Self {
             identity: d.identity,
             keys_disabled: d.keys_disabled,
+            keys_remaining: d.keys_remaining,
             response_may_have_landed: d.response_may_have_landed,
         }
     }
@@ -568,6 +570,7 @@ commands! {
                 max_credits: q.max_credits,
                 identity: q.identity_id,
                 request: q.request,
+                prior_conflict: q.prior_conflict,
             },
             identity: q.identity,
             keys: q.keys,

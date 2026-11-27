@@ -236,6 +236,7 @@ export class ConnectFlow extends Model {
   #loads = 0;
   /** Quotes in a row that read other group facts than the sheet shows, since one that matched. */
   #mismatches = 0;
+  #quoteNeedsSheet = false;
   #closed = false;
 
   constructor(
@@ -258,8 +259,12 @@ export class ConnectFlow extends Model {
   async load(): Promise<void> {
     const n = ++this.#loads;
     const again = this.sheet !== null;
+    clearTimeout(this.#typing);
+    this.#quotes++;
     this.phase = "loading";
     this.quote = null;
+    this.quoteError = null;
+    this.quoting = false;
     this.changed();
     try {
       const sheet = await this.api.appConnectSheet(this.walletId, this.linkId);
@@ -275,11 +280,20 @@ export class ConnectFlow extends Model {
         this.#off = new Set(sheet.bindings.filter((b) => !b.primary && !earlier.selection.includes(b.index)).map((b) => b.index));
         this.limit = limitText(earlier.terms.fundingLimit);
       }
+      this.#quoteNeedsSheet = false;
       this.phase = "sheet";
       this.changed();
       void this.requote();
     } catch (e) {
-      if (n === this.#loads) this.#fail(e);
+      if (n !== this.#loads || this.#closed) return;
+      if (again && (hasCode(e, "platform.timeout") || hasCode(e, "platform.unavailable"))) {
+        this.#quoteNeedsSheet = true;
+        this.quoteError = e;
+        this.phase = "sheet";
+        this.changed();
+      } else {
+        this.#fail(e);
+      }
     }
   }
 
@@ -340,6 +354,8 @@ export class ConnectFlow extends Model {
    * facts than the sheet shows reads the request again, once: if the next one disagrees too, the quote
    * fails and the user's retry reads it again. */
   async requote(): Promise<void> {
+    if (this.phase !== "sheet") return;
+    if (this.#quoteNeedsSheet) return this.#reread();
     const n = ++this.#quotes;
     const choice = this.choice();
     this.quote = null;
@@ -352,6 +368,7 @@ export class ConnectFlow extends Model {
       if (n !== this.#quotes || this.#closed) return;
       if (quote.groups !== this.sheet?.groups) {
         if (this.#mismatches++ === 0) return this.#reread();
+        this.#quoteNeedsSheet = true;
         this.quoteError = new Error("group facts changed");
         return;
       }
@@ -372,8 +389,7 @@ export class ConnectFlow extends Model {
 
   /** The quote's Try again: a quote whose group facts disagreed again reads the request first. */
   retryQuote() {
-    if (this.#mismatches === 0) void this.requote();
-    else this.#reread();
+    void this.requote();
   }
 
   /** Approve: a fresh quote, its grant under the passphrase, then the approval. A fresh quote that

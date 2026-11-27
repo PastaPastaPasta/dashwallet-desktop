@@ -157,6 +157,29 @@ pub mod hex_array {
             .try_into()
             .map_err(|_| D::Error::custom(format!("expected {N} bytes")))
     }
+
+    pub mod option {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+        pub fn serialize<S: Serializer, const N: usize>(
+            v: &Option<[u8; N]>,
+            s: S,
+        ) -> Result<S::Ok, S::Error> {
+            v.map(hex::encode).serialize(s)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
+            d: D,
+        ) -> Result<Option<[u8; N]>, D::Error> {
+            Option::<String>::deserialize(d)?
+                .map(|value| {
+                    let mut bytes = [0; N];
+                    hex::decode_to_slice(value, &mut bytes).map_err(D::Error::custom)?;
+                    Ok(bytes)
+                })
+                .transpose()
+        }
+    }
 }
 
 /// A transaction output reference, `txid:vout`.

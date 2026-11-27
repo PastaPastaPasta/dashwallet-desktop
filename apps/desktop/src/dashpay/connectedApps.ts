@@ -211,7 +211,7 @@ export class ConnectedAppsModel extends Model {
       const failure = isAppError(e) && e.code === "connect.failed" ? connectFailureName(e.data) : null;
       const shouldRefresh = failure === "notConfirmed" || failure === "pendingFeeTooHigh" || failure === "disconnectConflict";
       const shouldRequote =
-        (isAppError(e) && e.code === "platform.grant_exceeded") ||
+        (isAppError(e) && (e.code === "platform.grant_exceeded" || e.code === "platform.grant_invalid")) ||
         failure === "feeTooHigh" ||
         failure === "disconnectConflict";
       if (shouldRefresh) this.onDisconnected();

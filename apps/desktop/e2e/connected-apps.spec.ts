@@ -115,7 +115,7 @@ test("Disconnect failure shows a plain error and keeps the row in the list", asy
   expect(errors).toEqual([]);
 });
 
-test("Disconnect refuses unverified older grants with a plain error", async ({ page }) => {
+test("Disconnect refuses unverified key ownership with a plain error", async ({ page }) => {
   const errors = await openConnectedApps(page, "dashpay-connected-apps");
   await page.evaluate(() => {
     window.__dwFixture!.world.disconnectOutcome = "unverifiedKey";
@@ -126,6 +126,36 @@ test("Disconnect refuses unverified older grants with a plain error", async ({ p
   );
   await expect(page.getByTestId("disconnect-confirm")).toBeDisabled();
   expect(errors).toEqual([]);
+});
+
+test("a partial Disconnect reports the disabled keys and leaves the app reachable", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  const app = page.getByTestId("connected-app-row").first();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "partial";
+  });
+  await app.getByTestId("connected-app-disconnect").click();
+  await expect(page.getByTestId("disconnect-sheet").getByTestId("connected-app-key")).toHaveCount(1);
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("1 of 2 keys disabled. Disconnect again to finish.");
+  await expect(app.getByTestId("connected-app-key")).toHaveCount(1);
+  await expect(app.getByTestId("connected-app-disconnect")).toBeEnabled();
+});
+
+test("a pending Disconnect can be checked without a new fee", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  const app = page.getByTestId("connected-app-row").first();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "checkAttempt";
+  });
+  await app.getByTestId("connected-app-disconnect").click();
+  await expect(page.getByTestId("disconnect-fee")).toContainText("without sending an update or charging a fee");
+  const check = page.getByTestId("disconnect-confirm");
+  await expect(check).toHaveText("Check earlier attempt");
+  await check.click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
 });
 
 test("shows the test-networks-only notice on mainnet without listing connected apps", async ({ page }) => {

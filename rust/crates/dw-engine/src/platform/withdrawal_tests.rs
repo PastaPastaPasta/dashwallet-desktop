@@ -674,7 +674,7 @@ impl World {
 
 /// The process restarts: the session's nonce record is gone (BL-335).
 pub(crate) fn restart(w: &World) {
-    w.f.s.withdrawal_nonces.0.lock().unwrap().clear();
+    w.f.s.withdrawal_nonces.nonces.lock().unwrap().clear();
 }
 
 fn rules() -> Rules {

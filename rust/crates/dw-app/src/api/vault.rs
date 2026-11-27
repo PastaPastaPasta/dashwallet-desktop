@@ -395,6 +395,9 @@ pub enum GrantPurposeSpec {
         #[ts(type = "string")]
         #[serde(with = "crate::dto::hex_array")]
         request: [u8; 20],
+        #[ts(type = "string | null")]
+        #[serde(default, with = "crate::dto::hex_array::option")]
+        prior_conflict: Option<[u8; 16]>,
     },
 }
 
@@ -430,10 +433,12 @@ impl From<GrantPurposeSpec> for GrantPurpose {
                 max_credits,
                 identity,
                 request,
+                prior_conflict,
             } => GrantPurpose::AppDisconnect {
                 max_credits,
                 identity,
                 request,
+                prior_conflict,
             },
         }
     }
@@ -471,10 +476,12 @@ impl From<GrantPurpose> for GrantPurposeSpec {
                 max_credits,
                 identity,
                 request,
+                prior_conflict,
             } => Self::AppDisconnect {
                 max_credits,
                 identity,
                 request,
+                prior_conflict,
             },
             // The host cannot request a masternode withdrawal yet (MG-13 is
             // engine-only; MG-10 binds it): an engine-issued one shows as the

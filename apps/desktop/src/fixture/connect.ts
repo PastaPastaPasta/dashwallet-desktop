@@ -19,6 +19,8 @@ import { FIXTURE_NOW } from "./wallet";
 /** Scripted outcome for `app_connect_disconnect_quote` / `app_connect_disconnect` in the fixture. */
 export type DisconnectFixtureOutcome =
   | "ok"
+  | "partial"
+  | "checkAttempt"
   | "responseInFlight"
   | "notConfirmed"
   | "unverifiedKey"
@@ -359,16 +361,17 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const outcome = world.disconnectOutcome ?? "ok";
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
-      const fee = BigInt(DISCONNECT_FEE);
+      const fee = outcome === "checkAttempt" ? 0n : BigInt(DISCONNECT_FEE);
       const balance = outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
+      const priorAttemptConflict = outcome === "priorChargeKnown" || outcome === "priorChargePossible";
       return {
-        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request },
+        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request, priorConflict: priorAttemptConflict ? "c1".repeat(16) : null },
         identity,
-        keys: app.keys.map((k) => k.keyId),
+        keys: (outcome === "partial" ? app.keys.slice(0, 1) : app.keys).map((k) => k.keyId),
         fee: String(fee),
         balance: String(balance),
-        priorAttemptConflict: outcome === "priorChargeKnown" || outcome === "priorChargePossible",
+        priorAttemptConflict,
         priorAttemptDebit: outcome === "priorChargeKnown" ? "500000" : null,
       };
     },
@@ -395,8 +398,13 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       useGrant(world, id);
       if (outcome === "notConfirmed") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
       if (outcome === "error") throw fail("platform.unavailable", "platform.unavailable");
-      const [removed] = apps.splice(idx, 1);
-      return { identity, keysDisabled: removed.keys.map((k) => k.keyId), responseMayHaveLanded: outcome === "responseInFlight" };
+      const app = apps[idx];
+      const count = outcome === "partial" ? 1 : app.keys.length;
+      const keysDisabled = app.keys.slice(0, count).map((k) => k.keyId);
+      const remaining = app.keys.slice(count);
+      if (remaining.length > 0) apps[idx] = { ...app, keys: remaining };
+      else apps.splice(idx, 1);
+      return { identity, keysDisabled, keysRemaining: remaining.length, responseMayHaveLanded: outcome === "responseInFlight" };
     },
   };
 }

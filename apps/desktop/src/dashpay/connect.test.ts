@@ -416,6 +416,42 @@ describe("the flow over the fixture", () => {
     expect([flow.phase, flow.planChanged, flow.grants.pending, link().started]).toEqual(["sheet", true, null, false]);
   });
 
+  it("retries a transiently unavailable sheet after another group mismatch", async () => {
+    const { flow, backend, link } = await open("ok");
+    const realQuote = backend.appConnectQuote;
+    const quote = vi.spyOn(backend, "appConnectQuote").mockImplementation(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    const unavailable = err("platform.unavailable");
+    sheet.mockRejectedValueOnce(unavailable);
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quoteError).toBe(unavailable));
+    expect([flow.phase, flow.quote, flow.quoting, link().started]).toEqual(["sheet", null, false, false]);
+    quote.mockRestore();
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect(sheet).toHaveBeenCalledTimes(3);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("retries the quote after one group refresh succeeded but quoting timed out", async () => {
+    const { flow, backend } = await open("ok");
+    const realQuote = backend.appConnectQuote;
+    const timeout = err("platform.timeout");
+    const quote = vi.spyOn(backend, "appConnectQuote")
+      .mockImplementationOnce(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }))
+      .mockRejectedValueOnce(timeout);
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).toBe(timeout));
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect(sheet).toHaveBeenCalledTimes(1);
+    expect(quote).toHaveBeenCalledTimes(3);
+  });
+
   it("keys not confirmed in time leave the request open, and approving again finishes it", async () => {
     const { flow } = await open("notConfirmed");
     const approved = flow.choice();

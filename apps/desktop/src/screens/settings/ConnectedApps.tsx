@@ -102,7 +102,7 @@ function AppRow({
         </div>
         <div className="connected-app-actions">
           <DashButton variant="tintedGray" size="small" data-testid="connected-app-disconnect" disabled={busy} onClick={onDisconnect}>
-            {t("dashpay.connect.connected.disconnect")}
+            {t(app.keys.length === 0 ? "dashpay.connect.connected.checkAttempt" : "dashpay.connect.connected.disconnect")}
           </DashButton>
         </div>
       </div>
@@ -124,14 +124,16 @@ function AppRow({
           {t("dashpay.connect.connected.expiryPast", { date: expiryDate })}
         </p>
       )}
-      <div className="connected-app-keys-block">
-        <p className="connect-asks-title">{t("dashpay.connect.connected.keys")}</p>
-        <ul className="connected-app-keys" data-testid="connected-app-keys">
-          {app.keys.map((k) => (
-            <KeyItem key={k.keyId} item={k} detailed />
-          ))}
-        </ul>
-      </div>
+      {app.keys.length > 0 && (
+        <div className="connected-app-keys-block">
+          <p className="connect-asks-title">{t("dashpay.connect.connected.keys")}</p>
+          <ul className="connected-app-keys" data-testid="connected-app-keys">
+            {app.keys.map((k) => (
+              <KeyItem key={k.keyId} item={k} detailed />
+            ))}
+          </ul>
+        </div>
+      )}
     </li>
   );
 }
@@ -141,6 +143,7 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
   const app = model.target;
   if (!app) return null;
   const error = model.quoteError ?? model.disconnectError;
+  const confirmationOnly = model.quote?.fee === "0" && model.quote.keys.length > 0;
   // Once the live quote resolves, render only the key IDs the quote will
   // actually disable (falling back to cached metadata for descriptions).
   const shownKeys =
@@ -211,7 +214,7 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
                 {disconnectErrorText(error)}
               </p>
             )}
-            {model.quote?.priorAttemptConflict && (
+            {!confirmationOnly && model.quote?.priorAttemptConflict && (
               <p className="form-problem" role="alert" data-testid="disconnect-prior-charge">
                 {model.quote.priorAttemptDebit !== null
                   ? t("dashpay.connect.connected.priorChargeKnown", { amount: creditCount(model.quote.priorAttemptDebit) })
@@ -220,7 +223,9 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
             )}
             {(error === null || model.requoted || model.quoting) && (
               <p className="sheet-text" role="status" data-testid="disconnect-fee">
-                {model.quote !== null ? (
+                {confirmationOnly ? (
+                  t("dashpay.connect.connected.checkAttemptBody")
+                ) : model.quote !== null ? (
                   t("dashpay.connect.connected.fee", { amount: creditCount(model.quote.fee) })
                 ) : (
                   model.quoting && <span className="spinner" aria-hidden="true" />
@@ -246,7 +251,7 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
             disabled={model.disconnecting || model.quoting || model.quote === null}
             onClick={() => void model.confirmDisconnect()}
           >
-            {t("dashpay.connect.connected.disconnect")}
+            {t(confirmationOnly ? "dashpay.connect.connected.checkAttempt" : "dashpay.connect.connected.disconnect")}
           </DashButton>
         </div>
       </div>
@@ -302,17 +307,22 @@ export function ConnectedAppsCard({
               {query.isFetching ? t("dashpay.connect.connected.checking") : t("dashpay.connect.connected.refresh")}
             </DashButton>
           </div>
-          {model.disconnectedLabel !== null && (
+          {model.disconnectedLabel !== null && model.lastDone !== null && (
             <p
               className={model.lastDone?.responseMayHaveLanded ? "form-problem" : "form-ok"}
               role={model.lastDone?.responseMayHaveLanded ? "alert" : "status"}
               data-testid="connected-apps-done"
             >
-              {t(
-                model.lastDone?.responseMayHaveLanded
-                  ? "dashpay.connect.connected.disconnectedResponsePending"
-                  : "dashpay.connect.connected.disconnected",
-                { label: model.disconnectedLabel },
+              {model.lastDone.keysRemaining > 0
+                ? t("dashpay.connect.connected.disconnectedPartial", {
+                    disabled: model.lastDone.keysDisabled.length,
+                    total: model.lastDone.keysDisabled.length + model.lastDone.keysRemaining,
+                  })
+                : t(model.lastDone.responseMayHaveLanded
+                    ? "dashpay.connect.connected.disconnectedResponsePending"
+                    : "dashpay.connect.connected.disconnected", { label: model.disconnectedLabel })}
+              {model.lastDone.keysRemaining > 0 && model.lastDone.responseMayHaveLanded && (
+                <> {t("dashpay.connect.connected.responsePending")}</>
               )}
             </p>
           )}
