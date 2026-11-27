@@ -141,6 +141,12 @@ impl RecordFault {
     }
 }
 
+/// Height of the ChainLock key-wallet applied to the wallet: the only one
+/// its finality order lets beat an InstantSend lock.
+pub(crate) fn applied_chainlock(info: &PlatformWalletInfo) -> Option<u32> {
+    (info.core_wallet.metadata.last_applied_chain_lock.as_ref()).map(|c| c.block_height)
+}
+
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
