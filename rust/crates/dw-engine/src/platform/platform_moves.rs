@@ -3503,16 +3503,17 @@ pub(crate) async fn activity(
     let completed = reconcile(&store, &mut funds, &ev, &held).await?;
     let (mut shielded, settled) = from_shielded(session, wallet_id, &store).await?;
     let pool = pool(wallet).await?;
-    let published = store
-        .blocking(|db, scope| {
-            db.settings_with_prefix(scope, dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX)
+    let armed_refunds = shielded
+        .iter()
+        .filter_map(|record| match record.source {
+            FromShieldedSource::Registration { draft } if record.armed => Some(draft),
+            _ => None,
         })
-        .await?;
+        .collect();
+    let pending_fallbacks =
+        super::registration_shielded::pending_fallbacks(session, wallet_id, armed_refunds).await?;
     let mut addresses = covered(&pool, &moves);
-    for (key, _) in published {
-        let Some(text) = key.strip_prefix(dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX) else {
-            continue;
-        };
+    for text in pending_fallbacks {
         let refund_due = shielded
             .iter()
             .any(|record| record.to == text && (record.expects() > 0 || record.unseen > 0));
@@ -3523,7 +3524,7 @@ pub(crate) async fn activity(
             .any(|record| record.address == text && (record.expects() > 0 || record.unseen > 0));
         if !refund_due
             && !recorded_payment
-            && let Some(address) = parse(text)
+            && let Some(address) = parse(&text)
         {
             addresses.remove(&address);
         }

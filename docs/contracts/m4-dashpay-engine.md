@@ -5496,7 +5496,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);
     it absorbs the rise of the first read that covers the fallback unless the baseline already recorded a funded
-    fallback after the create was named. Activity leaves unused published fallbacks out of its balance queries.
+    fallback after the create was named. Activity skips a fallback while a named create could still owe an
+    unrecorded refund, unless a recorded payment needs that address. Once the create settles or a refund is
+    armed, Activity reads the address normally. A rise above the refund it can claim is `Incoming`.
     A read that misses the fallback keeps its refund attribution pending. `RegistrationStatus` gains `from_shielded`, true
     for a row whose stored funding is `shielded`. After a restart a named row waiting `payment_unknown` runs again
     only on a `resume_registration` with no grant, which checks its evidence and signs nothing. On mainnet the funding is
