@@ -7239,3 +7239,375 @@ fn disconnect_pending_rebroadcast_enforces_funds_gate_while_allowing_confirmatio
         );
     }
 }
+
+/// Reviewer F / Opus B1 at 2545d85dc fail-first test:
+/// Because `read_consistent_state` reads the nonce before the identity, a
+/// retire whose nonce read lagged at height `H - 1` (tip 29) while the
+/// identity read at height `H` proved the conflicting revision bump (foreign
+/// write at 31) stores `observed_tip = Some(29)` AND
+/// `observed_height = Some(max(id_height, nonce_height)) = Some(H)`.
+/// Every skip past the reservation MUST compare the current nonce read's
+/// height against `observed_height` (failing closed on `None`):
+/// - (a) Step-2 retire with split read `(nonce_height = 100 / tip 29, id_height = 101)`
+///   persists `{nonce: 30, observed_tip: 29, observed_height: 101}`; a transfer
+///   at `nonce_height = 100` (tip 29) refuses `Unavailable` with zero signatures
+///   and zero broadcasts (never `WithdrawalLanded`), while a read at `>= 101`
+///   (tip 31) signs at exact nonce 32.
+/// - (b) Same split read blocks another app's Disconnect at `nonce_height = 100`
+///   (signs at exact 32 at `nonce_height = 101`) and blocks Approve G1 at
+///   `nonce_height = 100` even when `tip = 31 >= observed_tip = 29` (grant unused).
+/// - (c) Restart + reload of (a) still refuses `Unavailable` at `nonce_height = 100`,
+///   and legacy `observed_height == None` fails closed.
+/// - (d) Post-rebroadcast and post-fresh retire sites with split read persist
+///   `observed_height = Some(max(id_height2, nonce_height2))`.
+#[test]
+fn disconnect_reservation_observed_height_blocks_split_read_lagging_skip() {
+    use crate::platform::errors::CreditsError;
+    use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
+
+    let setup_step2_split_retire = || {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        let l2 = devnet(second_app_request());
+        let c2 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g2_app = f.quoted_grant(&l2, &c2);
+        f.approve(&l2, &c2, &g2_app).unwrap();
+        let req2 = hex::encode(l2.request.request_hash());
+
+        // App 1 Disconnect signs at nonce 30 (from tip 29), lost in flight.
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+
+        // Foreign write lands at nonce 31 in block H = 101 leaving 30 unused,
+        // bumping revision. At step-2 retire, nonce read comes from H - 1 = 100
+        // (tip 29) while identity read comes from H = 101.
+        let state_31_missing_30 = merge_fake_nonce(29, 31);
+        f.net
+            .nonces
+            .lock()
+            .unwrap()
+            .insert(id(ME), state_31_missing_30);
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        *f.net.identity_height.lock().unwrap() = 101;
+
+        let g_retire = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g_retire),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("last_conflict persisted");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(29));
+        assert_eq!(
+            conflict.observed_height,
+            Some(101),
+            "step-2 split retire must persist observed_height = max(id_height=101, nonce_height=100)"
+        );
+
+        (f, me_b58, req1, req2)
+    };
+
+    // --- (a) & (b): step-2 split retire blocks lagging H-1 transfer, other-app
+    //                Disconnect, and Approve G1; current H=101 read signs at 32 ---
+    {
+        let (f, me_b58, _req1, req2) = setup_step2_split_retire();
+
+        // (a) Transfer at nonce_height = 100 (tip 29) refuses Unavailable with 0 sent.
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "transfer at nonce_height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert!(
+            f.net.transfers_sent.lock().unwrap().is_empty(),
+            "lagging height refusal must sign and broadcast zero transfers"
+        );
+
+        // (b1) Other app's Disconnect at nonce_height = 100 (even with id_height = 101)
+        //      must compare nonce_height (not id_height) and refuse Unavailable.
+        let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+        let g2 = f.disconnect_grant(q2.request, q2.max_credits);
+        let signed_before = f.net.signed_disables.lock().unwrap().len();
+        let bcast_before = f.net.broadcast_disables.lock().unwrap().len();
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        *f.net.identity_height.lock().unwrap() = 101;
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req2, &g2),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "other app Disconnect at nonce_height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+
+        // (b2) Approve G1 at nonce_height = 100 with tip 31 (>= observed_tip 29,
+        //      missing bit 30 <= tip) MUST refuse Unavailable on observed_height = 101
+        //      and keep the grant unused.
+        *f.net.stale_nonce.lock().unwrap() = Some(merge_fake_nonce(29, 31));
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let mut req3 = second_app_request();
+        let sk3 = SecretKey::from_secret_bytes([91u8; 32]).unwrap();
+        req3.app_eph_pub = PublicKey::from_secret_key(&sk3).serialize();
+        req3.connection_id = Some([91; 16]);
+        let l3 = devnet(req3);
+        let c3 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g3 = f.quoted_grant(&l3, &c3);
+        let updates_before = f.net.updates.lock().unwrap().len();
+        assert_eq!(
+            f.approve(&l3, &c3, &g3),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "approve G1 at nonce_height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+        assert!(f.unused(&g3));
+
+        // Current read at height H = 101 (tip 31): transfer signs at exact nonce 32.
+        *f.net.stale_nonce.lock().unwrap() = None;
+        *f.net.nonce_height.lock().unwrap() = 101;
+        *f.net.identity_height.lock().unwrap() = 101;
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
+            .unwrap();
+        {
+            let sent = f.net.transfers_sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(t) =
+                &sent[0]
+            else {
+                panic!("expected credit transfer transition");
+            };
+            assert_eq!(
+                t.nonce(),
+                32,
+                "current read at height 101 (tip 31) must skip reserved 30 and sign at exact nonce 32"
+            );
+        }
+
+        // Other app's Disconnect at height >= 101 now succeeds and signs at >= 33 (past 32).
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        let done2 = f.disconnect(&me_b58, &req2, &g2).unwrap();
+        assert_eq!(done2.keys_disabled, q2.keys);
+        let signed = f.net.signed_disables.lock().unwrap();
+        assert!(
+            signed.last().unwrap().1 >= 32,
+            "other app Disconnect at height >= 101 must sign at >= 32"
+        );
+    }
+
+    // --- (c) Restart + reload of (a): H-1 read is still Unavailable;
+    //         legacy observed_height == None fails closed ---
+    {
+        let (mut f, me_b58, req1, _req2) = setup_step2_split_retire();
+        f.restart();
+        assert_eq!(f.s.withdrawal_nonces.floor(id(ME)), 0);
+        let reloaded = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        assert_eq!(
+            reloaded.last_conflict.as_ref().and_then(|c| c.nonce),
+            Some(30)
+        );
+        assert_eq!(
+            reloaded.last_conflict.as_ref().and_then(|c| c.observed_tip),
+            Some(29)
+        );
+        assert_eq!(
+            reloaded
+                .last_conflict
+                .as_ref()
+                .and_then(|c| c.observed_height),
+            Some(101)
+        );
+
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "restarted lagging read at height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+
+        // Legacy reservation with observed_height == None fails closed even at height 101.
+        let mut rec_none_h = reloaded;
+        rec_none_h.last_conflict.as_mut().unwrap().observed_height = None;
+        f.put_record(rec_none_h);
+        *f.net.stale_nonce.lock().unwrap() = None;
+        *f.net.nonce_height.lock().unwrap() = 101;
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "legacy reservation with observed_height == None must fail closed"
+        );
+        assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+    }
+
+    // --- (d) Post-rebroadcast and post-fresh retire sites with split read
+    //         persist observed_height = Some(max(id_height2, nonce_height2)) ---
+    {
+        // Post-rebroadcast retire with split read (nonce_height2 = 100, id_height2 = 105).
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+
+        *f.net.after_update.lock().unwrap() = Some(Box::new(|net| {
+            let mut all = net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+            net.nonces
+                .lock()
+                .unwrap()
+                .insert(id(ME), merge_fake_nonce(29, 31));
+            *net.stale_nonce.lock().unwrap() = Some(29);
+            *net.nonce_height.lock().unwrap() = 100;
+            *net.identity_height.lock().unwrap() = 105;
+        }));
+        let gd_rebroadcast = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd_rebroadcast),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("post-rebroadcast conflict stored");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(29));
+        assert_eq!(
+            conflict.observed_height,
+            Some(105),
+            "post-rebroadcast split retire must persist observed_height = 105"
+        );
+    }
+    {
+        // Post-fresh retire with split read (nonce_height2 = 100, id_height2 = 107).
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        *f.net.after_update.lock().unwrap() = Some(Box::new(|net| {
+            let mut all = net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+            net.nonces
+                .lock()
+                .unwrap()
+                .insert(id(ME), merge_fake_nonce(29, 31));
+            *net.stale_nonce.lock().unwrap() = Some(29);
+            *net.nonce_height.lock().unwrap() = 100;
+            *net.identity_height.lock().unwrap() = 107;
+        }));
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("post-fresh conflict stored");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(29));
+        assert_eq!(
+            conflict.observed_height,
+            Some(107),
+            "post-fresh split retire must persist observed_height = 107"
+        );
+    }
+}

@@ -859,6 +859,15 @@ pub(crate) struct DisconnectConflictInfo {
     /// consumed by the conflicting update.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) observed_tip: Option<u64>,
+    /// Proved Platform block height (`max(id_height, nonce_height)`) of the
+    /// read that proved the conflict when `nonce: Some(k)` was persisted.
+    /// Because `read_consistent_state` reads the nonce before the identity,
+    /// `observed_tip` can come from a nonce read older than the identity read
+    /// that observed the conflicting revision bump. Every skip past `k` must
+    /// also require the current nonce read's height to be `>= observed_height`
+    /// (failing closed when `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observed_height: Option<u64>,
 }
 
 /// Whether the sign-in `loginKeyResponse` document was provably never sent,
@@ -1705,7 +1714,10 @@ fn reserved_nonce_on_retire(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DisconnectNonceKind {
     Pending,
-    Reserved { observed_tip: Option<u64> },
+    Reserved {
+        observed_tip: Option<u64>,
+        observed_height: Option<u64>,
+    },
 }
 
 /// All unresolved Disconnect nonces (both active `pending_disconnect` and
@@ -1730,11 +1742,15 @@ pub(crate) async fn pending_disconnects_for_identity(
                 .map(|p| (p.nonce, p.transition_hash, DisconnectNonceKind::Pending));
             let reserved = r.last_conflict.and_then(|c| {
                 let observed_tip = c.observed_tip;
+                let observed_height = c.observed_height;
                 c.nonce.filter(|&n| pending_nonce != Some(n)).map(|n| {
                     (
                         n,
                         c.transition_hash,
-                        DisconnectNonceKind::Reserved { observed_tip },
+                        DisconnectNonceKind::Reserved {
+                            observed_tip,
+                            observed_height,
+                        },
                     )
                 })
             });
@@ -1781,6 +1797,7 @@ pub(crate) async fn clear_spent_conflict_nonces(
         {
             c.nonce = None;
             c.observed_tip = None;
+            c.observed_height = None;
             changed = true;
             cleared.push(k);
         }
@@ -1974,7 +1991,7 @@ pub(crate) async fn approve(
     // other is refused for free (duplicate nonce / no fee), and the cost is
     // liveness only.
     let mut other_live_pendings: Vec<u64> = Vec::new();
-    let mut other_reserved_nonces: Vec<(u64, Option<u64>)> = Vec::new();
+    let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
     for r in all_records
         .iter()
         .filter(|r| r.identity == owner_b58 && r.request != req_hex)
@@ -1987,11 +2004,11 @@ pub(crate) async fn approve(
             && let Some(n) = c.nonce
             && pending_nonce != Some(n)
         {
-            other_reserved_nonces.push((n, c.observed_tip));
+            other_reserved_nonces.push((n, c.observed_tip, c.observed_height));
         }
     }
     if !other_live_pendings.is_empty() || !other_reserved_nonces.is_empty() {
-        let (nonce_state, _) = net.identity_nonce(id).await?;
+        let (nonce_state, nonce_height) = net.identity_nonce(id).await?;
         let tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
         for d_nonce in other_live_pendings {
             if super::withdrawal::takes(nonce_state, d_nonce, id) {
@@ -2004,7 +2021,7 @@ pub(crate) async fn approve(
             }
         }
         let mut had_spent_reservation = false;
-        for (reserved_k, observed_tip) in other_reserved_nonces {
+        for (reserved_k, observed_tip, observed_height) in other_reserved_nonces {
             if reserved_k > tip {
                 if super::withdrawal::takes(nonce_state, reserved_k, id) {
                     return Err(ConnectError::Failed {
@@ -2014,7 +2031,9 @@ pub(crate) async fn approve(
                 return Err(PlatformError::Unavailable.into());
             }
             if super::withdrawal::takes(nonce_state, reserved_k, id) {
-                if observed_tip.is_none_or(|obs| tip < obs) {
+                if observed_tip.is_none_or(|obs| tip < obs)
+                    || observed_height.is_none_or(|obs_h| nonce_height < obs_h)
+                {
                     return Err(PlatformError::Unavailable.into());
                 }
             } else {
@@ -3014,7 +3033,7 @@ pub(crate) async fn disconnect(
             detail: "unknown app connection".into(),
         })?;
     let mut other_live_pendings: Vec<u64> = Vec::new();
-    let mut other_reserved_nonces: Vec<(u64, Option<u64>)> = Vec::new();
+    let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
     for r in all_records
         .iter()
         .filter(|r| r.identity == owner && r.request != request)
@@ -3027,7 +3046,7 @@ pub(crate) async fn disconnect(
             && let Some(n) = c.nonce
             && pending_nonce != Some(n)
         {
-            other_reserved_nonces.push((n, c.observed_tip));
+            other_reserved_nonces.push((n, c.observed_tip, c.observed_height));
         }
     }
     let granted_max_credits =
@@ -3054,6 +3073,7 @@ pub(crate) async fn disconnect(
         {
             c.nonce = None;
             c.observed_tip = None;
+            c.observed_height = None;
             session.withdrawal_nonces.advance_floor(id, k);
         }
     }
@@ -3145,6 +3165,7 @@ pub(crate) async fn disconnect(
             let reserved =
                 reserved_nonce_on_retire(pending.nonce, nonce_state, id_height, nonce_height, id);
             let observed_tip = reserved.map(|_| nonce_state & IDENTITY_NONCE_VALUE_FILTER);
+            let observed_height = reserved.map(|_| id_height.max(nonce_height));
             if reserved.is_none() {
                 session.withdrawal_nonces.advance_floor(id, pending.nonce);
             }
@@ -3154,6 +3175,7 @@ pub(crate) async fn disconnect(
                 observed_debit,
                 nonce: reserved,
                 observed_tip,
+                observed_height,
             });
             let _ = put_record(session, wallet_id, record).await;
             session.vault.revoke_grant(&grant);
@@ -3195,6 +3217,7 @@ pub(crate) async fn disconnect(
                     observed_debit,
                     nonce: None,
                     observed_tip: None,
+                    observed_height: None,
                 });
                 let _ = put_record(session, wallet_id, record).await;
                 session.vault.revoke_grant(&grant);
@@ -3353,6 +3376,7 @@ pub(crate) async fn disconnect(
                     id,
                 );
                 let observed_tip = reserved.map(|_| tip2);
+                let observed_height = reserved.map(|_| id_height2.max(nonce_height2));
                 if reserved.is_none() {
                     session.withdrawal_nonces.advance_floor(id, pending.nonce);
                 }
@@ -3362,6 +3386,7 @@ pub(crate) async fn disconnect(
                     observed_debit,
                     nonce: reserved,
                     observed_tip,
+                    observed_height,
                 });
                 let _ = put_record(session, wallet_id, record).await;
                 session.vault.revoke_grant(&grant);
@@ -3413,9 +3438,11 @@ pub(crate) async fn disconnect(
     // record's own re-quote at `other_k`). Still refuse `Unavailable` on a
     // stale read (`other_k > tip`).
     let mut other_reserved_floor = 0u64;
-    for (other_k, observed_tip) in other_reserved_nonces {
+    for (other_k, observed_tip, observed_height) in other_reserved_nonces {
         if super::withdrawal::takes(nonce_state, other_k, id) {
-            if observed_tip.is_none_or(|obs| nonce_tip < obs) {
+            if observed_tip.is_none_or(|obs| nonce_tip < obs)
+                || observed_height.is_none_or(|obs_h| nonce_height < obs_h)
+            {
                 return Err(PlatformError::Unavailable.into());
             }
             other_reserved_floor =
@@ -3450,6 +3477,7 @@ pub(crate) async fn disconnect(
             if let Some(c) = &mut record.last_conflict {
                 c.nonce = None;
                 c.observed_tip = None;
+                c.observed_height = None;
             }
             fallback_nonce
         }
@@ -3614,6 +3642,7 @@ pub(crate) async fn disconnect(
                     id,
                 );
                 let observed_tip = reserved.map(|_| tip2);
+                let observed_height = reserved.map(|_| id_height2.max(nonce_height2));
                 if reserved.is_none() {
                     session.withdrawal_nonces.advance_floor(id, next_nonce);
                 }
@@ -3623,6 +3652,7 @@ pub(crate) async fn disconnect(
                     observed_debit,
                     nonce: reserved,
                     observed_tip,
+                    observed_height,
                 });
                 let _ = put_record(session, wallet_id, record).await;
                 session.vault.revoke_grant(&grant);
