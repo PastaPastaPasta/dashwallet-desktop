@@ -282,6 +282,9 @@ export function ConnectedAppsCard({
   );
   useModel(model);
   const username = identity.mainName ?? identity.names[0] ?? null;
+  const done = model.lastDone;
+  const partial = done !== null && (done.hasUnresolvedKeys || done.keysRemaining > 0);
+  const needsAttention = done?.hasUnresolvedKeys || done?.responseMayHaveLanded;
 
   return (
     <SettingsCard title={t("dashpay.connect.connected.title")} testId="connected-apps-card">
@@ -307,21 +310,23 @@ export function ConnectedAppsCard({
               {query.isFetching ? t("dashpay.connect.connected.checking") : t("dashpay.connect.connected.refresh")}
             </DashButton>
           </div>
-          {model.disconnectedLabel !== null && model.lastDone !== null && (
+          {model.disconnectedLabel !== null && done !== null && (
             <p
-              className={model.lastDone?.responseMayHaveLanded ? "form-problem" : "form-ok"}
-              role={model.lastDone?.responseMayHaveLanded ? "alert" : "status"}
+              className={needsAttention ? "form-problem" : "form-ok"}
+              role={needsAttention ? "alert" : "status"}
               data-testid="connected-apps-done"
             >
-              {model.lastDone.keysRemaining > 0
-                ? t("dashpay.connect.connected.disconnectedPartial", {
-                    disabled: model.lastDone.keysDisabled.length,
-                    total: model.lastDone.keysDisabled.length + model.lastDone.keysRemaining,
-                  })
-                : t(model.lastDone.responseMayHaveLanded
+              {done.hasUnresolvedKeys && t("dashpay.connect.connected.disconnectKeysUnresolved", { label: model.disconnectedLabel })}
+              {!done.hasUnresolvedKeys && done.keysRemaining > 0 && (
+                t("dashpay.connect.connected.disconnectedPartial", {
+                  disabled: done.keysDisabled.length,
+                  total: done.keysDisabled.length + done.keysRemaining,
+                })
+              )}
+              {!partial && t(done.responseMayHaveLanded
                     ? "dashpay.connect.connected.disconnectedResponsePending"
                     : "dashpay.connect.connected.disconnected", { label: model.disconnectedLabel })}
-              {model.lastDone.keysRemaining > 0 && model.lastDone.responseMayHaveLanded && (
+              {partial && done.responseMayHaveLanded && (
                 <> {t("dashpay.connect.connected.responsePending")}</>
               )}
             </p>

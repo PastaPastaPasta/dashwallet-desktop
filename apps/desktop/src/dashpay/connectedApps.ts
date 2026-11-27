@@ -213,6 +213,7 @@ export class ConnectedAppsModel extends Model {
       const shouldRequote =
         (isAppError(e) && (e.code === "platform.grant_exceeded" || e.code === "platform.grant_invalid")) ||
         failure === "feeTooHigh" ||
+        failure === "pendingFeeTooHigh" ||
         failure === "disconnectConflict";
       if (shouldRefresh) this.onDisconnected();
       if (shouldRequote) {

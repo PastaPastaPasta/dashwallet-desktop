@@ -166,6 +166,7 @@ pub enum GrantPurpose {
         max_credits: u64,
         identity: [u8; 32],
         request: [u8; 20],
+        revision: u64,
         prior_conflict: Option<[u8; 16]>,
     },
 }

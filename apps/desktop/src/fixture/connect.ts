@@ -20,6 +20,7 @@ import { FIXTURE_NOW } from "./wallet";
 export type DisconnectFixtureOutcome =
   | "ok"
   | "partial"
+  | "unresolvedKey"
   | "checkAttempt"
   | "responseInFlight"
   | "notConfirmed"
@@ -361,12 +362,12 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const outcome = world.disconnectOutcome ?? "ok";
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
-      const fee = outcome === "checkAttempt" ? 0n : BigInt(DISCONNECT_FEE);
+      const fee = outcome === "checkAttempt" || outcome === "pendingFeeTooHigh" ? 0n : BigInt(DISCONNECT_FEE);
       const balance = outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
       const priorAttemptConflict = outcome === "priorChargeKnown" || outcome === "priorChargePossible";
       return {
-        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request, priorConflict: priorAttemptConflict ? "c1".repeat(16) : null },
+        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request, revision: "1", priorConflict: priorAttemptConflict ? "c1".repeat(16) : null },
         identity,
         keys: (outcome === "partial" ? app.keys.slice(0, 1) : app.keys).map((k) => k.keyId),
         fee: String(fee),
@@ -389,7 +390,9 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const outcome = world.disconnectOutcome ?? "ok";
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
-      if (outcome === "pendingFeeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingFeeTooHigh" });
+      if (outcome === "pendingFeeTooHigh" && g.grant.purpose.maxCredits !== "0") {
+        throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingFeeTooHigh" });
+      }
       if (outcome === "pendingWrite") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingWrite" });
       if (outcome === "grantExceeded")
         throw fail("platform.grant_exceeded", "platform.grant_exceeded", { kind: "budget", purpose: "credits", needed: "25000000", remaining: DISCONNECT_FEE });
@@ -404,7 +407,13 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const remaining = app.keys.slice(count);
       if (remaining.length > 0) apps[idx] = { ...app, keys: remaining };
       else apps.splice(idx, 1);
-      return { identity, keysDisabled, keysRemaining: remaining.length, responseMayHaveLanded: outcome === "responseInFlight" };
+      return {
+        identity,
+        keysDisabled,
+        keysRemaining: remaining.length,
+        hasUnresolvedKeys: outcome === "unresolvedKey",
+        responseMayHaveLanded: outcome === "responseInFlight",
+      };
     },
   };
 }

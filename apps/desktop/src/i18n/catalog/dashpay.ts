@@ -947,6 +947,7 @@ export const dashpay = {
       disconnected: "Disconnected “{label}”.",
       disconnectedResponsePending: "Disconnected “{label}”. Its session keys are disabled, but a sign-in response was still in flight, so a key may already have reached the app.",
       disconnectedPartial: "{disabled} of {total} keys disabled. Disconnect again to finish.",
+      disconnectKeysUnresolved: "Disconnect pending for “{label}”. Dash Wallet couldn’t confirm all keys are disabled.",
       responsePending: "A sign-in response was still in flight, so a key may already have reached the app.",
       checkAttempt: "Check earlier attempt",
       checkAttemptBody: "Dash Wallet can check the earlier attempt without sending an update or charging a fee.",

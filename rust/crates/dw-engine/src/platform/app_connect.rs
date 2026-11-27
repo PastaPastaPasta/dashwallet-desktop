@@ -598,6 +598,8 @@ pub struct DisconnectQuote {
     /// Raw 32-byte identity id bound into `GrantPurpose::AppDisconnect`.
     pub identity_id: [u8; 32],
     pub identity: String,
+    /// Proved identity revision the fresh-write grant is bound to.
+    pub revision: u64,
     /// The verified session key ids that will be disabled.
     pub keys: Vec<KeyID>,
     /// The grant's credit bound, equal to `fee` (never clamped).
@@ -617,7 +619,7 @@ pub struct DisconnectQuote {
     pub prior_attempt_debit: Option<u64>,
 }
 
-/// A finished disconnect.
+/// The confirmed outcome of one Disconnect batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisconnectDone {
     pub identity: String,
@@ -625,6 +627,8 @@ pub struct DisconnectDone {
     pub keys_disabled: Vec<KeyID>,
     /// Verified session keys still enabled after the batch.
     pub keys_remaining: u32,
+    /// At least one recorded key has yet to be verified on Platform.
+    pub has_unresolved_keys: bool,
     /// `true` when an earlier sign-in response document was broadcast with an
     /// unknown outcome (or committed on Platform after the disable), so a
     /// response carrying a shared key may already have reached the app even
@@ -2769,7 +2773,7 @@ async fn check_disconnect_grant(
     grant: &str,
     identity: Identifier,
     request: [u8; 20],
-) -> Result<(u64, Option<[u8; 16]>), ConnectError> {
+) -> Result<(u64, u64, Option<[u8; 16]>), ConnectError> {
     let (vault, g) = (session.vault.clone(), grant.to_owned());
     let purpose = tokio::task::spawn_blocking(move || {
         vault.grant_purpose(&g, GrantKind::AppDisconnect, Some(&wallet.0))
@@ -2781,6 +2785,7 @@ async fn check_disconnect_grant(
         max_credits,
         identity: granted_identity,
         request: granted_request,
+        revision,
         prior_conflict,
     } = purpose
     else {
@@ -2789,7 +2794,7 @@ async fn check_disconnect_grant(
     if granted_identity != identity.to_buffer() || granted_request != request {
         return Err(PlatformError::GrantInvalid.into());
     }
-    Ok((max_credits, prior_conflict))
+    Ok((max_credits, revision, prior_conflict))
 }
 
 async fn resolve_key_scope(
@@ -3044,6 +3049,7 @@ pub(crate) async fn disconnect_quote(
         request: request_hash,
         identity_id: id.to_buffer(),
         identity: owner,
+        revision: on_chain.revision(),
         keys,
         max_credits: fee,
         fee,
@@ -3097,7 +3103,7 @@ pub(crate) async fn disconnect(
             other_reserved_nonces.push((n, c.observed_tip, c.observed_height));
         }
     }
-    let (granted_max_credits, granted_conflict) =
+    let (granted_max_credits, granted_revision, granted_conflict) =
         check_disconnect_grant(session, wallet_id, &grant, id, request_hash).await?;
     // Hold (do not cancel yet) any parked login response for THIS identity
     // under its write lock once Disconnect is authorized: any automatic retry
@@ -3148,6 +3154,7 @@ pub(crate) async fn disconnect(
             identity,
             keys_disabled,
             keys_remaining,
+            has_unresolved_keys: verified.has_unresolved,
             response_may_have_landed,
         })
     };
@@ -3407,7 +3414,9 @@ pub(crate) async fn disconnect(
         return complete(record, Vec::new()).await;
     }
 
-    if granted_conflict != disconnect_conflict_marker(&record)? {
+    if granted_revision != fresh.revision()
+        || granted_conflict != disconnect_conflict_marker(&record)?
+    {
         return Err(PlatformError::GrantInvalid.into());
     }
 
@@ -3479,8 +3488,17 @@ pub(crate) async fn disconnect(
     // so the only competitor for `k` is our own dead bytes (never a transfer or
     // withdrawal). Refuse `Unavailable` on a stale read (`k > tip`). Clear the
     // reservation only when `k` itself is proved spent (`k <= tip && !takes`).
-    let next_nonce = if let Some(reserved_k) = record.last_conflict.as_ref().and_then(|c| c.nonce) {
+    let next_nonce = if let Some(conflict) = record.last_conflict.as_ref()
+        && let Some(reserved_k) = conflict.nonce
+    {
         if super::withdrawal::takes(nonce_state, reserved_k, id) {
+            if conflict.observed_tip.is_none_or(|tip| nonce_tip < tip)
+                || conflict
+                    .observed_height
+                    .is_none_or(|height| nonce_height < height)
+            {
+                return Err(PlatformError::Unavailable.into());
+            }
             reserved_k
         } else if reserved_k > nonce_tip {
             return Err(PlatformError::Unavailable.into());
@@ -3505,12 +3523,6 @@ pub(crate) async fn disconnect(
         }
         .into());
     }
-    if fresh.balance() < fee {
-        return Err(ConnectError::Credits {
-            needed: fee,
-            available: fresh.balance(),
-        });
-    }
     let master = master_key(&fresh).ok_or(PlatformError::from(
         super::errors::IdentityError::KeysMissing {
             purpose: super::identity::KeyPurpose::Authentication,
@@ -3531,7 +3543,20 @@ pub(crate) async fn disconnect(
             })?;
         check_disconnect_key(&record, key)?;
     }
-    let target_revision = fresh.revision() + 1;
+    let (pre_sign, pre_sign_height) = net.refresh(wallet, id).await?;
+    if pre_sign_height < id_height {
+        return Err(PlatformError::Unavailable.into());
+    }
+    if pre_sign.revision() != granted_revision {
+        return Err(PlatformError::GrantInvalid.into());
+    }
+    if pre_sign.balance() < fee {
+        return Err(ConnectError::Credits {
+            needed: fee,
+            available: pre_sign.balance(),
+        });
+    }
+    let target_revision = granted_revision + 1;
     let held: Vec<HeldKey> = key_path(session.vault.network(), index, master.id())
         .map(|path| vec![(path, master.data().to_vec())])
         .unwrap_or_default();
@@ -3551,7 +3576,7 @@ pub(crate) async fn disconnect(
         .only_keys([master.id()]);
     let signed = leased(
         &lease,
-        net.sign_disable_keys(&fresh, master.id(), disable.clone(), next_nonce, &signer),
+        net.sign_disable_keys(&pre_sign, master.id(), disable.clone(), next_nonce, &signer),
     )
     .await;
     drop(signer);
@@ -3570,7 +3595,7 @@ pub(crate) async fn disconnect(
         nonce: next_nonce,
         transition_hex: hex::encode(&transition_bytes),
         transition_hash: transition_hash.clone(),
-        balance_before: Some(fresh.balance()),
+        balance_before: Some(pre_sign.balance()),
     };
     record.pending_disconnect = Some(pending.clone());
     if let Err(e) = put_record(session, wallet_id, record.clone()).await {

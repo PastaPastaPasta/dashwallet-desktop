@@ -143,6 +143,37 @@ test("a partial Disconnect reports the disabled keys and leaves the app reachabl
   await expect(app.getByTestId("connected-app-disconnect")).toBeEnabled();
 });
 
+test("Disconnect reports pending confirmation when a recorded key is unresolved", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "unresolvedKey";
+  });
+  await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText(
+    "Disconnect pending for “Yappr”. Dash Wallet couldn’t confirm all keys are disabled.",
+  );
+});
+
+test("a fee increase refreshes the open Disconnect sheet to a no-fee check", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  const app = page.getByTestId("connected-app-row").first();
+  await app.getByTestId("connected-app-disconnect").click();
+  const confirm = page.getByTestId("disconnect-confirm");
+  await expect(confirm).toHaveText("Disconnect");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "pendingFeeTooHigh";
+  });
+  await confirm.click();
+  await authorize(page);
+  await expect(confirm).toHaveText("Check earlier attempt");
+  await expect(page.getByTestId("disconnect-fee")).toContainText("without sending an update or charging a fee");
+  await confirm.click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
+});
+
 test("a pending Disconnect can be checked without a new fee", async ({ page }) => {
   await openConnectedApps(page, "dashpay-connected-apps");
   const app = page.getByTestId("connected-app-row").first();

@@ -912,6 +912,13 @@ impl Fixture {
             max_credits,
             identity,
             request,
+            revision: self
+                .engine
+                .block_on(self.net.identity(Identifier::from(identity)))
+                .unwrap()
+                .0
+                .unwrap()
+                .revision(),
             prior_conflict,
         };
         (self
@@ -2690,6 +2697,7 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
         max_credits: q.max_credits,
         identity: id(ME).to_buffer(),
         request: req_hash,
+        revision: q.revision,
         prior_conflict: q.prior_conflict,
     };
     assert!(matches!(
@@ -2739,6 +2747,7 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
                     max_credits: q.max_credits,
                     identity: id(ME).to_buffer(),
                     request: [0xee; 20],
+                    revision: q.revision,
                     prior_conflict: None,
                 },
                 Some(&f.wallet.0),
@@ -3618,6 +3627,44 @@ fn disconnect_refuses_lagging_pre_approval_snapshot_with_absent_keys() {
 }
 
 #[test]
+fn disconnect_refuses_a_revision_newer_than_the_quote() {
+    let f = Fixture::new();
+    let me = b58(&id(ME));
+    let link = devnet(request());
+    let choice = Fixture::choice();
+    let approve_grant = f.quoted_grant(&link, &choice);
+    f.approve(&link, &choice, &approve_grant).unwrap();
+    let request = hex::encode(link.request.request_hash());
+    let quote = f.disconnect_quote(&me, &request).unwrap();
+    let grant = f.disconnect_grant(quote.request, quote.max_credits);
+    let quoted_identity = f.net.me();
+    {
+        let mut identities = f.net.identities.lock().unwrap();
+        let identity = identities.get_mut(&id(ME)).unwrap();
+        identity.set_revision(identity.revision() + 1);
+    }
+    *f.net.identity_height.lock().unwrap() = 101;
+    for first_read in [None, Some(quoted_identity)] {
+        *f.net.stale_refresh_once.lock().unwrap() = first_read;
+        assert_eq!(
+            f.disconnect(&me, &request, &grant),
+            Err(ConnectError::Platform(PlatformError::GrantInvalid))
+        );
+        assert!(f.net.signed_disables.lock().unwrap().is_empty());
+        assert!(f.disconnect_grant_unused(&grant));
+    }
+
+    let updated = f.disconnect_quote(&me, &request).unwrap();
+    assert_eq!(updated.revision, quote.revision + 1);
+    let grant = f.disconnect_grant(updated.request, updated.max_credits);
+    assert!(
+        !f.disconnect(&me, &request, &grant)
+            .unwrap()
+            .has_unresolved_keys
+    );
+}
+
+#[test]
 fn disconnect_grant_bound_to_identity_refuses_other_identity_in_same_wallet() {
     let f = Fixture::new();
     let id1 = id(ME);
@@ -4362,6 +4409,7 @@ fn disconnect_fee_matches_drive_ephemeral_cost_and_splits_oversized_batches() {
     let done1 = f.disconnect(&me_b58, &req_hex, &g_batch1).unwrap();
     assert_eq!(done1.keys_disabled, q_batch1.keys);
     assert_eq!(done1.keys_remaining, 1);
+    assert!(!done1.has_unresolved_keys);
     // Second key is still enabled -> app still listed with 1 remaining key.
     let after1 = f.list_apps(&me_b58).unwrap();
     assert_eq!(after1.apps.len(), 1);
@@ -4375,6 +4423,7 @@ fn disconnect_fee_matches_drive_ephemeral_cost_and_splits_oversized_batches() {
     let done2 = f.disconnect(&me_b58, &req_hex, &g_batch2).unwrap();
     assert_eq!(done2.keys_disabled, q_batch2.keys);
     assert_eq!(done2.keys_remaining, 0);
+    assert!(!done2.has_unresolved_keys);
     assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 }
 
@@ -4786,6 +4835,8 @@ fn disconnect_disables_present_verified_keys_when_predicted_reapproval_key_never
     rec.state = RecordState::Submitted;
     rec.session_keys.push(99);
     rec.session_key_data.insert(99, "aa".repeat(20));
+    rec.session_keys.push(100);
+    rec.session_key_data.insert(100, "cc".repeat(20));
     f.put_record(rec);
 
     // Lagging pre-approval snapshot where ALL keys are absent still returns Unavailable.
@@ -4823,6 +4874,9 @@ fn disconnect_disables_present_verified_keys_when_predicted_reapproval_key_never
     f.net.refreshed.store(false, Ordering::SeqCst);
     let done = f.disconnect(&me_b58, &req_hex, &gd).unwrap();
     assert_eq!(done.keys_disabled, present_keys);
+    assert_eq!(done.keys_remaining, 0);
+    assert!(done.has_unresolved_keys);
+    assert!(!f.net.me().public_keys().contains_key(&100));
     assert!(!f.net.me().public_keys()[&99].is_disabled());
     let rec_after = f
         .engine
@@ -7805,7 +7859,7 @@ fn disconnect_reservation_observed_height_blocks_split_read_lagging_skip() {
     // --- (a) & (b): step-2 split retire blocks lagging H-1 transfer, other-app
     //                Disconnect, and Approve G1; current H=101 read signs at 32 ---
     {
-        let (f, me_b58, _req1, req2) = setup_step2_split_retire();
+        let (f, me_b58, req1, req2) = setup_step2_split_retire();
 
         // (a) Transfer at nonce_height = 100 (tip 29) refuses Unavailable with 0 sent.
         *f.net.stale_nonce.lock().unwrap() = Some(29);
@@ -7840,6 +7894,20 @@ fn disconnect_reservation_observed_height_blocks_split_read_lagging_skip() {
         );
         assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
         assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+
+        let mut stale = f.net.me();
+        stale.set_revision(stale.revision() - 1);
+        *f.net.stale.lock().unwrap() = Some(stale);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g1 = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g1),
+            Err(ConnectError::Platform(PlatformError::Unavailable))
+        );
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+        assert!(f.disconnect_grant_unused(&g1));
+        *f.net.stale.lock().unwrap() = None;
 
         // (b2) Approve G1 at nonce_height = 100 with tip 31 (>= observed_tip 29,
         //      missing bit 30 <= tip) MUST refuse Unavailable on observed_height = 101

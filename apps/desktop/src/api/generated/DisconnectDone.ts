@@ -2,6 +2,10 @@
 
 export type DisconnectDone = { identity: string, keysDisabled: Array<number>, keysRemaining: number,
 /**
+ * At least one recorded key has yet to be verified on Platform.
+ */
+hasUnresolvedKeys: boolean,
+/**
  * True when an earlier sign-in response document for this approval was
  * still in flight or confirmed on Platform, so a decryption key may
  * already have reached the app despite the session keys being disabled.

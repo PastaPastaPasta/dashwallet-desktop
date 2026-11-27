@@ -226,6 +226,8 @@ pub struct DisconnectDone {
     pub identity: String,
     pub keys_disabled: Vec<u32>,
     pub keys_remaining: u32,
+    /// At least one recorded key has yet to be verified on Platform.
+    pub has_unresolved_keys: bool,
     /// True when an earlier sign-in response document for this approval was
     /// still in flight or confirmed on Platform, so a decryption key may
     /// already have reached the app despite the session keys being disabled.
@@ -400,6 +402,7 @@ impl From<engine::DisconnectDone> for DisconnectDone {
             identity: d.identity,
             keys_disabled: d.keys_disabled,
             keys_remaining: d.keys_remaining,
+            has_unresolved_keys: d.has_unresolved_keys,
             response_may_have_landed: d.response_may_have_landed,
         }
     }
@@ -570,6 +573,7 @@ commands! {
                 max_credits: q.max_credits,
                 identity: q.identity_id,
                 request: q.request,
+                revision: q.revision,
                 prior_conflict: q.prior_conflict,
             },
             identity: q.identity,
