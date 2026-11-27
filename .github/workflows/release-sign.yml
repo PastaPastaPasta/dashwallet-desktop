@@ -18,7 +18,8 @@
 #   Windows   no stored secret: GitHub's OIDC token signs in to Azure Artifact Signing. Variables
 #             AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT,
 #             AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
-#   PGP       secrets RELEASE_PGP_PRIVATE_KEY, RELEASE_PGP_PASSPHRASE
+#   PGP       secrets RELEASE_PGP_PRIVATE_KEY, RELEASE_PGP_PASSPHRASE: a key of CI's own (ci_pgp_fingerprint),
+#             never the release key or a subkey of it, and accepted for candidates only
 #
 # Until the Azure account exists, `windows_sig_ref` takes the Windows signature from the detached-signatures
 # repository instead (made on the YubiKey with ci/release/sign-windows.sh); macOS and PGP are still signed here.
@@ -140,8 +141,12 @@ jobs:
           INPUT_WIN_REF: ${{ inputs.windows_sig_ref }}
         run: |
           ids=docs/release/signing-identities.json
-          jq -e '(.pgp_fingerprint | test("^[0-9A-Fa-f]{40}$")) and (.apple_team_id | test("^[A-Z0-9]{10}$"))' "$ids" >/dev/null || {
-            echo "::error::$ids does not pin pgp_fingerprint and apple_team_id at $TAG (docs/release/CI-SIGNING.md)" >&2
+          jq -e '((.ci_pgp_fingerprint // "") | test("^[0-9A-Fa-f]{40}$")) and (.apple_team_id | test("^[A-Z0-9]{10}$"))' "$ids" >/dev/null || {
+            echo "::error::$ids does not pin ci_pgp_fingerprint and apple_team_id at $TAG (docs/release/CI-SIGNING.md)" >&2
+            exit 1
+          }
+          jq -e '((.ci_pgp_fingerprint | ascii_upcase) != ((.pgp_fingerprint // "") | ascii_upcase))' "$ids" >/dev/null || {
+            echo "::error::ci_pgp_fingerprint is the release key's fingerprint in $ids: CI holds a key of its own" >&2
             exit 1
           }
           # Azure signs under windows_signer; a YubiKey signature (windows_sig_ref) under windows_leaf_sha256.
@@ -156,8 +161,8 @@ jobs:
               exit 1
             }
           fi
-          grep -qx -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' docs/release/release-key.asc || {
-            echo "::error::docs/release/release-key.asc is not the release key at $TAG" >&2
+          grep -qx -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' docs/release/ci-release-key.asc || {
+            echo "::error::docs/release/ci-release-key.asc is not CI's public key at $TAG" >&2
             exit 1
           }
           if grep -qx -- '-----BEGIN CERTIFICATE-----' docs/release/windows-ca.pem; then
@@ -287,7 +292,7 @@ jobs:
           for suffix in linux-x86_64.AppImage linux-amd64.deb linux-x86_64.flatpak sbom-rust.cdx.json sbom-npm.cdx.json; do
             cp "$UNSIGNED/dash-wallet-$VERSION-$suffix" "$OUT/dist/"
           done
-          fpr=$(jq -r .pgp_fingerprint docs/release/signing-identities.json)
+          fpr=$(jq -r .ci_pgp_fingerprint docs/release/signing-identities.json)
           ci/release/sign-checksums.sh --version "$VERSION" --dist-dir "$OUT/dist" --sigs-dir "$SIGS" \
             --gpg-key "$fpr" --passphrase-fd 3 3<<<"$RELEASE_PGP_PASSPHRASE"
 

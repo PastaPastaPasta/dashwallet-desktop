@@ -105,9 +105,15 @@ jobs:
           INPUT_SIGS_REPO: ${{ inputs.sigs_repo }}
           INPUT_SIGS_REF: ${{ inputs.sigs_ref }}
           INPUT_DMG_TAG: ${{ inputs.dmg_draft_tag }}
+          SIGNED_ARTIFACT: ${{ inputs.signed_artifact }}
         run: |
           [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || {
             echo "::error::tag must be vX.Y.Z or vX.Y.Z-rc.N (got '$INPUT_TAG')" >&2
+            exit 1
+          }
+          # Signatures made in CI are a candidate's only: CI's PGP key never verifies a stable release.
+          [[ -z "$SIGNED_ARTIFACT" || "$INPUT_TAG" =~ -rc\.[0-9]+$ ]] || {
+            echo "::error::signed_artifact is for a release candidate; $INPUT_TAG is signed locally (docs/release/SIGNING.md)" >&2
             exit 1
           }
           [[ "$GITHUB_REF" == "refs/tags/$INPUT_TAG" ]] || {
@@ -272,6 +278,8 @@ jobs:
             echo "SIGNED_DMG=$dmg"
           } >> "$GITHUB_ENV"
       - name: Attach and verify all detached signatures against repo-pinned identities
+        env:
+          SIGNED_ARTIFACT: ${{ inputs.signed_artifact }}
         run: |
           # H2 / M4 / Decision 5: Pinned identities (docs/release/signing-identities.json and
           # docs/release/release-key.asc) are read exclusively from the main repo checkout at $TAG
@@ -290,6 +298,8 @@ jobs:
           if [[ -f docs/release/windows-ca.pem ]] && grep -qx -- '-----BEGIN CERTIFICATE-----' docs/release/windows-ca.pem; then
             args+=(--win-ca-file docs/release/windows-ca.pem)
           fi
+          # Signed by release-sign.yml: SHA256SUMS.asc is CI's own key's, pinned apart from the release key.
+          [[ -z "$SIGNED_ARTIFACT" ]] || args+=(--ci-signed)
           ci/github/release-attach.sh "${args[@]}"
       - name: Prepare final signed release assets for attestation
         env:

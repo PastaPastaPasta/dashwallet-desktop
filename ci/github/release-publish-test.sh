@@ -1240,6 +1240,23 @@ try:
     subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
                     "--output", str(rc_sigs / "SHA256SUMS.asc"), str(rc_sigs / "SHA256SUMS")], check=True, env=env, capture_output=True)
     subprocess.run(["gpgconf", "--kill", "all"], env=env, capture_output=True)
+
+    # release-sign.yml: CI's own PGP key, pinned apart from the release key, signs a candidate's SHA256SUMS
+    ci_home = gpg_root / "c"
+    ci_home.mkdir(mode=0o700)
+    ci_env = {**os.environ, "GNUPGHOME": str(ci_home)}
+    subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "CI candidates <ci@example.com>", "ed25519", "sign", "never"], check=True, env=ci_env, capture_output=True)
+    ci_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=ci_env, text=True)
+    ci_fpr = [line.split(":")[9] for line in ci_out.splitlines() if line.startswith("fpr:")][0]
+    (wk / "ci.fpr").write_text(ci_fpr)
+    subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "ci-release-key.asc"), "--export", ci_fpr], check=True, env=ci_env, capture_output=True)
+    for sums, out in ((rc_sigs / "SHA256SUMS", wk / "SHA256SUMS.rc.ci.asc"), (sigs / "SHA256SUMS", wk / "SHA256SUMS.stable.ci.asc")):
+        subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", ci_fpr,
+                        "--output", str(out), str(sums)], check=True, env=ci_env, capture_output=True)
+    subprocess.run(["gpgconf", "--kill", "all"], env=ci_env, capture_output=True)
+    ids = json.loads((wk / "identities.json").read_text())
+    (wk / "identities-ci.json").write_text(json.dumps({**ids, "ci_pgp_fingerprint": ci_fpr}, indent=2) + "\n")
+    (wk / "identities-ci-same.json").write_text(json.dumps({**ids, "ci_pgp_fingerprint": primary_fpr.lower()}, indent=2) + "\n")
 finally:
     shutil.rmtree(gpg_root, ignore_errors=True)
 PY
@@ -1455,7 +1472,7 @@ PY
     --identities-file "$e2e/work/identities-placeholder.json" \
     --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
     --allow-non-darwin
-  ids_ok='.schema == 1 and ((.pgp_fingerprint | startswith("REPLACE_")) or (.pgp_fingerprint | test("^[0-9a-fA-F]{40}$"))) and ((.apple_team_id | startswith("REPLACE_")) or (.apple_team_id | test("^[A-Z0-9]{10}$"))) and (if has("windows_signer") then ((.windows_leaf_sha256 // "REPLACE_") | contains("REPLACE_")) and (.windows_signer | (.organization | type == "string" and length > 0) and (.eku | test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) else ((.windows_leaf_sha256 | contains("REPLACE_")) or (.windows_leaf_sha256 | test("^sha256:[0-9a-fA-F]{64}$"))) end)'
+  ids_ok='.schema == 1 and ((.pgp_fingerprint | startswith("REPLACE_")) or (.pgp_fingerprint | test("^[0-9a-fA-F]{40}$"))) and ((.apple_team_id | startswith("REPLACE_")) or (.apple_team_id | test("^[A-Z0-9]{10}$"))) and (if has("windows_signer") then ((.windows_leaf_sha256 // "REPLACE_") | contains("REPLACE_")) and (.windows_signer | (.organization | type == "string" and length > 0) and (.eku | test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) else ((.windows_leaf_sha256 | contains("REPLACE_")) or (.windows_leaf_sha256 | test("^sha256:[0-9a-fA-F]{64}$"))) end) and ((.ci_pgp_fingerprint // "REPLACE_") | (startswith("REPLACE_") or test("^[0-9a-fA-F]{40}$"))) and (((.ci_pgp_fingerprint // "") | ascii_upcase) != (.pgp_fingerprint | ascii_upcase))'
   check "signing-identities.json: production repo file is valid schema 1 (placeholder or properly formatted real identities)" \
     'jq -e "$ids_ok" "$here/../../docs/release/signing-identities.json" >/dev/null'
   check "signing-identities.json: the shape check takes a windows_signer pin without a leaf hash, and refuses both together" \
@@ -1857,6 +1874,51 @@ PY
     "SHA256SUMS must list 7 files" "$e2e/rc-attach-stablesums.out" \
     "${rc_attach_base[@]}" --sigs-dir "$e2e/rc-sigs-stablesums" --out-dir "$e2e/rc-attached-stablesums"
 
+  # A candidate signed by release-sign.yml (--ci-signed): SHA256SUMS.asc is CI's own key's, pinned apart from the
+  # release key, and that key verifies a candidate signed in CI and nothing else
+  e2e_ci_fpr=$(cat "$e2e/work/ci.fpr")
+  ci_pin=(--identities-file "$e2e/work/identities-ci.json" --ci-pgp-pubkey "$e2e/work/ci-release-key.asc")
+  cp -R "$e2e/rc-sigs" "$e2e/rc-sigs-ci"
+  cp "$e2e/work/SHA256SUMS.rc.ci.asc" "$e2e/rc-sigs-ci/SHA256SUMS.asc"
+  cp -R "$e2e/sigs" "$e2e/sigs-ci"
+  cp "$e2e/work/SHA256SUMS.stable.ci.asc" "$e2e/sigs-ci/SHA256SUMS.asc"
+  ci_rc=0
+  PATH="$attach_path" "$here/release-attach.sh" "${rc_attach_base[@]}" "${ci_pin[@]}" --ci-signed --sigs-dir "$e2e/rc-sigs-ci" \
+    --out-dir "$e2e/rc-attached-ci" > "$e2e/rc-attach-ci.out" 2>&1 || ci_rc=$?
+  check "CI-signed candidate: release-attach verifies SHA256SUMS.asc against CI's own pinned key and records it" \
+    '[[ $ci_rc -eq 0 ]] && jq -e --arg f "$e2e_ci_fpr" ".pgp_fpr == \$f and (.files | length) == 9" "$e2e/rc-attached-ci/signed-manifest.json" >/dev/null'
+  if [[ $ci_rc -ne 0 ]]; then cat "$e2e/rc-attach-ci.out" >&2 || true; fi
+  expect_attach_fail \
+    "CI-signed candidate: release-attach refuses a SHA256SUMS.asc made by the release key" \
+    "gpg --verify failed|expected" "$e2e/rc-attach-ci-relkey.out" \
+    "${rc_attach_base[@]}" "${ci_pin[@]}" --ci-signed --out-dir "$e2e/rc-attached-ci-relkey"
+  expect_attach_fail \
+    "CI key: a candidate published without --ci-signed is refused when CI's key made its SHA256SUMS.asc" \
+    "gpg --verify failed|expected" "$e2e/rc-attach-ci-local.out" \
+    "${rc_attach_base[@]}" "${ci_pin[@]}" --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-local"
+  expect_attach_fail \
+    "CI key: a stable release is refused when CI's key made its SHA256SUMS.asc, a valid signature by a pinned key" \
+    "gpg --verify failed|expected" "$e2e/attach-ci-stable.out" \
+    "${attach_base[@]}" "${ci_pin[@]}" --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable"
+  ci_valid=$(GNUPGHOME=$(umask 077 && mktemp -d /tmp/dwcv.XXXXXX) bash -c 'gpg --batch --quiet --import "$1" && gpg --batch --status-fd 1 --verify "$2" "$3" 2>/dev/null | grep -c "^\[GNUPG:\] GOODSIG"; gpgconf --kill all >/dev/null 2>&1; rm -rf "$GNUPGHOME"' _ "$e2e/work/ci-release-key.asc" "$e2e/sigs-ci/SHA256SUMS.asc" "$e2e/sigs-ci/SHA256SUMS")
+  check "CI key: that stable SHA256SUMS.asc is a good signature under CI's key, so the pin is what refused it" '[[ "$ci_valid" == 1 ]]'
+  expect_attach_fail \
+    "CI key: --ci-signed is refused for a stable release, even with CI's signature and pin in place" \
+    "CI signs release candidates only" "$e2e/attach-ci-stable-flag.out" \
+    "${attach_base[@]}" "${ci_pin[@]}" --ci-signed --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable-flag"
+  check "CI key: nothing was attached for the stable release in either case" \
+    '[[ ! -e "$e2e/attached-ci-stable/signed-manifest.json" && ! -e "$e2e/attached-ci-stable-flag/signed-manifest.json" ]]'
+  expect_attach_fail \
+    "CI key: release-attach refuses identities whose CI key is the release key" \
+    "ci_pgp_fingerprint is the release key" "$e2e/attach-ci-same.out" \
+    "${attach_base[@]}" --identities-file "$e2e/work/identities-ci-same.json" --out-dir "$e2e/attached-ci-same"
+  expect_attach_fail \
+    "CI-signed candidate: release-attach refuses --ci-signed while ci_pgp_fingerprint is not pinned" \
+    "pinned CI PGP fingerprint must be 40 hex" "$e2e/rc-attach-ci-nopin.out" \
+    "${rc_attach_base[@]}" --ci-signed --ci-pgp-pubkey "$e2e/work/ci-release-key.asc" --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-nopin"
+  check "release-publish-signed.yml passes --ci-signed only for signatures from the signing job, and refuses those for a stable tag" \
+    '[[ $(grep -c -- "--ci-signed" "$here/../../.github/workflows/release-publish-signed.yml") -eq 1 ]] && grep -qF -- "[[ -z \"\$SIGNED_ARTIFACT\" ]] || args+=(--ci-signed)" "$here/../../.github/workflows/release-publish-signed.yml" && grep -qF "signed_artifact is for a release candidate" "$here/../../.github/workflows/release-publish-signed.yml"'
+
   # Blocker #7: ci/release/fetch-unsigned.sh pins locally verified --tag-sha, verifies run + attestations + checksums before exposing files
   fu=$e2e/fetch-unsigned-test
   mkdir -p "$fu/bin"
@@ -2011,9 +2073,11 @@ FGH
   ck_key=$(GNUPGHOME=$ck_gen gpg --batch --pinentry-mode loopback --passphrase 'ci pass' --armor --export-secret-keys "$ck_fpr" 2>/dev/null)
   GNUPGHOME=$ck_gen gpgconf --kill all > /dev/null 2>&1 || true
   rm -rf "$ck_gen"
-  jq -n --arg f "$ck_fpr" '{schema: 1, pgp_fingerprint: $f}' > "$ck/ids.json"
-  jq -n --arg f "$e2e_fpr" '{schema: 1, pgp_fingerprint: $f}' > "$ck/ids-other.json"
-  echo '{"schema": 1, "pgp_fingerprint": "REPLACE_WITH_40_HEX"}' > "$ck/ids-placeholder.json"
+  jq -n --arg f "$ck_fpr" --arg r "$e2e_fpr" '{schema: 1, pgp_fingerprint: $r, ci_pgp_fingerprint: $f}' > "$ck/ids.json"
+  jq -n --arg f "$e2e_fpr" '{schema: 1, ci_pgp_fingerprint: $f}' > "$ck/ids-other.json"
+  jq -n --arg f "$ck_fpr" '{schema: 1, pgp_fingerprint: $f}' > "$ck/ids-release-only.json"
+  jq -n --arg f "$ck_fpr" '{schema: 1, pgp_fingerprint: ($f | ascii_downcase), ci_pgp_fingerprint: $f}' > "$ck/ids-same.json"
+  echo '{"schema": 1, "ci_pgp_fingerprint": "REPLACE_WITH_40_HEX"}' > "$ck/ids-placeholder.json"
   ck_keys() { # ck_keys <cmd> [ids]: runs ci-signing-keys.sh as the workflow does; sets $ck_rc
     ck_rc=0
     RUNNER_TEMP="$ck/runner" GITHUB_ENV="$ck/env" RELEASE_PGP_PRIVATE_KEY="$ck_key" RELEASE_PGP_PASSPHRASE='ci pass' \
@@ -2027,6 +2091,13 @@ FGH
   ck_keys pgp "$ck/ids-placeholder.json"
   check "ci-signing-keys: refuses while the fingerprint is a placeholder, before importing anything" \
     '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "is not pinned" "$ck/keys.out"'
+  ck_keys pgp "$ck/ids-release-only.json"
+  check "ci-signing-keys: refuses a key pinned only as the release key, which CI must never hold" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "ci_pgp_fingerprint is not pinned" "$ck/keys.out"'
+  ck_keys pgp "$ck/ids-same.json"
+  check "ci-signing-keys: refuses a CI key that is also pinned as the release key" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" ]] && grep -q "CI holds a key of its own" "$ck/keys.out"'
+  ck_keys cleanup
   ck_keys pgp "$ck/ids.json"
   ck_home=$(sed -n 's/^GNUPGHOME=//p' "$ck/env")
   check "ci-signing-keys: imports the pinned PGP key into a throwaway GNUPGHOME and exports it" \

@@ -15,6 +15,7 @@
 #     [--identities-file docs/release/signing-identities.json] \
 #     [--pgp-pubkey docs/release/release-key.asc] \
 #     [--pgp-fingerprint <40-hex>] \
+#     [--ci-signed [--ci-pgp-pubkey docs/release/ci-release-key.asc] [--ci-pgp-fingerprint <40-hex>]] \
 #     [--apple-team-id <10-alnum>] \
 #     [--win-leaf-hash <sha256:64-hex>] \
 #     [--win-signer-org <organization> --win-signer-eku <OID>] \
@@ -26,6 +27,11 @@
 # cert SHA-256) are loaded from the main repository at the tag (docs/release/signing-identities.json
 # and docs/release/release-key.asc) and NEVER from --sigs-dir. All three identities fail closed
 # until populated.
+#
+# --ci-signed: the signatures were made by release-sign.yml. SHA256SUMS.asc is then checked against CI's own
+# key (ci_pgp_fingerprint, docs/release/ci-release-key.asc) and only for a release candidate. Without the flag
+# the release key is the only one accepted, so a signature by the key CI holds never verifies a stable release
+# or a locally signed candidate. The two pins must be two different keys.
 #
 # The Windows signer is pinned one of two ways, never both:
 #   windows_leaf_sha256   the SHA-256 of one long-lived leaf certificate (a hardware token, a CA-issued
@@ -65,6 +71,9 @@ tauri_conf="$repo_root/rust/crates/dw-app/tauri.conf.json"
 identities_file="$repo_root/docs/release/signing-identities.json"
 pgp_pubkey="$repo_root/docs/release/release-key.asc"
 pgp_fingerprint=
+ci_signed=0
+ci_pgp_pubkey="$repo_root/docs/release/ci-release-key.asc"
+ci_pgp_fingerprint=
 apple_team_id=
 win_ca_file=
 win_leaf_hash=
@@ -85,6 +94,9 @@ while (($#)); do
     --identities-file) identities_file=${2:?}; shift 2 ;;
     --pgp-pubkey) pgp_pubkey=${2:?}; shift 2 ;;
     --pgp-fingerprint) pgp_fingerprint=${2:?}; shift 2 ;;
+    --ci-signed) ci_signed=1; shift ;;
+    --ci-pgp-pubkey) ci_pgp_pubkey=${2:?}; shift 2 ;;
+    --ci-pgp-fingerprint) ci_pgp_fingerprint=${2:?}; shift 2 ;;
     --apple-team-id) apple_team_id=${2:?}; shift 2 ;;
     --win-ca-file) win_ca_file=${2:?}; shift 2 ;;
     --win-leaf-hash) win_leaf_hash=${2:?}; shift 2 ;;
@@ -123,13 +135,27 @@ fi
 if [[ -f "$identities_file" ]]; then
   [[ ! -L "$identities_file" ]] || die "refusing symlink identities file $identities_file"
   [[ -n "$pgp_fingerprint" ]] || pgp_fingerprint=$(jq -r '.pgp_fingerprint // empty' "$identities_file")
+  [[ -n "$ci_pgp_fingerprint" ]] || ci_pgp_fingerprint=$(jq -r '.ci_pgp_fingerprint // empty' "$identities_file")
   [[ -n "$apple_team_id" ]] || apple_team_id=$(jq -r '.apple_team_id // empty' "$identities_file")
   [[ -n "$win_leaf_hash" ]] || win_leaf_hash=$(jq -r '.windows_leaf_sha256 // empty' "$identities_file")
   [[ -n "$win_signer_org" ]] || win_signer_org=$(jq -r '.windows_signer.organization? // empty' "$identities_file")
   [[ -n "$win_signer_eku" ]] || win_signer_eku=$(jq -r '.windows_signer.eku? // empty' "$identities_file")
 fi
 
-want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+norm_fpr() { printf '%s' "$1" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]'; }
+ci_fpr=$(norm_fpr "$ci_pgp_fingerprint")
+if [[ "$ci_fpr" =~ ^[0-9A-F]{40}$ && "$ci_fpr" == "$(norm_fpr "$pgp_fingerprint")" ]]; then
+  die "ci_pgp_fingerprint is the release key's fingerprint: CI holds a key of its own, never the release key or a subkey of it (docs/release/signing-identities.json)"
+fi
+if ((ci_signed)); then
+  ((rc)) || die "--ci-signed on stable version $version: CI signs release candidates only, and its key never verifies a stable release"
+  [[ "$ci_fpr" =~ ^[0-9A-F]{40}$ ]] ||
+    die "pinned CI PGP fingerprint must be 40 hex chars (got '${ci_pgp_fingerprint:-<empty>}'; populate ci_pgp_fingerprint in docs/release/signing-identities.json)"
+  pgp_fingerprint=$ci_fpr
+  pgp_pubkey=$ci_pgp_pubkey
+fi
+
+want_fpr=$(norm_fpr "$pgp_fingerprint")
 [[ "$want_fpr" =~ ^[0-9A-F]{40}$ ]] ||
   die "pinned PGP primary fingerprint must be 40 hex chars (got '${pgp_fingerprint:-<empty>}'; populate docs/release/signing-identities.json)"
 

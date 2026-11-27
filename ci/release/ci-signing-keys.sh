@@ -10,8 +10,8 @@
 # apple: imports the Developer ID .p12 into a throwaway keychain and writes the App Store Connect API key
 #        to a 0600 file; refuses a certificate that is not the one Developer ID Application identity of the
 #        pinned apple_team_id. Exports APPLE_SIGNING_IDENTITY and APPLE_API_KEY_PATH.
-# pgp:   imports the signing key into a throwaway GNUPGHOME; refuses a key whose primary fingerprint is not
-#        the pinned pgp_fingerprint. Exports GNUPGHOME.
+# pgp:   imports CI's signing key into a throwaway GNUPGHOME; refuses a key whose primary fingerprint is not
+#        the pinned ci_pgp_fingerprint, and one that is the release key (pgp_fingerprint). Exports GNUPGHOME.
 set -euo pipefail
 umask 077
 
@@ -84,7 +84,9 @@ case "$cmd" in
     ;;
   pgp)
     : "${RELEASE_PGP_PRIVATE_KEY:?}" "${RELEASE_PGP_PASSPHRASE:?}" "${GITHUB_ENV:?}"
-    want=$(pinned "${2:?identities.json}" pgp_fingerprint | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    want=$(pinned "${2:?identities.json}" ci_pgp_fingerprint | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    release=$(jq -r '.pgp_fingerprint // empty' "$2" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    [[ "$want" != "$release" ]] || die "ci_pgp_fingerprint is the release key's fingerprint: CI holds a key of its own"
     mask_lines <<<"$RELEASE_PGP_PRIVATE_KEY"
     mkdir -p "$dir"
     chmod 700 "$dir"

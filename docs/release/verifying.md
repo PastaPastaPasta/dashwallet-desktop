@@ -79,6 +79,11 @@ Look for `gpg: Good signature from …` and confirm that `Primary key fingerprin
 published in the release notes. (Releases are signed by an online signing subkey while the primary key stays
 offline, so `gpg` prints both the primary key fingerprint and the signing subkey fingerprint.)
 
+A release candidate whose signatures were made in CI ([`CI-SIGNING.md`](CI-SIGNING.md)) is the one exception: its
+`SHA256SUMS.asc` is signed by a key of CI's own, `docs/release/ci-release-key.asc` at the candidate's tag, whose
+fingerprint is `ci_pgp_fingerprint` in `docs/release/signing-identities.json`. That key signs candidates only. A
+stable release is never signed by it, and the publish workflow refuses one that is.
+
 ## Check the macOS signature and notarization
 
 On signed releases (1.0 and later) and signed candidates, both the `.dmg` and `Dash Wallet.app` inside it are

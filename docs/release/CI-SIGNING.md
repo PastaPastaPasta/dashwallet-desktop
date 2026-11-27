@@ -32,7 +32,7 @@ One dispatch, two jobs:
 |---|---|---|
 | macOS `.app` and `.dmg`: Developer ID, hardened runtime, notarized, stapled | Developer ID Application certificate; App Store Connect API key for the notary service | secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8` |
 | Windows installer: Authenticode, SHA-256, RFC 3161 timestamp | a key held by Azure Artifact Signing | not in GitHub: the job signs in to Azure with GitHub's OIDC token |
-| `SHA256SUMS.asc` | the release PGP key | secrets `RELEASE_PGP_PRIVATE_KEY`, `RELEASE_PGP_PASSPHRASE` |
+| `SHA256SUMS.asc` | a PGP key of CI's own, accepted for candidates only | secrets `RELEASE_PGP_PRIVATE_KEY`, `RELEASE_PGP_PASSPHRASE` |
 
 ## One-time setup
 
@@ -98,34 +98,38 @@ gh variable set APPLE_API_ISSUER_ID --env release-signing --repo "$R" --body "<I
 rm ~/Downloads/AuthKey_<KEY_ID>.p8
 ```
 
-### 3. PGP: a signing subkey for `SHA256SUMS.asc` (10 minutes)
+### 3. PGP: a key of CI's own for a candidate's `SHA256SUMS.asc` (10 minutes)
 
-CI gets a signing subkey of your release key, under a passphrase of its own. The primary key stays with you: it
-still signs the tag ([`RC-SIGNING.md`](RC-SIGNING.md) section 3), it is what `pgp_fingerprint` pins, and it can
-revoke the subkey without anything from GitHub. Neither the primary key nor your passphrase goes to GitHub.
+CI signs a candidate's checksums with a key made for that and nothing else. It is not your release key, and not
+a subkey of it: a compromised run can sign with whatever key CI holds, and a subkey of the release key verifies
+as the release key wherever that key is trusted, a stable release of this app included. `release-attach.sh`
+accepts CI's key for a release candidate signed in CI and refuses it for everything else. Your own key keeps
+signing the tag ([`RC-SIGNING.md`](RC-SIGNING.md) section 3) and every stable release.
 
 ```sh
-export PGP_FPR=<40-hex primary fingerprint of your release key>
-gpg --quick-add-key "$PGP_FPR" ed25519 sign 2y                  # asks to unlock your primary key
-gpg --list-secret-keys --with-subkey-fingerprints "$PGP_FPR"    # the new [S] subkey is the last one listed
-PGP_SUB=<40-hex fingerprint of that subkey>
+export GNUPGHOME=$(mktemp -d)
+gpg --quick-generate-key "Dash Wallet Desktop candidate signing (CI) <you@example.org>" ed25519 sign 2y   # asks for a new passphrase
+CI_FPR=$(gpg --list-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
+gpg --armor --export "$CI_FPR" > ci-release-key.asc && echo "$CI_FPR"          # both are public: step 5
 
-CI_HOME=$(mktemp -d) && chmod 700 "$CI_HOME"                    # a throwaway home that holds only the subkey
-gpg --export-secret-subkeys "$PGP_SUB!" | gpg --homedir "$CI_HOME" --import
-GRIP=$(gpg --homedir "$CI_HOME" --list-secret-keys --with-keygrip --with-colons |
-  awk -F: -v want="$PGP_SUB" '$1 == "fpr" && $10 == want { s = 1; next } s && $1 == "grp" { print $10; exit }')
-gpg-connect-agent --homedir "$CI_HOME" "passwd $GRIP" /bye      # your passphrase once, then a NEW one for CI, twice
-gpg --homedir "$CI_HOME" --armor --export-secret-subkeys "$PGP_SUB!" |
-  gh secret set RELEASE_PGP_PRIVATE_KEY --env release-signing --repo "$R"    # asks for the new passphrase
-gh secret set RELEASE_PGP_PASSPHRASE --env release-signing --repo "$R"       # prompts: paste the new passphrase
-gpgconf --homedir "$CI_HOME" --kill all && rm -rf "$CI_HOME"
-gpg --delete-secret-keys "$PGP_SUB!"                            # your own keyring keeps signing with your usual subkey
-gpg --armor --export "$PGP_FPR" > release-key.asc               # public, now with the CI subkey: step 5
+# Before anything is uploaded or deleted: what lets you revoke or re-install this key without GitHub.
+BACKUP=<a directory on the offline medium that holds your other signing material>
+cp "$GNUPGHOME/openpgp-revocs.d/$CI_FPR.rev" "$BACKUP/dashwallet-ci-$CI_FPR.rev"
+gpg --armor --export-secret-keys "$CI_FPR" > "$BACKUP/dashwallet-ci-$CI_FPR.secret.asc"    # still under its passphrase
+gpg --show-keys "$BACKUP/dashwallet-ci-$CI_FPR.secret.asc" | grep -q "$CI_FPR" &&
+  test -s "$BACKUP/dashwallet-ci-$CI_FPR.rev" && echo "backup ok"
 ```
 
-A new subkey takes its primary's passphrase, which is why the subkey is given another one in a throwaway home
-before it is exported. The last-but-one line removes the subkey's secret half from your own keyring: gpg signs
-with the newest signing subkey it holds, and that should stay yours.
+Go on only after `backup ok`:
+
+```sh
+gpg --armor --export-secret-keys "$CI_FPR" | gh secret set RELEASE_PGP_PRIVATE_KEY --env release-signing --repo "$R"
+gh secret set RELEASE_PGP_PASSPHRASE --env release-signing --repo "$R"         # prompts: paste that passphrase
+gpgconf --kill all && rm -rf "$GNUPGHOME" && unset GNUPGHOME
+```
+
+To give people who trust your own key a path to this one, certify it before committing it:
+`gpg --import ci-release-key.asc && gpg --sign-key "$CI_FPR" && gpg --armor --export "$CI_FPR" > ci-release-key.asc`.
 
 ### 4. Windows: Azure Artifact Signing (30 minutes of work, then 1 to 30 business days of waiting)
 
@@ -150,14 +154,17 @@ Microsoft's steps are in <https://learn.microsoft.com/azure/artifact-signing/qui
    az login
    APP_ID=$(az ad app create --display-name dashwallet-desktop-release-signing --query appId --output tsv)
    az ad sp create --id "$APP_ID"
-   SUBJECT="$(gh api "repos/$R/actions/oidc/customization/sub" --jq .sub_claim_prefix):environment:release-signing"
-   echo "$SUBJECT"   # repo:PastaPastaPasta@6443210/dashwallet-desktop@1409635492:environment:release-signing
-   [[ "$SUBJECT" == repo:*:environment:release-signing ]] || echo "STOP: that is not a subject; do not create the credential"
-   az ad app federated-credential create --id "$APP_ID" --parameters "{
-     \"name\": \"dashwallet-desktop-release-signing\",
-     \"issuer\": \"https://token.actions.githubusercontent.com\",
-     \"subject\": \"$SUBJECT\",
-     \"audiences\": [\"api://AzureADTokenExchange\"]}"
+   if PREFIX=$(gh api "repos/$R/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty') && [[ "$PREFIX" == repo:*/* ]]; then
+     SUBJECT="$PREFIX:environment:release-signing"
+     echo "$SUBJECT"   # repo:PastaPastaPasta@6443210/dashwallet-desktop@1409635492:environment:release-signing
+     az ad app federated-credential create --id "$APP_ID" --parameters "{
+       \"name\": \"dashwallet-desktop-release-signing\",
+       \"issuer\": \"https://token.actions.githubusercontent.com\",
+       \"subject\": \"$SUBJECT\",
+       \"audiences\": [\"api://AzureADTokenExchange\"]}"
+   else
+     echo "STOP: GitHub returned no OIDC subject for $R, so no credential was created. Do not run the lines below."
+   fi
    SUB=$(az account show --query id --output tsv)
    az role assignment create --assignee "$APP_ID" --role "Artifact Signing Certificate Profile Signer" \
      --scope "/subscriptions/$SUB/resourceGroups/<group>/providers/Microsoft.CodeSigning/codeSigningAccounts/<account>/certificateProfiles/<profile>"
@@ -195,7 +202,8 @@ still signed in CI.
 ```json
 {
   "schema": 1,
-  "pgp_fingerprint": "<40 hex, from step 3>",
+  "pgp_fingerprint": "<your release key's, as it is today: it signs the tag and stable releases>",
+  "ci_pgp_fingerprint": "<40 hex, CI's key from step 3>",
   "apple_team_id": "<10 characters, in parentheses in the Developer ID identity's name>",
   "windows_signer": {
     "organization": "<the organization name on the Azure certificate, exactly>",
@@ -204,7 +212,9 @@ still signed in CI.
 }
 ```
 
-- `docs/release/release-key.asc`: the file from step 3.
+- `docs/release/ci-release-key.asc`: the file from step 3. `pgp_fingerprint` and `release-key.asc` stay your own
+  release key's and are not read for a candidate signed in CI; the two fingerprints must be two different keys,
+  and `release-key.asc` must not carry a subkey that CI holds.
 - `docs/release/windows-ca.pem`: with `windows_signer`, this file is required and is the only trust for the Windows
   signature and its timestamp. For Azure Artifact Signing it holds one certificate, the *Microsoft Identity
   Verification Root Certificate Authority 2020*
@@ -238,9 +248,16 @@ may hold one of the two, never both.
    approval within three days, while the signing job's artifact still exists. A green rehearsal ends with the notice `dry_run=true on
    v1.0.0-rc.2 …`.
 3. Publish: the same command without `-f dry_run=true`, and the same approval.
-4. Verify the published candidate as in [`RC-SIGNING.md`](RC-SIGNING.md) section 7. With a `windows_signer` pin
-   the identities file has no leaf hash to require, so find the leaf the pin selects and require that one. From a
-   checkout of the tag:
+4. Verify the published candidate as in [`RC-SIGNING.md`](RC-SIGNING.md) section 7, with two differences. The
+   PGP key is CI's, `docs/release/ci-release-key.asc` at the tag, and the primary fingerprint gpg prints is
+   `ci_pgp_fingerprint`:
+
+   ```sh
+   gpg --import docs/release/ci-release-key.asc && gpg --verify SHA256SUMS.asc SHA256SUMS
+   ```
+
+   And with a `windows_signer` pin the identities file has no leaf hash to require, so find the leaf the pin
+   selects and require that one. From a checkout of the tag:
 
    ```sh
    exe=dash-wallet-1.0.0-rc.2-windows-x64-setup.exe ids=docs/release/signing-identities.json
@@ -265,7 +282,7 @@ The `sign` job installs `osslsigncode` and `gnupg` from Homebrew at their curren
 does; `jsign` is fetched at a pinned version and checked against a pinned SHA-256. Those two Homebrew packages
 and what they depend on therefore run in a job that holds the PGP key and can sign with Azure, and the approved
 tag does not fix their versions. That is the same trust the local runbook places in Homebrew, and it is not yet
-removed here.
+removed here (issue #1156).
 
 ## Rotating and revoking
 
@@ -273,10 +290,16 @@ removed here.
   if its key leaked: Gatekeeper then refuses every app signed with it.
 - **Windows:** delete the federated credential or the role assignment and CI can no longer sign. Nothing in GitHub
   needs changing.
-- **PGP:** revoke the CI subkey with your primary key (`gpg --edit-key "$PGP_FPR"`, select the subkey, `revkey`),
-  commit the updated `release-key.asc`, and add a new subkey as in step 3. The pinned fingerprint does not change.
-- **Shutting CI signing down:** first delete the Azure federated credential (or the role assignment) and check
-  that a sign-in fails; only then delete the `release-signing` environment, which removes every secret at once.
+- **PGP:** import the revocation certificate from your backup into a keyring that holds `ci-release-key.asc`
+  (the saved file has a colon in front of its `-----BEGIN` line; remove it first), export the now revoked public key
+  over `docs/release/ci-release-key.asc` on `main`, then make a new key as in step 3 and pin its fingerprint.
+  `release-attach.sh` refuses a signature by a revoked key.
+- **Shutting CI signing down:** first cut Azure off and confirm it; only then delete the `release-signing`
+  environment, which removes every secret at once. Deleting the federated credential stops the sign-in itself:
+  confirm with `az ad app federated-credential list --id "$APP_ID"` that none is left. Removing the role
+  assignment leaves the sign-in working and takes away only the right to sign, so a successful sign-in proves
+  nothing there: confirm with `az role assignment list --assignee "$APP_ID" --all` that the profile's signer role
+  is gone.
   The order matters. Azure trusts the environment by its name, and a workflow that names an environment that
   does not exist creates it again without the reviewer and the tag rule. If Azure cannot be cut off at once,
   keep the environment and its rules and delete the secrets one by one.
