@@ -305,6 +305,58 @@ fn failed_legacy_repair_never_offers_the_claim_input() {
 }
 
 #[test]
+fn a_malformed_legacy_claim_id_refuses_the_open() {
+    let (_dir, engine, id, funding, _, network) =
+        non_push_only_claim_the_fork_dropped(Pin::Dev1387);
+    let input = encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    on_store(
+        &network,
+        "UPDATE core_dropped_unsigned_spends SET txid = X'00'",
+        [],
+    );
+    let result = engine.block_on(engine.open_network(DashNetwork::Regtest, offline()));
+    assert!(matches!(result, Err(crate::EngineError::Storage(_))));
+    let rows: i64 = rusqlite::Connection::open(network.join(WALLET_DB_FILE))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM core_dropped_unsigned_spends WHERE txid = X'00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1);
+    assert_eq!(coin_spent(&network, id, &input).0, 0);
+}
+
+#[test]
+fn restored_legacy_output_uses_the_canonical_outpoint_key() {
+    let (_dir, _engine, wallet, _, claim, network) =
+        non_push_only_claim_the_fork_dropped(Pin::Dev1387);
+    let change = OutPoint::new(claim.txid(), 1);
+    let canonical = encode_outpoint(&change);
+    let mut alternate = canonical.clone();
+    assert_eq!(alternate.pop(), Some(1));
+    alternate.extend([251, 1, 0]);
+    assert_eq!(crate::history_ops::decode_stored(&alternate), Some(change));
+    on_store(
+        &network,
+        "UPDATE core_dropped_unsigned_spends SET deleted_outputs =
+            json_set(deleted_outputs, '$[0].outpoint', ?1)",
+        [hex::encode(&alternate)],
+    );
+    repair_closed(&network);
+    let stored_key: Vec<u8> = rusqlite::Connection::open(network.join(WALLET_DB_FILE))
+        .unwrap()
+        .query_row(
+            "SELECT outpoint FROM core_utxos WHERE wallet_id = ?1 AND outpoint IN (?2, ?3)",
+            rusqlite::params![wallet.0.as_slice(), &canonical, &alternate],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_key, canonical);
+}
+
+#[test]
 fn legacy_output_must_match_its_transaction() {
     for field in ["value", "script", "outpoint"] {
         let (_dir, _engine, id, funding, claim, network) =

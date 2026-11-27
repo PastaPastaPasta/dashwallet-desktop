@@ -529,6 +529,30 @@ fn missing_shielded_store_with_a_wal_only_marker_is_refused_unchanged() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+#[test]
+fn damaged_app_database_without_shielded_store_offers_recovery() {
+    probe_p9a_absent();
+    let f = fixture("v0.3.0");
+    std::fs::remove_file(f.net.join("shielded.sqlite")).unwrap();
+    damage_header(&f, "app.sqlite");
+    let engine = engine(&f.root);
+    let before = tree(&f.net);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => {
+            assert_eq!(r.screen.way_out, WayOut::Damaged);
+            assert!(r.detail.contains("app.sqlite"), "{r:?}");
+        }
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened with a damaged app database"),
+    }
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    let fresh = engine
+        .block_on(engine.recover_in_fresh_folder(DashNetwork::Regtest))
+        .unwrap();
+    assert!(restored_mark_set(&fresh));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A damaged refusal followed by an open that is not refused as damaged
 /// (here, the store mended) takes the way out back.
 #[test]

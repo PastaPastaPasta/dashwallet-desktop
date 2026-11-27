@@ -184,8 +184,18 @@ const SHIELDED_STORE_SEEN: &str = "shielded_store_seen";
 
 pub(crate) fn refuse_missing_store(dir: &std::path::Path, wrote: bool) -> Result<(), EngineError> {
     let app_db = dir.join(dw_appdb::APP_DB_FILE);
-    if dir.join(SHIELDED_DB_FILE).try_exists()? || !app_db.try_exists()? {
+    if dir.join(SHIELDED_DB_FILE).try_exists()? {
         return Ok(());
+    }
+    let metadata = match app_db.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(why) = dw_fs::not_sole(&metadata) {
+        return Err(EngineError::Storage(format!(
+            "read Shielded store marker: app.sqlite {why}"
+        )));
     }
     #[cfg(unix)]
     let app_db = dir.canonicalize()?.join(dw_appdb::APP_DB_FILE);
@@ -204,7 +214,13 @@ pub(crate) fn refuse_missing_store(dir: &std::path::Path, wrote: bool) -> Result
             |r| r.get(0),
         )
     })
-    .map_err(|e| EngineError::Storage(format!("read Shielded store marker: {e}")))?;
+    .map_err(|e| {
+        if crate::store_upgrade::is_damaged(&e) {
+            damaged_store(dir, dw_appdb::APP_DB_FILE, e.to_string(), wrote)
+        } else {
+            EngineError::RetryableIo(format!("read Shielded store marker: {e}"))
+        }
+    })?;
     if seen {
         return Err(missing_store(dir, wrote));
     }
@@ -212,12 +228,21 @@ pub(crate) fn refuse_missing_store(dir: &std::path::Path, wrote: bool) -> Result
 }
 
 fn missing_store(dir: &std::path::Path, wrote: bool) -> EngineError {
+    damaged_store(
+        dir,
+        SHIELDED_DB_FILE,
+        "the previously opened Shielded store is missing".into(),
+        wrote,
+    )
+}
+
+fn damaged_store(dir: &std::path::Path, store: &str, detail: String, wrote: bool) -> EngineError {
     crate::store_upgrade::map_error(
         dir,
         crate::store_upgrade::StoreUpgradeStage::Prepare,
         dw_store_upgrade::StoreUpgradeError::SnapshotSourceDamaged {
-            store: SHIELDED_DB_FILE.into(),
-            detail: "the previously opened Shielded store is missing".into(),
+            store: store.into(),
+            detail,
         },
         wrote,
     )

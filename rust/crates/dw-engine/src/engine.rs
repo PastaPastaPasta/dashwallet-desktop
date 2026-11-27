@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::fsutil::create_private_dir;
 use crate::gate::PauseRefused;
+use crate::store_upgrade::copy::WayOut;
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NetworkSession, SessionOptions};
 
 /// Stack size of the engine runtime's threads: the async workers and the
@@ -139,7 +140,6 @@ impl Shared {
     /// recovery phrase; any other result, an open that is not refused among
     /// them, withdraws it.
     fn note_open<T>(&self, network: &DashNetwork, opened: &mut Result<T, EngineError>) {
-        use dw_store_upgrade::copy::WayOut;
         let state = match opened {
             Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Damaged => {
                 Some(Refused::Damaged)
@@ -411,7 +411,10 @@ impl Engine {
             .handle
             .spawn_blocking(move || crate::store_upgrade::request_restore(&dir))
             .await?;
-        if matches!(requested, Err(EngineError::ShieldedSpendHeld(_)))
+        if matches!(&requested, Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Damaged)
+        {
+            self.shared.set_refused(network, Some(Refused::Damaged));
+        } else if matches!(requested, Err(EngineError::ShieldedSpendHeld(_)))
             && self.shared.refused(network) == Some(Refused::Restore)
         {
             self.shared.set_refused(network, Some(Refused::RestoreHeld));

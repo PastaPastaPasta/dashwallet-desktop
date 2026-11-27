@@ -149,15 +149,26 @@ pub(crate) fn sweep_once(data_root: &Path) -> bool {
 fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, EngineError> {
     order::record(network_dir, order::Step::Restore);
     let found = std::cell::Cell::new(None);
-    let holds = |dir: &Path| match crate::platform::restore_hold::restore_hold(dir) {
-        Some(hold) => {
-            found.set(Some(hold));
-            Err(format!("a shielded spend is held ({hold:?})"))
+    let probe_failed = std::cell::Cell::new(None);
+    let holds = |dir: &Path| {
+        if let Err(e) = crate::platform::shielded_pool::refuse_missing_store(dir, false) {
+            let detail = e.to_string();
+            probe_failed.set(Some(e));
+            return Err(detail);
         }
-        None => Ok(()),
+        match crate::platform::restore_hold::restore_hold(dir) {
+            Some(hold) => {
+                found.set(Some(hold));
+                Err(format!("a shielded spend is held ({hold:?})"))
+            }
+            None => Ok(()),
+        }
     };
     let info = dw_store_upgrade::run_pending_restore(network_dir, SystemTime::now(), &holds)
         .map_err(|e| {
+            if let Some(error) = probe_failed.take() {
+                return error;
+            }
             let held = matches!(
                 e,
                 StoreUpgradeError::RestoreIncomplete {
@@ -192,8 +203,15 @@ pub(crate) fn prepare_and_reconcile(
     let data_root = network_dir
         .parent()
         .ok_or_else(|| EngineError::Internal(format!("{} has no parent", network_dir.display())))?;
+    let pending = dw_store_upgrade::pending_restore(network_dir)
+        .map_err(|e| EngineError::RetryableIo(format!("read the restore marker: {e}")))?;
+    if pending != Some(PendingRestore::InProgress) {
+        crate::platform::shielded_pool::refuse_missing_store(network_dir, false)?;
+    }
     let restored = run_pending_restore(network_dir)?;
-    crate::platform::shielded_pool::refuse_missing_store(network_dir, restored.is_some())?;
+    if restored.is_some() {
+        crate::platform::shielded_pool::refuse_missing_store(network_dir, true)?;
+    }
     let adopters = Adopters::for_build(data_root);
     let prepared = prepare_with(network_dir, adopters, SystemTime::now()).map_err(|e| {
         map_error(
@@ -299,6 +317,7 @@ pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
             false,
         ));
     }
+    crate::platform::shielded_pool::refuse_missing_store(network_dir, false)?;
     if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir) {
         return Err(EngineError::ShieldedSpendHeld(hold));
     }
@@ -516,7 +535,7 @@ pub(crate) fn map_error(
 }
 
 /// A wallet file that isn't a database or is corrupt: retrying can't help.
-fn is_damaged(e: &rusqlite::Error) -> bool {
+pub(crate) fn is_damaged(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
         Some(rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)

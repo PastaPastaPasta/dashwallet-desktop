@@ -689,10 +689,21 @@ commands! {
         let _slot = state.session_slot().await;
         let choice = network.map(NetworkChoice::from);
         let network = choice.map_or_else(|| state.window_network(), NetworkChoice::network);
-        let dir = engine.recover_in_fresh_folder(network.clone()).await?;
-        eprintln!("dw-app: {} starts over in {}", network.dir_name(), dir.display());
+        let mut pending = state.recovery_choice_pending.lock().await;
+        let redirected = match (choice, pending.get(&network)) {
+            (Some(_), Some(dir)) => *dir == engine.network_dir(&network)?,
+            _ => false,
+        };
+        if !redirected {
+            let dir = engine.recover_in_fresh_folder(network.clone()).await?;
+            eprintln!("dw-app: {} starts over in {}", network.dir_name(), dir.display());
+            if choice.is_some() {
+                pending.insert(network.clone(), dir);
+            }
+        }
         if let Some(choice) = choice {
             network_choice::write_network_choice(&state.data_root, choice)?;
+            pending.remove(&network);
         }
         Ok(())
     }

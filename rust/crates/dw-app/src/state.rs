@@ -107,6 +107,8 @@ pub struct AppState {
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
+    /// Recovery redirects that committed before their restart preference.
+    pub(crate) recovery_choice_pending: Mutex<HashMap<DashNetwork, PathBuf>>,
     /// Ends the app (`AppHandle::exit`); `selftest_report` and `quit_app`
     /// call it.
     exit: Box<dyn Fn(i32) + Send + Sync>,
@@ -636,6 +638,7 @@ impl AppState {
             #[cfg(test)]
             broadcasts_taken: AtomicUsize::new(0),
             session: Mutex::new(None),
+            recovery_choice_pending: Mutex::new(HashMap::new()),
             exit: Box::new(move |code| handle.exit(code)),
             restart: Box::new(move || restarting.request_restart()),
             sends: SendHandles::default(),

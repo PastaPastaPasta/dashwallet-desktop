@@ -2501,6 +2501,44 @@ fn a_damaged_switch_target_offers_recovery_for_that_network() {
     assert_eq!(demo.active(), "mainnet");
 }
 
+#[test]
+fn recovery_for_a_damaged_switch_can_retry_saving_the_network() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    let root = demo.data_root();
+    dw_fs::create_owned_dir(&root, std::path::Path::new("testnet")).unwrap();
+    let wallet = root.join("testnet/wallet.sqlite");
+    let junk = [0x5a; 512];
+    std::fs::write(&wallet, junk).unwrap();
+    demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "storage_refused",
+    );
+    let choice = root.join("network.json");
+    std::fs::create_dir(&choice).unwrap();
+    let recover = || json!({ "network": "testnet" });
+    demo.err("recover_in_fresh_folder", recover(), "io");
+    let redirect = root.join("network-folders.json");
+    let before = std::fs::read(&redirect).unwrap();
+    std::fs::remove_dir(choice).unwrap();
+
+    demo.err(
+        "recover_in_fresh_folder",
+        json!({ "network": "mainnet" }),
+        "invalid_argument",
+    );
+    demo.ok("recover_in_fresh_folder", recover());
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["chosen"],
+        "testnet"
+    );
+    assert_eq!(std::fs::read(redirect).unwrap(), before);
+    assert!(root.join("testnet-recovered-1").is_dir());
+    assert!(!root.join("testnet-recovered-2").exists());
+    assert_eq!(std::fs::read(wallet).unwrap(), junk);
+}
+
 /// Row 74: when the network left does not reopen either, the window has
 /// none; it stays the window's, so the splash's Retry (`open_network(null)`)
 /// opens it once it can.

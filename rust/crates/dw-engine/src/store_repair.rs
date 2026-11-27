@@ -1086,14 +1086,8 @@ fn recheck(
         ))?;
         let mut q = stmt.query([])?;
         while let Some(r) = q.next()? {
-            let (wallet, txid): (Vec<u8>, Vec<u8>) = (r.get(1)?, r.get(2)?);
-            let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid))
-            else {
-                tracing::warn!(
-                    "store repair: a fork-dropped row's key doesn't read; left as it is"
-                );
-                continue;
-            };
+            let wallet: [u8; 32] = r.get(1)?;
+            let txid = Txid::from_byte_array(r.get(2)?);
             let row = LegacyRow {
                 id: r.get(0)?,
                 record_blob: hex::encode(r.get::<_, Option<Vec<u8>>>(3)?.unwrap_or_default()),
@@ -1417,6 +1411,7 @@ fn planned_restore(
                 if !seen.insert(o) {
                     continue;
                 }
+                let op = encode_outpoint(&o);
                 let present: bool = tx.query_row(
                     "SELECT EXISTS (SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2)",
                     params![wallet.as_slice(), &op],
