@@ -93,9 +93,10 @@ DW_TARGET=${CARGO_TARGET_DIR:-$PWD/../../rust/target}
 DWCLI=$DW_TARGET/debug/dwcli .venv/bin/python -m pytest -v tests/test_l1_sync.py
 ```
 
-On a single node dash-spv never reports `caught_up`: there are no quorums, so its masternode phase
-stalls on `getqrinfo` ("Cannot find quorum snapshot"). The suite waits on scanned heights and txids
-instead (`dwcli sync --min-height` / `--txid`).
+Plain regtest nodes lack the quorum snapshots needed to answer `getqrinfo`. Desktop skips SPV
+masternode sync on regtest by default so that filter sync can proceed. `functional/run.sh` sets
+`DWD_REGTEST_MASTERNODES=1` for suites that need masternode sync. The L1 suite waits on scanned
+heights and txids (`dwcli sync --min-height` / `--txid`).
 
 **l1-send** (`tests/test_l1_send.py`) drives a host-built `dwcli` (`DWCLI=/path/to/dwcli`; skipped when
 absent) over SPV against the node: receive and sync, a custom-fee payment, coin control, a locked coin left

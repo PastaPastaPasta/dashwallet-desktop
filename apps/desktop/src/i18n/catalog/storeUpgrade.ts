@@ -117,6 +117,10 @@ export const storeUpgrade = {
       "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
     platformRestored:
       "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
+    platformRestoredCancel: {
+      move: "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform funds are paused and this cancel wasn't sent. The earlier move can still go through. The check runs while Dash Platform is on. Once it has finished, choose Cancel again.",
+      payment: "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform funds are paused and this cancel wasn't sent. The earlier payment can still go through. The check runs while Dash Platform is on. Once it has finished, choose Cancel again.",
+    },
     platformOff: "Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.",
     platformOffNotSending: "Dash Platform is off until you next start Dash Wallet, and this needs it.",
     finishBusy: {

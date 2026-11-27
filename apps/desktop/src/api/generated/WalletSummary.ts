@@ -14,7 +14,11 @@ hasMnemonic: boolean,
  * Imported from a Dash Core wallet.dat with legacy issued address
  * ranges, which a recovery phrase doesn't restore.
  */
-legacyIssued: boolean, hd: boolean, birthHeight: number | null,
+legacyIssued: boolean,
+/**
+ * The stored address lookahead is above the default or could not be read.
+ */
+raisedLookahead: boolean, hd: boolean, birthHeight: number | null,
 /**
  * UNIX seconds the wallet was added on this device, when known.
  */

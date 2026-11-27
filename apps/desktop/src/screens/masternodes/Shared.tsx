@@ -9,6 +9,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import type { SharedImport } from "../../api/generated/SharedImport";
 import type { SharedSession } from "../../api/generated/SharedSession";
 import type { UnreadableSession } from "../../api/generated/UnreadableSession";
@@ -461,6 +462,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const query = useSharedSession(wallet.walletId, open.id);
   /** The record a command returned, shown at once; the event re-reads the rest (§3.5). */
   const [latest, setLatest] = useState<SharedSession | null>(open.imported?.session ?? null);
+  const [sentOperation, setSentOperation] = useState<ProTxOperation | null>(null);
   const [imported, setImported] = useState<ImportResult | null>(open.imported);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -476,7 +478,10 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [actorFeeAccepted, setActorFeeAccepted] = useState(false);
   const replyId = useId();
   const setupOffId = useId();
-  const s = pick(query.data, latest);
+  const saved = pick(query.data, latest);
+  const s: SharedSession | null = saved?.kind === "dissolve_together" && saved.stage.kind === "combined" && sentOperation
+    ? { ...saved, stage: { kind: "sent" }, next: "wait", discardable: false, txid: sentOperation.txid }
+    : saved;
   const debit = s?.debit ?? 0;
   const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
   const sync = useSyncStatus();
@@ -558,7 +563,9 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sendMaintenance = () =>
     granted(0, async (grant) => {
       const sent = await b.mnSharedSendMaintenance(wallet.walletId, s.id, grant);
-      return { session: sent.kind === "session" ? sent.session : await b.mnSharedSession(wallet.walletId, s.id).catch(() => s) };
+      if (sent.kind === "session") return { session: sent.session };
+      setSentOperation(sent.operation);
+      return { session: s };
     });
   const copyMessage = async () => {
     try {
@@ -599,7 +606,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sessionWarnings = s.warnings.map((w) => warningText(w, s)).filter((x): x is string => !!x);
   const importWarnings = imported ? imported.warnings.map((w) => warningText(w, s)).filter((x): x is string => !!x) : [];
   const counts = { joined: s.rows.filter((r) => r.contributed).length, approved: s.rows.filter((r) => r.approved).length, signed: s.rows.filter((r) => r.fundingSigned).length, total: s.rows.length };
-  const togetherOp = togetherOperation(s, ops.data);
+  const togetherOp = togetherOperation(s, ops.data) ?? (sentOperation && togetherOperation(s, [sentOperation]));
+  const waitingForTogetherOp = s.kind === "dissolve_together" && s.stage.kind === "sent" && togetherOp === null;
   const refused = togetherOp ? handoffRefusedText(togetherOp) : null;
   const rowText = v.row === "abandoning" ? (spendBackLine(s, refusedSentence) ?? "") : rowCopy(v.row, s, { coordinator: coordinatorLabel, dash, funding, counts, t });
   const moreItems = [
@@ -823,7 +831,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
           <Notice tone="warning" testId="sh-together-refused">
             {refused}
           </Notice>
-        ) : (
+        ) : !waitingForTogetherOp && (
           <p className="sh-row-copy" aria-live="polite" data-testid={`sh-row-${v.row}`}>
             {rowText}
           </p>
