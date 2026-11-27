@@ -580,7 +580,7 @@ impl NetworkSession {
                 ))
             })
             .await?;
-        let (history, unspent) = self.op_view(wallet).await?;
+        let (history, unspent, beats) = self.op_view(wallet).await?.with_beats();
         let mut pending = Vec::new();
         let mut used = InUse::default();
         // A coin another row will spend is no collateral (BL-346).
@@ -606,10 +606,10 @@ impl NetworkSession {
             let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) else {
                 continue;
             };
-            let state = state_of(row, &history, &unspent);
-            // A block spends a conflicted row's input: it never confirms,
-            // so its keys and collateral are free again, as Core frees a
-            // ProRegTx's when it leaves the mempool (D54).
+            let state = state_of(row, &history, &unspent, &beats);
+            // A final block beats a conflicted row, or a transaction it spends: it
+            // never confirms, so its keys and collateral are free again, as
+            // Core frees a ProRegTx's when it leaves the mempool (D54).
             if state == ProTxOperationState::Conflicted {
                 continue;
             }

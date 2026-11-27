@@ -14,7 +14,7 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -22,7 +22,7 @@ use dashcore::blockdata::transaction::special_transaction::TransactionType as Sp
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use dw_protx::payloads::resolve_collateral;
 use key_wallet::managed_account::transaction_record::{OutputRole, TransactionRecord};
-use key_wallet::transaction_checking::TransactionContext;
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 
 use crate::platform::Counterparty;
 use crate::platform::attribution::Payees;
@@ -542,6 +542,19 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
+/// Whether `rival`, in a block `counts` accepts, beats a transaction it
+/// double-spends: one InstantSend-locked (`locked`) only when a ChainLock
+/// covers that block (DIP-10, key-wallet's order). A final block is
+/// ChainLocked already, but the ChainLock may be read before its proof.
+pub(crate) fn block_beats(
+    rival: &TransactionContext,
+    locked: bool,
+    chainlock: Option<u32>,
+    counts: impl FnOnce(&BlockInfo) -> bool,
+) -> bool {
+    rival.block_info().is_some_and(counts) && (!locked || chain_locked(rival, chainlock))
+}
+
 /// Whether another transaction in a block the SPV header chain proves
 /// final ([`proven_final`] under the wallet's own `chainlock`, `active`
 /// the chain's block hash at each height it has) spends one of `txid`'s
@@ -598,39 +611,113 @@ pub(crate) fn spent_outpoints(
     txs: &HashMap<Txid, TxEntry>,
     may_beat: impl Fn(&Txid, &TxEntry, bool) -> bool,
 ) -> HashSet<OutPoint> {
-    let mined = |e: &TxEntry| e.context.block_info().is_some();
+    let conflicted = conflicts_by(txs, may_beat);
+    (txs.iter())
+        .filter(|(t, e)| {
+            e.context.block_info().is_some() || !(e.is_abandoned() || conflicted.contains_key(*t))
+        })
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
+/// The transactions out of a block that can never confirm, by
+/// [`spent_outpoints`]' rule (Core's `MarkConflicted`), each with the
+/// lowest block that beats it, as `(height, hash)`: another transaction in
+/// a block spends one of their inputs, or they descend out of a block from
+/// one that does. Only a block `counts` accepts beats anything. Abandoned
+/// ones count, so a restart reads the same set from the abandoned copies
+/// the load restores. An InstantSend-locked one is conflicted only by a
+/// block `chainlock` covers, and never through its parent.
+pub(crate) fn conflicted(
+    txs: &HashMap<Txid, TxEntry>,
+    chainlock: Option<u32>,
+    counts: impl Fn(&BlockInfo) -> bool,
+) -> HashMap<Txid, (u32, dashcore::BlockHash)> {
+    conflicts_by(txs, |_, rival, locked| {
+        block_beats(&rival.context, locked, chainlock, &counts)
+    })
+}
+
+fn conflicts_by(
+    txs: &HashMap<Txid, TxEntry>,
+    may_beat: impl Fn(&Txid, &TxEntry, bool) -> bool,
+) -> HashMap<Txid, (u32, dashcore::BlockHash)> {
+    let block = |e: &TxEntry| e.context.block_info().map(|b| (b.height(), b.block_hash()));
     let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
-    for (t, e) in txs.iter().filter(|(_, e)| mined(e)) {
+    for (t, e) in txs.iter().filter(|(_, e)| block(e).is_some()) {
         for i in &e.tx.input {
             in_block.entry(i.previous_output).or_default().push((*t, e));
         }
     }
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
-    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+    for (t, e) in txs.iter().filter(|(_, e)| block(e).is_none()) {
         let locked = instant_locked(e);
         for i in &e.tx.input {
             if !locked {
                 children.entry(i.previous_output.txid).or_default().push(*t);
             }
-            let beats = |(b, be): &(Txid, &TxEntry)| b != t && may_beat(b, be, locked);
-            if in_block
-                .get(&i.previous_output)
-                .is_some_and(|v| v.iter().any(beats))
-            {
-                todo.push(*t);
-            }
+            let beaten = (in_block.get(&i.previous_output).into_iter().flatten())
+                .filter(|(b, be)| b != t && may_beat(b, be, locked))
+                .filter_map(|(_, be)| block(be))
+                .min();
+            todo.extend(beaten.map(|b| (*t, b)));
         }
     }
-    let mut conflicted = HashSet::new();
-    while let Some(t) = todo.pop() {
-        if conflicted.insert(t) {
-            todo.extend(children.get(&t).into_iter().flatten());
+    let mut conflicted: HashMap<Txid, (u32, dashcore::BlockHash)> = HashMap::new();
+    while let Some((t, b)) = todo.pop() {
+        if conflicted.get(&t).is_none_or(|known| b < *known) {
+            conflicted.insert(t, b);
+            todo.extend((children.get(&t).into_iter().flatten()).map(|c| (*c, b)));
         }
     }
-    (txs.iter())
-        .filter(|(t, e)| mined(e) || !(e.is_abandoned() || conflicted.contains(*t)))
-        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+    conflicted
+}
+
+/// What proves a block final ([`proven_final`]): the best ChainLock, when
+/// the SPV header chain holds its block, and that chain's block hash at
+/// each height read. The default proves nothing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Finality {
+    pub chainlock: Option<(u32, dashcore::BlockHash)>,
+    pub active: HashMap<u32, dashcore::BlockHash>,
+}
+
+impl Finality {
+    pub(crate) fn proves(&self, block: &BlockInfo) -> bool {
+        proven_final(
+            (block.height(), block.block_hash()),
+            self.chainlock,
+            &self.active,
+        )
+    }
+
+    /// Whether the header chain may still make `block` final: it proves
+    /// it, or no ChainLock reaches its height yet.
+    pub(crate) fn may_hold(&self, block: &BlockInfo) -> bool {
+        self.chainlock.is_none_or(|(h, _)| block.height() > h) || self.proves(block)
+    }
+}
+
+/// Heights at or below `at_most` of the blocks holding a transaction that
+/// spends an output of another transaction of `txs`, or an outpoint
+/// another of `txs` spends too: every block that can beat one of them or
+/// a transaction that spends the wallet's coins, the headers a
+/// [`Finality`] reads.
+pub(crate) fn spender_heights(txs: &[&HashMap<Txid, TxEntry>], at_most: u32) -> BTreeSet<u32> {
+    let mut spent: HashMap<OutPoint, usize> = HashMap::new();
+    for e in txs.iter().flat_map(|h| h.values()) {
+        for i in &e.tx.input {
+            *spent.entry(i.previous_output).or_default() += 1;
+        }
+    }
+    let known = |o: &OutPoint| {
+        spent.get(o).is_some_and(|n| *n > 1) || txs.iter().any(|h| h.contains_key(&o.txid))
+    };
+    (txs.iter().flat_map(|h| h.values()))
+        .filter_map(|e| Some((e, e.context.block_info()?.height())))
+        .filter(|(e, h)| *h <= at_most && (e.tx.input.iter()).any(|i| known(&i.previous_output)))
+        .map(|(_, h)| h)
         .collect()
 }
 
@@ -1152,7 +1239,7 @@ pub(crate) fn swept_by_block(
     }
 }
 
-/// What can prove a gone parent of an orphan's drop dead for good
+/// What can prove a dropped or swept transaction dead for good
 /// ([`dead_for_good`]).
 #[derive(Debug, Default)]
 pub(crate) struct Deaths {
@@ -1174,8 +1261,9 @@ impl Deaths {
     }
 }
 
-/// Whether `parent`, a gone parent of an orphan's drop, is dead for good
-/// (#749 Q81c §2, Q81d): it is not live in the history, and (a) its
+/// Whether `parent`, a gone parent of an orphan's drop or a transaction of
+/// a drop's chain ([`chain_dead_for_good`]), is dead for good (#749 Q81c
+/// §2, Q81d): it is not live in the history, and (a) its
 /// `dropped:` mark is a never-valid verdict, (b) a conflict sweep removed
 /// it for a winner whose block the header chain proves final (`proven`),
 /// or (c) another transaction spent one of its inputs
@@ -1216,6 +1304,30 @@ pub(crate) fn dead_for_good(
         || deaths.inputs_of(parent).any(spent_finally)
 }
 
+/// Whether the dropped transaction `t` can never confirm: it, or a
+/// transaction it builds on through a chain of parents `ancestor` names
+/// (dropped or swept, [`Deaths::inputs_of`]), is dead for good (`dead`,
+/// [`dead_for_good`]). The walk stops at a parent `ancestor` doesn't name.
+pub(crate) fn chain_dead_for_good(
+    t: &Txid,
+    deaths: &Deaths,
+    ancestor: impl Fn(&Txid) -> bool,
+    dead: impl Fn(&Txid) -> bool,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut next = vec![*t];
+    while let Some(u) = next.pop() {
+        if !seen.insert(u) {
+            continue;
+        }
+        if dead(&u) {
+            return true;
+        }
+        next.extend((deaths.inputs_of(&u).map(|o| o.txid)).filter(|p| ancestor(p)));
+    }
+    false
+}
+
 /// What [`held_awaiting`] reads beside the drops and the history.
 pub(crate) struct HeldEvidence<'a> {
     /// The header chain proves a transaction's block final
@@ -1235,6 +1347,8 @@ pub(crate) struct HeldEvidence<'a> {
     /// A gone parent of an orphan's drop is dead for good
     /// ([`dead_for_good`]).
     pub dead_for_good: &'a dyn Fn(&Txid) -> bool,
+    /// A dropped transaction can never confirm ([`chain_dead_for_good`]).
+    pub drop_dead: &'a dyn Fn(&Txid) -> bool,
 }
 
 /// Whether a coin the drops still hold (`held`, [`still_held`]) awaits
@@ -1243,13 +1357,14 @@ pub(crate) struct HeldEvidence<'a> {
 /// dropped transaction's note holds, and its origin's note): a coin is
 /// settled when no live transaction of the history or key-wallet record
 /// spends it, no InstantSend lock of a transaction the wallet holds no
-/// copy of may spend it, and every drop holding it is settled. A drop is
-/// settled when its winner is in the history and its block proven final
-/// (`chain_final`); when the history doesn't hold it, or it is unknown,
-/// when one of the coins it contested has a final spend: the evidence's,
-/// or a spend by a transaction of the history in a block proven final. An
-/// orphan's drop, which nothing beat, is settled once each parent a load
-/// found gone is dead for good (Q81c §2). A drop with no origin note
+/// copy of may spend it, and every drop holding it is settled. A drop
+/// whose winner the history holds is settled when the winner's block is
+/// proven final (`chain_final`) or the drop's own transaction can never
+/// confirm (`drop_dead`); one whose winner the history doesn't hold, or
+/// is unknown, when one of the coins it contested has a final spend: the
+/// evidence's, or a spend by a transaction of the history in a block proven
+/// final. An orphan's drop, which nothing beat, is settled once each parent
+/// a load found gone is dead for good (Q81c §2). A drop with no origin note
 /// awaits.
 pub(crate) fn held_awaiting(
     held: &BTreeSet<OutPoint>,
@@ -1272,12 +1387,12 @@ pub(crate) fn held_awaiting(
             }
         }
     }
-    let settled_drop = |origin: &DropOrigin| match origin {
+    let settled_drop = |t: &Txid, origin: &DropOrigin| match origin {
         DropOrigin {
             winner: None, gone, ..
         } if !gone.is_empty() => gone.iter().all(evidence.dead_for_good),
         _ => match (origin.winner.and_then(|w| txs.get(&w))).filter(|e| !e.is_abandoned()) {
-            Some(winner) => (evidence.chain_final)(winner),
+            Some(winner) => (evidence.chain_final)(winner) || (evidence.drop_dead)(t),
             None => {
                 (origin.contested.iter()).any(|o| locked.contains(o) || (evidence.final_spend)(o))
             }
@@ -1287,9 +1402,9 @@ pub(crate) fn held_awaiting(
         live.contains(coin)
             || (evidence.spent_by_record)(coin)
             || (evidence.unknown_lock)(coin)
-            || (drops.values())
-                .filter(|(holds, _)| holds.contains(coin))
-                .any(|(_, origin)| !origin.as_ref().is_some_and(settled_drop))
+            || (drops.iter())
+                .filter(|(_, (holds, _))| holds.contains(coin))
+                .any(|(t, (_, origin))| !origin.as_ref().is_some_and(|o| settled_drop(t, o)))
     })
 }
 
@@ -1418,6 +1533,18 @@ pub(crate) struct WalletHistory {
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
+    /// Verified locks whose transaction or one of its inputs belongs to
+    /// this wallet. In memory only.
+    pub(crate) session_locks: HashSet<Txid>,
+    /// Of [`Self::session_locks`], those a fork took out of their block
+    /// that key-wallet removed: the history keeps them out of a block,
+    /// locked, and the coins key-wallet gave back for them stay out of
+    /// spending (`crate::withhold`) until key-wallet records them again.
+    pub(crate) fork_kept_locks: HashSet<Txid>,
+    /// Own spends removed by a fork after the early-lock buffer evicted
+    /// evidence. Their inputs stay held for this session irrespective of
+    /// later changes to the history entry.
+    pub(crate) uncertain_fork_spends: HashMap<Txid, BTreeSet<OutPoint>>,
     /// The last load of the history missed a stored record or mark.
     pub load_incomplete: bool,
     /// The claims the store's repair put back pending, as the last load
@@ -1473,6 +1600,65 @@ pub(crate) struct WalletHistory {
 }
 
 impl WalletHistory {
+    pub(crate) fn knows_instant_lock(&self, txid: &Txid, entry: &TxEntry) -> bool {
+        instant_locked(entry) || (!entry.abandoned && self.session_locks.contains(txid))
+    }
+
+    fn owns_output(&self, o: &OutPoint) -> bool {
+        self.own_outputs
+            .get(&o.txid)
+            .is_some_and(|out| out.contains_key(&o.vout))
+    }
+
+    fn owned_inputs_of(&self, txid: &Txid, entry: &TxEntry) -> Vec<OutPoint> {
+        entry
+            .tx
+            .input
+            .iter()
+            .enumerate()
+            .filter_map(|(n, input)| {
+                let coin = input.previous_output;
+                (entry.own_inputs.contains_key(&(n as u32))
+                    || self.owns_output(&coin)
+                    || self.claimed.contains_key(&coin)
+                    || self
+                        .marked
+                        .get(txid)
+                        .is_some_and(|marked| marked.contains(&coin)))
+                .then_some(coin)
+            })
+            .collect()
+    }
+
+    pub(crate) fn remember_if_buffered(&mut self, txid: &Txid, locks: &EarlyInstantLocks) {
+        if locks.inputs.contains_key(txid) && self.txs.contains_key(txid) {
+            self.session_locks.insert(*txid);
+        }
+    }
+
+    pub(crate) fn upsert_with_locks(
+        &mut self,
+        record: &TransactionRecord,
+        seen_at: Option<u64>,
+        locks: &EarlyInstantLocks,
+    ) -> bool {
+        let new = self.upsert(record, seen_at);
+        if !is_wallets(record) {
+            return new;
+        }
+        self.remember_if_buffered(&record.txid, locks);
+        for output in record
+            .output_details
+            .iter()
+            .filter(|o| matches!(o.role, OutputRole::Received | OutputRole::Change))
+        {
+            let outpoint = OutPoint::new(record.txid, output.index);
+            self.session_locks
+                .extend(locks.spends.get(&outpoint).into_iter().flatten());
+        }
+        new
+    }
+
     /// Sets the coins the wallet held at a load (empty when the load failed
     /// to read a record, or read one missing or another's).
     pub fn set_loaded_coins(&mut self, txids: HashSet<Txid>) {
@@ -1508,6 +1694,7 @@ impl WalletHistory {
         self.own_outputs.remove(txid);
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
+        self.fork_kept_locks.remove(txid);
     }
 
     /// The ProRegTxs kept out of sight that the history has no own entry
@@ -1537,6 +1724,7 @@ impl WalletHistory {
             return false;
         }
         let new = !self.txs.contains_key(&record.txid);
+        self.fork_kept_locks.remove(&record.txid);
         let entry = self.txs.entry(record.txid).or_insert_with(|| TxEntry {
             tx: record.transaction.clone(),
             context: record.context.clone(),
@@ -1679,18 +1867,53 @@ impl WalletHistory {
 
     /// A fork replaced the blocks above the wallet's truncation height:
     /// `removed` are gone, and `unconfirmed` (InstantSend-locked, so the
-    /// network mines them again) are out of a block, locked. Returns the
-    /// transactions that changed.
-    pub fn truncate(&mut self, removed: &[Txid], unconfirmed: &[Txid]) -> Vec<Txid> {
+    /// network mines them again) are out of a block, locked. A removed one
+    /// a verified lock named this session is kept as unconfirmed too
+    /// ([`Self::fork_kept_locks`]). Returns the transactions that changed.
+    pub fn truncate(
+        &mut self,
+        removed: &[Txid],
+        unconfirmed: &[Txid],
+        lock_overflow: bool,
+    ) -> Vec<Txid> {
+        let mut changed = Vec::new();
         for txid in removed {
+            if lock_overflow
+                && !self.session_locks.contains(txid)
+                && let Some(entry) = self.txs.get(txid)
+            {
+                let own_inputs = self.owned_inputs_of(txid, entry);
+                if !own_inputs.is_empty() {
+                    self.uncertain_fork_spends
+                        .entry(*txid)
+                        .or_default()
+                        .extend(own_inputs);
+                }
+            }
+            if self.session_locks.contains(txid)
+                && let Some(entry) = self.txs.get_mut(txid)
+            {
+                entry.context = TransactionContext::Mempool;
+                entry.instant_locked = true;
+                self.fork_kept_locks.insert(*txid);
+                changed.push(*txid);
+                continue;
+            }
+            if self.uncertain_fork_spends.contains_key(txid)
+                && let Some(entry) = self.txs.get_mut(txid)
+            {
+                entry.context = TransactionContext::Mempool;
+                entry.instant_locked = false;
+                entry.abandoned = false;
+                changed.push(*txid);
+                continue;
+            }
             self.hidden_registrations.remove(txid);
             self.own_outputs.remove(txid);
+            if self.txs.remove(txid).is_some() {
+                changed.push(*txid);
+            }
         }
-        let mut changed: Vec<Txid> = removed
-            .iter()
-            .filter(|t| self.txs.remove(*t).is_some())
-            .copied()
-            .collect();
         for txid in unconfirmed {
             if let Some(e) = self.txs.get_mut(txid) {
                 e.context = TransactionContext::Mempool;
@@ -1720,8 +1943,63 @@ impl WalletHistory {
 #[derive(Debug, Default)]
 pub(crate) struct HistoryStore {
     wallets: RwLock<HashMap<WalletId, WalletHistory>>,
+    early_locks: RwLock<EarlyInstantLocks>,
     /// Woken when a wallet's collaterals become pending.
     collateral_wake: Arc<tokio::sync::Notify>,
+}
+
+pub(crate) const EARLY_LOCK_LIMIT: usize = 4096;
+const EARLY_LOCK_INPUT_LIMIT: usize = 65_536;
+
+#[derive(Debug, Default)]
+pub(crate) struct EarlyInstantLocks {
+    order: VecDeque<Txid>,
+    inputs: HashMap<Txid, Vec<OutPoint>>,
+    spends: HashMap<OutPoint, HashSet<Txid>>,
+    input_count: usize,
+    overflow: bool,
+}
+
+impl EarlyInstantLocks {
+    fn remember(&mut self, txid: Txid, inputs: &[OutPoint]) {
+        if self.inputs.contains_key(&txid) {
+            return;
+        }
+        if inputs.len() > EARLY_LOCK_INPUT_LIMIT {
+            self.overflow = true;
+            return;
+        }
+        while self.order.len() >= EARLY_LOCK_LIMIT
+            || self.input_count + inputs.len() > EARLY_LOCK_INPUT_LIMIT
+        {
+            let oldest = self
+                .order
+                .pop_front()
+                .expect("a full buffer has an oldest lock");
+            let old_inputs = self
+                .inputs
+                .remove(&oldest)
+                .expect("every queued lock has inputs");
+            self.input_count -= old_inputs.len();
+            for o in old_inputs {
+                if let std::collections::hash_map::Entry::Occupied(mut spenders) =
+                    self.spends.entry(o)
+                {
+                    spenders.get_mut().remove(&oldest);
+                    if spenders.get().is_empty() {
+                        spenders.remove();
+                    }
+                }
+            }
+            self.overflow = true;
+        }
+        self.order.push_back(txid);
+        self.inputs.insert(txid, inputs.to_vec());
+        for o in inputs {
+            self.spends.entry(*o).or_default().insert(txid);
+        }
+        self.input_count += inputs.len();
+    }
 }
 
 impl HistoryStore {
@@ -1734,6 +2012,30 @@ impl HistoryStore {
             self.collateral_wake.notify_one();
         }
         r
+    }
+
+    /// Hold history and lock evidence in the same order as `note_instant_lock`,
+    /// so a truncation cannot see a record before its buffered match.
+    pub(crate) fn with_wallet_records<R>(
+        &self,
+        wallet: WalletId,
+        f: impl FnOnce(&mut WalletHistory, &EarlyInstantLocks) -> R,
+    ) -> R {
+        self.with_wallet(wallet, |history| {
+            let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+            f(history, &locks)
+        })
+    }
+
+    pub(crate) fn truncate(
+        &self,
+        wallet: WalletId,
+        removed: &[Txid],
+        unconfirmed: &[Txid],
+    ) -> Vec<Txid> {
+        self.with_wallet_records(wallet, |history, locks| {
+            history.truncate(removed, unconfirmed, locks.overflow)
+        })
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the
@@ -1854,12 +2156,26 @@ impl HistoryStore {
     /// Marks `txid` InstantSend-locked in each loaded history but those of
     /// `skip` that holds it out of a block without a known lock: key-wallet
     /// tells only the wallets holding its record or coins (#828). The
-    /// wallets marked.
+    /// wallets marked. Only a verified network lock supplies inputs for
+    /// the reorg fallback, even if no load currently needs a claim rerun.
     pub(crate) fn note_instant_lock(
         &self,
         txid: &Txid,
+        verified_inputs: Option<&[OutPoint]>,
         skip: impl Fn(&WalletId) -> bool,
     ) -> Vec<WalletId> {
+        if let Some(inputs) = verified_inputs {
+            let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+            self.early_locks
+                .write()
+                .unwrap_or_else(|p| p.into_inner())
+                .remember(*txid, inputs);
+            for history in wallets.values_mut() {
+                if history.txs.contains_key(txid) || inputs.iter().any(|o| history.owns_output(o)) {
+                    history.session_locks.insert(*txid);
+                }
+            }
+        }
         let wants_lock = |id: &WalletId, h: &WalletHistory| {
             !skip(id)
                 && h.loaded
@@ -3140,7 +3456,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 3);
         store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
-        store.with_wallet(wallet, |h| h.truncate(&[removed.txid()], &[kept.txid()]));
+        store.truncate(wallet, &[removed.txid()], &[kept.txid()]);
         assert_eq!(
             store.registration_collaterals(&wallet),
             vec![kept_collateral],
@@ -3550,7 +3866,7 @@ mod tests {
         let locked = add(3, in_block(8, 3));
         let unknown = Txid::from_byte_array([9; 32]);
 
-        let changed = h.truncate(&[removed, unknown], &[locked, unknown]);
+        let changed = h.truncate(&[removed, unknown], &[locked, unknown], false);
 
         assert_eq!(changed, [removed, locked]);
         assert!(!h.txs.contains_key(&removed));
@@ -4541,6 +4857,144 @@ mod tests {
         }
     }
 
+    /// #907, beside a winner W stuck in a block the header chain replaced
+    /// (B at 10, under a ChainLock of 11, the header chain holding B'): a
+    /// drop settles once its own dropped transaction can never confirm
+    /// ([`chain_dead_for_good`]). C, dropped holding D, builds on P, swept
+    /// for W: a rival's spend of P's input A, proven final, kills P and so
+    /// C; P itself mined and proven final kills neither, since a
+    /// transaction live in the history is never dead. Roots R1 and R2, beaten by one winner,
+    /// share its origin: a rival's spend of R1's input E1 kills R1 alone,
+    /// and K, a dropped child of R1, with it; R1 itself mined kills none.
+    #[test]
+    fn a_drop_beside_a_stale_winner_settles_only_once_its_own_chain_is_dead() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (replaced, kept, lock) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+            BlockHash::from_byte_array([3; 32]),
+        );
+        let headers = HashMap::from([(10, kept), (11, lock)]);
+        let proven = |b: (u32, BlockHash)| proven_final(b, Some((11, lock)), &headers);
+        let chain_final = |e: &TxEntry| {
+            (e.context.block_info()).is_some_and(|b| proven((b.height(), b.block_hash())))
+        };
+        let in_hash = |hash: BlockHash| TransactionContext::InBlock(BlockInfo::new(10, hash, 0));
+        let spends = |coins: &[OutPoint], n: u8| {
+            let inputs = coins.iter().map(|o| input(o.txid, o.vout)).collect();
+            tx(inputs, vec![out(10, &hash_addr(n))])
+        };
+        let awaits = |stale: &Transaction,
+                      origin: DropOrigin,
+                      keys: &[(Txid, OutPoint)],
+                      deaths: &Deaths,
+                      mined: Vec<Transaction>| {
+            let drops: HeldDrops = (keys.iter())
+                .map(|(k, h)| (*k, (BTreeSet::from([*h]), Some(origin.clone()))))
+                .collect();
+            let txs: HashMap<Txid, TxEntry> =
+                (std::iter::once(entry(stale.clone(), in_hash(replaced))))
+                    .chain(mined.into_iter().map(|m| entry(m, in_hash(kept))))
+                    .map(|e| (e.tx.txid(), e))
+                    .collect();
+            let no_notes = BTreeMap::new();
+            let dead = |u: &Txid| dead_for_good(u, deaths, &txs, &no_notes, proven);
+            let ancestor = |u: &Txid| drops.contains_key(u) || deaths.swept_by.contains_key(u);
+            let drop_dead = |u: &Txid| chain_dead_for_good(u, deaths, ancestor, dead);
+            let evidence = HeldEvidence {
+                chain_final: &chain_final,
+                dead_for_good: &dead,
+                drop_dead: &drop_dead,
+                ..no_evidence(None)
+            };
+            (keys.iter())
+                .map(|(_, h)| held_awaiting(&BTreeSet::from([*h]), &drops, &txs, &evidence))
+                .collect::<Vec<_>>()
+        };
+
+        let (a, d) = (OutPoint::new(t(1), 0), OutPoint::new(t(2), 0));
+        let stale = spends(&[a], 3);
+        let p = spends(&[a], 1);
+        let c = tx(
+            vec![input(p.txid(), 0), input(d.txid, d.vout)],
+            vec![out(40, &hash_addr(2))],
+        );
+        let deaths = Deaths {
+            swept_by: BTreeMap::from([(
+                p.txid(),
+                SweptBy {
+                    claim: false,
+                    winner: stale.txid(),
+                    block: None,
+                    tx: p.clone(),
+                },
+            )]),
+            copies: BTreeMap::from([(c.txid(), c.clone())]),
+            ..Deaths::default()
+        };
+        let origin = DropOrigin {
+            winner: Some(stale.txid()),
+            contested: BTreeSet::from([a, OutPoint::new(p.txid(), 0), d]),
+            gone: BTreeSet::new(),
+        };
+        let c_drop = [(c.txid(), d)];
+        let mut rows = Vec::new();
+        for (name, mined, d_awaits) in [
+            ("nothing else", vec![], true),
+            (
+                "a rival's spend of A proven final",
+                vec![spends(&[a], 4)],
+                false,
+            ),
+            ("P mined and proven final", vec![p.clone()], true),
+        ] {
+            let got = awaits(&stale, origin.clone(), &c_drop, &deaths, mined);
+            rows.push((format!("D, {name}"), got, vec![d_awaits]));
+        }
+
+        let (a1, e1) = (OutPoint::new(t(5), 0), OutPoint::new(t(5), 1));
+        let (a2, e2) = (OutPoint::new(t(6), 0), OutPoint::new(t(6), 1));
+        let (h1, h2, h3) = (
+            OutPoint::new(t(7), 0),
+            OutPoint::new(t(7), 1),
+            OutPoint::new(t(7), 2),
+        );
+        let stale = spends(&[a1, a2], 3);
+        let (r1, r2) = (spends(&[a1, e1], 5), spends(&[a2, e2], 6));
+        let k = spends(&[OutPoint::new(r1.txid(), 0)], 8);
+        let deaths = Deaths {
+            copies: BTreeMap::from([
+                (r1.txid(), r1.clone()),
+                (r2.txid(), r2.clone()),
+                (k.txid(), k.clone()),
+            ]),
+            ..Deaths::default()
+        };
+        let origin = DropOrigin {
+            winner: Some(stale.txid()),
+            contested: BTreeSet::from([a1, e1, a2, e2]),
+            gone: BTreeSet::new(),
+        };
+        let roots = [(r1.txid(), h1), (r2.txid(), h2), (k.txid(), h3)];
+        for (name, mined, r_await) in [
+            (
+                "a rival's spend of E1 proven final",
+                vec![spends(&[e1], 4)],
+                vec![false, true, false],
+            ),
+            (
+                "R1 mined and proven final",
+                vec![r1.clone()],
+                vec![true, true, true],
+            ),
+        ] {
+            let got = awaits(&stale, origin.clone(), &roots, &deaths, mined);
+            rows.push((format!("R1's, R2's and K's coins, {name}"), got, r_await));
+        }
+        let wrong: Vec<_> = rows.iter().filter(|(_, got, want)| got != want).collect();
+        assert!(wrong.is_empty(), "(row, awaits, expected): {wrong:?}");
+    }
+
     /// [`HeldEvidence`] of nothing, under `chainlock`, whose header chain
     /// proves every block at or below it.
     fn no_evidence(chainlock: Option<u32>) -> HeldEvidence<'static> {
@@ -4553,6 +5007,7 @@ mod tests {
             spent_by_record: &|_| false,
             unknown_lock: &|_| false,
             dead_for_good: &|_| false,
+            drop_dead: &|_| false,
         }
     }
 
@@ -5127,6 +5582,104 @@ mod tests {
             spent_outpoints(&txs, |_, _, locked| !locked).contains(&coin(5)),
             "A stays held"
         );
+    }
+
+    /// #740: [`conflicted`] keeps the lowest block that beats each
+    /// transaction, along every path: a child of two beaten parents, and
+    /// its child, take the lower block, whichever parent is walked first
+    /// (16 independent diamonds, as the walk's order is the map's).
+    /// [`spent_outpoints`] holds only the rivals' inputs.
+    #[test]
+    fn mg740_conflicted_keeps_the_lowest_beating_block_along_every_path() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
+        let (mut want, mut rivals) = (HashMap::new(), HashSet::new());
+        for i in 0..16u8 {
+            let (x, y) = (coin(2 * i + 1), coin(2 * i + 2));
+            let spend = |inputs: Vec<OutPoint>, value| {
+                let inputs = inputs.into_iter().map(|o| input(o.txid, o.vout)).collect();
+                tx(inputs, vec![out(value, &hash_addr(9))])
+            };
+            let (a, b) = (spend(vec![x], 1), spend(vec![y], 2));
+            let c = spend(
+                vec![OutPoint::new(a.txid(), 0), OutPoint::new(b.txid(), 0)],
+                3,
+            );
+            let d = spend(vec![OutPoint::new(c.txid(), 0)], 4);
+            want.extend([
+                (a.txid(), 20),
+                (b.txid(), 12),
+                (c.txid(), 12),
+                (d.txid(), 12),
+            ]);
+            for t in [a, b, c, d] {
+                txs.insert(t.txid(), entry(t, TransactionContext::Mempool));
+            }
+            for (o, height) in [(x, 20), (y, 12)] {
+                let r = tx(vec![input(o.txid, o.vout)], vec![out(5, &hash_addr(8))]);
+                txs.insert(r.txid(), entry(r, in_block(height, 0)));
+                rivals.insert(o);
+            }
+        }
+        let heights: HashMap<Txid, u32> = (conflicted(&txs, None, |_| true).into_iter())
+            .map(|(t, (h, _))| (t, h))
+            .collect();
+        assert_eq!(heights, want);
+        assert_eq!(spent_outpoints(&txs, |_, _, locked| !locked), rivals);
+    }
+
+    /// #954: only a block `counts` accepts beats a transaction, directly
+    /// or through its parent; [`Finality`] accepts a block only when the
+    /// header chain holds its hash under a ChainLock it holds too, and
+    /// [`spender_heights`] names the blocks it must read.
+    #[test]
+    fn mg954_only_a_counted_block_beats_and_finality_checks_its_hash() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let hash = |n: u8| BlockHash::from_byte_array([n; 32]);
+        let at = |h: u32, n: u8| TransactionContext::InBlock(BlockInfo::new(h, hash(n), 0));
+        let p = tx(vec![input(coin(1).txid, 0)], vec![out(1, &hash_addr(9))]);
+        let k = tx(vec![input(p.txid(), 0)], vec![out(2, &hash_addr(9))]);
+        let r = tx(vec![input(coin(1).txid, 0)], vec![out(3, &hash_addr(8))]);
+        let paid = tx(vec![input(coin(7).txid, 0)], vec![out(4, &hash_addr(9))]);
+        let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
+        for (t, c) in [
+            (&p, TransactionContext::Mempool),
+            (&k, TransactionContext::Mempool),
+            (&r, at(20, 1)),
+            (&paid, at(5, 3)),
+        ] {
+            txs.insert(t.txid(), entry(t.clone(), c));
+        }
+        let all = conflicted(&txs, None, |_| true);
+        assert_eq!(all.get(&k.txid()), Some(&(20, hash(1))), "through P");
+        assert!(conflicted(&txs, None, |b| b.height() != 20).is_empty());
+        assert_eq!(spender_heights(&[&txs], 30), BTreeSet::from([20]));
+        assert!(spender_heights(&[&txs], 19).is_empty(), "above the bound");
+
+        let block = BlockInfo::new(20, hash(1), 0);
+        let fin = |cl: Option<(u32, u8)>, active: &[(u32, u8)]| Finality {
+            chainlock: cl.map(|(h, n)| (h, hash(n))),
+            active: active.iter().map(|(h, n)| (*h, hash(*n))).collect(),
+        };
+        assert!(fin(Some((21, 2)), &[(20, 1), (21, 2)]).proves(&block));
+        assert!(
+            !fin(None, &[(20, 1), (21, 2)]).proves(&block),
+            "no ChainLock"
+        );
+        assert!(
+            !fin(Some((19, 2)), &[(20, 1), (19, 2)]).proves(&block),
+            "above it"
+        );
+        assert!(
+            !fin(Some((21, 2)), &[(20, 4), (21, 2)]).proves(&block),
+            "a stale hash"
+        );
+        assert!(
+            !fin(Some((21, 2)), &[(20, 1), (21, 5)]).proves(&block),
+            "another branch's lock"
+        );
+        assert!(!fin(Some((21, 2)), &[(21, 2)]).proves(&block), "no header");
+        assert!(!Finality::default().proves(&block));
     }
 
     /// Two mined spends of one coin B (a fork's block the store kept) beside

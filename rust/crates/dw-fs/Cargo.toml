@@ -18,7 +18,12 @@ rustix = { version = "1", default-features = false, features = ["std", "fs", "pr
 [target.'cfg(windows)'.dependencies]
 # MoveFileExW without MOVEFILE_REPLACE_EXISTING (rename_noreplace); the
 # version dw-desktop uses.
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 dw-testutil = { workspace = true }

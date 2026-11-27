@@ -81,7 +81,7 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`shared maintenance ${theme}: Together's fee in the display unit, refused below the minimum`, async ({ page }, info) => {
+  test(`shared maintenance ${theme}: Together accepts an edited fee below its suggestion`, async ({ page }, info) => {
     const errors = trackPageErrors(page);
     const chromium = info.project.name === "chromium";
     await openPane(page, "sh-detail", theme);
@@ -89,17 +89,14 @@ for (const theme of THEMES) {
     await page.getByTestId("sh-dissolve-together").click();
     const fee = page.getByTestId("sh-together-fee");
     await expect(fee).toHaveValue("0.00001000");
-    await expect(page.getByTestId("sh-together-fee-help")).toHaveText("At least 0.00001000 tDASH for 3 shares");
+    await expect(page.getByTestId("sh-together-fee-help")).toHaveText("Suggested fee for 3 shares: 0.00001000 tDASH");
     await expect(page.getByTestId("sh-dissolve-together-form")).not.toContainText("duffs");
     await passphrase(page, "sh-together-credential");
     await expect(page.getByTestId("sh-together-start")).toBeEnabled();
     await shot(page, "sh-together-fee", theme, chromium);
     await fee.fill("0.000009");
-    await expect(page.getByTestId("sh-together-fee-help")).toHaveAttribute("role", "alert");
-    await expect(page.getByTestId("sh-together-start")).toBeDisabled();
-    await shot(page, "sh-together-fee-low", theme, chromium);
-    await fee.fill("0.00002");
     await expect(page.getByTestId("sh-together-start")).toBeEnabled();
+    await shot(page, "sh-together-fee-low", theme, chromium);
     await page.getByTestId("sh-together-start").click();
     await expect(page.getByTestId("sh-session")).toBeVisible();
     await expect(page.getByTestId("sh-row-togetherSendApproval")).toBeVisible();
@@ -132,33 +129,40 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`shared maintenance ${theme}: a hand-off the network refused never reads as sent`, async ({ page }, info) => {
+  for (const handoff of ["refused", "unknown"] as const) test(`shared maintenance ${theme}: ${handoff} hand-off never reads as sent`, async ({ page }, info) => {
     const errors = trackPageErrors(page);
     const chromium = info.project.name === "chromium";
+    const setHandoff = () => page.evaluate((kind) => {
+      if (kind === "unknown") window.__dwFixture!.world.shared.handoff = "send.broadcast_unknown";
+    }, handoff);
+    const warning = handoff === "refused" ? REFUSED : "Dash Wallet couldn't confirm that the dissolution reached the network. It may still confirm. You can send it again from In progress.";
     await openPane(page, "sh-handoff-refused", theme);
+    await setHandoff();
     await page.getByTestId("sh-dissolve-open").click();
     await passphrase(page, "sh-dissolve-credential");
     await page.getByTestId("sh-dissolve-accept").locator("input").check();
     await page.getByTestId("sh-dissolve-now").click();
-    await expect(page.getByTestId("sh-dissolve-refused")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-dissolve-refused")).toHaveText(warning);
     await expect(page.getByTestId("sh-dissolve-sent")).toHaveCount(0);
-    await shot(page, "sh-dissolve-not-sent", theme, chromium);
+    await shot(page, `sh-dissolve-${handoff}`, theme, chromium);
 
     await openPane(page, "sh-handoff-refused", theme);
+    await setHandoff();
     await page.getByTestId("sh-standby-send-0-1000").click();
     await passphrase(page, "sh-standby-send-credential");
     await page.getByTestId("sh-standby-send-confirm").click();
-    await expect(page.getByTestId("sh-standby-refused")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-standby-refused")).toHaveText(warning);
     await expect(page.getByTestId("sh-standby-sent")).toHaveCount(0);
-    await shot(page, "sh-standby-not-sent", theme, chromium);
+    await shot(page, `sh-standby-${handoff}`, theme, chromium);
 
     await openSession(page, "sh-handoff-refused", theme);
+    await setHandoff();
     await passphrase(page, "sh-credential");
     await page.getByTestId("sh-send-maintenance").click();
-    await expect(page.getByTestId("sh-together-refused")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-together-refused")).toHaveText(warning);
     await expect(page.getByTestId("sh-row-sent")).toHaveCount(0);
     await expect(page.getByTestId("sh-send-maintenance")).toHaveCount(0);
-    await shot(page, "sh-together-not-sent", theme, chromium);
+    await shot(page, `sh-together-${handoff}`, theme, chromium);
     expect(errors).toEqual([]);
   });
 

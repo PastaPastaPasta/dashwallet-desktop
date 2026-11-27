@@ -573,7 +573,11 @@ fn mg10_an_instantsend_lock_after_the_abandon_makes_the_key_change_sent_again() 
     let (op, tx, _) = f.sent_key_change(&hash);
     f.abandon(tx.txid());
     assert_eq!(kind(f.state(&op)), "abandoned");
-    assert!(f.session.withdrawal_payout_changes(&pro_tx_hash).is_empty());
+    assert!(
+        f.engine
+            .block_on(f.session.withdrawal_payout_changes(&pro_tx_hash))
+            .is_empty()
+    );
 
     let instant = TransactionContext::InstantSend(Default::default());
     f.block_event(vec![tx_record(tx.clone(), instant)]);
@@ -586,7 +590,8 @@ fn mg10_an_instantsend_lock_after_the_abandon_makes_the_key_change_sent_again() 
         "{e:?}"
     );
     assert_eq!(
-        f.session.withdrawal_payout_changes(&pro_tx_hash),
+        f.engine
+            .block_on(f.session.withdrawal_payout_changes(&pro_tx_hash)),
         vec![None]
     );
     assert_eq!(f.barrier_ops(), std::slice::from_ref(&op.id));
@@ -689,4 +694,533 @@ fn mg10_an_abandon_during_a_resend_stops_its_hand_off() {
         other => panic!("{other:?}"),
     }
     assert_eq!(f.lib.sent().len(), handed, "handed off again");
+}
+
+impl Fx {
+    /// A fresh BIP44 receive address of the wallet.
+    fn receive_address(&self) -> dashcore::Address {
+        let (s, id) = (Arc::clone(&self.session), self.wallet);
+        self.engine
+            .block_on(self.session.on_runtime(async move {
+                let wallet = s.wallet(&id).await?;
+                Ok(wallet.core().next_receive_address_for_account(0).await?)
+            }))
+            .unwrap()
+    }
+
+    /// #740's payment P, signed by the wallet and recorded in the mempool:
+    /// it spends a confirmed coin of the wallet, pays half a coin elsewhere
+    /// and two change outputs back to the wallet, and the update fee coin of
+    /// [`Self::registered`] is gone, so the next operations are paid from
+    /// P's change. Returns P, its input and its change coins.
+    fn pending_payment(&self) -> (Transaction, OutPoint, [OutPoint; 2]) {
+        use std::str::FromStr;
+        let to = |address: dashcore::Address, value| TxOut {
+            value,
+            script_pubkey: address.script_pubkey(),
+        };
+        let prev = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+                ..Default::default()
+            }],
+            output: vec![to(self.receive_address(), COIN)],
+            special_transaction_payload: None,
+        };
+        let input = OutPoint::new(prev.txid(), 0);
+        self.hold(input, prev.output[0].clone());
+        self.confirm(prev.clone(), 2);
+        self.spend(OutPoint::new(Txid::from_byte_array([2; 32]), 0));
+        let elsewhere = dashcore::Address::from_str(crate::send::test_support::FOREIGN)
+            .unwrap()
+            .assume_checked();
+        let unsigned = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: input,
+                sequence: u32::MAX,
+                ..Default::default()
+            }],
+            output: vec![
+                to(elsewhere, COIN / 2),
+                to(self.receive_address(), COIN / 5),
+                to(self.receive_address(), COIN / 5 + 1_000),
+            ],
+            special_transaction_payload: None,
+        };
+        let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+        psbt.inputs[0].non_witness_utxo = Some(prev);
+        let mut signed = (self.engine)
+            .block_on(
+                self.session
+                    .sign_psbt(self.wallet, psbt, self.spend_grant(COIN)),
+            )
+            .unwrap();
+        assert!(dw_psbt::finalize(&mut signed));
+        let p = dw_psbt::extract(&signed).unwrap();
+        self.seen_in_mempool(&p);
+        let change = [1, 2].map(|vout| OutPoint::new(p.txid(), vout));
+        for o in change {
+            self.hold(o, p.output[o.vout as usize].clone());
+        }
+        (p, input, change)
+    }
+
+    /// A transaction paying `input` elsewhere: a rival of the payment that
+    /// spent it.
+    fn rival_of(input: OutPoint) -> Transaction {
+        Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: input,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: COIN / 3,
+                script_pubkey: dashcore::ScriptBuf::new(),
+            }],
+            special_transaction_payload: None,
+        }
+    }
+
+    /// #740's operations, both paid from P's change: a payout-changing key
+    /// change of the registered masternode `hash`, and a registration of an
+    /// existing collateral paid from P's change or the key change's, each
+    /// recorded in the mempool. Returns the key change, the registration and
+    /// the collateral.
+    fn operations_on_change(
+        &self,
+        hash: &str,
+        change: [OutPoint; 2],
+    ) -> (ProTxOperation, ProTxOperation, OutPoint) {
+        let (key_change_op, k, _) = self.sent_key_change(hash);
+        assert!(change.contains(&k.input[0].previous_output), "{k:?}");
+        let collateral = self.credit(3, MASTERNODE_COLLATERAL);
+        let req = RegistrationRequest {
+            service: "1.2.3.5".into(),
+            ..request(CollateralChoice::ExistingUtxo {
+                outpoint: format!("{}-0", collateral.txid),
+            })
+        };
+        let registration = self.register(req, self.grant(COIN)).unwrap();
+        assert_eq!(registration.state, ProTxOperationState::Sent);
+        let tx = self.lib.sent().pop().unwrap();
+        let fee = tx.input[0].previous_output;
+        assert!(change.contains(&fee) || fee.txid == k.txid(), "{tx:?}");
+        self.seen_in_mempool(&tx);
+        assert!(self.locked().contains(&collateral), "D9");
+        (key_change_op, registration, collateral)
+    }
+
+    /// The operations funded from a conflicted payment's change are
+    /// `conflicted`, and nothing holds on them: the barrier's operation
+    /// reads `conflicted`, the follower unlocks the collateral and a later
+    /// update of the masternode is signed.
+    fn assert_released(
+        &self,
+        hash: &str,
+        key_change_op: &ProTxOperation,
+        registration: &ProTxOperation,
+        collateral: OutPoint,
+    ) {
+        assert_eq!(self.state(key_change_op), ProTxOperationState::Conflicted);
+        assert_eq!(self.state(registration), ProTxOperationState::Conflicted);
+        assert_eq!(
+            self.op_barrier_state(key_change_op),
+            Some(ProTxOperationState::Conflicted)
+        );
+        self.follow();
+        assert!(!self.locked().contains(&collateral), "D54");
+        self.credit(4, COIN);
+        let next = self.update(key_change(hash, 6), self.grant(COIN)).unwrap();
+        assert_eq!(next.state, ProTxOperationState::Sent);
+    }
+}
+
+/// #740: a key change and a registration paid from P's unconfirmed change.
+/// The user abandons P, and a rival spend of P's input is mined. They can
+/// never confirm (Core's `MarkConflicted` reaches them through P), so they
+/// read `conflicted`: the next update is signed, the payout-change
+/// barrier's operation is `conflicted` and the registration's collateral
+/// unlocks.
+#[test]
+fn mg740_operations_on_an_abandoned_payments_change_are_conflicted_once_a_rival_is_mined() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+    assert_ne!(f.state(&key_change_op), ProTxOperationState::Conflicted);
+
+    f.confirm(Fx::rival_of(input), 60);
+    f.tip(66);
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #740 after a restart: the user abandoned P, and the rival is mined after
+/// the app restarts. P's evidence is its abandoned copy, which the load
+/// puts back into the history, so the operations read `conflicted` all the
+/// same and nothing holds on them.
+#[test]
+fn mg740_operations_on_an_abandoned_payments_change_are_conflicted_after_a_restart() {
+    let mut f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+
+    f.restart(&[(3, MASTERNODE_COLLATERAL)]);
+    let vout = payload(&reg_tx).collateral_outpoint.vout;
+    f.hold(
+        OutPoint::new(reg_tx.txid(), vout),
+        reg_tx.output[vout as usize].clone(),
+    );
+    f.confirm(reg_tx.clone(), 7);
+    *f.seam.list.lock().unwrap() = Some(vec![entry_of(&reg_tx)]);
+    assert!(
+        (f.session.hub.history.get(&f.wallet, &p.txid())).is_some_and(|e| e.is_abandoned()),
+        "the load restores P's abandoned copy"
+    );
+    assert_ne!(f.state(&key_change_op), ProTxOperationState::Conflicted);
+
+    f.confirm(Fx::rival_of(input), 60);
+    f.tip(66);
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #740: P abandoned, with its rival only in the mempool. P may still
+/// confirm, so the operations read `abandoned` as the abandon left them
+/// (D49), never `conflicted`: the next update waits on the key change, the
+/// barrier's operation is `abandoned` and the collateral stays locked.
+#[test]
+fn mg740_an_abandoned_payments_rival_only_in_the_mempool_keeps_every_hold() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+
+    f.record(Fx::rival_of(input), TransactionContext::Mempool);
+    f.tip(66);
+    assert_eq!(f.state(&key_change_op), ProTxOperationState::Abandoned);
+    assert_eq!(f.state(&registration), ProTxOperationState::Abandoned);
+    assert_eq!(
+        f.op_barrier_state(&key_change_op),
+        Some(ProTxOperationState::Abandoned)
+    );
+    f.follow();
+    assert!(f.locked().contains(&collateral), "unlocked");
+    f.credit(4, COIN);
+    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdateAbandonedPending { operation } if *operation == key_change_op.id),
+        "{e:?}"
+    );
+}
+
+/// #740 with P never abandoned (the history still holds it): the
+/// operations paid from its change read `conflicted` once a rival of P's
+/// input is mined final, and their fee inputs settle once that block is
+/// buried, as a direct conflict's do: under SPV's ChainLock, at once.
+#[test]
+fn mg740_fee_inputs_of_operations_on_a_beaten_payments_change_settle_once_buried() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (_, input, change) = f.pending_payment();
+    let (key_change_op, registration, _) = f.operations_on_change(&hash, change);
+    let ops = [&key_change_op.id, &registration.id];
+    let fee_inputs = || -> Vec<String> {
+        let rows = f.rows().into_iter().filter(|r| ops.contains(&&r.id));
+        rows.map(|r| r.fee_inputs).collect()
+    };
+    assert_eq!(fee_inputs().len(), 2);
+    assert!(fee_inputs().iter().all(|i| i != "[]"));
+
+    f.confirm(Fx::rival_of(input), 60);
+    f.tip(60);
+    assert_eq!(f.state(&key_change_op), ProTxOperationState::Conflicted);
+    assert_eq!(f.state(&registration), ProTxOperationState::Conflicted);
+    f.follow();
+    assert!(fee_inputs().iter().all(|i| i == "[]"), "{:?}", fee_inputs());
+}
+
+impl Fx {
+    /// Runs `op` on the wallet's manager as dash-spv does, then hands the
+    /// hub its events and flushes the wallet store.
+    fn deliver<F>(&self, op: F)
+    where
+        F: for<'a> FnOnce(
+                &'a mut platform_wallet::key_wallet_manager::WalletManager<
+                    platform_wallet::PlatformWalletInfo,
+                >,
+            ) -> futures_util::future::BoxFuture<'a, ()>
+            + Send
+            + 'static,
+    {
+        use dash_spv::EventHandler;
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        let manager = self.session.manager().unwrap();
+        let events: Vec<platform_wallet::key_wallet_manager::WalletEvent> =
+            self.engine.block_on(async move {
+                let wm = manager.wallet_manager_arc();
+                let mut wm = wm.write().await;
+                let mut rx = wm.subscribe_events();
+                op(&mut wm).await;
+                std::iter::from_fn(|| rx.try_recv().ok()).collect()
+            });
+        for event in &events {
+            self.session.hub.on_wallet_event(event);
+        }
+        self.session.hub.settle_rereads();
+        (self.session.live().unwrap().persister)
+            .flush(self.wallet.0)
+            .unwrap();
+    }
+
+    /// The scan reaches `height`, whose block holds `txs`: key-wallet
+    /// records and stores them in that block. Returns its hash.
+    fn mined(&self, height: u32, txs: Vec<Transaction>) -> dashcore::BlockHash {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let mut block = dashcore::Block {
+            header: dashcore::blockdata::block::Header {
+                version: dashcore::blockdata::block::Version::from_consensus(1),
+                prev_blockhash: dashcore::BlockHash::all_zeros(),
+                merkle_root: dashcore::TxMerkleNode::all_zeros(),
+                time: 1_793_598_712,
+                bits: dashcore::CompactTarget::from_consensus(0x207f_ffff),
+                nonce: height,
+            },
+            txdata: txs,
+        };
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+        let hash = block.block_hash();
+        let id = self.wallet;
+        self.deliver(move |wm| {
+            Box::pin(async move {
+                let wallets = BTreeSet::from([id.0]);
+                wm.process_block_for_wallets(&block, hash, height, &wallets)
+                    .await;
+                wm.update_wallet_synced_height(&id.0, height);
+            })
+        });
+        self.tip(height);
+        hash
+    }
+
+    /// key-wallet applies a ChainLock of the block `hash` at `height`,
+    /// which the wallet store keeps.
+    fn chain_lock_applied(&self, height: u32, hash: dashcore::BlockHash) {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        self.deliver(move |wm| {
+            Box::pin(async move {
+                wm.apply_chain_lock(dashcore::ChainLock {
+                    block_height: height,
+                    block_hash: hash,
+                    signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+                });
+            })
+        });
+    }
+
+    /// A quote's look at the masternode `pro_tx_hash`'s payout-change
+    /// barriers, which deletes those it clears.
+    fn quote_barriers(&self, pro_tx_hash: &[u8; 32]) {
+        (self.engine).block_on(self.session.withdrawal_clear_barriers(pro_tx_hash));
+    }
+
+    /// #740's operations still hold: they read `state`, a quote keeps the
+    /// key change's barrier, the follower keeps the collateral locked and a
+    /// later update of the masternode is refused.
+    fn assert_held(
+        &self,
+        what: &str,
+        hash: &str,
+        pro_tx_hash: &[u8; 32],
+        (key_change_op, registration): (&ProTxOperation, &ProTxOperation),
+        collateral: OutPoint,
+        state: ProTxOperationState,
+    ) {
+        assert_eq!(self.state(key_change_op), state, "{what}");
+        assert_eq!(self.state(registration), state, "{what}");
+        self.quote_barriers(pro_tx_hash);
+        assert!(
+            self.barrier_ops().contains(&key_change_op.id),
+            "{what}: the barrier"
+        );
+        self.follow();
+        assert!(
+            self.locked().contains(&collateral),
+            "{what}: the collateral"
+        );
+        self.credit(4, COIN);
+        let e = self.update(key_change(hash, 6), self.grant(COIN));
+        assert!(e.is_err(), "{what}: a later update {e:?}");
+    }
+}
+
+/// A block of the header chain [`ops::flat_headers`] answers, at `height`.
+fn on_chain(height: u32) -> TransactionContext {
+    use key_wallet::transaction_checking::BlockInfo;
+    TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 0))
+}
+
+/// #954 (M-1): the rival of P comes back from the wallet store after a
+/// restart in a block a fork replaced, and the ChainLock the wallet applied
+/// is at a greater height on the new branch. The header chain doesn't hold
+/// the rival's block, so it beats nothing: the operations stay
+/// `abandoned`, a quote keeps the barrier, the collateral stays locked and
+/// a later update waits. Once the chain holds that block under the
+/// ChainLock, all of it goes.
+#[test]
+fn mg954_a_rival_reloaded_from_a_replaced_block_after_a_restart_releases_nothing() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let mut f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+    // A re-send of P's input that pays the wallet change, as key-wallet
+    // records a spend of its coin.
+    let mut rival = Fx::rival_of(input);
+    rival.output.push(TxOut {
+        value: COIN / 4,
+        script_pubkey: f.receive_address().script_pubkey(),
+    });
+    let stale = f.mined(60, vec![rival.clone()]);
+    let replaced = dashcore::BlockHash::from_byte_array([0x60; 32]);
+    let lock = dashcore::BlockHash::from_byte_array([0x61; 32]);
+    f.forks.lock().unwrap().extend([(60, replaced), (61, lock)]);
+    f.chain_lock_applied(61, lock);
+    {
+        let live = f.session.live().unwrap();
+        crate::kill9::eventually("the store keeps the rival's block", || {
+            live.persister.flush(f.wallet.0).unwrap();
+            let stored = (live.persister)
+                .get_core_tx_record(f.wallet.0, &rival.txid())
+                .unwrap();
+            stored.and_then(|r| r.context.block_info().map(|b| b.block_hash())) == Some(stale)
+        });
+        crate::kill9::eventually("the store keeps the ChainLock", || {
+            live.persister.flush(f.wallet.0).unwrap();
+            let stored = live.store.load().unwrap();
+            let applied = (stored.wallets.get(&f.wallet.0))
+                .and_then(|w| w.wallet_info.metadata.last_applied_chain_lock.clone());
+            applied.is_some_and(|cl| (cl.block_height, cl.block_hash) == (61, lock))
+        });
+    }
+
+    f.restart(&[(3, MASTERNODE_COLLATERAL)]);
+    let vout = payload(&reg_tx).collateral_outpoint.vout;
+    f.hold(
+        OutPoint::new(reg_tx.txid(), vout),
+        reg_tx.output[vout as usize].clone(),
+    );
+    f.record(reg_tx.clone(), on_chain(7));
+    *f.seam.list.lock().unwrap() = Some(vec![entry_of(&reg_tx)]);
+    let reloaded = f.session.hub.history.get(&f.wallet, &rival.txid());
+    assert_eq!(
+        reloaded.and_then(|e| e.context.block_info().map(|b| b.block_hash())),
+        Some(stale),
+        "the load restores the rival in its old block"
+    );
+    f.tip(66);
+    let ops = (&key_change_op, &registration);
+    let abandoned = ProTxOperationState::Abandoned;
+    f.assert_held(
+        "a replaced block",
+        &hash,
+        &pro_tx_hash,
+        ops,
+        collateral,
+        abandoned,
+    );
+
+    f.forks.lock().unwrap().insert(60, stale);
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+    f.quote_barriers(&pro_tx_hash);
+    assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
+}
+
+/// #954 (M-1): a rival of P in one block no ChainLock covers releases
+/// nothing, as a reorg can undo it: a quote keeps the barrier, the
+/// collateral stays locked and a later update waits. The block is orphaned
+/// (the rival back in the mempool): all of it still holds. Once a ChainLock
+/// covers the rival's block on the chain, the barrier clears and the
+/// collateral unlocks.
+#[test]
+fn mg954_a_rival_in_a_block_no_chainlock_covers_releases_nothing_until_one_does() {
+    let f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+    let ops = (&key_change_op, &registration);
+    let abandoned = ProTxOperationState::Abandoned;
+    let rival = Fx::rival_of(input);
+
+    f.record(rival.clone(), on_chain(60));
+    f.tip(60);
+    f.assert_held("one block", &hash, &pro_tx_hash, ops, collateral, abandoned);
+    f.record(rival.clone(), TransactionContext::Mempool);
+    f.tip(61);
+    f.assert_held("orphaned", &hash, &pro_tx_hash, ops, collateral, abandoned);
+
+    f.record(rival, on_chain(61));
+    f.chainlock(61);
+    f.tip(66);
+    f.quote_barriers(&pro_tx_hash);
+    assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #954: an InstantSend-locked key change whose own fee input a plain
+/// block spends (M-2), and a registration, not locked, whose fee input a
+/// plain block spends (M-1's direct term). The lock outranks that block
+/// (DIP-10), and the block is not final, so both stay `sent`: a quote
+/// keeps the key change's barrier, a later update waits and the
+/// registration's collateral stays locked. Once a ChainLock covers the
+/// block they are `conflicted` and release.
+#[test]
+fn mg954_operations_hold_against_a_plain_block_rival_until_a_chainlock_locked_or_not() {
+    let f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (key_change_op, k, k_fee) = f.sent_key_change(&hash);
+    f.seen_with(&k, TransactionContext::InstantSend(Default::default()));
+    let collateral = f.credit(3, MASTERNODE_COLLATERAL);
+    let req = RegistrationRequest {
+        service: "1.2.3.5".into(),
+        ..request(CollateralChoice::ExistingUtxo {
+            outpoint: format!("{}-0", collateral.txid),
+        })
+    };
+    let registration = f.register(req, f.grant(COIN)).unwrap();
+    let r_fee = f.lib.sent().pop().unwrap().input[0].previous_output;
+    for (fee, nonce) in [(k_fee, 1), (r_fee, 2)] {
+        let mut rival = Fx::rival_of(fee);
+        rival.lock_time = nonce;
+        f.record(rival, on_chain(60));
+    }
+    f.tip(66);
+    let ops = (&key_change_op, &registration);
+    let sent = ProTxOperationState::Sent;
+    f.assert_held("a plain block", &hash, &pro_tx_hash, ops, collateral, sent);
+
+    f.chainlock(60);
+    f.quote_barriers(&pro_tx_hash);
+    assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
 }

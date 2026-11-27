@@ -901,6 +901,40 @@ fn states(moves: &[MoveRecord]) -> Vec<(PlatformActivityState, bool)> {
 const DONE: (PlatformActivityState, bool) = (PlatformActivityState::Done, true);
 const LOST: (PlatformActivityState, bool) = (PlatformActivityState::Failed, false);
 
+#[test]
+fn partly_taken_keys_release_the_hold_without_attributing_the_spend() {
+    let inputs = &[("a", 4), ("b", 9)];
+    let mut send = record("send", 1, inputs);
+    send.kind = MoveKind::Transfer;
+    let mut exit = record("exit", 2, inputs);
+    exit.exit_of = Some(send.id.clone());
+    let withdrawal = record("withdrawal", 1, inputs);
+    let mut cancel = record("cancel", 2, inputs);
+    cancel.kind = MoveKind::Transfer;
+    cancel.cancel_of = Some(withdrawal.id.clone());
+
+    let incomplete = seen(11, &[("a", Some(4))]);
+    let partly_taken = seen(12, &[("a", Some(4)), ("b", Some(8))]);
+    for mut moves in [
+        vec![send.clone()],
+        vec![send, exit],
+        vec![withdrawal, cancel],
+    ] {
+        settle(&mut moves, &incomplete);
+        assert!(moves.iter().all(MoveRecord::holds));
+
+        let changed = settle(&mut moves, &partly_taken);
+        assert_eq!(changed, (0..moves.len()).collect());
+        assert!(moves.iter().all(|m| (m.state, m.can_land) == LOST));
+        assert!(
+            moves
+                .iter()
+                .all(|m| m.group.is_none() && m.fee_taken.is_none())
+        );
+        assert!(moves.iter().flat_map(|m| &m.inputs).all(|i| i.unseen == 0));
+    }
+}
+
 /// D5 and D6 at the settle: a withdrawal and its cancel, or a send and its
 /// exit, settle only on the nonces reached and the document known; the
 /// document present names the withdrawal, absent the other; never replaced.
@@ -1040,6 +1074,66 @@ fn a_payout_and_its_cancel_settle_on_the_nonces_and_the_documents() {
     assert!(moves.iter().all(MoveRecord::holds), "the document unknown");
     settle_payouts(&mut moves, &partly, &absent);
     assert_eq!(states(&moves), [LOST, LOST]);
+}
+
+/// #1060: two moves beside a held payout P, both to one address at other
+/// amounts, share one withdrawal document (`withdrawal_id` has no amount).
+/// Present, with P's absent, it does not say which paid: the newest is done
+/// for the group and unattributed, the other and P failed, and the
+/// payout's own document present still wins. Equal terms keep the newest
+/// answered, or else the oldest.
+#[test]
+fn moves_beside_a_payout_sharing_one_document_settle_unattributed() {
+    let reached = seen(20, &[("a", Some(4))]);
+    let group = || {
+        let mut p = held_of(MoveKind::ToContact, "p", 1);
+        p.to = "contact".into();
+        let x1 = held_of(MoveKind::ToCore, "x1", 2);
+        let mut x2 = held_of(MoveKind::ToCore, "x2", 3);
+        x2.inputs[0].credits = 5;
+        x2.credits = 6;
+        vec![p, x1, x2]
+    };
+    let shared: Documents = [
+        ("p".to_owned(), false),
+        ("x1".to_owned(), true),
+        ("x2".to_owned(), true),
+    ]
+    .into();
+
+    let mut moves = group();
+    settle_payouts(&mut moves, &reached, &shared);
+    assert_eq!(states(&moves), [LOST, LOST, DONE]);
+    assert!(!moves[0].unattributed);
+    assert!(moves[1].unattributed && moves[2].unattributed);
+    let outcome = moves[2].group.as_ref().expect("the group's outcome");
+    assert_eq!(outcome.to.as_deref(), Some("y"));
+    assert!(moves[2].activity().unattributed);
+
+    // The payout's own document present stays first.
+    let mut moves = group();
+    let mut docs = shared.clone();
+    docs.insert("p".into(), true);
+    settle_payouts(&mut moves, &reached, &docs);
+    assert_eq!(states(&moves), [DONE, LOST, LOST]);
+    assert!(moves.iter().all(|m| !m.unattributed));
+
+    // Equal terms: the oldest, or the newest answered, is done and named.
+    let alike = || {
+        let mut moves = group();
+        moves[2].inputs[0].credits = 1;
+        moves[2].credits = 2;
+        moves
+    };
+    let mut moves = alike();
+    settle_payouts(&mut moves, &reached, &shared);
+    assert_eq!(states(&moves), [LOST, DONE, LOST]);
+    assert!(moves.iter().all(|m| !m.unattributed && m.group.is_none()));
+    let mut moves = alike();
+    moves[2].answered = true;
+    settle_payouts(&mut moves, &reached, &shared);
+    assert_eq!(states(&moves), [LOST, LOST, DONE]);
+    assert!(moves.iter().all(|m| !m.unattributed));
 }
 
 /// While a pair waits on a document after its nonces were proved taken,
