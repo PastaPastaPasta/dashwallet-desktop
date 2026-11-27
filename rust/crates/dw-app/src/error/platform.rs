@@ -250,6 +250,12 @@ impl From<PlatformError> for AppError {
         let message = e.to_string();
         let (code, data): (super::ErrorCode, _) = match e {
             P::Unavailable => (PlatformCode::Unavailable.into(), None),
+            P::SessionOff => (
+                PlatformCode::Unavailable.into(),
+                Some(ErrorData::Feature {
+                    feature: "platform".into(),
+                }),
+            ),
             P::Timeout => (PlatformCode::Timeout.into(), None),
             P::ProofInvalid => (PlatformCode::ProofInvalid.into(), None),
             P::TrustMismatch => (PlatformCode::TrustMismatch.into(), None),
@@ -681,6 +687,18 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_disabled_session_is_distinct_from_an_unreachable_network() {
+        let disabled = AppError::from(PlatformError::SessionOff);
+        let unreachable = AppError::from(PlatformError::Unavailable);
+        assert_eq!(disabled.code, unreachable.code);
+        assert!(matches!(
+            disabled.data,
+            Some(ErrorData::Feature { feature }) if feature == "platform"
+        ));
+        assert!(unreachable.data.is_none());
+    }
+
     /// Every variant's code equals the engine's `code()`: the strings here
     /// are copies of the contract's, and must not drift from it.
     #[test]
@@ -688,6 +706,7 @@ mod tests {
         let s = || String::from("x");
         let platform = [
             PlatformError::Unavailable,
+            PlatformError::SessionOff,
             PlatformError::Timeout,
             PlatformError::ProofInvalid,
             PlatformError::TrustMismatch,

@@ -17,6 +17,14 @@ struct SettingsScreen: View {
     @State var revealPassphrase = ""
     @State var revealedWords: [String] = []
 
+    private func directoryText(for network: DashNetwork) -> String {
+        do {
+            return try state.env.host.dataDirectory(for: network).path
+        } catch {
+            return ErrorText.m2(error.code)
+        }
+    }
+
     var body: some View {
         let model = model
         let amounts = state.env.amounts
@@ -39,7 +47,7 @@ struct SettingsScreen: View {
                     Text(Format.transition(model.transition)).dashFont(.footnote)
                 }
                 if let network = model.network {
-                    KeyValueRow(CrossStrings.dataDirectory, state.env.host.dataDirectory(for: network).path)
+                    KeyValueRow(CrossStrings.dataDirectory, directoryText(for: network))
                 }
             }
             DashCard {

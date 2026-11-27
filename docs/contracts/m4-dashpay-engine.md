@@ -5215,7 +5215,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     and stays unnamed. `ContactError` gains `Shielded(ShieldedError)` with the pool's codes. **Mainnet: off.** On mainnet
     the source refuses `platform.feature_off{feature: shielded_contact_payment}` as before this item: the facade's
     gates run in main's order and then refuse, `begin_flow(ContactPayFromBalance, shielded)` refuses, and
-    `ShieldedActivity.contact` stays unset. Testnet, regtest and devnet pay.
+    `ShieldedActivity.contact` stays unset. The Shielded spend build gate (item 111) allows payouts only on testnet.
 
 102. **A top-up from Platform as its Confirm showed (C-routes D-C3 review, version 81).** `top_up_from_platform`
     takes `fee_input: Option<PlatformAddressRow>`, its quote's input 0 (the fee source): a plan at submit that takes

@@ -690,7 +690,7 @@ impl NetworkSession {
         wallet: WalletId,
     ) -> Result<(), crate::platform::PlatformError> {
         if self.platform.funds_off() {
-            return Err(crate::platform::PlatformError::Unavailable);
+            return Err(crate::platform::PlatformError::SessionOff);
         }
         match self.wallet_platform_held(wallet) {
             true => Err(crate::platform::PlatformError::Restored),
