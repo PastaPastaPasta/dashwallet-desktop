@@ -236,11 +236,11 @@ export function moveExitLine(exit: MoveExit, credits: (c: string) => string): st
  * the plain move's text). */
 function exitOutcomeText(exit: MoveExit, lost: boolean): string | null {
   const C = MOVE_COPY;
-  const won = (row: PlatformActivity | null) => row?.state === "done";
+  const won = (row: PlatformActivity | null) => row?.state === "done" && row.winnerKnown !== false;
   if (exit.kind !== "cancel") {
     if (exit.kind === "move") return lost && won(exit.row) ? C.exitMove.lost : null;
     if (!lost) return C.exitSend.done(recipientOf(exit.row));
-    return exit.kind === "send" || won(exit.row) ? C.exitSend.lost(recipientOf(exit.row)) : null;
+    return won(exit.row) ? C.exitSend.lost(recipientOf(exit.row)) : null;
   }
   const recipient = exit.held ? recipientOf(exit.held) : "";
   const payment = exit.of === "payment";

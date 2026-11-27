@@ -250,9 +250,8 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
   });
 
   it("maps generic, fee-change, and provably-unsent disconnect errors accurately", () => {
-    expect(disconnectErrorText({ code: "platform.unavailable", message: "", data: null })).toBe(
-      "Dash Wallet couldn't disconnect this app. Try again.",
-    );
+    expect(disconnectErrorText({ code: "platform.unavailable", message: "", data: null })).toContain("Make sure Dash Platform is on and connected");
+    expect(disconnectErrorText({ code: "platform.restored", message: "", data: null })).toContain("Finish checking the restored wallet data");
     expect(disconnectErrorText({ code: "platform.grant_exceeded", message: "", data: null })).toBe(
       "The Dash Platform fee changed while disconnecting, so review the updated fee and try again.",
     );

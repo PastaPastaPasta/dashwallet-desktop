@@ -903,6 +903,8 @@ export const dashpay = {
       credits: "Your identity needs {amount} more in credits to add these keys. Top it up, then try again.",
       answered: "You've already answered this request. Ask the app for a new one.",
       check: "Couldn't check this request with Platform. Try again.",
+      platformRestored: "Finish checking the restored wallet data with Dash Platform before trying again. If you finish the restore without Dash Platform, reopen Dash Wallet with Dash Platform on before trying again.",
+      platformUnavailable: "Dash Platform is unavailable for this request. Make sure Dash Platform is on and connected, then try again.",
       failed: "Sign-in didn't finish: {detail}",
       returnFailed: "Dash Wallet couldn't open {host}. Switch back to the app yourself.",
     },

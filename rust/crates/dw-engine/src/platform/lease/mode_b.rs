@@ -934,6 +934,8 @@ pub enum StuckFundingRefusal {
     /// Resolve: Resolve abandons it itself (`LockAbandoned`).
     #[error("transaction {0} spends the wallet's coins and is not ChainLocked yet")]
     SpendUnsettled(Txid),
+    #[error("the move's own asset lock {0} is mined and not ChainLocked yet")]
+    OwnLockUnfinalized(Txid),
     /// A lock a call of the step signed, or a tracked `Built` or
     /// `Broadcast` lock of the step, spends no coin the self-spend can
     /// take, so the self-spend would not conflict with it (review Opus O-5:
@@ -981,7 +983,7 @@ impl StuckFundingRefusal {
             Self::NoMarker => "no_marker",
             Self::CallRunning => "call_running",
             Self::JournalUnavailable => "journal_unavailable",
-            Self::SpendUnsettled(_) => "spend_unsettled",
+            Self::SpendUnsettled(_) | Self::OwnLockUnfinalized(_) => "spend_unsettled",
             Self::LockInputsSpent(_) => "lock_inputs_spent",
             Self::LockAbandoned(_) => "lock_abandoned",
             Self::MissesSignedLock(_) => "misses_signed_lock",
@@ -999,6 +1001,7 @@ impl StuckFundingRefusal {
             Self::RowsUnknown
                 | Self::CallRunning
                 | Self::SpendUnsettled(_)
+                | Self::OwnLockUnfinalized(_)
                 | Self::LockAbandoned(_)
                 | Self::JournalUnavailable
         )
