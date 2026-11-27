@@ -228,7 +228,6 @@ impl Beats {
     /// its blocks, under a ChainLock at `chainlock` (none proves nothing).
     #[cfg(test)]
     pub(crate) fn on_chain(history: &HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> Self {
-        use dashcore::hashes::Hash;
         let mut active: HashMap<u32, dashcore::BlockHash> = (history.values())
             .filter_map(|e| e.context.block_info())
             .map(|b| (b.height(), b.block_hash()))
@@ -264,7 +263,6 @@ pub(crate) fn flat_headers(
     session: &NetworkSession,
     forks: &Arc<std::sync::Mutex<HashMap<u32, dashcore::BlockHash>>>,
 ) {
-    use dashcore::hashes::Hash;
     let forks = Arc::clone(forks);
     session.hub.attach_headers(Arc::new(move |height| {
         let hash = (forks.lock().unwrap().get(&height).copied())
@@ -1490,7 +1488,6 @@ mod tests {
     /// block is ChainLocked.
     #[test]
     fn mg740_a_row_is_beaten_through_a_beaten_parent_by_the_history_rule() {
-        use dashcore::hashes::Hash;
         use dashcore::{ScriptBuf, TxIn, TxOut};
         use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
         let spend = |input: OutPoint, value| Transaction {

@@ -1253,7 +1253,6 @@ fn mg740_a_payout_change_paid_from_a_beaten_payment_holds_nothing() {
 fn mg740_a_payout_change_reads_the_rivals_final_copy_over_a_replaced_one() {
     use super::super::session::payout_changes_in;
     use crate::history::{Finality, TxEntry};
-    use dashcore::hashes::Hash;
     use std::collections::HashMap;
     let moved = CoreScript::new_p2pkh([0x22; 20]);
     let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
