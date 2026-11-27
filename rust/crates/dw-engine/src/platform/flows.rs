@@ -143,6 +143,16 @@ impl FlowKind {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn app_approvals_and_disconnects_require_platform_funds() {
+    for flow in [FlowKind::AppConnect, FlowKind::AppDisconnect] {
+        assert!(flow.moves_funds());
+        assert!(flow.needs_platform());
+        assert!(flow.moves_platform_funds());
+    }
+}
+
 /// A lease's budgets (E0-04 §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

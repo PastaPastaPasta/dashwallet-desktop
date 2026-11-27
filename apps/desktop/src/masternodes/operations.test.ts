@@ -152,6 +152,7 @@ describe("a shared dissolution's send result", () => {
     expect(handoffRefusedText(d({ kind: "not_sent" }))).toBe(t("masternodes.shared.dissolve.notSent"));
     expect(handoffRefusedText(d({ kind: "signed" }))).toBe(t("masternodes.shared.dissolve.notSent"));
     expect(handoffRefusedText(d({ kind: "sent" }))).toBeNull();
+    expect(handoffRefusedText(d({ kind: "sent" }, "send.broadcast_unknown"))).toBe(t("masternodes.shared.dissolve.handoffUnknown"));
     expect(handoffRefusedText(d({ kind: "confirmed", height: 9 }))).toBeNull();
   });
 });

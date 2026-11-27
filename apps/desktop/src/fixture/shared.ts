@@ -592,19 +592,20 @@ function planDissolve(shares: SharedShares, actor: number, fee: number): Dissolv
 
 function dissolveOp(world: World, hash: string, fee: number, debit: number): ProTxOperation {
   const n = world.shared.sent.length + 1;
+  const sent = world.shared.handoff === null || world.shared.handoff === "send.broadcast_unknown";
   const op: ProTxOperation = {
     id: fake(`d15${n.toString(16)}`, 32),
     kind: "dissolve",
     proTxHash: hash,
     txid: h(`d${n}`),
-    state: world.shared.handoff === null ? { kind: "sent" } : { kind: "not_sent" },
+    state: sent ? { kind: "sent" } : { kind: "not_sent" },
     signRequest: null,
     fee,
     debit,
     overdue: false,
     createdAt: NOW,
     signedAt: NOW,
-    sentAt: world.shared.handoff === null ? NOW : null,
+    sentAt: sent ? NOW : null,
     lastError: world.shared.handoff,
     terms: {
       masternodeType: "regular",
@@ -1068,7 +1069,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       checkFee(request.fee);
       const shares = eligible(world, hash);
       ownShare(shares, request.shareIndex);
-      const least = Math.max(1_000, 300 + 110 * shares.shares.length);
+      const least = 300 + 110 * shares.shares.length;
       if (request.fee < least) throw fail("masternodes.shared_funding_mismatch", "the fee doesn't relay", { kind: "sharedFunding", reason: "fee_low", needed: least });
       capped(world, walletId, grantId, request.fee);
       const s = session(h("ed3"), "coordinator", {

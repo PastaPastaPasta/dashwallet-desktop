@@ -336,6 +336,22 @@ test.describe("Wallets", () => {
     await expect(page.getByTestId(B)).toHaveCount(0);
   });
 
+  test("the Remove wallet warning matches the wallet's recovery material", async ({ page }) => {
+    for (const [summary, warning] of [
+      [{ hasMnemonic: true, legacyIssued: false }, "recovery phrase and its BIP39 passphrase"],
+      [{ hasMnemonic: false, legacyIssued: false }, "Only a wallet backup or export"],
+      [{ hasMnemonic: true, legacyIssued: true }, "Only a wallet backup or export"],
+    ] as const) {
+      await page.goto(fixtureUrl("two-wallets", "light"));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate((state) => Object.assign(window.__dwFixture!.world.wallets[1].summary, state), summary);
+      await command(page, { kind: "navigate", route: "settings" });
+      await page.getByTestId("settings-tabs-wallets").click();
+      await page.getByTestId(`${B}-remove`).click();
+      await expect(page.getByTestId("settings-remove-sheet")).toContainText(warning);
+    }
+  });
+
   for (const [reason, text] of [
     ["inFlight", "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed."],
     [
