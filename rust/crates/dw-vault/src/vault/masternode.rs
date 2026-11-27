@@ -24,8 +24,8 @@
 //! removing a wallet leaves them, and `recover_with_mnemonic` drops them
 //! with every other record of the old vault (its backup copy keeps them).
 
-use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, hash160, sha256};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::{Hash, HashEngine, HmacEngine, hash160, sha256};
 use zeroize::Zeroizing;
 
 use super::{KEY_LOAD_ATTEMPTS, OpGuard, REC_SEED, Vault, WriteGuard, decode_seed, record_id};
@@ -54,9 +54,9 @@ pub const MAX_MASTERNODE_KEY_BYTES: usize = 256;
 const MN_ID_KEY_LABEL: &[u8] = b"dw-vault masternode record id v1";
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut engine = HmacEngine::<sha256::Hash>::new(key);
+    let mut engine = HmacEngine::<sha256::HashEngine>::new(key);
     engine.input(data);
-    Hmac::<sha256::Hash>::from_engine(engine).to_byte_array()
+    engine.finalize().to_byte_array()
 }
 
 /// `mnkey/<HMAC(HMAC(dek, label), proTxHash)>/`: the record-id prefix of
@@ -234,9 +234,9 @@ impl Vault {
             };
             #[cfg(unix)]
             std::fs::File::open(&self.shared.dir)?.sync_all()?;
-            let public = PublicKey::from_secret_key(&secret);
+            let public = secret.public_key();
             Ok(Some(
-                hash160::Hash::hash(&public.serialize()).to_byte_array(),
+                hash160::Hash::hash(&public.to_compressed()).to_byte_array(),
             ))
         })
     }
@@ -253,7 +253,7 @@ impl Vault {
         key: &KeySource,
         pro_tx_hash: &[u8; 32],
         role: &str,
-    ) -> Result<SecretKey, SignerError> {
+    ) -> Result<EcdsaSecretKey, SignerError> {
         if op.epoch != epoch {
             return Err(SignerError::Locked);
         }
@@ -307,10 +307,8 @@ impl Vault {
     }
 }
 
-/// The secp256k1 secret a 32-byte record holds, if it is one. secp256k1
-/// takes the bytes by value, so one unerased copy passes through its
-/// constructor (MG-05 review L9).
-fn secret_of(record: &[u8]) -> Option<SecretKey> {
+/// The secp256k1 secret a 32-byte record holds, if it is one.
+fn secret_of(record: &[u8]) -> Option<EcdsaSecretKey> {
     let bytes = Zeroizing::new(<[u8; 32]>::try_from(record).ok()?);
-    SecretKey::from_secret_bytes(*bytes).ok()
+    EcdsaSecretKey::from_bytes(&bytes).ok()
 }

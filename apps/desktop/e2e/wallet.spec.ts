@@ -527,7 +527,7 @@ test.describe("Pay", () => {
       const restored = wallet.coins[0];
       const single = { ...restored, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 2 };
       wallet.coins = [single];
-      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, catchingUp: false };
+      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, withheld: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
       w.coinjoin.restoredOutpoints = [`${single.outpoint.txid}:${single.outpoint.vout}`];
       w.coinjoin.mixers[wallet.summary.walletId] = {
         state: "idle",
@@ -838,6 +838,31 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Q92_H2: the abandon confirm of a payment from before a restore starts with MG's line, until it's abandoned", async ({ page }) => {
+    const errors = await open(page, "restore-holds");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-abandon-restored-hint")).toHaveText(
+      "This payment was still pending in your wallet data from before the upgrade, and it hasn't confirmed since. Anything you did with it after the upgrade, such as abandoning it, is no longer recorded here.",
+    );
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    expect(errors).toEqual([]);
+  });
+
+  test("Q92 money gate: while the restored wallet data is checked, its line stands in for Abandon", async ({ page }) => {
+    const errors = await open(page, "restore-holds-restored");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-restored-gate")).toHaveText(
+      "Dash Wallet is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
+    );
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await expect(page.getByTestId("tx-resend")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test("Abandon isn't offered for a payment a settled later payment spends from", async ({ page }) => {
     const errors = await open(page, "abandon-settled-child-hidden");
     await page.getByTestId("sidebar-activity").click();
@@ -856,6 +881,29 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText(
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("Abandon isn't offered for a payment that funds an unfinished Platform top-up", async ({ page }) => {
+    const errors = await open(page, "abandon-platform-funding-hidden");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"57".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("a platformFunding refusal says why the payment can't be abandoned", async ({ page }) => {
+    const errors = await open(page, "abandon-platform-funding");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"58".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
     );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);

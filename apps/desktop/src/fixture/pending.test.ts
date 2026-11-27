@@ -1,10 +1,13 @@
 // The fixture's answers for the commands dw-app does not have yet (pending.ts), through
 // IpcBackend as the screens call them: the adapter's "absent" and "present" paths.
 
-import { clearMocks } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { absentAsUnavailable } from "../api/pending";
 import { IpcBackend } from "../api/tauri";
+import { OpenFailureActions } from "../screens/StoreRefusal";
 import { installFixture, type FixtureHandle } from "./index";
+import { plannedWithdrawalCredits } from "../platform/move";
 import { landSend, PLATFORM_PAYEE } from "./pending";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
 
@@ -13,6 +16,7 @@ let backend: IpcBackend;
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
   const stored = new Map<string, string>();
+  vi.stubGlobal("location", { reload: vi.fn() });
   vi.stubGlobal("sessionStorage", { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v), removeItem: (k: string) => stored.delete(k) });
   fixture = installFixture({ scenario: "funded" });
   backend = new IpcBackend("fixture");
@@ -47,8 +51,54 @@ describe("fixture pending commands", () => {
     fixture.world.networkSwitch = { fail: { rolledBack: false } };
     await expect(backend.switchNetwork("mainnet")).rejects.toMatchObject({ code: "app.network_switch_failed", data: { rolledBack: false } });
     expect(fixture.world.launch.network.kind).toBe("testnet");
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use", data: { kind: "storageInUse", retryable: false } });
     await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use" });
+    expect(await backend.restartApp()).toBeNull();
+    expect(location.reload).toHaveBeenCalledOnce();
     expect((await backend.openNetwork()).network.kind).toBe("testnet");
+  });
+
+  it("keeps the foreign files with keep_current_files, and the open after it opens them, restored", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "funded", openRestore: "foreign:otherLineage" });
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_restore", data: { state: "foreign", cause: "otherLineage" } });
+    const actions = new OpenFailureActions(backend);
+    let reopened: Promise<unknown> | null = null;
+    await actions.keep(() => (reopened = backend.openNetwork()));
+    expect(actions.problem).toBeNull();
+    expect(await reopened).toMatchObject({ network: { kind: "testnet", restored: true } });
+    expect(fixture.world.restoreCalls).toEqual(["keepCurrentFiles"]);
+  });
+
+  it("asks for the restore and restarts; the next start opens the earlier data, restored", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "funded", openRefused: "refusedRestore", restoreAvailable: true });
+    expect(await backend.restoreAvailable()).toBe(true);
+    await new OpenFailureActions(backend).restore();
+    expect(fixture.world.restoreCalls).toEqual(["restoreAvailable", "requestRestore"]);
+    expect(fixture.world.appExits).toEqual(["restart"]);
+    expect(location.reload).toHaveBeenCalledOnce();
+    clearMocks();
+    installFixture({ scenario: "funded" });
+    expect(await backend.openNetwork()).toMatchObject({ network: { restored: true } });
+    expect(await backend.activeNetwork()).toMatchObject({ restored: true });
+  });
+
+  it("reads restore_available as absent, and the restore commands as unavailable, in a dw-app without them", async () => {
+    clearMocks();
+    mockIPC((cmd) => {
+      throw `Command ${cmd} not found`;
+    });
+    expect(await backend.restoreAvailable()).toBeNull();
+    for (const call of [backend.requestRestore, backend.keepCurrentFiles, backend.cancelRestore]) await expect(call()).rejects.toThrow(/^This is not available in this build\.$/);
+  });
+
+  it("quits and restarts through quit_app and restart_app, whose success is null", async () => {
+    expect(await backend.quitApp()).toBeNull();
+    expect(await backend.restartApp()).toBeNull();
+    expect(fixture.world.appExits).toEqual(["quit", "restart"]);
+    await expect(absentAsUnavailable(Promise.reject("Command quit_app not found"))).rejects.toThrow(/^This is not available in this build\.$/);
+    await expect(absentAsUnavailable(Promise.reject(new Error("disk full")))).rejects.toThrow("disk full");
   });
 
   it("only saves the choice in a window pinned to a network", async () => {
@@ -75,6 +125,16 @@ describe("fixture pending commands", () => {
     expect(await backend.shieldedHistory(W, 0, 10)).toBeNull();
     expect(await backend.platformAddresses(W)).toBeNull();
     expect(await backend.platformActivity(W)).toBeNull();
+  });
+
+  it("reports a first scan as running, a stopped failed pass as not, and a running retry as running", async () => {
+    const s = fixture.world.pending.shielded!;
+    s.ready = false;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: true });
+    s.lastPassFailed = true;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: false, lastPassFailed: true });
+    s.scanning = true;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: true, lastPassFailed: true });
   });
 
   it("quotes a move to Core and refuses a grant that is too small", async () => {
@@ -341,14 +401,61 @@ describe("fixture pending commands", () => {
     expect((await backend.platformActivity(W))?.[0]).toMatchObject({ estimated: true, mayLand: false });
   });
 
-  it("holds a move beside a send that may still land, at the quote (before any passphrase) and at the move", async () => {
-    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+  it("holds a plain move beside a send that may still land; the move quoted beside it is its exit, at its inputs", async () => {
+    const plain = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     platform().nextSend = "failed";
     const { outcome } = await pay(credits("1000000000"));
     const held = { code: "credits.move_pending", data: { artifact: outcome.id } };
-    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(held);
-    const grant = await opGrant(quote.grant.maxCredits);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, grant.id)).rejects.toMatchObject(held);
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, plain.to, null, (await opGrant(plain.grant.maxCredits)).id)).rejects.toMatchObject(held);
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    expect(exit.exitOf).toBe(outcome.id);
+    // Only the send's input, the largest address: the rest stays.
+    expect(exit.credits).toBe("30000000000");
+  });
+
+  it("the exit of a held send that goes through fails the send: its recipient isn't paid, neither is replaced", async () => {
+    platform().nextSend = "failed";
+    const { outcome } = await pay(credits("1000000000"));
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id);
+    expect(moved.state).toBe("done");
+    const rows = (await backend.platformActivity(W)) ?? [];
+    expect(rows.find((a) => a.id === outcome.id)).toMatchObject({ state: "failed", mayLand: false });
+    expect(rows.some((a) => a.state === "replaced")).toBe(false);
+    expect(platform().addresses.map((a) => a.credits)).toEqual(["10000000000"]);
+  });
+
+  it("the exit of a held send that loses: the send went through and paid its recipient, the move failed", async () => {
+    platform().nextSend = "failed";
+    const { outcome } = await pay(credits("1000000000"));
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    platform().nextMove = "lost";
+    const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id);
+    expect(moved.state).toBe("failed");
+    expect((await backend.platformActivity(W))?.find((a) => a.id === outcome.id)).toMatchObject({ state: "done", mayLand: false });
+  });
+
+  it("cancels a held move to its own address: the move fails, the amount less the fee arrives, and the row names what it cancels", async () => {
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    const q = await backend.platformCancelQuote(W, "pm-held");
+    expect(q).toMatchObject({ of: "pm-held", credits: "40000000000", feeCredits: "6500000" });
+    expect(platform().addresses.map((a) => a.address)).not.toContain(q.to);
+    await expect(backend.platformCancel(W, "pm-held", PLATFORM_PAYEE, (await opGrant(q.grant.maxCredits)).id)).rejects.toMatchObject({ code: "invalid_argument" });
+    const out = await backend.platformCancel(W, "pm-held", q.to, (await opGrant(q.grant.maxCredits)).id);
+    expect(out).toMatchObject({ state: "done", to: q.to });
+    const rows = (await backend.platformActivity(W)) ?? [];
+    expect(rows.find((a) => a.id === out.id)).toMatchObject({ kind: "send", cancels: "pm-held", state: "done" });
+    expect(rows.find((a) => a.id === "pm-held")).toMatchObject({ state: "failed", mayLand: false });
+    expect(platform().addresses).toEqual([{ address: q.to, credits: "39993500000" }]);
+  });
+
+  it("refuses a cancel beside a held send, and of a move that no longer holds", async () => {
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    platform().activity = [{ ...platform().activity.find((a) => a.id === "pm-held")!, id: "ps-x", kind: "send", to: PLATFORM_PAYEE }, ...platform().activity];
+    await expect(backend.platformCancelQuote(W, "pm-held")).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "ps-x" } });
+    await expect(backend.platformCancelQuote(W, "pa-1")).rejects.toMatchObject({ code: "credits.quote_changed" });
   });
 
   it("seeds a send that may land for the scenario: its row carries mayLand and its exact retry is quoted", async () => {
@@ -512,5 +619,28 @@ describe("fixture Platform address funds on mainnet", () => {
     await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, null)).rejects.toMatchObject(off);
     // The exact retry passes the flag; this fixture's payee is a testnet address, so the recipient check answers next.
     await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, "ps-held")).rejects.toMatchObject({ code: "credits.recipient_invalid" });
+  });
+});
+
+describe("fixture Core Max of coins still arriving", () => {
+  /** A Core Max to `route` of one arriving coin of `amount`: the refusal's data. */
+  async function maxOfArriving(route: "shield" | "fund", amount: number) {
+    clearMocks();
+    installFixture({ scenario: "transfer-max-arriving" }).world.wallets[0].coins[0].amount = amount;
+    const b = new IpcBackend("fixture");
+    const quote = route === "shield" ? b.shieldQuote(W, { kind: "all" }) : b.platformFundQuote(W, { kind: "all" });
+    return quote.then(
+      () => null,
+      (e: { data?: unknown }) => e.data,
+    );
+  }
+
+  it("says Max can move them once they've confirmed only from the route's smallest amount plus the lock fee", async () => {
+    const fee = 1_148;
+    for (const [route, floor] of [["shield", 10_001], ["fund", 56_001]] as const) {
+      for (const [amount, arrivingClears] of [[floor + fee, true], [floor + fee - 1, false]] as const) {
+        expect(await maxOfArriving(route, amount), `${route} ${amount}`).toEqual({ kind: "maxMinimum", min: floor, duffs: 0, leftDuffs: 0, arrivingDuffs: amount, arrivingClears });
+      }
+    }
   });
 });

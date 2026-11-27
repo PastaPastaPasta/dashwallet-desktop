@@ -125,7 +125,7 @@ fn current_receiving(view: &PoolView) -> Result<&PoolAddress, EngineError> {
 }
 
 fn pool_addresses(pool: &AddressPool, chain: AddressChain) -> Vec<PoolAddress> {
-    pool.addresses
+    pool.addresses()
         .values()
         .map(|a| PoolAddress {
             address: a.address.clone(),
@@ -179,8 +179,10 @@ impl NetworkSession {
             addresses.extend(pool_addresses(external_addresses, AddressChain::Receiving));
             addresses.extend(pool_addresses(internal_addresses, AddressChain::Change));
         }
+        // An excluded coin (`crate::withhold`) counts in no balance.
+        let excluded = self.hub.excluded_coins(wallet, &info.core_wallet);
         let mut balances: HashMap<Address, u64> = HashMap::new();
-        for utxo in account.utxos.values() {
+        for utxo in (account.utxos.values()).filter(|u| !excluded.contains_key(&u.outpoint)) {
             *balances.entry(utxo.address.clone()).or_default() += utxo.txout.value;
         }
         Ok(PoolView {

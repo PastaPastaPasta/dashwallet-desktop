@@ -43,6 +43,16 @@ export const transfer = {
    * smallest amount. `maxBelowMinimumAll` when nothing in the wallet's other accounts stays. */
   maxBelowMinimum: "Max can move only {amount}, which is less than the smallest amount, {min}. Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
   maxBelowMinimumAll: "Max can move only {amount}, which is less than the smallest amount, {min}.",
+  /** Max from the Dash wallet can move nothing yet: its coins are still arriving (`arriving`, as `maxArriving`'s), and
+   * once they've confirmed they would clear this route's smallest amount and the fee. */
+  maxAllArriving: "Your Dash wallet's coins are still arriving ({arriving}). Max can move them once they've confirmed.",
+  /** As `maxAllArriving`, but even once they've confirmed the coins wouldn't clear this route's smallest amount and the
+   * fee. */
+  maxArrivingTooSmall: "Your Dash wallet's coins are still arriving ({arriving}), but even once they've confirmed, that's less than the smallest amount this transfer can move.",
+  /** Max from the Dash wallet can move nothing, nothing is arriving, and every coin is one Max leaves out. */
+  maxNothing: "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  /** Max from the Dash wallet can move nothing, and nothing is arriving or left out. */
+  maxEmpty: "There's nothing in your Dash wallet to move.",
   continue: "Continue",
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
@@ -117,13 +127,19 @@ export const transfer = {
       debitOnly: "Dash Platform has not said whether the move of {taken} went through. Activity shows it when it does. Do not move again until it does.",
     },
     replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
+    /** The move is the way out of a payment from Platform that may still go through: only one of the two goes through. */
+    exitSend: {
+      line: "This payment of {amount} to {recipient} may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the two can go through. If the move goes through, {recipient} isn't paid, and the amount, less fees, goes to your Dash wallet.",
+      done: "Moved to Dash wallet. The payment to {recipient} didn't go through, so {recipient} wasn't paid.",
+      lost: "The payment went through before the move, so {recipient} was paid. The move wasn't charged.",
+    },
     failed: { title: "The move did not go through", text: "Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again." },
     unseen: "Your move has an update.",
     waiting: {
       text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
       held: "An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.",
       sendHeld: "A payment from Platform may still go through. Moving waits until it settles.",
-      heldSend: "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
+      heldSend: "An earlier payment from your Platform balance may still go through. Wait for it to finish, or open it in Activity and move the same funds to your Dash wallet instead. If the move goes through, that payment isn't made.",
       action: "View in Activity",
     },
     check: { loading: "Checking for an unfinished move…", failed: "Could not check for an unfinished move.", again: "Check again" },
@@ -240,17 +256,39 @@ export const transfer = {
   shielded: {
     /** While Shielded's account is not established (shielded/syncing.ts). */
     sync: {
-      syncing: "Shielded is still syncing; try again when it finishes.",
+      syncing: "Shielded is still syncing. Try again when it finishes.",
+      /** Instead of `syncing` when the vault's lock (`locked`, `mixingOnly`) or a watch-only wallet holds
+       * the viewing key's first bind. */
+      locked: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.",
+      mixingOnly: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
+      /** Receive's line while the first scan runs; `percent` is formatted. */
+      progress: "Syncing Shielded… {percent}",
       scanning: "Scanning…",
       /** `when` is how long ago, as "5 min ago". */
       lastChecked: "Last checked {when}",
     },
+    /** Where this version cannot send from Shielded (shielded/spends.ts). `source`: a "Pay from" row. */
+    spends: {
+      unavailable: "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.",
+      source: "Not available in this version",
+    },
+    /** Where a move into Shielded would be, while this version cannot send from Shielded (shielded/spends.ts). */
+    shieldInUnavailable: "This version of Dash Wallet doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.",
+    /** Receive's Shielded tab, in place of the address, while this version cannot send from Shielded. */
+    receiveUnavailable: "This version of Dash Wallet doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.",
     card: {
       inactive: "Shielded is not active on this network yet.",
       finish: "Finish",
       checkAgain: "Check again",
       why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
       unfinished: "{amount} was locked to add to Shielded and is not applied yet.",
+    },
+    /** What payments that may still go through hold of the Shielded balance (not in it). `amount`
+     * is the held total with its unit; `count` the payments holding it. */
+    held: {
+      one: "{amount} is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+      other: "{amount} is held for {count} payments that may still go through. If the network shows one can no longer go through, its part comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
     },
     titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
     form: {
@@ -327,8 +365,24 @@ export const transfer = {
       text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
       copy: "Copy address",
       loading: "Getting your Shielded address…",
+      /** Under the address while Shielded's first scan runs. */
+      early: "You can receive now. Your Shielded balance shows when the sync finishes.",
+      locked: "Unlock the wallet to show your Shielded address.",
+      mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.",
+      unlock: "Unlock",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
       qr: "QR code of {address}",
       copyAddress: "Copy Shielded address",
+    },
+    /** Home's notice while the Shielded store stays closed (`shielded.store_closed`), by the engine's
+     * reason (MG). Report a problem is `settings.about.links.issues`, with its hint. */
+    closed: {
+      title: "Shielded couldn't open",
+      inUse: "Another program, possibly another copy of Dash Wallet, is using your Shielded data, so Dash Wallet didn't open Shielded. The rest of your wallet works as usual. Close any other copy of Dash Wallet, then restart.",
+      failed: "Dash Wallet couldn't move your Shielded data to this version, so it didn't open Shielded. The rest of your wallet works as usual. Restart to try again. If Shielded still doesn't open, choose Report a problem, and keep your wallet data as it is: support may need it.",
+      damaged: "Dash Wallet couldn't read your Shielded data from before the upgrade, so it didn't open Shielded and changed nothing in that data. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
+      noUpgradeCopy: "Dash Wallet has no backup of your Shielded data from before the upgrade, so it won't move that data and didn't open Shielded. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
+      restart: "Restart",
     },
     error: {
       poolTooSmall: "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",

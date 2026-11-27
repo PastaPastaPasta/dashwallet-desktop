@@ -121,12 +121,22 @@ describe("the Add from Dash wallet flow", () => {
 
   it("a Core Max below the smallest amount says what Max can move, and what it leaves out only when something is", () => {
     const max = { request: { kind: "add" as const, duffs: 1, all: true } };
-    const below = (leftDuffs: number) => appError("credits.below_minimum", { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs });
+    const below = (leftDuffs: number) => appError("credits.below_minimum", { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs, arrivingDuffs: 0, arrivingClears: false });
     expect(fundErrorText(below(3_000), credits, duffs, max)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00056001 tDASH. Max doesn't include mixed coins, payments from contacts or coins in other accounts.");
     expect(fundErrorText(below(0), credits, duffs, max)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00056001 tDASH.");
     const typed = appError("credits.below_minimum", { kind: "limit", duffs: 56_001 });
     expect(text(typed)).toBe("Too small to add: the smallest amount is 0.00056001 tDASH.");
     expect(fundErrorText(typed, credits, duffs, max)).toBe(text(typed));
+  });
+
+  it("a Core Max of nothing says the coins are arriving (and whether Max can move them once they've confirmed), that Max leaves them all out, or that the wallet has nothing to move, never 0.00000000 or the minimum", () => {
+    const max = { request: { kind: "add" as const, duffs: 1, all: true } };
+    const zero = (leftDuffs: number, arrivingDuffs: number, arrivingClears = arrivingDuffs > 0) => appError("credits.below_minimum", { kind: "maxMinimum", min: 56_001, duffs: 0, leftDuffs, arrivingDuffs, arrivingClears });
+    expect(fundErrorText(zero(7_000, 200_000), credits, duffs, max)).toBe("Your Dash wallet's coins are still arriving (0.002 tDASH). Max can move them once they've confirmed.");
+    expect(fundErrorText(zero(7_000, 5_000, false), credits, duffs, max)).toBe("Your Dash wallet's coins are still arriving (0.00005 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.");
+    expect(fundErrorText(zero(200_000, 0), credits, duffs, max)).toBe("Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.");
+    expect(fundErrorText(zero(0, 0), credits, duffs, max)).toBe("There's nothing in your Dash wallet to move.");
+    for (const e of [zero(7_000, 200_000), zero(7_000, 5_000, false), zero(200_000, 0), zero(0, 0)]) expect(fundErrorText(e, credits, duffs, max)).not.toMatch(/0\.00000000|Too small/);
   });
 
   it("finishes a lock that was not applied with one duff of grant and no confirm step", async () => {
@@ -242,7 +252,7 @@ describe("the Add from Dash wallet error texts", () => {
   it("has words for the too-many-coins and unfinished-add refusals", () => {
     expect(text(appError("credits.too_many_inputs", { kind: "number", value: 700 }))).toBe("That takes too many separate coins at once. Consolidate your coins first, then try again.");
     expect(text(appError("credits.fund_pending", { kind: "txid", txid: "ab" }))).toBe("An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.");
-    expect(text(appError("platform.feature_off", { kind: "feature", feature: "platform" }))).toBe("Platform addresses are not active on this network yet.");
+    expect(text(appError("platform.feature_off", { kind: "feature", feature: "platform" }))).toBe("Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.");
   });
 
   it("a refused Finish names its own lock only while it can still be finished", () => {

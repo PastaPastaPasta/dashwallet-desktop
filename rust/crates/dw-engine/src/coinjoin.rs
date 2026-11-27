@@ -40,7 +40,6 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use dashcore::blockdata::transaction::outpoint::OutPoint;
-use dashcore::hashes::Hash;
 use dashcore::sighash::SighashCache;
 use dashcore::{Address, BlockHash, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE};
@@ -83,6 +82,9 @@ use crate::{EngineError, EngineEvent, NetworkSession, WalletId};
 pub enum CoinJoinFailure {
     /// CoinJoin features are turned off (`enablecoinjoin` false).
     Disabled,
+    /// The network's data was restored from its backup: mixing waits for
+    /// its first full sync (the money gate, `restore_gate`).
+    Restored,
     /// The wallet has no private keys.
     WatchOnly,
     /// The balance is below the mixing minimum (0.00140001 DASH);
@@ -121,6 +123,7 @@ impl std::fmt::Display for CoinJoinFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => f.write_str("coinjoin is disabled"),
+            Self::Restored => f.write_str("mixing waits for the first sync after a restore"),
             Self::WatchOnly => f.write_str("watch-only wallet"),
             Self::InsufficientFunds { min_duffs } => {
                 write!(f, "balance below the mixing minimum of {min_duffs} duffs")
@@ -673,7 +676,7 @@ impl CoinJoinRuntime {
 
     /// Tests: `input` held by `owner` since now, as a session that signed
     /// and ended leaves it.
-    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    #[cfg(all(debug_assertions, feature = "test-support"))]
     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
         let mut mixers = self.mixers();
         let held = &mut mixers.entry(id).or_default().held;
@@ -960,7 +963,8 @@ impl MixView {
     }
 }
 
-/// Core's balances over `coins` (wallet/coinjoin.cpp:500-580).
+/// Core's balances over `coins` (wallet/coinjoin.cpp:500-580). An
+/// excluded coin (`crate::withhold`) counts in none.
 fn compute_balances(
     coins: &[MixViewCoin],
     network: dashcore::Network,
@@ -968,7 +972,10 @@ fn compute_balances(
 ) -> (CoinJoinBalances, f32) {
     let view = MixView {
         height: u32::MAX,
-        coins: coins.to_vec(),
+        coins: (coins.iter())
+            .filter(|c| c.coin.excluded.is_none())
+            .cloned()
+            .collect(),
         balances: CoinJoinBalances::default(),
         total: 0,
         average_rounds: 0.0,
@@ -1058,13 +1065,13 @@ fn path_of(info: &ManagedWalletInfo, address: &Address) -> Option<DerivationPath
 
 /// `scriptSig` of a P2PKH input: `<DER signature ‖ sighash type> <pubkey>`.
 pub(crate) fn p2pkh_script_sig(
-    sig: &dashcore::secp256k1::ecdsa::Signature,
+    sig: &dashcore::ecdsa::EcdsaSignature,
     sighash_type: u32,
-    pubkey: &dashcore::secp256k1::PublicKey,
+    pubkey: &dashcore::ecdsa::EcdsaPublicKey,
 ) -> ScriptBuf {
-    let mut der = sig.serialize_der().to_vec();
+    let mut der = sig.with_der(<[u8]>::to_vec);
     der.push(sighash_type as u8);
-    let pk = pubkey.serialize();
+    let pk = pubkey.to_compressed();
     let mut out = Vec::with_capacity(der.len() + pk.len() + 2);
     out.push(der.len() as u8);
     out.extend_from_slice(&der);
@@ -1314,7 +1321,10 @@ impl NetworkSession {
             })
             .collect();
         let (balances, average_rounds) = compute_balances(&coins, network, settings.rounds);
-        let total = coins.iter().map(MixViewCoin::value).sum();
+        let total = (coins.iter())
+            .filter(|c| c.coin.excluded.is_none())
+            .map(MixViewCoin::value)
+            .sum();
         Ok(MixView {
             height: snapshot.height,
             coins,
@@ -1332,7 +1342,7 @@ impl NetworkSession {
         &self,
         fence: &CoinFence,
     ) -> Result<Option<MixView>, EngineError> {
-        if !self.leases.journal_ready() {
+        if !self.leases.journal_ready() || self.hub.restore.is_restored() {
             return Ok(None);
         }
         let view = (self.replay_guarded(fence.wallet_id(), self.mix_view(fence))).await;
@@ -1607,6 +1617,9 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.wallet(&wallet_id).await?;
+            if this.hub.restore.is_restored() {
+                return Err(CoinJoinFailure::Restored.into());
+            }
             let settings = this.coinjoin.settings();
             if !settings.enabled {
                 return Err(CoinJoinFailure::Disabled.into());
@@ -1894,13 +1907,16 @@ impl NetworkSession {
                 _ => return Err(EngineError::Internal("not a CoinJoin account".into())),
             };
             for _ in 0..count {
-                out.push(
-                    pool.next_unused_and_reserve(&KeySource::Public(xpub), now)
-                        .map_err(|e| EngineError::Internal(format!("CoinJoin address: {e}")))?,
-                );
+                let address = (pool.next_unused(&KeySource::Public(xpub)))
+                    .map_err(|e| EngineError::Internal(format!("CoinJoin address: {e}")))?;
+                if !pool.reserve(&address, now) {
+                    return Err(EngineError::Internal(format!(
+                        "CoinJoin address: {address} not reservable"
+                    )));
+                }
+                out.push(address);
             }
         }
-        account.bump_monitor_revision();
         Ok(out)
     }
 
@@ -2760,7 +2776,7 @@ impl NetworkSession {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if !this.rescan_running() {
-                    match this.replay_guard(wallet_id, 0).await {
+                    match this.replay_wait(wallet_id, 0).await {
                         Ok(_) if cancels() != cancels_before => {
                             return Err(EngineError::RescanInterrupted);
                         }
@@ -2929,6 +2945,7 @@ impl NetworkSession {
             return;
         };
         let appdb = Arc::downgrade(&live.appdb);
+        let hub = Arc::downgrade(&self.hub);
         self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
             // Closed: there is nothing to write and nothing to try again.
             let Some(appdb) = appdb.upgrade() else {
@@ -2939,6 +2956,14 @@ impl NetworkSession {
                 SweepNews::Truncated { height } => delete_beaten_above(&appdb, &scope, height),
                 SweepNews::Beaten { txids, winner, at } => {
                     write_beaten(&appdb, &scope, txids, winner, at)
+                }
+                SweepNews::Dropped { dead, released } => {
+                    retire_dropped(&appdb, wallet_id, dead, released).map(|retired| {
+                        if let Some(hub) = hub.upgrade() {
+                            hub.forget_restore_holds(wallet_id, &retired);
+                        }
+                        !retired.is_empty()
+                    })
                 }
             };
             written
@@ -3165,6 +3190,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_while_restored()?;
             let wallet = this.wallet(&wallet_id).await?;
             let _claim = this.coinjoin.claim_resend(wallet_id)?;
             let (records, gone) = this.sweep_out_states(wallet_id).await?;
@@ -3683,6 +3709,14 @@ pub(crate) enum SweepNews<'a> {
     },
     /// A fork replaced the blocks above `height` (`ChainTruncated`).
     Truncated { height: u32 },
+    /// key-wallet dropped `dead`, a peer's unsigned claims on a new
+    /// transaction's outputs and what is built on them, and gave back
+    /// `released` (`TransactionsSwept`, rust-dashcore#1523). Nothing beat
+    /// them.
+    Dropped {
+        dead: &'a BTreeSet<Txid>,
+        released: &'a [OutPoint],
+    },
 }
 
 /// Gives each of `txids` that has a sweep record in `scope` a beaten row
@@ -3711,6 +3745,47 @@ pub(crate) fn write_beaten(
         .collect();
     db.set_settings_durable(scope, &writes)?;
     Ok(true)
+}
+
+/// Deletes the sweep record of each of `dead` whose every input is an
+/// output of one of `dead` or in `released`, with its beaten row and its
+/// restore hold (in the wallet scope), in one durable write: it can never
+/// confirm, and key-wallet gave back what it spent. One with any other
+/// input keeps holding them all, and is sent again until a rival of that
+/// input settles it. The txids retired.
+pub(crate) fn retire_dropped(
+    db: &AppDb,
+    wallet: WalletId,
+    dead: &BTreeSet<Txid>,
+    released: &[OutPoint],
+) -> Result<Vec<Txid>, AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let mut retired = Vec::new();
+    for t in dead {
+        let key = format!("{SWEEP_OUT_PREFIX}{t}");
+        let Some(o) = (db.setting(&scope, &key)?).and_then(|v| SweepOut::decode(&key, &v)) else {
+            continue;
+        };
+        if o.inputs()
+            .all(|i| dead.contains(&i.txid) || released.contains(&i))
+        {
+            retired.push(*t);
+        }
+    }
+    if retired.is_empty() {
+        return Ok(retired);
+    }
+    let sweep_keys: Vec<String> = (retired.iter())
+        .flat_map(|t| [SWEEP_OUT_PREFIX, SWEEP_BEATEN_PREFIX].map(|p| format!("{p}{t}")))
+        .collect();
+    let hold_keys = crate::restore_gate::hold_keys(&retired);
+    let wallet_scope = wallet.to_string();
+    let writes: Vec<(&str, &str, Option<&str>)> = (sweep_keys.iter())
+        .map(|k| (scope.as_str(), k.as_str(), None))
+        .chain((hold_keys.iter()).map(|k| (wallet_scope.as_str(), k.as_str(), None)))
+        .collect();
+    db.set_scoped_settings_durable(&writes)?;
+    Ok(retired)
 }
 
 /// Deletes the beaten rows of `scope` whose winner's block a fork above
@@ -4765,6 +4840,7 @@ mod tests {
                 lock_input: false,
                 unresolved_lock: false,
                 awaiting_history: false,
+                excluded: None,
             },
             path: Some(path.parse().unwrap()),
             rounds,

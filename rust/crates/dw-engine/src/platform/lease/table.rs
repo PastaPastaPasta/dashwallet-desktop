@@ -80,6 +80,8 @@ pub(crate) struct Signers {
     pub(crate) life: Option<SignerLife>,
     /// `MasternodeWithdrawal`, single use (MG-13 P3, P12).
     pub(crate) withdrawal: Option<VaultSigner>,
+    /// `AppConnect`: one request's application keys.
+    pub(crate) app_connect: Option<VaultSigner>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one
@@ -344,6 +346,9 @@ pub struct LeaseTable {
     pub(crate) background: Arc<super::background::Background>,
     /// The catch-up's resume path (H6 part 2); the session installs it.
     pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
+    /// The wallets held for the session by a fork hold not marked
+    /// ([`Self::hold_fork_wallets`]); `None`: every wallet.
+    pub(crate) fork_held: Mutex<Option<BTreeSet<WalletId>>>,
     /// The table itself, for work a J step's effects start.
     pub(super) me: Weak<LeaseTable>,
     /// Rows a test's scripted library tracks, which the session's evidence
@@ -357,6 +362,10 @@ pub struct LeaseTable {
     /// Tests: holds the next shielded artifact's write before it runs.
     #[cfg(test)]
     pub(crate) hold_artifact_write: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next erase of a removed wallet's journal rows fails
+    /// before it writes.
+    #[cfg(test)]
+    pub(crate) fail_next_erase: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -402,6 +411,7 @@ impl LeaseTable {
             refresh: tokio::sync::Mutex::new(()),
             background: Arc::default(),
             resumer: OnceLock::new(),
+            fork_held: Mutex::new(Some(BTreeSet::new())),
             me: me.clone(),
             #[cfg(test)]
             test_rows: Default::default(),
@@ -409,6 +419,8 @@ impl LeaseTable {
             test_hold_rows: Default::default(),
             #[cfg(test)]
             hold_artifact_write: Default::default(),
+            #[cfg(test)]
+            fail_next_erase: Default::default(),
         })
     }
 
@@ -964,6 +976,17 @@ impl Lease {
         self.signer(
             BudgetPurpose::Credits,
             |s| s.platform_address.as_ref(),
+            |e| e.credits.granted(),
+        )
+    }
+
+    /// The App Connect signer a call's permit hands out (an `AppConnect`
+    /// lease's application keys): the permit's J step already charged the
+    /// call's quote.
+    pub(crate) fn call_app_connect_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Credits,
+            |s| s.app_connect.as_ref(),
             |e| e.credits.granted(),
         )
     }

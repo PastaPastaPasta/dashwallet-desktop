@@ -15,219 +15,51 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# ---- dashpay/platform, pinned to pasta's fork (DESIGN.md R3, DEC-18, DEC-168) ----
-# PastaPastaPasta/platform dw/rc-followup-a7@c5917e6bd5
-# = dw/rc-followup-a5@9cbd5eef29 (below) + fallible wallet state guards
-#   (`checked_state`, `checked_state_mut`; `state_blocking`, `state_mut_blocking`,
-#   `try_state` and `try_state_mut` return `Result`), `WalletNotFound` once the
-#   wallet has left the manager (01bd231f66), and
-#   `PlatformAddressWallet::fund_from_shielded_remainder_asset_lock` admitted by
-#   the crate-private `ExistingLockAuthority` (c5917e6bd5).
-# PastaPastaPasta/platform dw/rc-followup-a5@9cbd5eef29
-# = dw/rc-followup-a4@1046e8999b (below) on rusqlite 0.41 and refinery 0.10, so the
-#   build bundles SQLite 3.54, past the WAL close deadlock of 3.51.0 and 3.51.1 (#105),
-#   with grovedb on PastaPastaPasta/grovedb dw/commitment-tree-rusqlite-0.41@b48a1d5067
-#   (dashpay/grovedb#1034 on the previous grovedb pin) (23f2ecb25d, 9cbd5eef29); a pool
-#   top-up checks the keyset again once it holds the shield lock (f593776c80).
-# PastaPastaPasta/platform dw/rc-followup-a4@1046e8999b
-# = dw/rc-followup-a3@15da855307 (below) + the rust-dashcore re-pin below;
-#   `PlatformWalletInfo` forwards `unconfirmed_spent_outpoints` and
-#   `sweep_conflicts_only` (9fbeef7e26, 9386926074, 6b90b064fe, 1046e8999b).
-# PastaPastaPasta/platform dw/rc-followup-a3@15da855307
-# = dw/rc-followup-a@4b34c3608c (below) + the rust-dashcore re-pin below;
-#   `PlatformWalletInfo` forwards `dismiss_spend` and `refetch_on_lock` (15da855307).
-# PastaPastaPasta/platform dw/rc-followup-a@4b34c3608c
-# = dw/rc-followup-1@24187d6ab7 (below) + the rust-dashcore re-pin below;
-#   `PlatformWalletInfo` forwards `undismiss` (4b34c3608c).
-# PastaPastaPasta/platform dw/rc-followup-1@24187d6ab7
-# = dw/rc-locks-mempool-authz@373342cb38 (below) + the rust-dashcore re-pin below;
-#   `PlatformWalletInfo` forwards `dismiss` (4de3a39fbe), and a kept coin row with no
-#   spender stores null (24187d6ab7).
-# PastaPastaPasta/platform dw/rc-locks-mempool-authz@373342cb38
-# = dw/0.2-item0@9df84d418b (below) + the rust-dashcore re-pin below; storage migration
-#   V2 marks the InstantSend locks stored as verified, and stored history, coins and
-#   input claims count a lock only from such a row (ba2b948d39, 625a052adb, 61cf123879);
-#   `PlatformWalletInfo` forwards the account generation (ca52b26a75); opening a store
-#   drops an unconfirmed transaction an older build recorded without its owner's
-#   signature and gives back the coin it marked spent (6eb8f4d142), only a coin of the
-#   wallet's own pools that nothing else holds spent, and keeps each drop in the table
-#   fork migration V3 adds (373342cb38); `PlatformWalletInfo` forwards whether a
-#   transaction is dismissed (60e71ec7a1).
-# PastaPastaPasta/platform dw/0.2-item0@9df84d418b
-# = dw/0.2-item0@0c575df0e3 (below) merged with
-#   dw/0.2-mempool-during-sync@08d1eb7047 (below).
-# dw/0.2-item0@0c575df0e3
-# = dw/0.2-item0@72d0a3e74c (below) merged with
-#   dw/0.2-item0-keyset2@e31626fa02, the public keyset entry points for hooked unshield,
-#   identity top-up and identity create from the pool
-#   (`PlatformWallet::shielded_{unshield_to,identity_top_up_from_pool,identity_create_from_pool}_with_keyset`).
-# dw/0.2-mempool-during-sync@08d1eb7047
-# = dw/0.2-item0@72d0a3e74c (below) + the rust-dashcore re-pin below.
-# dw/0.2-item0@72d0a3e74c
-# = dw/0.2-item0@1050b954e3 (below) merged with
-#   dw/0.2-item0-hook@bdf8553942, the public keyset entry points for hooked shielded
-#   spends (`PlatformWallet::shielded_{transfer,withdraw}_to_with_keyset`), which refuse
-#   a keyset of another wallet (`ShieldedKeysetMismatch`) before any build or store write.
-#   The engine sets the `ShieldedDispatch` hook from this revision on. A hooked build
-#   writes spend dispositions into `shielded.sqlite` that an older library does not
-#   read, so once a hooked build has run, a pin back below the hooked library
-#   (dw/0.2-item0@1050b954e3) is not allowed.
-# dw/0.2-item0@1050b954e3
-# = dw/0.2-mix-shield-approve-inputs-r57@03200c83fc (below) merged with
-#   dw/0.2-item0-al@bdb49f18, an asset lock whose wallet left before tracking is never
-#   broadcast (`WalletRemovedBeforeSend`), plus the 100-input asset-lock cap
-#   (`AssetLockTooManyInputs`), and with
-#   dw/0.2-item0-hook@6764cc70, shielded spend dispositions, their release on every path,
-#   and the `ShieldedDispatch` hook.
-# dw/0.2-mix-shield-approve-inputs-r57@03200c83fc
-# = dw/0.1.x-row57-rescan-credits@0c4620f16d (below) + the rust-dashcore re-pin below.
-# dw/0.1.x-row57-rescan-credits@0c4620f16d
-# = dw/0.1.x-row57-rescan-credits@67a82124bd merged with
-#   dw/0.2-mix-shield-rdc-swept-hash@0608d96bd3, with rust-dashcore re-pinned to the
-#   merge of both sides' rust-dashcore heads (below).
-# dw/0.1.x-row57-rescan-credits@67a82124bd
-# = dw/0.1.x-core-bridge-updated-utxos@7537f4a264 merged with
-#   dw/0.2-asset-lock-status-by-outpoint@5e74bd8c82.
-# dw/0.1.x-core-bridge-updated-utxos@7537f4a264 = @8411b4e1d5 below, which carries
-# dashpay/platform#5792, with rust-dashcore pinned to the rust-dashcore #1326 backport;
-# the gaps it leaves are tracked in rust-dashcore #1361.
-# dw/0.2-mix-shield-rdc-swept-hash@0608d96bd3
-# = dw/0.2-mix-shield-rdc-swept-hash@9a4307603d merged with main's pin,
-#   dw/0.2-asset-lock-status-by-outpoint@5e74bd8c82 (upstream copies: dashpay/platform
-#   #5793 header_hash_at, #5794 asset_lock_status, #5792 the re-scanned coins):
-# dw/0.2-mix-shield-rdc-swept-hash@9a4307603d
-# = dw/0.2-spv-header-hash-at@030e3d833b + the rust-dashcore re-pin below,
-# where dw/0.2-spv-header-hash-at@030e3d833b
-# = dw/0.2-asset-lock-build-amount-5780@1829ebc43a + `SpvRuntime::header_hash_at` and
-# `HeaderLookup` public (rs-platform-wallet spv/runtime.rs, spv/mod.rs), so a sweep record
-# checks its evidence against the SPV header chain.
-# dw/0.2-asset-lock-build-amount-5780@1829ebc43a
-# = dw/0.1.x-restore-utxos-5780@8838305277 + `pub use build::AssetLockBuildAmount`
-# (rs-platform-wallet asset_lock/mod.rs), so a drain can name `DrainAll`.
-# dw/0.2-asset-lock-status-by-outpoint@5e74bd8c82
-# = dw/0.2-asset-lock-status-by-outpoint@4eef80c9fc merged with
-#   dw/0.1.x-core-bridge-updated-utxos@8411b4e1d5:
-# dw/0.2-asset-lock-status-by-outpoint@4eef80c9fc
-# = dw/0.1.x-restore-utxos-5780@8838305277 + `SqlitePersister::asset_lock_status`, one
-# asset lock's stored status by outpoint, consumed rows included (the fund's evidence
-# after a reopen, §7 item 79).
-# dw/0.1.x-core-bridge-updated-utxos@8411b4e1d5
-# = dw/0.1.x-restore-utxos-5780@8838305277
-# + the event bridge sending the persister every coin a block's re-scan credits
-# (one transaction paying a pool past its gap; 0.1.x row 56). Upstream copy:
-# fix/platform-wallet-persist-updated-record-utxos on v5.1-dev.
-# dw/0.1.x-restore-utxos-5780@8838305277
-# = dw/0.1.x-restore-utxos@2ce6aae742 with its early restore_utxos rounds reverted
-# + dashpay/platform#5780 as of 907a5d2b: the SQLite rehydrate placing each restored
-# UTXO in the funds account that derives its address (key-wallet `restore_utxos`,
-# dashpay/platform#5724), on the rust-dashcore backport below
-# + a test-only `Hash` import that backport needs. Re-pin to upstream once #5780 merges.
-# dw/0.1.x-restore-utxos@2ce6aae742 = dw/bl187-v24-dashcore@dc0c946307 + early rounds of the above.
-# dw/bl187-v24-dashcore@dc0c946307 = dw/dp3-04b-pool-rotation@82fb33aff8
-# + rust-dashcore 626c91d1 with upstream's adaptations to it (#5307, #5392, #5403, #5423; BL-187)
-# + MasternodeListSummary.net_info, every net-info entry of the list (MG-04b D39, D75).
-# dw/dp3-04b-pool-rotation@82fb33aff8 = dw/e0-10c-v5.1-spv-trust
-# @ebe37f8a67 (#5307 (v5.1 move)@f475f72a11 + #4978 (ad601d1d8b) + #5366 (SPV quorum
-# key with its status)) + the storage fix for a DashPay contact's xpub rotation and
-# its persisted account stamp (DP3-04b; fork migration 1 in its own history,
-# design D32). Move back to an upstream revision once all of them are on
-# v5.1-dev; that bump adds a reconcile from fork V1 to upstream's number (D36).
+# ---- platform: integration/dashwallet-desktop-8 (DESIGN.md R3, DEC-18, DEC-168) ----
+# = the -7 integration branch (v5.2-dev + the wallet's open upstream pull requests,
+# merged in order) with the v5.1.0 release merged in for protocol version 15, on the
+# rust-dashcore revision below. It lives on the PastaPastaPasta fork until upstream
+# carries the same merge; the pin then returns to dashpay/platform.
 # Cargo.lock was seeded from the platform checkout's lock at this revision so
 # the shared transitive graph (grovedb, rusqlite, tokio, ...) resolves to the
 # versions upstream builds and tests with.
 # `shielded`: the Orchard pool (halo2, orchard, the commitment tree), on since
 # 0.1 ships shielded funds (RELEASE-PLAN §1; cost in docs/research/shielded-cost.md).
 # It turns on `dash-sdk/shielded` and `dpp/shielded-client` too.
-platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0", features = ["bls", "eddsa", "shielded"] }
+platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9", features = ["bls", "eddsa", "shielded"] }
 # `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03),
 # `shielded` = the persister's shielded tables.
-platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0", default-features = false, features = ["sqlite", "secrets", "shielded"] }
+platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9", default-features = false, features = ["sqlite", "secrets", "shielded"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
-dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 # `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`
 # but its manifest does not enable the feature (the platform workspace gets it by
 # feature unification).
-dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0", features = ["ed25519-dalek"] }
-dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0" }
+dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9", features = ["ed25519-dalek"] }
+dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9" }
 # Drive's document cost estimator (`drive::drive::document::cost`, the one
 # wasm-sdk exposes), for the credits cost table (DP1-06). `verify` is the
 # feature dash-sdk already builds it with.
-drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0", default-features = false, features = ["verify"] }
+drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9", default-features = false, features = ["verify"] }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it;
 # `dashpay-contract`: the DashPay contract that a broadcast contactRequest's
 # proof is verified against (DP2-02).
-rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0", features = ["dpns-contract", "dashpay-contract"] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9", features = ["dpns-contract", "dashpay-contract"] }
 # DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
 # vault's Platform signers; the same functions platform-wallet calls.
-platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0" }
+platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "7f0a1b0c378c23057d1cc060b61a094fda8f0bc9" }
 
 # ---- rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
-# PastaPastaPasta/rust-dashcore dw/rc-followup-a4@1e6e07957a
-# = dw/rc-followup-a3@7c62cd9c5a (below) + a locked spend paying another wallet is passed
-#   again to the wallet that dismissed what it spends (5698bea369), a conflict sweep
-#   credits again the coins a removed loser alone spent while their funding is held
-#   (070ea52c9d), a block transaction sweeps wallets the block was not fetched for,
-#   and every wallet again once its ChainLock lands, at most 1,000 kept (4871f1a0c4,
-#   9a9368c19d), and a locked record stays until a ChainLock when another fetched
-#   wallet lags or a fork unmines it (2ff3377c20), and what a ChainLock overturned
-#   goes with its descendants and is refused if it arrives again (fd2c288dde), and a
-#   conflict that overturned an unlocked record is kept for a late lock (766ea0c6b2).
-#   Platform dw/rc-followup-a5@9cbd5eef29 pins it.
-# dw/rc-followup-a3@7c62cd9c5a
-# = dw/rc-followup-a@25013d7ade (below) + spends of a dismissed transaction are held apart
-#   from the wallet's own dismissals and released when it is locked or mined, and a locked
-#   spend that matched no wallet is passed to it again when what it spends comes back
-#   (7c62cd9c5a).
-# dw/rc-followup-a@25013d7ade
-# = dw/rc-followup-1@9e4a8928ab (below) + a block clears the dismissal of each of its
-#   transactions in every wallet, not only in the wallets it matched (25013d7ade).
-# dw/rc-followup-1@9e4a8928ab
-# = dw/rc-locks-mempool-authz@570d686cbb (below) + a spend of a transaction a wallet
-#   dismissed is dismissed with it in that wallet, and a verified lock for a dismissed
-#   transaction has it fetched again however long ago it was last seen (9e4a8928ab).
-# dw/rc-locks-mempool-authz@570d686cbb
-# = dw/0.2-mempool-during-sync@ae49570ae8 (below) + these fixes: a pending spend of a coin
-#   the wallet holds counts only with its owner's signature (3001b0d198); widening an
-#   address pool bumps the account generation, so a filter batch matched before it is not
-#   committed (4881d3c67b); a lock that arrives before its transaction is kept and
-#   announced when the transaction does (f1c8e0fd6c); the mempool is looked at again when
-#   the wallets' view changes (86b9cde207); a transaction dropped as dead (a swept loser,
-#   an abandoned transaction, a spend of either) is not credited again unconfirmed
-#   (c850f98f5d); that replay runs in bounded batches that release the wallet and looks
-#   again at a wallet registered meanwhile (abc5d42dfd); a filter batch is committed for a
-#   wallet only over scripts it was matched against (d58c50867e); a dismissed transaction
-#   is not credited to another wallet until a lock or a block settles it, and its verified
-#   lock has it fetched again (570d686cbb). Platform dw/rc-locks-mempool-authz@373342cb38
-#   pins it.
-# dw/0.2-mempool-during-sync@ae49570ae8
-# = dw/0.2-mix-shield-approve-inputs-r57@8e7ad2c1f5 (below) + `ClientConfig::mempool_during_sync`:
-#   mempool relay turned on as each peer connects rather than at FiltersSyncComplete, so a
-#   payment and its InstantSend lock reach the wallet while it is still syncing, and the
-#   mempool asked for again when filter sync first completes (opt-in; the engine sets it
-#   in `spv_config`). The wallet is given an InstantSend lock only once it is verified, a
-#   later lock replaces one that has not verified, and a peer without the Bloom service
-#   is sent no Bloom or mempool message.
-# dw/0.2-mix-shield-approve-inputs-r57@8e7ad2c1f5
-# = dw/0.1.x-row57-rescan-credits-swept@7b7126b418 (below) merged with
-#   dw/0.2-mix-shield-approve-inputs@e19314aa82 (9359687d93 + `Signer::approve_inputs`: a
-#   signer sees a build's inputs before any signature).
-# dw/0.1.x-row57-rescan-credits-swept@7b7126b418
-# = dw/0.1.x-confirm-credits-rescan-outputs@846ffe54 merged with
-#   dw/0.2-swept-winner-block-hash@9359687d93, both on dw/restore-utxos-626c91d1@55663e43
-#   (dashpay 626c91d1 + #1112, #1105, #1295, `ManagedWalletInfo::restore_utxos`,
-#   cherry-picked). 846ffe54 adds the rust-dashcore #1326 backport and the fork's own test
-#   and doc commits on it (f0f5cd08, 846ffe54); the gaps #1326 leaves are tracked in #1361.
-#   9359687d93 adds `TransactionsSwept::winner_block` (the winner's block, height and
-#   hash). Back to a dashpay revision at the next platform re-pin.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "1e6e07957a76d4dbd92f9d4cb85f490ebd15c714" }
-key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "1e6e07957a76d4dbd92f9d4cb85f490ebd15c714" }
-key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "1e6e07957a76d4dbd92f9d4cb85f490ebd15c714" }
-dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "1e6e07957a76d4dbd92f9d4cb85f490ebd15c714" }
-dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "1e6e07957a76d4dbd92f9d4cb85f490ebd15c714" }
-# ---- dashpay/base-sdk: EXACTLY the revision that rust-dashcore pins ----
-dash-pkc = { git = "https://github.com/dashpay/base-sdk", rev = "33fcc59e1868c803f9608e0e78ee8bddf3abcee7", default-features = false }
+# dashpay/rust-dashcore: the revision the platform pin above names.
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+# ---- dashpay/base-sdk: EXACTLY the version that rust-dashcore pins ----
+dash-pkc = { version = "0.3.0-beta", default-features = false }
 
 # ---- our crates ----
 dw-appdb = { path = "crates/dw-appdb" }
@@ -242,6 +74,8 @@ dw-message = { path = "crates/dw-message" }
 dw-p2p = { path = "crates/dw-p2p" }
 dw-protx = { path = "crates/dw-protx" }
 dw-psbt = { path = "crates/dw-psbt" }
+dw-shielded-drain = { path = "crates/dw-shielded-drain" }
+dw-store-upgrade = { path = "crates/dw-store-upgrade" }
 dw-testutil = { path = "crates/dw-testutil" }
 dw-units = { path = "crates/dw-units" }
 dw-uri = { path = "crates/dw-uri" }
@@ -259,6 +93,7 @@ tempfile = "3"
 # The platform pin asks for rs-tenderdash-abci v1.8.0, whose proto compiler builds with zip 8
 # (RUSTSEC-2026-0545..0548 and earlier). v1.8.1 is v1.8.0 with only the zip 9 bump. Drop this
 # when the platform pin moves to v1.8.1 or later. eebfc46c is the v1.8.1 tag.
+
 [patch."https://github.com/dashpay/rs-tenderdash-abci"]
 tenderdash-abci = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
 tenderdash-proto = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }

@@ -22,4 +22,26 @@ export const platform = {
     rulesUnsupportedHeldTopUp:
       "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update Dash Wallet, and check Activity before you try again.",
   },
+  /** The cancel of a move to the Dash wallet or a contact payment from Platform that may still go through:
+   * the same Platform funds go to the wallet's own Platform address instead, and only one of the two goes through. */
+  cancel: {
+    move: {
+      action: "Cancel move",
+      title: "Cancel this move?",
+      body: "Dash Wallet can't tell yet whether this move of {amount} to your Dash wallet will go through. Cancelling uses the same Platform funds to send to your own Platform address instead, so only one of the two can go through. If the cancel goes through, the amount stays in your Platform balance, minus a fee of about {fee}.",
+      confirm: "Cancel move",
+      done: "Move cancelled. The amount is in your Platform balance, minus the fee.",
+      lost: "The move went through before the cancel, so the amount is in your Dash wallet. The cancel wasn't charged.",
+    },
+    payment: {
+      action: "Cancel payment",
+      title: "Cancel this payment?",
+      body: "Dash Wallet can't tell yet whether this payment of {amount} to {recipient} will go through. Cancelling sends the same Platform balance to your own Platform address instead, so only one of the two can go through. If the cancel goes through, {recipient} isn't paid, and the amount stays in your Platform balance, minus a fee of about {fee}. If the payment goes through first, {recipient} is paid and the cancel fails.",
+      confirm: "Cancel payment",
+      done: "Payment cancelled. {recipient} wasn't paid, and the amount is in your Platform balance, minus the fee.",
+      lost: "The payment went through before the cancel, so {recipient} was paid. The cancel wasn't charged.",
+    },
+    dismiss: "Keep waiting",
+    pending: "Cancelling. Dash Wallet is waiting for Dash Platform to confirm which one went through.",
+  },
 } as const satisfies Tree;

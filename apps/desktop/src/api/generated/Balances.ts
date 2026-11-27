@@ -10,6 +10,11 @@ export type Balances = { confirmed: number, unconfirmed: number, immature: numbe
  */
 coinjoin: number,
 /**
+ * Coins kept out of every bucket above, and out of spending, while
+ * the payment they come from may never confirm: shown as pending.
+ */
+withheld: number,
+/**
  * The wallet is still catching up (its scan has not reached the birth
  * block): the buckets hold what it has seen so far, payments seen in
  * the mempool or locked by InstantSend included, and can miss coins in
@@ -17,4 +22,18 @@ coinjoin: number,
  * scanned: a wallet born long ago is still behind the tip while the
  * sync status says so.
  */
-catchingUp: boolean, };
+catchingUp: boolean,
+/**
+ * The coins held while what beat a payment that can never confirm is
+ * unfinished, summed: in no bucket above.
+ */
+heldUnfinished: number,
+/**
+ * The held coins whose value is unknown, not in `heldUnfinished`.
+ */
+heldUnvalued: number,
+/**
+ * A held coin awaits a transaction that isn't final yet: no way out
+ * is offered until it is.
+ */
+heldAwaiting: boolean, };

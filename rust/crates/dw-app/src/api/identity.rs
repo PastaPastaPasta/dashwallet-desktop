@@ -22,24 +22,26 @@ use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
     CostTable, PendingTopUp, StuckTopUpFunding, TopUpFromPlatformOutcome, TopUpFromPlatformQuote,
-    TopUpOutcome, TopUpQuote, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
+    TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
-use self::platform_addresses::{
-    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PlatformAddressRow, PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
-};
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
+use self::platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
+    PlatformAddressBalance, PlatformAddressRow, PlatformCancelQuote, PlatformFundOutcome,
+    PlatformFundQuote, PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote,
+    PlatformShieldQuote,
+};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
 use self::shielded::{
-    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding, UnshieldToPlatformOutcome,
+    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress,
+    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedStatus, ShieldedSyncInfo, StuckShieldFunding,
+    UnshieldToPlatformOutcome,
 };
 use self::startup::{
     DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
@@ -562,6 +564,29 @@ commands! {
         Ok(dashpay.move_to_core(amount.into(), to, exit_of, grant).await?.into())
     }
 
+    /// What cancelling the held move or contact payment `of` takes: its
+    /// inputs at its nonces to one of the wallet's own Platform addresses.
+    #[facade("DashPay::platform_cancel_quote")]
+    fn platform_cancel_quote(state, wallet_id: String, of: String) -> PlatformCancelQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_cancel_quote(of).await?.into())
+    }
+
+    /// Cancels the held move or contact payment `of` to `to` (the quote's,
+    /// one of the wallet's own Platform addresses) under `grant`.
+    #[facade("DashPay::platform_cancel")]
+    fn platform_cancel(
+        state,
+        wallet_id: String,
+        of: String,
+        to: String,
+        grant: String,
+    ) -> PlatformSendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let _in_flight = state.broadcasting();
+        Ok(dashpay.platform_cancel(of, to, grant).await?.into())
+    }
+
     /// The wallet's Platform receive address: the lowest unused one.
     #[facade("DashPay::platform_receive_address")]
     fn platform_receive_address(state, wallet_id: String) -> PlatformReceiveAddress {
@@ -803,6 +828,13 @@ commands! {
     #[facade("DashPay::shielded_status")]
     fn shielded_status(state, wallet_id: String) -> ShieldedStatus {
         Ok(state.dashpay(&wallet_id).await?.shielded_status().await?.into())
+    }
+
+    /// Where the wallet's Shielded sync stands, for the status bar, Sync
+    /// progress and Receive; answers while a pass runs.
+    #[facade("DashPay::shielded_sync_info")]
+    fn shielded_sync_info(state, wallet_id: String) -> ShieldedSyncInfo {
+        Ok(state.dashpay(&wallet_id).await?.shielded_sync_info().await?.into())
     }
 
     /// Runs a shielded sync pass now; returns the status after.

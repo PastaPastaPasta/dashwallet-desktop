@@ -903,6 +903,7 @@ impl NetworkSession {
         if call.source == PaymentSource::Platform
             && super::contact_payout::refuse_on_mainnet(self).is_ok()
         {
+            self.refuse_platform_funds(id)?;
             return super::contact_payout::pay_live(self, id, call).await;
         }
         self.pay_gates(id, &call).await?;

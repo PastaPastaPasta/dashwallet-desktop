@@ -2,17 +2,21 @@
 // signal names exactly the queries to refetch (events.ts).
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { FundAmount } from "./generated/FundAmount";
 import type { Backend } from "./backend";
+import type { RestoreStatus } from "./generated/RestoreStatus";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldedSyncInfo } from "./generated/ShieldedSyncInfo";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
+import type { StoreLine } from "./generated/StoreLine";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
 import { creditsToDuffs, fundAmount } from "./pending";
+import { isRestored } from "./storeOpen";
 import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -41,6 +45,15 @@ export function useBackend(): Backend {
 
 export const keys = {
   network: ["network"] as const,
+  /** The network's `restored` (storeOpen.ts): seeded by the open, read again while it is `true`. */
+  restored: ["restored"] as const,
+  /** What RESTORED still waits for, read while it is set and again on each sync. */
+  restoreStatus: ["restoreStatus"] as const,
+  /** Whether a verified snapshot is there to restore, read by a screen shown instead of the wallet. */
+  restoreAvailable: ["restoreAvailable"] as const,
+  /** The store upgrade's notice for this session (`OpenedNetwork.notice`): seeded by the open only, `null`
+   * once dismissed. */
+  upgradeNotice: ["upgradeNotice"] as const,
   lockStatus: ["lockStatus"] as const,
   lastLockReport: ["lastLockReport"] as const,
   /** Reads `leases`, `dispatchStatus` and `lockStatus` (lockReport.ts). */
@@ -51,6 +64,8 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedSyncInfo: (walletId: string) => ["dashpay", "shielded", "syncInfo", walletId] as const,
+  shieldedAll: ["dashpay", "shielded"] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
   unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
@@ -139,11 +154,74 @@ export function useOpenNetwork() {
     queryKey: keys.network,
     queryFn: async () => {
       const since = lockGeneration();
-      const { lock } = await b.openNetwork();
+      const { network, lock, notice } = await b.openNetwork();
       seedLockStatus(client, lock, since);
+      seedRestored(client, network);
+      seedUpgradeNotice(client, notice);
       return lock;
     },
   });
+}
+
+/** Seeds `restored` from the opened network, only when it says: a value not known yet leaves it unread. */
+export function seedRestored(client: QueryClient, network: unknown) {
+  const restored = isRestored(network);
+  if (restored !== undefined) client.setQueryData<boolean | null>(keys.restored, restored);
+}
+
+/** `restored` read from `activeNetwork`. Its data is `undefined` while it is not known: before an answer, when
+ * the read failed, or when the network has no `restored` (the cache holds `null` then, as a query can't
+ * resolve to `undefined`). */
+export const restoredQuery = (b: Backend) =>
+  queryOptions({
+    queryKey: keys.restored,
+    queryFn: async (): Promise<boolean | null> => isRestored(await b.activeNetwork()) ?? null,
+    select: (restored: boolean | null): boolean | undefined => restored ?? undefined,
+  });
+
+/** Whether the network's wallet data was restored and RESTORED is still set: the banner shows while it is.
+ * `undefined` is not known yet. */
+export function useRestored() {
+  return useQuery(restoredQuery(useBackend()));
+}
+
+/** Seeds the store upgrade's notice from the open. It is kept until dismissed: through a lock
+ * (`keptWhileLocked`) and with no screen showing it (no garbage collection). */
+export function seedUpgradeNotice(client: QueryClient, notice: StoreLine | null | undefined) {
+  client.setQueryDefaults(keys.upgradeNotice, { gcTime: Infinity });
+  client.setQueryData<StoreLine | null>(keys.upgradeNotice, notice ?? null);
+}
+
+/** The store upgrade's notice (Q107 107-1): the line `openNetwork` gave for a session whose open upgraded
+ * the wallet data without a before-upgrade copy it can restore, until dismissed. Never fetched on its own,
+ * so nothing but the open sets it. */
+export function useUpgradeNotice() {
+  return useQuery<StoreLine | null>({ queryKey: keys.upgradeNotice, queryFn: () => null, enabled: false });
+}
+
+/** Dismisses the notice for this page; nothing on disk changes. */
+export function useDismissUpgradeNotice() {
+  const client = useQueryClient();
+  return () => client.setQueryData<StoreLine | null>(keys.upgradeNotice, null);
+}
+
+/** What RESTORED still waits for (`restore_status`): `null` with nothing held. The panel reads it once
+ * `restored` is known; the shell reads it whenever the wallet is unlocked. */
+export function useRestoreStatus(enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.restoreStatus, queryFn: () => b.restoreStatus(), enabled });
+}
+
+/** The cached `restore_status`'s `platformOff`: this session runs without Dash Platform. The shell reads
+ * it while the wallet is unlocked (App.tsx). */
+export function cachedPlatformOff(client: QueryClient): boolean {
+  return client.getQueryData<RestoreStatus | null>(keys.restoreStatus)?.platformOff === true;
+}
+
+/** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */
+export function useRestoreAvailable(enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.restoreAvailable, queryFn: async () => (await b.restoreAvailable()) === true, enabled, retry: false });
 }
 
 export function useLockStatus(enabled = true) {
@@ -238,22 +316,83 @@ export function usePendingPlatformFunds(walletId: string) {
   return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
 }
 
-/** How often a sheet that shows the sync line re-reads the status while a pass runs: the engine
- * sends no event when a pass ends. */
+/** How often a view that shows Shielded's sync re-reads the status while a pass runs or the account
+ * is not established: the scan's progress comes with no event. */
 export const SHIELDED_SCAN_POLL_MS = 5_000;
 
-export const shieldedStatusRefetchMs = (status: ShieldedStatus | null | undefined): number | false => (status?.syncing ? SHIELDED_SCAN_POLL_MS : false);
+/** While a first bind is held back by a pass: each read tries the bind and waits on the pass, so
+ * the status bar reads it less often. */
+export const SHIELDED_BIND_POLL_MS = 15_000;
+
+/** While a pass runs, or the account is not established and nothing but time holds it (not an
+ * unlock, not a watch-only wallet). */
+export function shieldedStatusRefetchMs(status: ShieldedStatus | null | undefined): number | false {
+  if (status?.active && status.account === "binding") return SHIELDED_BIND_POLL_MS;
+  return status?.syncing || (status?.active && !status.ready && (status.account === null || status.account === "bound")) ? SHIELDED_SCAN_POLL_MS : false;
+}
 
 /** The shielded account's status; `null` while dw-app has no such command (api/pending.ts).
- * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while a pass runs. */
-export function useShieldedStatus(walletId: string, pollWhileSyncing = false) {
+ * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while it syncs (not while the window
+ * is hidden: TanStack pauses interval reads in the background). */
+export function useShieldedStatus(walletId: string, pollWhileSyncing = false, enabled = true) {
   const b = useBackend();
   return useQuery({
     queryKey: keys.shieldedStatus(walletId),
     queryFn: () => b.shieldedStatus(walletId),
+    enabled,
     retry: false,
-    refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+    refetchInterval: pollWhileSyncing ? (q) => (q.state.status === "error" ? SHIELDED_SCAN_POLL_MS : shieldedStatusRefetchMs(q.state.data)) : false,
   });
+}
+
+/** While a pass runs, the account is not established and nothing but time holds it, or its last
+ * pass failed (the retry's start comes with no event); a failed read is tried again. */
+export function shieldedSyncInfoRefetchMs(info: ShieldedSyncInfo | null | undefined, failed: boolean): number | false {
+  if (failed) return SHIELDED_SCAN_POLL_MS;
+  if (!info?.active) return false;
+  return info.account === "binding" || info.syncing || info.lastPassFailed || (!info.established && info.account === "bound") ? SHIELDED_SCAN_POLL_MS : false;
+}
+
+/** Where the wallet's Shielded sync stands (`ShieldedSyncInfo`); `null` while dw-app has no such
+ * command. It answers while a pass holds the note store, which the full status waits for. */
+export function useShieldedSyncInfo(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.shieldedSyncInfo(walletId),
+    queryFn: () => b.shieldedSyncInfo(walletId),
+    enabled,
+    retry: false,
+    refetchInterval: (q) => shieldedSyncInfoRefetchMs(q.state.data, q.state.status === "error"),
+  });
+}
+
+/** Reads a failed read once more when the account reads bound, once per bound state: a read with
+ * no data goes back to pending while it refetches, so its error alone would re-read in a loop. */
+export function useRereadWhenBound(bound: boolean, enabled: boolean, failed: boolean, reread: () => unknown) {
+  const done = useRef(false);
+  useEffect(() => {
+    if (!bound) done.current = false;
+    else if (enabled && failed && !done.current) {
+      done.current = true;
+      void reread();
+    }
+  }, [enabled, bound, failed, reread]);
+}
+
+/** An account the full status read may bind: the sync read cannot see a viewing key saved by an
+ * earlier session, which binds with no unlock. */
+export function shieldedBindable(info: ShieldedSyncInfo | null | undefined): boolean {
+  return !!info?.active && info.account !== null && info.account !== "bound";
+}
+
+/** The full status read binds a bindable account, and the sync read is read again once it binds. */
+export function useShieldedBind(walletId: string, info: ShieldedSyncInfo | null | undefined, enabled = true) {
+  const qc = useQueryClient();
+  const bindable = shieldedBindable(info);
+  const bound = useShieldedStatus(walletId, true, enabled && bindable).data?.account === "bound";
+  useEffect(() => {
+    if (bindable && bound) void qc.invalidateQueries({ queryKey: keys.shieldedSyncInfo(walletId) });
+  }, [bindable, bound, qc, walletId]);
 }
 
 /** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
@@ -275,6 +414,20 @@ export type ShieldedQuoteView = { kind: "add"; quote: ShieldQuote } | { kind: "s
  * the command is absent, the network is not active or the account has not been scanned yet. */
 export function shieldedDuffs(status: ShieldedStatus | null): number | null {
   return status?.active && status.ready ? creditsToDuffs(status.balance) : null;
+}
+
+/** What payments that may still go through hold of the Shielded balance (not in `balance`): how
+ * many still hold notes, and the held total in credits and duffs. `null` when nothing is held: a
+ * held spend whose notes a scan saw spent holds nothing. */
+export interface ShieldedHold {
+  count: number;
+  credits: string;
+  duffs: number;
+}
+
+export function shieldedHold(status: ShieldedStatus | null | undefined): ShieldedHold | null {
+  if (!status?.active || BigInt(status.held) === 0n) return null;
+  return { count: status.heldSpends.filter((h) => BigInt(h.credits) > 0n).length, credits: status.held, duffs: creditsToDuffs(status.held) };
 }
 
 /** What `request` costs and buys, read while the sheet asks to confirm it. */
@@ -322,6 +475,7 @@ export function usePoolBalances(walletId: string) {
   const platform = usePlatformAddresses(walletId);
   return {
     shielded: poolReading(shielded, shieldedReading),
+    shieldedHold: shieldedHold(shielded.data),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: poolReading(platform, (p) => p?.duffs ?? "absent"),
     /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */

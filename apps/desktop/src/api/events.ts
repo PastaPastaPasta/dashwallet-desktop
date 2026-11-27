@@ -52,8 +52,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
       return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility, mnKeys.listState];
+    // The engine clears RESTORED on the first full sync after a restore: read while still set, with what it waits for.
     case "sync":
-      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState];
+      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState, keys.restored, keys.restoreStatus];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7). The
@@ -81,7 +82,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       // A lock drops the wallet's queries (lockGate.ts): only the lock screen's are read again.
       if (event.state === "locked") return [keys.lockStatus, keys.lockReconcile];
       // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
+      // A full unlock lets Shielded bind its viewing key: its status and address are read again.
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll, keys.shieldedAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];
@@ -291,6 +293,8 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
         else if (queryKey === keys.unfinishedTransfersAll)
           // Only a list that was partial is read again: sync events arrive up to 4 times a second.
           void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as UnfinishedTransfers | null | undefined)?.complete === false });
+        else if (queryKey === keys.restored) void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data === true });
+        else if (queryKey === keys.restoreStatus) void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data !== null });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();

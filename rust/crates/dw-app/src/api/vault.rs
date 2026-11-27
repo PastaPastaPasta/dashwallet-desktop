@@ -146,6 +146,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: the engine binds the Orchard account's viewing key from it, prompt-free, at the Platform start or the first shielded call (m4 §2.13); never a host's",
     ),
     (
+        "Vault::shielded_viewing_keys",
+        "internal: the engine binds account 0's and each identity tip account's viewing key from it, prompt-free, as platform-wallet's seedless bind requires; never a host's",
+    ),
+    (
         "Vault::shielded_spend_key",
         "internal: reached through `DashPay::shielded_send`, `unshield_to_core` and `unshield_to_platform`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
     ),
@@ -363,6 +367,20 @@ pub enum GrantPurposeSpec {
     /// Masternode transactions (ProRegTx, ProUpRegTx): each may take at most
     /// `max_duffs` out of the wallet, fee included.
     MasternodeOp { max_duffs: u64 },
+    /// One App Connect login (`app_connect_approve`): the request and plan
+    /// its quote named, credits up to `max_credits`. Needs the passphrase
+    /// every time: never quick unlock or a cached unlock.
+    AppConnect {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        max_credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::hex_array")]
+        request: [u8; 20],
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::hex_array")]
+        plan: [u8; 32],
+    },
 }
 
 impl From<GrantPurposeSpec> for GrantPurpose {
@@ -384,6 +402,15 @@ impl From<GrantPurposeSpec> for GrantPurpose {
             S::IdentityScan => GrantPurpose::IdentityScan,
             S::Governance => GrantPurpose::Governance,
             S::MasternodeOp { max_duffs } => GrantPurpose::MasternodeOp { max_duffs },
+            S::AppConnect {
+                max_credits,
+                request,
+                plan,
+            } => GrantPurpose::AppConnect {
+                max_credits,
+                request,
+                plan,
+            },
         }
     }
 }
@@ -407,6 +434,15 @@ impl From<GrantPurpose> for GrantPurposeSpec {
             P::IdentityScan => Self::IdentityScan,
             P::Governance => Self::Governance,
             P::MasternodeOp { max_duffs } => Self::MasternodeOp { max_duffs },
+            P::AppConnect {
+                max_credits,
+                request,
+                plan,
+            } => Self::AppConnect {
+                max_credits,
+                request,
+                plan,
+            },
             // The host cannot request a masternode withdrawal yet (MG-13 is
             // engine-only; MG-10 binds it): an engine-issued one shows as the
             // Platform credits it caps, as dw-ffi shows purposes it lacks.
@@ -1173,9 +1209,14 @@ commands! {
 
     /// A fresh BIP39 phrase of 12, 15, 18, 21 or 24 words. Nothing is
     /// stored: the UI shows it, checks the user wrote it down (QT-103,
-    /// IOS-004) and passes it to `importWallet`.
+    /// IOS-004) and passes it to `importWallet`. `restore_only` while the
+    /// open network's RESTORED mark is set: a new wallet waits for it to
+    /// clear.
     #[facade("dw_vault::mnemonic::generate")]
     fn generate_mnemonic(state, word_count: u8, language: MnemonicLanguageName) -> String {
+        if let Ok(session) = state.session().await {
+            dw_engine::store_upgrade::refuse_while_restored(session.data_dir())?;
+        }
         generated_phrase(word_count, language.into())
     }
 

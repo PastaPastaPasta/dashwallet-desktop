@@ -8,7 +8,6 @@
 use std::collections::{BTreeMap, HashMap};
 
 use dashcore::address::Payload;
-use dashcore::hashes::Hash;
 use dashcore::{
     Address, BlockHash, Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, TxIn, TxOut, Txid,
     Witness,
@@ -720,6 +719,7 @@ fn dashpay_account(account_type: AccountType, xpub: ExtendedPubKey) -> ManagedCo
         account_xpub: xpub,
         is_watch_only: true,
     })
+    .unwrap()
 }
 
 /// Our external account paying `contact` on the xpub of seed `seed`,
@@ -737,12 +737,12 @@ fn external_account(
     };
     let mut pay = dashpay_account(account_type, xpub);
     for pool in pay.managed_account_type_mut().address_pools_mut() {
-        pool.generate_addresses(extra, &KeySource::Public(xpub), true)
+        pool.generate_addresses(extra, &KeySource::Public(xpub))
             .unwrap();
     }
     let pool = pay.managed_account_type().address_pools()[0];
-    let scripts = (0..pool.addresses.len() as u32)
-        .map(|i| pool.addresses[&i].script_pubkey.clone())
+    let scripts = (0..pool.addresses().len() as u32)
+        .map(|i| pool.addresses()[&i].address.script_pubkey())
         .collect();
     (pay, scripts)
 }
@@ -795,13 +795,13 @@ impl Fixture {
                     xpub,
                 );
                 for pool in pay.managed_account_type_mut().address_pools_mut() {
-                    pool.generate_addresses(extra, &KeySource::Public(xpub), true)
+                    pool.generate_addresses(extra, &KeySource::Public(xpub))
                         .unwrap();
                 }
                 let scripts = |a: &ManagedCoreFundsAccount| {
                     let pool = a.managed_account_type().address_pools()[0];
-                    let mut by_index: Vec<(u32, ScriptBuf)> = (pool.addresses.iter())
-                        .map(|(i, info)| (*i, info.script_pubkey.clone()))
+                    let mut by_index: Vec<(u32, ScriptBuf)> = (pool.addresses().iter())
+                        .map(|(i, info)| (*i, info.address.script_pubkey()))
                         .collect();
                     by_index.sort();
                     by_index.into_iter().map(|(_, s)| s).collect::<Vec<_>>()
@@ -842,7 +842,7 @@ impl Fixture {
             let info = wm.get_wallet_info(&wallet.0).unwrap();
             let account = &info.core_wallet.accounts.standard_bip44_accounts[&0];
             let pool = account.managed_account_type().address_pools()[0];
-            pool.addresses[&n].script_pubkey.clone()
+            pool.addresses()[&n].address.script_pubkey()
         })
     }
 
@@ -1363,7 +1363,7 @@ fn t2_testnet_contact_payments_after_a_restore() {
                     .find(|(k, _)| k.user_identity_id == user && k.friend_identity_id == friend)
                     .expect("A's DashPay account paying B");
                 let pool = account.managed_account_type().address_pools()[0];
-                pool.addresses[&0].address.to_string()
+                pool.addresses()[&0].address.to_string()
             });
             eprintln!("A pays B's DashPay address {address}");
             let draft = s.new_tx_draft(a).unwrap();

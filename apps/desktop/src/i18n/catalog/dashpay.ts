@@ -94,6 +94,9 @@ export const dashpay = {
     unlock: "Unlock the wallet to continue.",
     authorize: "Waiting for your approval to continue.",
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
+    paymentUnknownShielded: "Checking whether the payment from your Shielded balance went through.",
+    /** Shown beside Continue, which checks again. */
+    paymentUnknownShieldedIdle: "Dash Wallet hasn't checked the payment from your Shielded balance since it reopened. Choose Continue to check it again. This doesn't spend anything.",
     paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
     /** Shown only beside both Continue and Move to Dash wallet, which it names. */
     paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
@@ -113,6 +116,19 @@ export const dashpay = {
      * reports no amount, so the line names none. */
     refundedPlatform:
       "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    /** A paid failure of a registration from the Shielded balance (C-funding F12): Platform sent
+     * the payment, less a penalty, to this wallet's Platform balance. */
+    refundedShielded:
+      "Dash Platform couldn't register the username. It kept part of the payment as a penalty and sent the rest to your Platform balance.",
+    /** A registration from the Shielded balance whose coins read spent with no identity made
+     * (C-funding F12): another device with the same recovery phrase may have spent them, so the
+     * line claims no refund. */
+    consumedShielded:
+      "Dash Wallet couldn't register the username. The Shielded funds chosen to pay for it have been spent, but no username was registered. Either this payment spent them, and Dash Platform kept a penalty and sent the rest to your Platform balance, or another device using this recovery phrase spent them. Check your Platform balance before you start a new registration.",
+    /** A Shielded-funded run whose readiness no longer held when it was about to pay. */
+    shieldedNotReady: "Your Shielded balance can't pay for the username right now, so nothing was spent. Try again in a moment.",
+    /** A Shielded payment that was refused before it was sent. */
+    shieldedRefused: "The payment from your Shielded balance didn't go through, so nothing was spent. You can try again.",
     /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
      * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
     quoteChanged:
@@ -140,6 +156,11 @@ export const dashpay = {
     cost: "A username costs about {amount}. Usernames the network votes on cost more; the exact cost is shown before you pay.",
     costUnknown: "Usernames the network votes on cost more than others. The exact cost is shown before you pay.",
     shortfall: "You need at least {amount} to create a username.",
+    /** Neither the Dash wallet nor the Shielded balance can pay. Every placeholder is an amount
+     * with its unit. */
+    shortfallBoth: "You need at least {amount} to create a username. Your Dash wallet has {core}. Your Shielded balance has {shielded}.",
+    /** As `shortfallBoth` in discreet mode, which shows the price but no balance. */
+    shortfallBothDiscreet: "You need at least {amount} to create a username. Neither your Dash wallet nor your Shielded balance has enough.",
     create: "Create username",
     watchOnly: "A watch-only wallet cannot join DashPay. Restore the wallet from its recovery phrase to join.",
     joinedAs: "You have joined DashPay as {username}.",
@@ -245,7 +266,38 @@ export const dashpay = {
       /** `time` is a clock time, HH:MM. */
       resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
+      /** `unsettled` while what holds the payment back is a hold: no "Try again". */
+      held: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
       syncing: "Your shielded balance is still syncing.",
+    },
+    /** "Make your username private", the step before the name (C-funding F19; the iOS and Android
+     * wallets' copy, "Dash balance" read as "Dash wallet", and the Shielded note says what it hides:
+     * the link between the funds and the username, which itself is public). */
+    privacy: {
+      title: "Make your username private",
+      titleNoShielded: "Pay for your username",
+      body: "To help keep your payment activity private, we recommend paying for the username from your Shielded balance",
+      shieldedNote: "Helps hide the link between your funds and your username",
+      coreNote: "Funds will be traceable to your username",
+      advanced: "Advanced",
+      shieldFirst: "Shield your funds first",
+      withoutPrivacy: "Continue without privacy",
+      /** The card shown in place of the sources while the Shielded balance cannot pay. */
+      tip: {
+        restingTitle: "Funds are resting",
+        /** `time` is a clock time, HH:MM. */
+        resting: "Your shielded funds are resting. They will be ready around {time} — creating your username before then links it to where the funds came from.",
+        poolTitle: "Privacy pool too small",
+        /** `notes` and `required` are counts of notes. */
+        pool: "The shared privacy pool holds {notes} of the {required} notes a private registration needs. That count comes from everyone's shielded activity, so it grows on its own — try again later.",
+        partlyTitle: "Not enough shielded funds",
+        /** `have`, `need` and `more` are amounts with their unit. */
+        partly: "Your Shielded balance holds {have} of the {need} a private registration needs. Add {more} more, then let it rest a few hours.",
+        nothingTitle: "Privacy tip",
+        /** `need` is an amount with its unit. */
+        nothing: "Paying privately takes at least {need} in your Shielded balance. Funds move there in seconds, then rest a few hours before they can pay for a username.",
+        waitTitle: "Shielded balance",
+      },
     },
     /** The name's checklist. */
     rule: {
@@ -281,6 +333,17 @@ export const dashpay = {
       /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
        * `funding` what the identity receives, exactly; `fee` the Platform fee, about; `total` both. */
       fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a Platform fee of about {fee}. Your identity starts with a balance of {funding}.",
+      /** Paid from the Shielded balance (C-funding F20). Every placeholder is an amount with its
+       * unit. */
+      shielded: {
+        leaves: "{denomination} leaves your Shielded balance.",
+        fee: "Network fee: about {fee}.",
+        starts: "Your identity starts with {start} in credits. The username and profile are paid from it, and about {left} stays as credits for contacts and profile changes.",
+        /** `starts` when nothing is left after the username and profile. */
+        startsNoneLeft: "Your identity starts with {start} in credits. The username and profile are paid from it.",
+        change: "{change} returns to your Shielded balance after the next sync.",
+        whole: "This uses your whole Shielded balance.",
+      },
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",
@@ -757,5 +820,104 @@ export const dashpay = {
     notNow: "Not now",
     dismiss: "Dismiss invitation",
     retry: "Try again",
+  },
+  /** "Sign in to an app" (App Connect): the sheet a `dashpay://connect` request opens. `label` is
+   * the app's own name for itself, never verified; `host` is where the app's return link goes. */
+  connect: {
+    title: "Sign in to an app",
+    loading: "Checking this request with Platform…",
+    app: {
+      claim: "“{label}” (name given by the app, not verified)",
+      unverified: "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+      id: "App ID",
+      copyId: "Copy App ID",
+    },
+    returnsTo: "Returns you to {host}",
+    signInAs: "Sign in as",
+    asks: "The app asks for:",
+    grant: {
+      contract: "A key for the app's contract",
+      docType: "A key for “{type}” documents",
+      profile: "A key that can edit your DashPay profile",
+      encryption: "An encryption key for the app",
+      /** `count` is how many contracts the group has now. */
+      group: "A key for the app's contracts ({count}). The app's owner can add contracts to this group later, and this key will work for those too.",
+      groupAdmins: "A key for the app's contracts ({count}). The app's owner and admins can add contracts to this group later, and this key will work for those too.",
+    },
+    /** The group row's details: who controls the group and what is in it now. */
+    group: {
+      owner: "Owner",
+      admins: "Admins",
+      contracts: "Contracts",
+      documentTypes: "Document types",
+      tokens: "Tokens",
+      none: "None",
+    },
+    /** Under a CRITICAL binding that can reach tokens: a group, or a contract with tokens or one an
+     * update could add tokens to. Only CRITICAL keys can sign token transitions. */
+    critical: "This key has critical access: it can do anything these contracts let your identity do, including sending the app's tokens your identity holds. The funding limit doesn't cap tokens.",
+    /** Under a CRITICAL binding that can't reach tokens: a read-only contract without tokens, or one document type. */
+    criticalNoTokens: "This key has critical access: within what it covers, it can do anything your identity can.",
+    /** Under a binding on the app's contracts, a document type or a group, unless the critical warning
+     * names tokens already: a document write can carry a token cost the identity pays. */
+    tokenCost: "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
+    cannot: "It can't spend Dash from this wallet, withdraw credits, transfer credits to anyone or change your other keys. It can spend your identity's credits up to the funding limit.",
+    limit: "Funding limit (Dash)",
+    limitHint: "The most this app can spend from your identity's credits.",
+    /** `max` is the most the wallet lets an approval set, in Dash. */
+    limitInvalid: "Enter an amount of Dash more than 0 and at most {max}, like 0.5.",
+    expiry: "Access ends",
+    expiryValue: "In {days} days",
+    fee: "Adding these keys costs about {amount} in credits.",
+    approve: "Approve",
+    deny: "Deny",
+    close: "Close",
+    step: {
+      keys: "Adding keys to your identity…",
+      confirm: "Waiting for Platform…",
+      send: "Sending to the app…",
+    },
+    done: "You're signed in to “{label}”.",
+    denied: "You declined this sign-in request. Nothing was added to your identity.",
+    /** Declined after an approval of this request stopped before its response was sent. */
+    deniedAfterApprove: "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
+    return: "Return to {host}",
+    retrySend: "Retry sending",
+    /** Under a quote that failed: quotes the same choice again. */
+    retryQuote: "Try again",
+    sendFailed: "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
+    planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
+    err: {
+      network: "This request is for {requested}, but this wallet uses {current}.",
+      mainnetOff: "This version can sign in to apps on test networks only.",
+      unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
+      invalid: "This sign-in request can't be read. Ask the app for a new one.",
+      newer: "This link needs a newer version of Dash Wallet.",
+      /** A new request while every request kept is on screen or being approved. */
+      busy: "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
+      stale: "This sign-in request has expired. Ask the app for a new one.",
+      protocol: "This network doesn't support app sign-in yet.",
+      noIdentity: "You need a DashPay username to sign in to apps. Create one in DashPay first.",
+      hint: "This sign-in is for an identity that isn't in this wallet.",
+      owner: "Dash Wallet refused this request: the app asked for keys covering contracts it doesn't own.",
+      credits: "Your identity needs {amount} more in credits to add these keys. Top it up, then try again.",
+      answered: "You've already answered this request. Ask the app for a new one.",
+      check: "Couldn't check this request with Platform. Try again.",
+      failed: "Sign-in didn't finish: {detail}",
+      returnFailed: "Dash Wallet couldn't open {host}. Switch back to the app yourself.",
+    },
+    /** After `err.failed`, only where the wallet read the identity back: never after `notConfirmed`. */
+    failed: {
+      added: "The keys were added to your identity.",
+    },
+    /** `err.failed`'s `detail`, by where the approval stopped. */
+    failure: {
+      keyConflict: "a key for this app is already on your identity, with different limits.",
+      notConfirmed: "Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, Dash Wallet checks your identity first.",
+      noResponseKey: "your identity has no key that can sign the answer to the app.",
+      nothingToSend: "Dash Wallet had nothing to send back to the app. Start again from the app; that adds new keys to your identity, for a small fee in credits.",
+      scopeChanged: "the app changed its contracts or keys on Dash Platform after your keys were added.",
+      unknown: "something went wrong on the way.",
+    },
   },
 } as const satisfies Tree;

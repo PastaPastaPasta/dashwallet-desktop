@@ -821,9 +821,11 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func closeNetwork(network: DashNetwork) async throws  -> Bool
     
     /**
-     * Data directory used for `network` ("Open data folder").
+     * Data directory used for `network` ("Open data folder"): the folder
+     * `network-folders.json` names once the network started over. A record
+     * that can't be read is an error, never the default folder.
      */
-    func networkDir(network: DashNetwork)  -> String
+    func networkDir(network: DashNetwork) throws  -> String
     
     /**
      * Opens (or returns the open) session for `network`.
@@ -973,10 +975,12 @@ open func closeNetwork(network: DashNetwork)async throws  -> Bool  {
 }
     
     /**
-     * Data directory used for `network` ("Open data folder").
+     * Data directory used for `network` ("Open data folder"): the folder
+     * `network-folders.json` names once the network started over. A record
+     * that can't be read is an error, never the default folder.
      */
-open func networkDir(network: DashNetwork) -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
+open func networkDir(network: DashNetwork)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeEngineError_lift) {
         uniffiCallStatus in
     uniffi_dashwallet_core_fn_method_engine_network_dir(
             self.uniffiCloneHandle(),
@@ -20186,6 +20190,11 @@ public enum TxActionRefusal: Equatable, Hashable {
      * wallet clears it.
      */
     case recordUnreadable
+    /**
+     * It, or a later transaction that spends from it, funds a Platform
+     * transfer that hasn't finished, which the wallet sends again.
+     */
+    case platformFunding
 
 
 
@@ -20224,6 +20233,8 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         case 8: return .settledDescendant
         
         case 9: return .recordUnreadable
+        
+        case 10: return .platformFunding
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -20267,6 +20278,10 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         
         case .recordUnreadable:
             writeInt(&buf, Int32(9))
+        
+        
+        case .platformFunding:
+            writeInt(&buf, Int32(10))
         
         }
     }
@@ -24154,7 +24169,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_engine_close_network() != 4202) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_engine_network_dir() != 64590) {
+    if (uniffi_dashwallet_core_checksum_method_engine_network_dir() != 51927) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_engine_open_network() != 17412) {

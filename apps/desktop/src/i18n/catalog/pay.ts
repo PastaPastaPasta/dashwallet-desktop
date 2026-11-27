@@ -76,6 +76,15 @@ export const pay = {
     lockedBeforeSend: "The wallet locked before the payment was sent. Nothing was sent.",
     noRetryHere: "The payment may have been sent, and it can no longer be retried here.",
   },
+  /** Notices on the Pay form: the payment waits on the wallet, nothing went wrong. */
+  notice: {
+    /** A contact payment refused while the contact's payment details aren't checked yet: after a
+     * launch until the first DashPay pass, or while the check can't finish (H-09). Nothing is ever
+     * sent to an unchecked contact. */
+    contactsUpdating: "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.",
+    /** Runs the estimate again and reopens the review, where Send runs the check again. */
+    tryAgain: "Try again",
+  },
   incomplete: "Enter an address and an amount first.",
   /** The contact form has no address field: only the amount is missing. */
   incompleteContact: "Enter an amount first.",
@@ -328,6 +337,8 @@ export const pay = {
       belowMinimum: "The smallest payment from here is {min}. Pay a smaller amount from your Dash wallet.",
       movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
       shieldedPending: "An earlier shielded payment is still being checked. Try again when it is settled.",
+      /** `shieldedPending` while what holds the payment back is a hold: no "Try again". */
+      shieldedHeld: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
     },
   },
   /** As `transfer.status`, for a payment from the Platform addresses. */

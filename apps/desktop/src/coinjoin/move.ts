@@ -26,8 +26,11 @@ import { messageTable, t } from "../i18n";
 import { en } from "../i18n/en";
 import { failureText, Model } from "../onboarding/model";
 import { SHIELDED_COPY, shieldedErrorText, shieldedSettled } from "../shielded/flow";
+import { SHIELDED_SYNC_COPY, shieldedWait, type ShieldedWait } from "../shielded/syncing";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { CoinJoinText } from "./model";
+import { platformHoldText } from "../api/platformHold";
 
 export type MoveMixedApi = Pick<
   Backend,
@@ -211,8 +214,21 @@ const countOf = (e: unknown): number => {
   return d?.kind === "number" && typeof d.value === "number" ? d.value : 0;
 };
 
-/** A plan or move refusal, by code; `amount` shows a duff figure a shielded refusal names. */
-export function moveErrorText(e: unknown, amount: (duffs: number) => string = String): string {
+/** Whether Move mixed to Shielded can start, as Add's: the reason it waits (`shieldedWaitText`) and
+ * the unlock that would let it, or `null` when it can. */
+export function moveShieldWait(status: ShieldedStatus | null | undefined): { why: string; unlock: "unlock" | "unlockFully" | null } | null {
+  const wait = shieldedWait(status);
+  if (wait === null) return null;
+  return { why: SHIELDED_SYNC_COPY.wait(wait), unlock: wait === "locked" ? "unlock" : wait === "mixingOnly" ? "unlockFully" : null };
+}
+
+/** The sheet's refusal line: Dash Platform off said as at a send only where the move was sent. */
+export const refusalText = (flow: Pick<MoveMixedFlow, "error" | "planFailed">, amount: (duffs: number) => string = String, wait: ShieldedWait | null = null): string =>
+  platformHoldText(flow.error, !flow.planFailed) ?? moveErrorText(flow.error, amount, wait);
+
+/** A plan or move refusal, by code; `amount` shows a duff figure a shielded refusal names, and `wait`
+ * names why Shielded waits (`shieldedWait`). */
+export function moveErrorText(e: unknown, amount: (duffs: number) => string = String, wait: ShieldedWait | null = null): string {
   if (hasCode(e, "coinjoin.nothing_to_move") || hasCode(e, SHIELDED_CODES.nothingToMove)) return MOVE_COPY.nothing;
   if (hasCode(e, "coinjoin.mixing_active") || hasCode(e, SHIELDED_CODES.mixingActive)) return MOVE_COPY.mixing.text;
   if (hasCode(e, "coinjoin.move_running") || hasCode(e, SHIELDED_CODES.moveRunning)) return MOVE_COPY.otherMove;
@@ -224,7 +240,7 @@ export function moveErrorText(e: unknown, amount: (duffs: number) => string = St
   if (hasCode(e, SHIELDED_CODES.coinsChanged)) return MOVE_COPY.planChanged;
   const code = (e as { code?: unknown } | null)?.code;
   if (typeof code === "string" && (code.startsWith("shielded.") || code.startsWith("platform."))) {
-    return shieldedErrorText(e, (c) => amount(creditsToDuffs(c)), amount, "add");
+    return shieldedErrorText(e, (c) => amount(creditsToDuffs(c)), amount, "add", wait ?? false);
   }
   return failureText(e);
 }
@@ -282,6 +298,8 @@ export class MoveMixedFlow extends Model {
   /** A move to Shielded's. */
   shielded: ShieldOutcome | null = null;
   error: unknown = null;
+  /** `error` refused the plan or quote, where nothing was being sent. */
+  planFailed = false;
   /** A plan, stop, move or resend call runs. */
   running = false;
   /** What the last Try again on a chunk of unknown outcome came to. */
@@ -317,8 +335,9 @@ export class MoveMixedFlow extends Model {
   }
 
   /** A refusal: Stop Mixing while the wallet mixes, else its text. */
-  #fail(e: unknown) {
+  #fail(e: unknown, planning = false) {
     this.error = e;
+    this.planFailed = planning;
     this.step = mixingRefusal(e) ? "mixing" : "refused";
   }
 
@@ -369,7 +388,7 @@ export class MoveMixedFlow extends Model {
           if (epoch !== this.#epoch) return;
           continue;
         }
-        this.#fail(e);
+        this.#fail(e, true);
       }
       break;
     }

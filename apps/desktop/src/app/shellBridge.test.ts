@@ -213,3 +213,43 @@ describe("stashed links", () => {
     expect(traceName(route)).toBe("rejected notSaved");
   });
 });
+
+describe("App Connect links", () => {
+  const route = { kind: "appConnect", linkId: "c0".repeat(16), returnsTo: "yappr.example" } as const;
+
+  it("opens the sign-in sheet for its request, on the page that was open", () => {
+    vi.stubGlobal("window", { setTimeout: () => 0 });
+    ui.set({ route: "contacts", dialog: "about" });
+    applyLink(route);
+    expect(ui.get()).toMatchObject({ route: "contacts", dialog: null, appConnect: { linkId: "c0".repeat(16), returnsTo: "yappr.example" } });
+    expect(linkProblem(route)).toBeNull();
+    expect(traceName(route)).toBe("appConnect");
+  });
+
+  it("a request that arrives while one is shown waits its turn", () => {
+    vi.stubGlobal("window", { setTimeout: () => 0 });
+    applyLink(route);
+    const next = { ...route, linkId: "d1".repeat(16) };
+    applyLink(next);
+    expect(ui.get().appConnect?.linkId).toBe(route.linkId);
+    expect(ui.get().appConnectQueue).toEqual([{ linkId: next.linkId, returnsTo: "yappr.example" }]);
+  });
+
+  it("a request typed or pasted has no return host", () => {
+    vi.stubGlobal("window", { setTimeout: () => 0 });
+    applyLink({ ...route, returnsTo: null });
+    expect(ui.get().appConnect).toEqual({ linkId: "c0".repeat(16), returnsTo: null });
+  });
+
+  it("says why a request was refused before any sheet", () => {
+    const rejected = (reason: "invalid" | "unsupported" | "needsNewerWallet" | "busy") => ({ kind: "rejected", reason: { kind: "connect", reason } }) as const;
+    expect(linkProblem(rejected("invalid"))).toBe("This sign-in request can't be read. Ask the app for a new one.");
+    expect(linkProblem(rejected("unsupported"))).toBe("This app uses a sign-in method this version of Dash Wallet doesn't support.");
+    expect(linkProblem(rejected("needsNewerWallet"))).toBe("This link needs a newer version of Dash Wallet.");
+    expect(linkProblem(rejected("busy"))).toBe(
+      "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
+    );
+    expect(traceName(rejected("needsNewerWallet"))).toBe("rejected connect needsNewerWallet");
+    expect(ui.get().appConnect).toBeNull();
+  });
+});

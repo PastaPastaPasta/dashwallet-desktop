@@ -7,7 +7,6 @@
 
 use std::collections::BTreeSet;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, Block, BlockHash, ScriptBuf, TxIn};
 use dw_vault::{Credential, GrantPurpose};
 use platform_wallet::PlatformWalletInfo;
@@ -42,6 +41,7 @@ where
     for event in &events {
         f.session.hub.on_wallet_event(event);
     }
+    f.session.hub.settle_rereads();
     (f.session.live().unwrap().persister)
         .flush(f.wallets[0].0)
         .unwrap();
@@ -182,10 +182,10 @@ fn shared_with_a_coin_paying_us(f: &Fx) -> Shared {
     ))
     .unwrap();
     let party = &vectors["cases"][0]["parties"][1];
-    let secret = dashcore::PrivateKey::from_wif(party["owner_wif"].as_str().unwrap())
+    let secret = *dashcore::PrivateKey::from_wif(party["owner_wif"].as_str().unwrap())
         .unwrap()
         .inner
-        .to_secret_bytes();
+        .to_bytes();
     let paid_a = paying(41, &receive(f), 701 * COIN);
     mined(f, 10, vec![paid_a.clone()]);
     let paid_x = paying(42, &receive(f), 300 * COIN);

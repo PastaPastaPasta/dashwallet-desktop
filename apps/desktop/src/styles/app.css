@@ -1098,10 +1098,16 @@ input[type="radio"]:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  height: var(--dw-layout-hero-height);
+  height: calc(var(--dw-layout-hero-height) + var(--hero-held-line));
   padding: var(--dw-space-l) var(--dw-layout-page-padding-h) 0;
   background: var(--dw-role-hero);
   color: var(--dw-role-text-on-hero);
+  --hero-held-line: 0px;
+}
+
+/* The line of coins a dropped payment holds: the band grows by it while it shows. */
+.hero-band:has(.hero-held) {
+  --hero-held-line: calc(var(--dw-space-s) + var(--dw-type-footnote-line));
 }
 
 .hero {
@@ -1159,30 +1165,57 @@ input[type="radio"]:disabled {
 
 /* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
 .hero-band:has(.hero-fiat) {
-  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line));
 }
 
 /* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
    the fiat row and the note of what Core has pending. */
 @media (min-width: 980px) {
   .hero-band:has(.hero[data-breakdown="none"]) {
-    height: var(--dw-layout-hero-height-hidden);
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
   .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line));
   }
 }
 
-.hero-note {
+.hero-note,
+.hero-held {
   margin: 0;
   font-size: var(--dw-type-footnote-size);
   font-weight: var(--dw-type-footnote-weight);
   line-height: var(--dw-type-footnote-line);
+}
+
+.hero-note,
+.hero-held-text {
   opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-held {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs) var(--dw-space-s);
+  align-items: baseline;
+  justify-content: center;
+  margin-top: var(--dw-space-s);
+  text-align: center;
+}
+
+.hero-held-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-on-hero);
+  font: inherit;
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .hero-fiat {
@@ -1859,6 +1892,13 @@ input[type="radio"]:disabled {
   color: var(--dw-role-danger);
 }
 
+.tx-detail-note {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
 /* Why Dash Wallet dropped the transaction itself, and where its coins are. */
 .tx-detail-dropped {
   max-width: 34rem;
@@ -2386,6 +2426,10 @@ input[type="radio"]:disabled {
   margin-bottom: 0;
 }
 
+.pay-banner.is-updating > .dash-button {
+  flex-shrink: 0;
+}
+
 .pay-fee-line {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -2512,6 +2556,21 @@ input[type="radio"]:disabled {
 
 .request-form .placeholder-note,
 .receive-card .form-problem {
+  margin: 0;
+}
+
+/* Receive in Shielded without the viewing key: why, and the unlock. Under the address while the
+   first scan runs: its progress, and that a payment is safe to receive now. */
+.shielded-receive-why,
+.shielded-receive-scan {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+}
+
+.shielded-receive-why p,
+.shielded-receive-scan p {
   margin: 0;
 }
 
@@ -2920,6 +2979,10 @@ input[type="radio"]:disabled {
 
 .onboarding-text {
   text-align: center;
+}
+
+.store-open-text {
+  overflow-wrap: anywhere;
 }
 
 .onboarding-note,
@@ -4893,6 +4956,19 @@ button.bell-row-open:focus-visible {
   opacity: var(--dw-opacity-disabled);
 }
 
+.restored-state-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.restored-state-panel .history-gap-actions {
+  margin-top: 0;
+}
+
 .history-gap-notice {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
@@ -5453,6 +5529,38 @@ button.bell-row-open:focus-visible {
 
 .pay-with-source[data-disabled] .topup-choice-amount {
   color: var(--dw-role-text-secondary);
+}
+
+/* "Make your username private": a source's note, balance and reason, one line each. */
+.pay-with-source .topup-choice-buys > span {
+  display: block;
+}
+
+/* The tip shown instead of the sources while the Shielded balance cannot pay; the pool's warning in
+   the warning color. */
+.privacy-tip {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-neutral-tint);
+}
+
+.privacy-tip[data-tone="warning"] {
+  background: var(--dw-role-warning-tint);
+}
+
+.privacy-tip-title {
+  margin: 0 0 var(--dw-space-xs);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.privacy-tip[data-tone="warning"] .privacy-tip-title {
+  color: var(--dw-role-warning);
+}
+
+.privacy-tip-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .topup-title {
@@ -6672,6 +6780,82 @@ button.bell-row-open:focus-visible {
   align-items: end;
 }
 
+/* A shared masternode's pane section: the share bar (this wallet's shares in the accent), its legend and lines. */
+.sh-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.sh-detail p {
+  margin: 0;
+}
+
+.sh-sharebar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin: var(--dw-space-xs) 0;
+}
+
+.sh-sharebar > span {
+  flex-basis: 0;
+  border-radius: 2px;
+  background: var(--dw-role-progress-track);
+}
+
+.sh-sharebar > span.is-mine {
+  background: var(--dw-role-accent);
+}
+
+.sh-node-hash {
+  display: block;
+}
+
+.sh-key-lines {
+  overflow-wrap: anywhere;
+}
+
+.sh-legend,
+.sh-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0 0 var(--dw-space-xs);
+  padding: 0;
+  list-style: none;
+}
+
+.sh-legend {
+  flex-flow: row wrap;
+  gap: var(--dw-space-xxs) var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.sh-legend li::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--dw-space-xxs);
+  border-radius: 2px;
+  background: var(--dw-role-progress-track);
+}
+
+.sh-legend li.is-mine {
+  color: var(--dw-role-text-primary);
+}
+
+.sh-legend li.is-mine::before {
+  background: var(--dw-role-accent);
+}
+
+.sh-standby-share {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
 .page-masternodes .mg-notice {
   margin-bottom: var(--dw-space-l);
 }
@@ -6933,4 +7117,140 @@ button.bell-row-open:focus-visible {
 
 .sync-phase-active {
   font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ Sign in to an app (App Connect) */
+
+.connect-body,
+.connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.connect-form .form-problem {
+  margin: 0;
+}
+
+.connect-form .form-problem:empty {
+  margin-top: calc(-1 * var(--dw-space-m));
+}
+
+.connect-terms {
+  padding: 0;
+}
+
+.connect-quote-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+}
+
+.connect-critical,
+.connect-key-note {
+  margin: var(--dw-space-xs) 0 0;
+  margin-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
+}
+
+.connect-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding-bottom: var(--dw-space-m);
+  border-bottom: 1px solid var(--dw-role-separator);
+}
+
+/* The app's own name for itself: plain text colour, never an accent or a check mark. */
+.connect-claim {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+  overflow-wrap: anywhere;
+}
+
+.connect-app-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+}
+
+.connect-app-id-value {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+  min-width: 0;
+}
+
+.connect-asks-title {
+  margin: 0 0 var(--dw-space-xs);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.connect-bindings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connect-binding {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.connect-binding .check-row {
+  align-items: flex-start;
+}
+
+.connect-binding-detail,
+.connect-group {
+  margin: 0;
+  padding-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
+  color: var(--dw-role-text-secondary);
+}
+
+.connect-group-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  margin-top: var(--dw-space-xxs);
+}
+
+.connect-group-row dd {
+  margin: 0;
+}
+
+.connect-loading,
+.connect-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.connect-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--dw-role-text-secondary);
+}
+
+.connect-step[data-current] {
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.connect-step:not([data-current])::before {
+  content: "";
+  width: var(--dw-space-l);
 }

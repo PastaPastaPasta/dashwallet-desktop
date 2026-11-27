@@ -1352,6 +1352,50 @@ fn a_failed_upgrade_is_read_back() {
     assert_eq!(f.eligibility(BOB).unwrap(), Eligibility::Ok);
 }
 
+/// A send, an accept or a key upgrade whose wait ends unconfirmed (the
+/// SDK's `StateTransitionResultUnconfirmed`, as the library hands it back)
+/// and that the read-back does not find is `platform.broadcast_unknown`,
+/// not `internal` nor a timeout the user is asked to try again: it may
+/// still land. Its lease paid for its one write.
+#[test]
+fn an_unconfirmed_write_is_unknown() {
+    let unconfirmed = || {
+        PlatformError::from(platform_wallet::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+                dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+            )),
+        ))
+    };
+    let f = Fixture::new(u64::MAX / 2);
+    *f.net.fails.lock().unwrap() = Some(unconfirmed());
+    let lease = f.flow(
+        FlowKind::ContactRequest,
+        vec![f.grant(CONTACT_REQUEST_CREDITS)],
+    );
+    assert_eq!(
+        Fixture::code(f.send(BOB, &lease)),
+        "platform.broadcast_unknown"
+    );
+    assert_eq!(
+        Fixture::code(f.accept(FRANK, &f.grant(CONTACT_REQUEST_CREDITS))),
+        "platform.broadcast_unknown"
+    );
+    assert_eq!(f.net.writes(), 2);
+    *f.net.fails.lock().unwrap() = None;
+    assert_eq!(
+        Fixture::code(f.send(BOB, &lease)),
+        "platform.grant_exceeded"
+    );
+
+    let g = Fixture::with_keys(keys(false), u64::MAX / 2);
+    *g.net.fails.lock().unwrap() = Some(unconfirmed());
+    assert_eq!(
+        Fixture::code(g.enable_keys(&g.grant(u64::MAX))),
+        "platform.broadcast_unknown"
+    );
+    assert_eq!(g.eligibility(BOB).unwrap(), Eligibility::NoDashPayKeys);
+}
+
 /// One write of an identity at a time, whatever the feature: a send waits
 /// for the identity's write lock, which names.rs takes too.
 #[test]

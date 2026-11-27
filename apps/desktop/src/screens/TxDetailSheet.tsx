@@ -2,7 +2,7 @@
 // facts (research 02 §4.6), the label editor, and Abandon / Resend where they apply (U-03 D15). With prices
 // (MP-01), what the payment was worth when first seen (its stamp, rates-engine §6) and its value now.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage, hasCode, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
@@ -14,6 +14,7 @@ import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
+import { useRestoredGate } from "../api/restoreGate";
 import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
@@ -173,8 +174,21 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
   return x.inputsUnresolved ? t("activity.abandon.unknownInputs") : t("activity.abandon.notSpending");
 }
 
+/** MG's line above the abandon confirm while the payment still holds its hold from before a restore
+ * (Q92 H2); abandoning ends the hold, so a later confirm shows none. */
+export const abandonHint = (x: TxDetailExtrasInfo): string | null => (x.restoreHeld ? t("activity.abandon.restoredHint") : null);
+
+/** What the sheet offers for one action the engine says applies: the action, nothing, the action
+ * disabled while RESTORED is not known yet (`undefined`), or, while the restored wallet data is still
+ * being checked, the money gate's refusal in its place. */
+export function actionOffer(applies: boolean, walletRestored: boolean | undefined): "offer" | "waiting" | "gated" | "none" {
+  if (!applies) return "none";
+  if (walletRestored === undefined) return "waiting";
+  return walletRestored ? "gated" : "offer";
+}
+
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
- * refusal, why a `settledDescendant` one can't be abandoned, which open wallet (of `wallets`)
+ * refusal, why a `settledDescendant` or `platformFunding` one can't be abandoned, which open wallet (of `wallets`)
  * a `recordUnreadable` one names, and that an Abandon refused while the wallet catches up can be
  * tried once it has, from the catalog. */
 export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = [], what: "abandon" | "resend" = "abandon"): string {
@@ -184,12 +198,59 @@ export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+    if (e.data.refusal === "platformFunding") return t("activity.abandon.platformFunding");
+    if (e.data.refusal === "restored") return t("activity.abandon.restoredGate");
   }
   return errorMessage(e);
 }
 
+/** Whether the engine withholds an output of this transaction: it, or a payment it was built on,
+ * may never confirm, so its coin is pending (`coins.pendingUnproven`). */
+export const withholds = (x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined): boolean => (x?.withheldOutputs.length ?? 0) > 0;
+
+/** The pending coin's line, under the status, while the engine withholds it. */
+export function PendingUnprovenLine({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined }) {
+  if (!withholds(x)) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-pending-unproven">
+      {t("coins.pendingUnproven")}
+    </p>
+  );
+}
+
+/** Abandon's hint on a payment whose coin is pending, while Abandon is offered. */
+export function UnprovenAbandonHint({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs" | "canAbandon"> }) {
+  if (!x.canAbandon || !withholds(x)) return null;
+  return (
+    <p className="tx-actions-question" data-testid="tx-abandon-unproven-hint">
+      {t("activity.abandon.unprovenParentHint")}
+    </p>
+  );
+}
+
+/** An abandoned payment's line while the engine's rescan checks a coin it spent before giving it
+ * back; it goes when the engine reports the check done. */
+export function CheckingSpentCoinsLine({ x }: { x: Pick<TxDetailExtrasInfo, "abandoned" | "checkingSpentCoins"> | undefined }) {
+  if (!x?.abandoned || !x.checkingSpentCoins) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-checking-spent-coins">
+      {t("activity.abandon.checkingSpentCoins")}
+    </p>
+  );
+}
+
+function CoinLines({ walletId, txid }: { walletId: string; txid: string }) {
+  const x = useTxDetailExtras(walletId, txid).data;
+  return (
+    <>
+      <PendingUnprovenLine x={x} />
+      <CheckingSpentCoinsLine x={x} />
+    </>
+  );
+}
+
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
-function Actions({ walletId, txid }: { walletId: string; txid: string }) {
+export function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const b = useBackend();
   const client = useQueryClient();
   const extras = useTxDetailExtras(walletId, txid);
@@ -197,9 +258,17 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
-  const can = !!x && (x.canAbandon || x.canResend);
+  const walletRestored = useRestoredGate();
+  const abandon = actionOffer(!!x?.canAbandon, walletRestored);
+  const resend = actionOffer(!!x?.canResend, walletRestored);
+  useEffect(() => {
+    if (abandon !== "offer") setConfirming(false);
+  }, [abandon]);
+  const shown = (a: typeof abandon) => a === "offer" || a === "waiting";
+  const can = shown(abandon) || shown(resend);
+  const gated = abandon === "gated" || resend === "gated";
   // After an abandon the actions go, but its note stays.
-  if (!x || (!can && !note)) return null;
+  if (!x || (!can && !gated && !note)) return null;
   const run = async (what: "abandon" | "resend") => {
     setBusy(true);
     setNote(null);
@@ -217,10 +286,16 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       setBusy(false);
     }
   };
+  const hint = abandonHint(x);
   return (
     <section className="tx-actions card-l1" aria-label="Actions" data-testid="tx-detail-actions">
-      {confirming ? (
+      {confirming && abandon === "offer" ? (
         <>
+          {hint && (
+            <p className="tx-actions-question" data-testid="tx-abandon-restored-hint">
+              {hint}
+            </p>
+          )}
           <p className="tx-actions-question">
             {abandonQuestion(x)}
           </p>
@@ -236,19 +311,25 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       ) : (
         can && (
           <span className="tx-actions-row">
-            {x.canResend && (
-              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy} onClick={() => void run("resend")}>
+            {shown(resend) && (
+              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy || resend === "waiting"} onClick={() => void run("resend")}>
                 Resend
               </DashButton>
             )}
-            {x.canAbandon && (
-              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy} onClick={() => setConfirming(true)}>
+            {shown(abandon) && (
+              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy || abandon === "waiting"} onClick={() => setConfirming(true)}>
                 Abandon transaction
               </DashButton>
             )}
           </span>
         )
       )}
+      {gated && (
+        <p className="placeholder-note" role="status" data-testid="tx-restored-gate">
+          {abandon === "gated" ? t("activity.abandon.restoredGate") : t("storeUpgrade.restore.banner")}
+        </p>
+      )}
+      {!confirming && <UnprovenAbandonHint x={x} />}
       {note && (
         <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">
           {note.text}
@@ -384,6 +465,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
               : droppedLine(d.status.dropped)}
           </p>
         )}
+        <CoinLines walletId={walletId} txid={d.txid} />
         <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">

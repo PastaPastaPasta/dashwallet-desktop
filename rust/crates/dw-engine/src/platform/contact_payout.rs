@@ -46,7 +46,7 @@ use super::payments::{
     PayoutState,
 };
 use super::platform_addresses::{PlatformActivity, PlatformActivityKind};
-use super::platform_moves::{self, MoveKind, MoveNet, MoveRecord, SdkMoves, Target};
+use super::platform_moves::{self, MoveNet, MoveRecord, SdkMoves, Target};
 use super::registration_flow::b58;
 use crate::send::SendFailure;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -336,7 +336,7 @@ fn final_state(record: &MoveRecord) -> Option<PayoutState> {
 /// whose write fails, is left.
 pub(crate) async fn settled(session: &NetworkSession, wallet_id: WalletId, moves: &[MoveRecord]) {
     let done: Vec<(&str, PayoutState)> = (moves.iter())
-        .filter(|m| m.kind == MoveKind::ToContact)
+        .filter(|m| m.pays_contact())
         .filter_map(|m| Some((m.id.as_str(), final_state(m)?)))
         .collect();
     if done.is_empty() {

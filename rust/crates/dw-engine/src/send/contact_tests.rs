@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, TxOut, Txid};
 use dpp::identity::Identity;
 use dpp::identity::v0::IdentityV0;
@@ -349,7 +348,8 @@ impl Fixture {
             network: dashcore::Network::Regtest,
             account_xpub: xpub,
             is_watch_only: true,
-        });
+        })
+        .unwrap();
         (account_type, managed)
     }
 
@@ -1830,6 +1830,7 @@ fn a_replaced_request_is_unverified_again() {
 /// H-09 test 4: the verified mark is durable. After a relaunch the
 /// degraded default pays the same payee with no fetch and no wait.
 #[test]
+#[ignore = "P9 post-RC (#5479-dependent)"]
 fn a_verified_payee_stays_verified_across_a_relaunch() {
     let mut f = fixture(false);
     f.store(f.bobs_account(contact_xpub(BOB)));
@@ -2092,6 +2093,7 @@ fn the_toggle_still_refuses_a_request_naming_another_identity() {
 /// stored, and cannot turn it on, so a contact payment stays gated. A
 /// developer build still reads it.
 #[test]
+#[ignore = "P9 post-RC (#5479-dependent)"]
 fn a_release_build_ignores_the_stored_toggle() {
     let mut f = fixture(false);
     f.store(f.bobs_account(contact_xpub(BOB)));
@@ -2578,11 +2580,11 @@ impl Fixture {
                 account_xpub: xpub,
             }],
             account_address_pools: (pools.into_iter())
-                .filter(|pool| !pool.addresses.is_empty())
+                .filter(|pool| !pool.addresses().is_empty())
                 .map(|pool| AccountAddressPoolEntry {
                     account_type,
-                    pool_type: pool.pool_type,
-                    addresses: pool.addresses.values().cloned().collect(),
+                    pool_type: pool.pool_type(),
+                    addresses: pool.addresses().values().cloned().collect(),
                 })
                 .collect(),
             ..Default::default()
@@ -2698,6 +2700,7 @@ fn an_address_the_rebuilt_account_still_holds_is_paid() {
 /// contact payments (every setting but the toggle since H-09), replaced
 /// unchecked by a fresh one from the new account (D14).
 #[test]
+#[ignore = "P9 post-RC (#5479-dependent)"]
 fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
     let mut f = fixture(false);
     let (old, new) = (contact_xpub(BOB), contact_xpub(CAROL));

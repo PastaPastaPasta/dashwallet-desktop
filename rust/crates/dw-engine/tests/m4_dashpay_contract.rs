@@ -156,6 +156,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_send",
     "DashPay.platform_send_grant",
     "DashPay.platform_send_bind",
+    // #762: the cancel of a held withdrawal or contact payout.
+    "DashPay.platform_cancel_quote",
+    "DashPay.platform_cancel",
     // 0.2 X1b slice 1: "Add from Dash wallet".
     "DashPay.platform_fund_quote",
     "DashPay.platform_fund",
@@ -165,6 +168,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_shield_quote",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
+    "DashPay.shielded_sync_info",
     "DashPay.shielded_sync",
     "DashPay.shielded_receive_address",
     "DashPay.shield_quote",
@@ -186,11 +190,17 @@ const IMPLEMENTED: &[&str] = &[
     // #402: recovering a partly used transfer to Shielded.
     "DashPay.recover_transfer_quote",
     "DashPay.recover_transfer",
+    // 1.0 F24: App Connect sign-ins.
+    "DashPay.app_connect_sheet",
+    "DashPay.app_connect_quote",
+    "DashPay.app_connect_approve",
+    "DashPay.app_connect_retry_send",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
 /// file there must join this list or `NOT_FACADE`.
 const FACADE: &[&str] = &[
+    "app_connect.rs",
     "contacts.rs",
     "credits.rs",
     "dashpay.rs",
@@ -234,9 +244,14 @@ const FACADE: &[&str] = &[
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
 /// with their tests (0.2 recovery), the input-0 planner with its tests
 /// (1.0 C1a-1), the credit transfer to an own Platform address with its
-/// tests (1.0 C6a-1), the parsers dw-fuzz drives (H-02, `fuzzing`
-/// feature), and the kill -9 rows' test folders (H-03).
+/// tests (1.0 C6a-1), the Shielded-funded identity create (1.0 C4b-2),
+/// the parsers dw-fuzz drives (H-02, `fuzzing` feature), the kill -9
+/// rows' test folders (H-03), and App Connect's network seam, rules and
+/// tests (1.0 F24).
 const NOT_FACADE: &[&str] = &[
+    "app_connect_net.rs",
+    "app_connect_plan.rs",
+    "app_connect_tests.rs",
     "attribution.rs",
     "avatar.rs",
     "avatar_cache.rs",
@@ -249,6 +264,7 @@ const NOT_FACADE: &[&str] = &[
     "banner.rs",
     "banner_tests.rs",
     "bringup.rs",
+    "close_unload_gate_tests.rs",
     "contact_names.rs",
     "contact_payout.rs",
     "contacts_model.rs",
@@ -275,6 +291,7 @@ const NOT_FACADE: &[&str] = &[
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
+    "known_wallets_tests.rs",
     "lease",
     "lock_inputs.rs",
     "lock_inputs_tests.rs",
@@ -293,6 +310,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund.rs",
     "platform_fund_tests.rs",
     "platform_moves.rs",
+    "platform_held_exit_tests.rs",
     "platform_mainnet_flag_tests.rs",
     "platform_moves_tests.rs",
     "platform_register.rs",
@@ -314,8 +332,12 @@ const NOT_FACADE: &[&str] = &[
     "registration_platform.rs",
     "registration_platform_tests.rs",
     "registration_rows.rs",
+    "registration_shielded.rs",
     "registration_tests",
     "registration_tests.rs",
+    "removal_gate_tests.rs",
+    "restore_hold.rs",
+    "restore_hold_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
     "shield_drain.rs",
@@ -324,8 +346,13 @@ const NOT_FACADE: &[&str] = &[
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_disposition_tests.rs",
+    "shielded_executed_tests.rs",
+    "shielded_import_tests.rs",
     "shielded_payout.rs",
     "shielded_pool.rs",
+    "shielded_release.rs",
+    "shielded_status_lock_tests.rs",
+    "shielded_store_drain_tests.rs",
     "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",
@@ -1007,6 +1034,7 @@ fn error_codes_match_the_contract() {
             PlatformError::BroadcastUnknown { artifact: s() },
             PlatformError::WillBeSent { artifact: s() },
             PlatformError::Cancelled,
+            PlatformError::Restored,
             PlatformError::NeedsGrant {
                 purpose: BudgetPurpose::Funding,
             },
@@ -1078,6 +1106,7 @@ fn error_codes_match_the_contract() {
             },
             RegistrationError::QuoteChanged,
             RegistrationError::Refunded,
+            RegistrationError::PaymentConsumed,
         ],
         RegistrationError::code,
     );
@@ -1111,6 +1140,32 @@ fn error_codes_match_the_contract() {
             ContactError::DetailsTooLong { bytes: 0, max: 0 },
         ],
         ContactError::code,
+    );
+    check_domain(
+        &enums,
+        "ConnectError",
+        &[
+            ConnectError::Network,
+            ConnectError::MainnetOff,
+            ConnectError::Unsupported,
+            ConnectError::Invalid,
+            ConnectError::Stale,
+            ConnectError::Protocol,
+            ConnectError::NoIdentity,
+            ConnectError::Hint,
+            ConnectError::Owner,
+            ConnectError::Answered,
+            ConnectError::Credits {
+                needed: 0,
+                available: 0,
+            },
+            ConnectError::PlanChanged,
+            ConnectError::SendFailed,
+            ConnectError::Failed {
+                failure: ConnectFailure::KeyConflict,
+            },
+        ],
+        ConnectError::code,
     );
     check_domain(
         &enums,
@@ -1205,12 +1260,16 @@ fn error_codes_match_the_contract() {
             ShieldedError::CoinsUnconfirmed { coins: 0 },
             ShieldedError::MoveRunning,
             ShieldedError::CoinsChanged,
+            ShieldedError::StoreClosed {
+                reason: ShieldedStoreClosed::Failed,
+            },
         ],
         ShieldedError::code,
     );
 
     let mut checked = [
         "AvatarError",
+        "ConnectError",
         "ContactError",
         "CreditsError",
         "IdentityError",
@@ -1348,7 +1407,8 @@ as_platform_via_accessor!(
     InvitationError,
     AvatarError,
     CreditsError,
-    ShieldedError
+    ShieldedError,
+    ConnectError
 );
 
 #[derive(Default)]
@@ -1671,6 +1731,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
+            dp.platform_cancel_quote(s()).await.map(drop),
+            dp.platform_cancel(s(), s(), s()).await.map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)
                 .await
                 .map(drop),
@@ -1680,6 +1742,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         // 0.1 E1: shielded funds refuse an unknown wallet.
         for refused in [
             dp.shielded_status().await.map(drop),
+            dp.shielded_sync_info().await.map(drop),
             dp.shielded_sync().await.map(drop),
             dp.shielded_receive_address().await.map(drop),
             dp.shield_quote(FundAmount::Duffs { duffs: 1 })
@@ -1713,6 +1776,41 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .map(drop),
             dp.recover_transfer_quote(s(), 0).await.map(drop),
             dp.recover_transfer(s(), 0, s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 1.0 F24: App Connect refuses an unknown wallet.
+        let link = || dw_uri::connect::ConnectUri {
+            carrier: dw_uri::connect::Carrier::DashPayConnect,
+            network: dw_uri::connect::NetworkSel::Devnet,
+            request: dw_uri::connect::AppConnectRequest {
+                app_eph_pub: [2; 33],
+                app_id: [1; 32],
+                label: s(),
+                identity_hint: None,
+                auth_bindings: Vec::new(),
+                connection_id: None,
+                enc_bindings: Vec::new(),
+                renew: false,
+                created_at_ms: 0,
+            },
+            callback: None,
+        };
+        let choice = || ConnectChoice {
+            identity: s(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 1,
+                expires_at_ms: 0,
+            },
+        };
+        for refused in [
+            dp.app_connect_sheet(link()).await.map(drop),
+            dp.app_connect_quote(link(), choice()).await.map(drop),
+            dp.app_connect_approve(link(), choice(), s())
+                .await
+                .map(drop),
+            dp.app_connect_retry_send(link()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

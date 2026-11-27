@@ -344,6 +344,17 @@ impl NetworkSession {
         wallet_id: WalletId,
         floor: u32,
     ) -> Result<u32, EngineError> {
+        self.refuse_while_restored()?;
+        self.replay_wait(wallet_id, floor).await
+    }
+
+    /// [`Self::replay_guard`] without the money gate: what waits for a
+    /// replay and moves no funds (the recovery scan).
+    pub(crate) async fn replay_wait(
+        &self,
+        wallet_id: WalletId,
+        floor: u32,
+    ) -> Result<u32, EngineError> {
         let wallet = self.wallet(&wallet_id).await?;
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.
@@ -509,22 +520,43 @@ impl NetworkSession {
         if flipped {
             self.hub.pump.mark_balances(wallet);
         }
+        // The scan is at or below `checkpoint` now: the end of its replay
+        // has reprocessed the funding block of each coin given back that
+        // waits from there (`crate::rescan_hold`).
+        let from = checkpoint.min(current);
+        self.hub.history.with_wallet(wallet, |h| {
+            for hold in h.rescan_holds.values_mut() {
+                hold.armed |= hold.checkpoint >= from;
+            }
+        });
         Ok(Some(target))
     }
 
     /// [`Self::record_rewind`], for a caller that holds the manager's
-    /// write lock and `wallet`'s info `info` under it.
+    /// write lock and `wallet`'s info `info` under it. Returns the
+    /// replay's target.
     pub(crate) async fn record_rewind_locked(
         &self,
         wallet: WalletId,
         info: &platform_wallet::PlatformWalletInfo,
         checkpoint: u32,
-    ) -> Result<(), EngineError> {
+    ) -> Result<u32, EngineError> {
         let replay = self.live()?.replay;
         self.hub.detect_truncation(wallet, &info.core_wallet);
-        self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)
-            .await
-            .map(drop)
+        let target = (self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)).await?;
+        // A filter batch in flight applied blocks above the scan: the
+        // record covers them, so an open after a quit keeps the coins this
+        // rewind holds until the scan is past them (#818).
+        let processed = info.core_wallet.last_processed_height();
+        if processed <= target {
+            return Ok(target);
+        }
+        let current = info.core_wallet.synced_height();
+        let birth = info.core_wallet.birth_height().saturating_sub(1);
+        Ok(replay
+            .note_rewind(wallet, checkpoint.min(current), processed, birth)
+            .await?
+            .target)
     }
 
     /// Stores the record of a rewind of `wallet`, whose info `info` the
@@ -1017,7 +1049,7 @@ impl NetworkSession {
     }
 
     /// QT-148 "Rebuild Index" equivalent: deletes the SPV chain data and
-    /// keeps wallets, vault and app data. SPV must be stopped, no wallet
+    /// keeps wallets, vault and app data, but for the drops' spend notes. SPV must be stopped, no wallet
     /// mixing or with a session open (`MixingActive`), and no signed
     /// round's inputs held (`InputsHeld`): the reset would hide that
     /// round's transaction from the wallet. Mixing does not start while it
@@ -1049,6 +1081,15 @@ impl NetworkSession {
                 this.record_rewind(&manager, *wallet, *checkpoint).await?;
             }
             this.record_closed_rewinds().await?;
+            // The drops' spend notes are proven against the header chain
+            // this deletes: none outlives it (#749, Q81b S3).
+            let every: Vec<WalletId> = (wallets.iter().map(|(w, _)| *w))
+                .chain(this.live()?.store.unloaded().into_iter().map(WalletId))
+                .collect();
+            this.appdb_op(move |db| {
+                (every.iter()).try_for_each(|w| crate::tx_actions::forget_spend_notes(db, *w))
+            })
+            .await?;
             let dir = this.data_dir().join(SPV_DIR);
             tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
                 Ok(()) => Ok(()),
@@ -1226,7 +1267,9 @@ pub(crate) fn stored_header_start(spv_dir: &std::path::Path) -> std::io::Result<
 /// under `spv_dir`, as dash-spv does.
 #[cfg(test)]
 pub(crate) async fn store_test_headers(spv_dir: &std::path::Path, height: u32, count: usize) {
-    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
+    use dash_spv::test_utils::{
+        BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage,
+    };
     let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
     let headers = vec![dash_spv::types::HashedBlockHeader::from(header); count];
     let mut storage = PersistentBlockHeaderStorage::open(spv_dir).await.unwrap();
@@ -1263,7 +1306,7 @@ mod tests {
     /// and across two segments, and none for an empty or missing store.
     #[test]
     fn the_stored_header_start_is_the_one_dash_spv_reads() {
-        use dash_spv::storage::{
+        use dash_spv::test_utils::{
             BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage,
         };
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1342,7 +1385,6 @@ mod tests {
 
     #[test]
     fn chainlock_keeps_the_highest() {
-        use dashcore::hashes::Hash;
         let h = |n| BlockHash::from_byte_array([n; 32]);
         let c = better_chainlock(None, (10, h(1)));
         let c = better_chainlock(c, (9, h(2)));

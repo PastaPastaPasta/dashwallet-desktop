@@ -13,13 +13,12 @@
 //! for no lease, and every record is the lock's own outpoint's, so no txid
 //! record of another output of its transaction hides it.
 
-use dashcore::hashes::Hash;
 use dashcore::transaction::special_transaction::TransactionPayload;
 use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::AssetLockProof;
-use platform_wallet::changeset::{PersistenceCapabilities, PlatformWalletPersistence};
+use platform_wallet::changeset::PersistenceCapabilities;
 use platform_wallet::{
     AssetLockFundingType, AssetLockStatus, PlatformWalletError, TrackedAssetLock,
 };
@@ -137,6 +136,8 @@ pub(crate) fn tracked(
         _ => 0,
     };
     TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point,
         proof: proof
             .then(|| AssetLockProof::Chain(ChainAssetLockProof::new(100, out_point.into()))),
@@ -167,11 +168,12 @@ fn state(rig: &impl Rig, at: OutPoint) -> Option<UnfinishedState> {
 }
 
 /// platform-wallet's error once Platform answered "already consumed" for
-/// the applied lock and `session`'s persister does not attest asset-lock
-/// reconciliation: `sync/tracking.rs:343-355` at the pin, after the
-/// outpoint match of `asset_lock/orchestration.rs:474-528`.
-pub(crate) fn unrecorded_consumed(session: &crate::NetworkSession) -> PlatformWalletError {
-    let capabilities = session.live().unwrap().store.persistence_capabilities();
+/// the applied lock at a persister that attests atomic changesets but not
+/// tracked asset locks (`mark_asset_lock_consumption_unknown`,
+/// `sync/tracking.rs` at the pin). The session's real persister attests
+/// both, so this stands for another backend.
+pub(crate) fn unrecorded_consumed() -> PlatformWalletError {
+    let capabilities = PersistenceCapabilities::ATOMIC_CHANGESETS;
     let missing = capabilities.missing(PersistenceCapabilities::ASSET_LOCK_RECONCILIATION);
     PlatformWalletError::Persistence(format!(
         "asset-lock reconciliation requires persistence capabilities {:?} (missing mask 0x{:x})",

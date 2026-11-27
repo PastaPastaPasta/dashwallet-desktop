@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
@@ -170,6 +169,7 @@ impl Fixture {
             hung: AtomicBool::new(false),
             stored,
             w: world,
+            proof_hold: Mutex::default(),
         });
         fake.sync_rows();
         fake
@@ -476,6 +476,9 @@ struct Fake {
     /// The locks are the wallet's own, in its store, not `World::locks`.
     stored: bool,
     w: Arc<Mutex<World>>,
+    /// The next proof wait holds here, as the library's does until its
+    /// proof or its bound.
+    proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl Fake {
@@ -792,6 +795,8 @@ impl TopUpLib for Fake {
             // unsigned `Built` lock while a funding call signs (fail
             // closed). It is stored from its next status on.
             let lock = TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: outpoint,
                 transaction,
                 account_index: 0,
@@ -838,6 +843,7 @@ impl TopUpLib for Fake {
     }
 
     async fn wait_proof(&self, outpoint: OutPoint, _: Duration) -> Result<(), FundError> {
+        crate::coins::pause_at(&self.proof_hold).await;
         if !self.w().proof_arrives {
             return Err(FundError::IsTimeout);
         }
@@ -1100,6 +1106,46 @@ fn an_islock_timeout_leaves_the_top_up_pending_until_resumed() {
     assert_eq!(lib.counts(), (1, 1));
 }
 
+/// #879: a close that starts while "Check again" waits for the lock's
+/// proof does not wait for it: the press is "waiting for proof", nothing is
+/// applied, and the lock is not taken.
+#[test]
+fn a_close_ends_a_top_up_resumes_proof_wait_as_waiting_for_proof() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(out.state, TopUpState::ProofWaiting);
+    let hold = Arc::new(crate::coins::TestPause::default());
+    *lib.proof_hold.lock().unwrap() = Some(Arc::clone(&hold));
+    let grant = f.grant(1_000);
+    let (s, wallet, run, txid) = (
+        Arc::clone(&f.session),
+        f.wallet,
+        Arc::clone(&lib),
+        out.txid.clone(),
+    );
+    let press = f.session.rt.spawn(async move {
+        let _op = s.enter().await.map_err(PlatformError::from)?;
+        topup::resume(&s, wallet, &*run, &txid, &grant).await
+    });
+    assert!(hold.wait_reached(Duration::from_secs(30)), "the proof wait");
+    let s = Arc::clone(&f.session);
+    let closing = f.session.rt.spawn(async move { s.close().await });
+    let resumed = f
+        .engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await });
+    hold.release.notify_one();
+    let resumed = resumed.expect("the close ended the proof wait").unwrap();
+    f.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), closing).await })
+        .expect("the close ends")
+        .unwrap();
+    assert_eq!(resumed.unwrap().state, TopUpState::ProofWaiting);
+    assert_eq!(lib.counts(), (1, 0), "one funding, no apply");
+    assert!(lib.w().consumed.is_empty(), "the lock is not taken");
+}
+
 /// A failed apply keeps the proved lock: it is listed, blocks a new
 /// top-up, and resuming applies it.
 #[test]
@@ -1119,6 +1165,39 @@ fn a_failed_apply_keeps_the_lock_for_resume() {
         f.top_up(&lib, DUFFS),
         Err(CreditsError::TopUpPending { .. })
     ));
+    let resumed = f.resume(&lib, &out.txid).unwrap();
+    let balance = START_BALANCE + credited(DUFFS);
+    assert_eq!(resumed.state, applied(Some(credited(DUFFS)), balance));
+    assert_eq!(lib.counts(), (1, 2));
+}
+
+/// An apply whose wait ends unconfirmed (the SDK's
+/// `StateTransitionResultUnconfirmed`, as the library hands it back) may
+/// have executed: it reads `platform.broadcast_unknown`, not `internal`,
+/// the lock stays tracked and blocks a new top-up, and nothing applies it
+/// again on its own. Finishing it applies the same lock, which Platform
+/// takes at most once.
+#[test]
+fn an_unconfirmed_apply_is_unknown_and_keeps_the_lock() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+        dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+    ));
+    lib.w().apply_error = Some(PlatformWalletError::Sdk(unconfirmed).into());
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(
+        out.state,
+        TopUpState::NotApplied {
+            error: "platform.broadcast_unknown".into()
+        }
+    );
+    assert!(f.pending(&lib)[0].proved);
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { .. })
+    ));
+    assert_eq!(lib.w().applies, 1, "not applied again on its own");
     let resumed = f.resume(&lib, &out.txid).unwrap();
     let balance = START_BALANCE + credited(DUFFS);
     assert_eq!(resumed.state, applied(Some(credited(DUFFS)), balance));
@@ -2086,7 +2165,7 @@ fn the_degraded_mode_tops_up_an_unverified_identity() {
 /// caught up; masternode sync releases it.
 #[test]
 fn the_funding_hold_waits_for_platform_writes() {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
 
     let f = fixture(false);
     let session = Arc::clone(&f.session);
@@ -2118,7 +2197,7 @@ fn the_funding_hold_waits_for_platform_writes() {
 /// it with the replay's first batch. Both release at the target.
 #[test]
 fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
     use platform_wallet::events::WalletEvent;
 
     let f = fixture(false);

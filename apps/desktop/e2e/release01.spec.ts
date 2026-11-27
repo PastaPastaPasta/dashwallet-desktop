@@ -415,7 +415,7 @@ test.describe("network choice", () => {
     await setKnobs(page, { closeRefused: "shielded_spend_unresolved" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
-    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A shielded payment is still being confirmed. Switch networks once it is.");
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
     await setKnobs(page, { closeRefused: "transfer_preparing" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
@@ -570,16 +570,17 @@ test.describe("network choice", () => {
     expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
   });
 
-  test("a switch whose way back fails too leaves the splash's Retry", async ({ page }) => {
+  test("a switch whose way back fails too leaves StorageInUse's Restart", async ({ page }) => {
     await open(page, "funded");
     await toSettings(page);
     await setKnobs(page, { fail: { rolledBack: false } });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
     await expect(page.locator(".toast")).toContainText("Mainnet did not open, and neither did Testnet again.");
-    await expect(page.getByTestId("splash").getByRole("alert")).toContainText("Dash Wallet could not open the wallet");
+    await expect(page.getByTestId("storage-in-use")).toContainText("Dash Wallet is still closing your wallet data");
+    await expect(page.getByTestId("storage-in-use-retry")).toHaveCount(0);
     await shot(page, "light-network-switch-none-open");
-    await page.getByTestId("splash").getByRole("button", { name: "Try again" }).click();
+    await page.getByTestId("storage-in-use-restart").click();
     await expect(page.getByTestId("lock-screen")).toBeVisible();
     expect(await activeNetwork(page)).toBe("testnet");
   });
@@ -1073,7 +1074,7 @@ test.describe("Shielded", () => {
         for (const id of ids) {
           const b = page.getByTestId(id);
           await expect(b).toBeDisabled();
-          await expect(b).toHaveAttribute("title", "Shielded is still syncing; try again when it finishes.");
+          await expect(b).toHaveAttribute("title", "Shielded is still syncing. Try again when it finishes.");
           // Disabled is dimmed, not hidden: its text still has at least 3:1 against what is behind it.
           expect(await contrast(b)).toBeGreaterThanOrEqual(3);
         }
@@ -1081,7 +1082,7 @@ test.describe("Shielded", () => {
       // Both of its Transfer routes wait and say why.
       for (const route of ["coreToShielded", "shieldedToCore"] as const) {
         await openTransfer(page, route);
-        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
         await expect(page.getByTestId("transfer-amount")).toBeDisabled();
         await waits(["transfer-max", "transfer-continue"]);
         if (route === "shieldedToCore") await shot(page, `${theme}-shielded-syncing-disabled`);
@@ -1089,7 +1090,9 @@ test.describe("Shielded", () => {
       }
       await page.getByTestId("sidebar-receive").click();
       await page.getByTestId("shielded-receive-open").click();
-      await expect(page.getByTestId("shielded-receive-why")).toHaveText("Shielded is still syncing; try again when it finishes.");
+      // Receive does not wait: the address shows with the first scan's progress.
+      await expect(page.getByTestId("shielded-receive-progress")).toHaveText("Syncing Shielded… 42.0%");
+      await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
       await page.getByTestId("sidebar-pay").click();
       await waits(["shielded-send"]);
       expect(errors).toEqual([]);

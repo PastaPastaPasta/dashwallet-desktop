@@ -669,7 +669,9 @@ pub(crate) async fn resume(
         state,
     };
     if pending.state == UnfinishedState::Confirming
-        && lib.wait_proof(outpoint, RESUME_PROOF_WAIT).await.is_err()
+        && !session
+            .proved_unless_closed(lib.wait_proof(outpoint, RESUME_PROOF_WAIT))
+            .await
     {
         return Ok(outcome(PlatformFundState::ProofWaiting));
     }
@@ -726,6 +728,9 @@ where
     let session = Arc::clone(session);
     let rt = session.rt.clone();
     rt.spawn(async move {
+        if signing {
+            session.refuse_platform_funds(wallet)?;
+        }
         let _admitted = session
             .signing_preflight(signing)
             .await
@@ -893,13 +898,10 @@ impl FundLib for PwFund {
     }
 
     async fn receive_address(&self) -> Result<PlatformAddress, PlatformError> {
-        let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
-            account: ACCOUNT,
-            key_class: 0,
-        };
-        Ok((self.pw.wallet.platform())
-            .next_unused_receive_address(key)
-            .await?)
+        let (session, wallet) = (&self.pw.session, &self.pw.wallet);
+        Ok(super::platform_moves::next_receive(session, wallet)
+            .await?
+            .0)
     }
 
     async fn apply<S>(
@@ -923,6 +925,7 @@ impl FundLib for PwFund {
                 Vec::new(),
                 &NoInputs,
                 signer,
+                None,
                 None,
             )
             .await?;

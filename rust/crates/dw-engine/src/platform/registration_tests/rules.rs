@@ -256,6 +256,18 @@ impl RegistrationLib for Hooked {
     async fn credit_balance(&self, identity: &str) -> Result<Option<u64>, PlatformError> {
         self.fake.credit_balance(identity).await
     }
+
+    async fn fallback_address(&self) -> Result<String, PlatformError> {
+        self.fake.fallback_address().await
+    }
+
+    async fn shielded_fund(
+        &self,
+        ask: crate::platform::registration_shielded::ShieldedAsk,
+        lease: Option<&Lease>,
+    ) -> Result<crate::platform::registration_shielded::ShieldedOutcome, PlatformError> {
+        self.fake.shielded_fund(ask, lease).await
+    }
 }
 
 /// A restored `KeysPrepared` row at `index` with nothing funded.

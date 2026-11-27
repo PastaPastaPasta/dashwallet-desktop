@@ -19,6 +19,9 @@ use crate::events::SessionHub;
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
+/// The drained notes held in upstream's store, by wallet: `(account, nullifier)`.
+pub(crate) type DrainedHeld = HashMap<[u8; 32], HashSet<(u32, [u8; 32])>>;
+
 /// `dashpay_sync` while a window is visible, and while hidden (§3.2).
 const DASHPAY_VISIBLE: Duration = Duration::from_secs(15);
 const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
@@ -103,22 +106,16 @@ pub(super) struct LockView {
     pub(super) locks: u64,
 }
 
-/// What [`PlatformRuntime::remove_from_manager`] does when the wallet holds
-/// a shielded spend whose result is not known (DEC-1046).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StoredSpends {
-    /// The wallet stays: `ShieldedSpendUnresolved` (Close Wallet, the
-    /// close, a restore's rollback).
-    Refuse,
-    /// The user removes the wallet: its stored spends go with it.
-    Purge,
-}
-
 /// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
 pub(crate) struct PlatformRuntime {
     /// `false` for a chain without Platform (`SessionOptions::no_platform`):
     /// SPV starts without a bring-up and no loop runs.
     pub(super) enabled: bool,
+    /// Unit tests drive Platform flows over fakes in sessions without
+    /// Platform; [`Self::funds_off`] refuses them there only when a test
+    /// sets this.
+    #[cfg(test)]
+    pub(crate) funds_off_in_tests: AtomicBool,
     pub(super) supervisor: Mutex<Option<Supervisor>>,
     /// Orders `start_spv`, `stop_spv` and `reset_chain_data`.
     pub(crate) lifecycle: tokio::sync::Mutex<()>,
@@ -150,13 +147,34 @@ pub(crate) struct PlatformRuntime {
     /// Shuts the dispatch hook from the close's start and during each drain
     /// of `shielded_passes`.
     pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
+    /// The coordinator the engine's dispatch hook is set on: the library
+    /// takes a hook once and does not say whether one is set.
+    pub(crate) shielded_hooked:
+        Mutex<std::sync::Weak<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>>,
+    /// This start's drain of the network's shielded store (Q110 110-2),
+    /// set once the session's journal open ran it: upstream's shielded
+    /// store opens only on `Ok`, and stays closed while this is unset.
+    pub(crate) shielded_drain: std::sync::OnceLock<Result<(), super::ShieldedStoreClosed>>,
+    /// The drained notes the engine holds in upstream's store, by wallet:
+    /// `(account, nullifier)` ([`super::shielded_pool::sync_drained_holds`]).
+    pub(crate) drained_held: Mutex<DrainedHeld>,
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
+    /// App Connect responses sealed and not yet published.
+    pub(crate) app_connect: super::app_connect::PendingSends,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's pause of the next settle of drained spends, between the
+    /// pass lock's read and its write (`shielded_pool::pass`).
+    #[cfg(test)]
+    pub(crate) settle_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// The last evidence wish given to the coordinator
+    /// (`shielded_pool::want_drained_evidence`).
+    #[cfg(test)]
+    pub(crate) evidence_wanted: std::sync::atomic::AtomicBool,
     /// A test's proved note count for the periodic pass's check
     /// (`Some(None)`: the read fails); the network's while `None`.
     #[cfg(test)]
@@ -178,10 +196,10 @@ pub(crate) struct PlatformRuntime {
     /// How many shielded passes reached the library's pass.
     #[cfg(test)]
     pub(crate) passes_run: std::sync::atomic::AtomicUsize,
-    /// A test's crash of the disposition consumer between its journal
-    /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
+    /// A test's proved reads for the dispatch hook's anchors read
+    /// (`shielded_release`); the network's while `None`.
     #[cfg(test)]
-    pub(crate) crash_before_ack: AtomicBool,
+    pub(crate) release_net: Mutex<Option<Arc<dyn super::shielded_release::ReleaseNet>>>,
     /// Held to read by each shielded pass, before `shielded_passes`; to
     /// write by a spend from its library call to its record, so no pass
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
@@ -212,6 +230,11 @@ pub(crate) struct PlatformRuntime {
     /// reads of the load fence.
     #[cfg(test)]
     pub(crate) hold_between_fence_reads: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: what the library answers `keyset_spends` instead of this
+    /// build's answer (`shielded_pool::PwShielded`); this build's while
+    /// `None`.
+    #[cfg(test)]
+    pub(crate) keyset_spends: std::sync::Mutex<Option<bool>>,
     /// Tests: the next invitation-hold settle reports here inside its
     /// admitted vault work, and waits for the receiver (or its sender's
     /// drop) before it retains.
@@ -229,6 +252,18 @@ pub(crate) struct PlatformRuntime {
     /// (`shielded_pool::UnshieldIntent`).
     pub(crate) unshield_intents:
         std::sync::Mutex<std::collections::HashMap<WalletId, super::shielded_pool::UnshieldIntent>>,
+    /// Each wallet's Shielded-funded registration create about to sign
+    /// (`registration_shielded::CreateIntent`).
+    pub(crate) registration_intents: std::sync::Mutex<
+        std::collections::HashMap<WalletId, super::registration_shielded::CreateIntent>,
+    >,
+    /// A test's faults of a Shielded-funded create's hook steps.
+    #[cfg(test)]
+    pub(crate) registration_faults:
+        std::sync::Mutex<super::registration_shielded::RegistrationFaults>,
+    /// Platform's last proved shielded note count and when it was proved
+    /// (unix seconds), for the registration's pool check (C-funding F16).
+    pub(crate) pool_notes: std::sync::Mutex<Option<(u64, u64)>>,
     /// The shield locks of unknown consumption marked this session, kept
     /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
     pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
@@ -535,6 +570,8 @@ impl PlatformRuntime {
     ) -> Self {
         Self {
             enabled,
+            #[cfg(test)]
+            funds_off_in_tests: AtomicBool::new(false),
             supervisor: Mutex::new(None),
             lifecycle: tokio::sync::Mutex::new(()),
             startup: RwLock::new(HashMap::new()),
@@ -550,9 +587,17 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
+            shielded_hooked: Mutex::new(std::sync::Weak::new()),
+            shielded_drain: std::sync::OnceLock::new(),
+            drained_held: Mutex::default(),
             shielded_checked_at: AtomicU64::new(0),
+            app_connect: Default::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            settle_pause: Mutex::new(None),
+            #[cfg(test)]
+            evidence_wanted: Default::default(),
             #[cfg(test)]
             notes_count: Mutex::new(None),
             #[cfg(test)]
@@ -566,7 +611,7 @@ impl PlatformRuntime {
             #[cfg(test)]
             passes_run: Default::default(),
             #[cfg(test)]
-            crash_before_ack: AtomicBool::new(false),
+            release_net: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),
             wallet_loads: tokio::sync::RwLock::new(()),
@@ -577,10 +622,16 @@ impl PlatformRuntime {
             #[cfg(test)]
             hold_between_fence_reads: std::sync::Mutex::default(),
             #[cfg(test)]
+            keyset_spends: std::sync::Mutex::default(),
+            #[cfg(test)]
             hold_settle_retain: std::sync::Mutex::default(),
             shielded_calls: std::sync::Mutex::default(),
             fund_holds: Arc::default(),
             unshield_intents: std::sync::Mutex::default(),
+            registration_intents: std::sync::Mutex::default(),
+            #[cfg(test)]
+            registration_faults: std::sync::Mutex::default(),
+            pool_notes: std::sync::Mutex::default(),
             shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
@@ -632,6 +683,16 @@ impl PlatformRuntime {
     /// The session runs with Platform (not `SessionOptions::no_platform`).
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Funds flows that need Platform are refused up front (C7): the
+    /// session runs without Platform.
+    pub(crate) fn funds_off(&self) -> bool {
+        #[cfg(test)]
+        if !self.funds_off_in_tests.load(Ordering::SeqCst) {
+            return false;
+        }
+        !self.enabled
     }
 
     /// SPV runs under a supervisor, and with it the Platform loops.
@@ -1067,28 +1128,27 @@ impl PlatformRuntime {
     ///
     /// The engine's only route to platform-wallet's `remove_wallet`, which
     /// at the pin always purges the wallet's shielded store, its stored
-    /// spends included (`wallet_lifecycle.rs:847-850` →
-    /// `coordinator.rs:878-902` → `file_store.rs:880-901`). So with
-    /// [`StoredSpends::Refuse`] a wallet holding a spend whose result is
-    /// not known stays (`ShieldedSpendUnresolved`, DEC-1046), as does one
-    /// with a marked spend (`leases`' journal, DEC-1057); only the
-    /// user's removal of the wallet passes [`StoredSpends::Purge`]. The
-    /// removal runs with no shielded pass in flight (`shielded_passes`,
-    /// R1-3): the coordinator's set of wallets changes only between passes.
+    /// spends included (`wallet_lifecycle.rs:1011-1013` →
+    /// `coordinator.rs:1041-1068` → `file_store.rs:1734-1761`). So a
+    /// wallet holding a spend whose result is not known stays
+    /// (`ShieldedSpendUnresolved`, DEC-1046), as does one with a marked
+    /// spend (`leases`' journal, DEC-1057), on every route: the user's
+    /// removal too (Q86 Q-PURGE C2), which checks first
+    /// (`shielded_pool::removal_hold`). The removal runs with no shielded
+    /// pass in flight (`shielded_passes`, R1-3): the coordinator's set of
+    /// wallets changes only between passes.
     /// Every caller ended the wallet's permits first (its revocation, the
     /// close's), so no spend of it stores a transition after the check.
     pub(crate) async fn remove_from_manager(
         &self,
         leases: &super::lease::LeaseTable,
         manager: &Manager,
+        appdb: &Arc<dw_appdb::AppDb>,
         id: WalletId,
-        spends: StoredSpends,
     ) -> Result<(), EngineError> {
         let _fence = self.contacts.fences.removal(id).await;
         let _passes = self.shielded_passes.write().await;
-        if spends == StoredSpends::Refuse
-            && super::shielded_pool::holds_unresolved(leases, manager, id).await
-        {
+        if super::shielded_pool::holds_unresolved(leases, manager, appdb, id).await {
             return Err(EngineError::ShieldedSpendUnresolved);
         }
         manager.remove_wallet(&id.0).await?;
@@ -1119,7 +1179,9 @@ impl NetworkSession {
         };
         for id in live.manager.list_wallet_ids_blocking() {
             let id = WalletId(id);
-            if super::shielded_pool::holds_unresolved(&self.leases, &live.manager, id).await {
+            if super::shielded_pool::holds_unresolved(&self.leases, &live.manager, &live.appdb, id)
+                .await
+            {
                 return true;
             }
             #[cfg(test)]
@@ -1132,6 +1194,26 @@ impl NetworkSession {
             }
         }
         false
+    }
+
+    /// The removal gate's hold ([`super::shielded_pool::removal_hold`]) of
+    /// any loaded wallet, carried over first: why a restore of this
+    /// network's earlier data is refused while it is open.
+    pub(crate) async fn restore_hold(&self) -> Option<crate::ShieldedHold> {
+        let live = self.live().ok()?;
+        let mut held = None;
+        for id in live.manager.list_wallet_ids_blocking() {
+            match super::shielded_pool::removal_hold(self, &live.manager, &live.appdb, WalletId(id))
+                .await
+            {
+                Some(crate::ShieldedHold::CarriedOver) => {
+                    return Some(crate::ShieldedHold::CarriedOver);
+                }
+                Some(hold) => held = Some(hold),
+                None => {}
+            }
+        }
+        held
     }
 
     /// Whether SPV is starting or running ([`Self::spv_state`] tells which).

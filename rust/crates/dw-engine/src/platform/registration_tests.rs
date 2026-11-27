@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::version::PlatformVersion;
 use dpp::version::v13::PROTOCOL_VERSION_13;
@@ -52,6 +51,19 @@ const COIN: u64 = 100_000_000;
 const PLAIN: &str = "alice2";
 const CONTESTED: &str = "alice";
 const NAME_CREDITS: u64 = 50_000_000;
+/// The Platform address a Shielded-funded row's create refunds to.
+const FALLBACK: &str = "fallback-address";
+
+/// The identity a Shielded funding record names.
+fn identity_of(funding: &str) -> String {
+    match super::registration_rows::Funding::decode(funding) {
+        super::registration_rows::Decoded::Known(super::registration_rows::Funding::Shielded {
+            identity: Some(identity),
+            ..
+        }) => identity,
+        _ => panic!("no identity named"),
+    }
+}
 
 struct NullSink;
 impl crate::EventSink for NullSink {
@@ -477,6 +489,20 @@ struct World {
     platform_fund: std::collections::VecDeque<(bool, PlatformFundEnd)>,
     /// Each pass's ask, and the plan it found the row with.
     platform_asks: Vec<super::platform_moves::RegisterAsk>,
+    /// How each funding pass of a Shielded-funded row ends, and with which
+    /// identity it names the row first, if any; an empty script is
+    /// `Unknown`.
+    shielded_fund: std::collections::VecDeque<(
+        Option<String>,
+        Result<super::registration_shielded::ShieldedOutcome, PlatformError>,
+    )>,
+    /// Each Shielded pass's ask.
+    shielded_asks: Vec<super::registration_shielded::ShieldedAsk>,
+    /// The fallbacks the starts took.
+    fallbacks_taken: usize,
+    /// A naming pass also records the identity it named at the row's
+    /// index, as the library does on an `Ok` whatever Platform proved.
+    shielded_records_named: bool,
     /// The session's network reads as mainnet.
     mainnet: bool,
     /// Name lookups fail as DAPI unreachable would.
@@ -557,6 +583,23 @@ enum IdentityAttempt {
     ReleasedThenUnavailable,
     /// The height caught up at the second attempt: created.
     RetriedThenCreated,
+    /// The transition was released and submitted, and the library's wait
+    /// ended unconfirmed (`StateTransitionResultUnconfirmed`); `retried`:
+    /// under the SDK's retry envelope. Nothing landed.
+    ReleasedThenUnconfirmed { retried: bool },
+}
+
+/// The SDK's unconfirmed outcome, as a wait that gave up returns it,
+/// under its retry envelope when `retried`.
+fn unconfirmed(retried: bool) -> dash_sdk::Error {
+    let e = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+        dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+    ));
+    if retried {
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e))
+    } else {
+        e
+    }
 }
 
 /// The tap's report of the lock `outpoint`, as the journal builds it: its
@@ -973,6 +1016,10 @@ impl RegistrationLib for Fake {
                 permit.note_released();
                 permit.note_released();
             }
+            Some(IdentityAttempt::ReleasedThenUnconfirmed { retried }) => {
+                permit.note_released();
+                return Err(PlatformError::from(unconfirmed(retried)));
+            }
             None => permit.note_released(),
         }
         let id = self.create_identity(outpoint, index);
@@ -1182,6 +1229,12 @@ impl RegistrationLib for Fake {
                 permit.note_released();
                 return Err(ClaimError::DuplicateKeys);
             }
+            Some(ClaimScript::ReleasedThenUnconfirmed { retried }) => {
+                permit.note_released();
+                return Err(ClaimError::Failed(PlatformError::from(unconfirmed(
+                    retried,
+                ))));
+            }
             Some(ClaimScript::OtherAppearsThenUnavailable) => {
                 self.w().identities.push((index, invitation::OTHER.into()));
                 return Err(ClaimError::Failed(PlatformError::Unavailable));
@@ -1254,6 +1307,56 @@ impl RegistrationLib for Fake {
             }
             end
         })
+    }
+
+    async fn fallback_address(&self) -> Result<String, PlatformError> {
+        self.w().fallbacks_taken += 1;
+        Ok(FALLBACK.to_owned())
+    }
+
+    async fn shielded_fund(
+        &self,
+        ask: super::registration_shielded::ShieldedAsk,
+        _lease: Option<&Lease>,
+    ) -> Result<super::registration_shielded::ShieldedOutcome, PlatformError> {
+        let (names, end) = {
+            let mut w = self.w();
+            w.shielded_asks.push(ask.clone());
+            (w.shielded_fund.pop_front()).unwrap_or((
+                None,
+                Ok(super::registration_shielded::ShieldedOutcome::Unknown),
+            ))
+        };
+        if let Some(identity) = names {
+            let funding = super::registration_rows::Funding::Shielded {
+                denomination: ask.denomination,
+                fallback: ask.fallback.clone(),
+                identity: Some(identity),
+            }
+            .encode();
+            let expected = super::registration_rows::Funding::Shielded {
+                denomination: ask.denomination,
+                fallback: ask.fallback,
+                identity: None,
+            }
+            .encode();
+            let marker = dw_appdb::dp_registration_named(&identity_of(&funding));
+            let written = self
+                .appdb
+                .set_registration_funding_durable(
+                    (&self.wallet.to_string(), ask.draft, ask.owner),
+                    (&expected, &funding),
+                    (&marker, "0"),
+                    0,
+                )
+                .unwrap();
+            assert!(written, "the fake names the row as the hook does");
+            let mut w = self.w();
+            if w.shielded_records_named {
+                w.identities.push((ask.index, identity_of(&funding)));
+            }
+        }
+        end
     }
 
     async fn request_inviter(
@@ -3289,6 +3392,8 @@ async fn build_and_track(
     let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
     let lock = OutPoint::new(tx.txid(), 0);
     let tracked = platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: lock,
         transaction: tx,
         account_index: 0,
@@ -3452,6 +3557,8 @@ fn built_lock(lock: OutPoint, coin: OutPoint) -> platform_wallet::TrackedAssetLo
         special_transaction_payload: None,
     };
     platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: lock,
         transaction,
         account_index: 0,
@@ -3722,9 +3829,11 @@ fn a_prepared_send_keeps_its_coin_through_a_locks_untracking() {
         reads_reserved(&f, coin),
         "the lock's untracking freed the prepared send's coin"
     );
-    // The send's own release frees it.
+    // The send's own release frees it, in the task its drop spawned.
     drop(prepared);
-    assert!(!reads_reserved(&f, coin));
+    eventually("the send's release frees the coin", || {
+        !reads_reserved(&f, coin)
+    });
 }
 
 /// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known
@@ -4269,7 +4378,8 @@ fn an_unknown_outcome_after_the_identity_does_not_settle() {
     let unknown = PlatformError::BroadcastUnknown {
         artifact: "st".into(),
     };
-    for error in [PlatformError::Timeout, unknown.clone()] {
+    let sdk_unconfirmed = PlatformError::from(unconfirmed(false));
+    for error in [PlatformError::Timeout, unknown.clone(), sdk_unconfirmed] {
         let f = fixture(false);
         let lib = f.fake();
         lib.w().name_error = Some(NameError::Platform(error.clone()));
@@ -4451,6 +4561,8 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
         wallet.state_mut().await.tracked_asset_locks.insert(
             lock,
             platform_wallet::TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: lock,
                 transaction,
                 account_index: 0,

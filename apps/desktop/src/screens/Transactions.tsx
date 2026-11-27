@@ -9,7 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useShieldedStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
 import { navigate, ui, useUi, type ActivityFilter } from "../app/ui";
@@ -19,7 +19,7 @@ import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShows
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { filterExtra, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
+import { filterExtra, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
 import { contactName, DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
@@ -95,7 +95,11 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // have no type to filter by, and nothing to search); Table mode is the Core columns.
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
-  const extra = useMemo(() => [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map(shieldedRow)], [platform.data, shielded.data]);
+  const shieldedStatus = useShieldedStatus(walletId);
+  const extra = useMemo(() => {
+    const held = heldActivities(shieldedStatus.data);
+    return [...(platform.data ?? []).map((a, _, all) => platformRow(a, all)), ...(shielded.data ?? []).map((a) => shieldedRow(a, held))];
+  }, [platform.data, shielded.data, shieldedStatus.data]);
   const withExtra = mode === "list" && category.id === "all" && !text && !routeFilter;
   const extraShown = useMemo(
     () => (withExtra ? filterExtra(extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : []),

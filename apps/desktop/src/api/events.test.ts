@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -74,7 +74,7 @@ describe("event bridge", () => {
     ]);
     // A lock drops the wallet's queries rather than reading them again; an unlock reads them.
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.lockReconcile]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "unlocked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "unlocked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll, keys.shieldedAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
     const registration = { flow: "registration" } as never;
@@ -111,7 +111,7 @@ describe("event bridge", () => {
     // The bring-up's outcome, and sync, move the DashPay status (BL-153 D8, D9).
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "startup" } })).toEqual([keys.dashpayAll]);
     expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility, mnKeys.listState]);
-    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState]);
+    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState, keys.restored, keys.restoreStatus]);
     // U-06: the engine's CoinJoin signal, and a balance change (D7), re-read the wallet's mixing status.
     expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([keys.coinjoinStatus("w"), keys.coinsAll("w")]);
     const report = REPORT;
@@ -289,6 +289,48 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
     expect(client.getQueryState(keys.dashpayStatus("c"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.identities("a"))?.isInvalidated).toBe(false);
+  });
+
+  it("sync re-reads restored only while it is set: the banner goes once the engine clears RESTORED", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.restored, true);
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined), syncStatus: () => new Promise(() => undefined) } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    expect(client.getQueryState(keys.restored)?.isInvalidated).toBe(true);
+    client.setQueryData(keys.restored, false);
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    expect(client.getQueryState(keys.restored)?.isInvalidated).toBe(false);
+  });
+
+  it("sync re-reads what RESTORED waits for, with no timer of its own", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.restoreStatus, { waiting: ["platformPass"], historyWallets: [], clearFailed: false });
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined), syncStatus: () => new Promise(() => undefined) } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(false);
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(true);
+    client.setQueryData(keys.restoreStatus, null);
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(false);
+  });
+
+  it("sync reads what RESTORED waits for again after a first read that failed", async () => {
+    const client = new QueryClient();
+    let reads = 0;
+    const observer = new QueryObserver(client, { queryKey: keys.restoreStatus, retry: false, queryFn: () => (++reads === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(null)) });
+    const stop = observer.subscribe(() => undefined);
+    await vi.waitFor(() => expect(observer.getCurrentResult().isError).toBe(true));
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined), syncStatus: () => new Promise(() => undefined) } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    expect(reads).toBe(1);
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    await vi.waitFor(() => expect(reads).toBe(2));
+    stop();
   });
 
   // Row 74: after a network switch the page is the new network's; what a command still running

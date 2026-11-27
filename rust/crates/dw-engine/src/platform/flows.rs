@@ -89,6 +89,54 @@ pub enum FlowKind {
     /// `PlatformOp` grant (C-funding P15), with the one key class its source
     /// needs; never a `ContactPayment` lease, nor the reverse.
     ContactPayFromBalance,
+    /// One App Connect login under an `AppConnect` grant: the MASTER-signed
+    /// IdentityUpdate adding the app's keys, then the response document,
+    /// each under its own call permit. Its signers are `PlatformIdentity`
+    /// and an `AppConnect` one bound to the grant's request.
+    AppConnect,
+}
+
+impl FlowKind {
+    /// Whether the flow spends Core coins, credits or shielded notes: the
+    /// restore's money gate refuses it while the restored mark is set
+    /// (`restore_gate`). Profile and contact writes, DashPay keys and votes
+    /// move nothing.
+    pub(crate) fn moves_funds(self) -> bool {
+        !matches!(
+            self,
+            Self::ProfileEdit
+                | Self::ContactRequest
+                | Self::Accept
+                | Self::PrivateDetails
+                | Self::EnableDashPayKeys
+                | Self::Voting
+        )
+    }
+
+    /// Whether the flow writes to Platform or spends credits or shielded
+    /// notes: refused up front in a session without Platform. Core payments
+    /// to contacts, masternode and governance transactions, and votes need
+    /// Core alone.
+    pub(crate) fn needs_platform(self) -> bool {
+        !matches!(
+            self,
+            Self::ContactPayment
+                | Self::Voting
+                | Self::MasternodeRegistration
+                | Self::KeyChange
+                | Self::SharedMasternode
+                | Self::Dissolution
+                | Self::Proposal
+        )
+    }
+
+    /// Whether the flow moves funds on Platform's side (credits, shielded
+    /// notes, or Core coins into an asset lock): a restore's Platform
+    /// residue refuses it. "Accept and pay" needs Platform for its accept,
+    /// which moves nothing; its payment is Core's.
+    pub(crate) fn moves_platform_funds(self) -> bool {
+        self.moves_funds() && self.needs_platform() && self != Self::AcceptAndPay
+    }
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -251,6 +299,9 @@ impl NetworkSession {
         crate::coinjoin::test_pause(crate::coinjoin::sweep_hooks(self).flow_admitted).await;
         self.require_wallet(&wallet_id).map_err(engine)?;
         match (flow, source) {
+            // An approval begins its own lease, under the grant its quote
+            // bound (app_connect.rs): never a host's.
+            (FlowKind::AppConnect, _) => return Err(PlatformError::GrantInvalid),
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
             (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded))
                 if super::shielded_payout::enabled_on(&self.network) => {}

@@ -99,6 +99,13 @@ export interface SendWorld {
   /** Payments a later payment spends from that is already locked or confirmed: the detail doesn't
    * offer Abandon (the engine's `settledDescendant`), and an Abandon is refused. */
   settledChildHidden: string[];
+  /** Payments that fund an unfinished Platform transfer, credit top-up or username registration,
+   * or that one depends on, whose asset lock was built while the detail was open: Abandon is
+   * offered, and refused (the engine's `platformFunding`). */
+  platformFunding: string[];
+  /** As `platformFunding`, with the lock already built when the detail opens: the detail doesn't
+   * offer Abandon, and an Abandon is refused. */
+  platformFundingHidden: string[];
   /** Payments whose Abandon is refused because a saved transaction of an open wallet doesn't read
    * (the engine's `recordUnreadable`): offered, then refused. Remove Unconfirmed is refused too while
    * any is listed. */
@@ -106,10 +113,18 @@ export interface SendWorld {
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
+  /** Abandoned payments a coin of which the engine's rescan is still checking before giving it
+   * back (`checkingSpentCoins`). */
+  checkingSpentCoins: string[];
   /** The wallet is catching up after a chain fork: Abandon and Remove Unconfirmed are refused with
    * `rescan_in_progress`. */
   catchingUp: boolean;
+  /** Payments that still hold their `restore_hold` from before a restore (Q92 H2), until abandoned. */
+  restoreHeld: string[];
 }
+
+/** The coins of `txid` the engine withholds (`coins.pendingUnproven`). */
+const withheldCoins = (coins: Utxo[], txid: string) => coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven");
 
 export const newSendWorld = (): SendWorld => ({
   drafts: {},
@@ -123,9 +138,13 @@ export const newSendWorld = (): SendWorld => ({
   rescanFirst: [],
   settledChild: [],
   settledChildHidden: [],
+  platformFunding: [],
+  platformFundingHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
+  checkingSpentCoins: [],
   catchingUp: false,
+  restoreHeld: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -177,6 +196,8 @@ export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[
     coinjoinDenominated: false,
     coinjoinRounds: null,
     spendable: confirmations > 0,
+    excluded: null,
+    pendingUnproven: false,
     ...extra,
   });
   return [
@@ -621,6 +642,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         label: null,
         isChange: true,
         spendable: true,
+        pendingUnproven: false,
       });
     const row: TxRow = {
       txid: s.txid,
@@ -864,10 +886,15 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid)) || world.send.rescanFirst.includes(txid),
+        canAbandon:
+          (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid) && !world.send.platformFundingHidden.includes(txid)) ||
+          world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
+        withheldOutputs: withheldCoins(wallet(world, walletId).coins, txid).map((u) => u.outpoint),
+        checkingSpentCoins: world.send.checkingSpentCoins.includes(txid),
         lastAnnouncedAt: world.send.announced[txid] ?? null,
+        restoreHeld: world.send.restoreHeld.includes(txid),
       };
       return extras;
     },
@@ -875,15 +902,33 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
       if (ctx.world.send.catchingUp) throw fail("rescan_in_progress", "a rescan is in progress");
+      if (ctx.world.restored) throw refused("restored");
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
+      if (ctx.world.send.platformFunding.includes(txid) || ctx.world.send.platformFundingHidden.includes(txid)) throw refused("platformFunding");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
+      // A payment whose coin the engine withholds: its pending coin goes. The coins it spent come
+      // back only once the engine's rescan finds them unspent, which the fixture doesn't run.
+      const withheld = withheldCoins(w.coins, txid);
+      if (withheld.length > 0) {
+        w.coins = w.coins.filter((u) => !withheld.includes(u));
+        const b = w.summary.balances;
+        if (b) w.summary.balances = { ...b, withheld: b.withheld - withheld.reduce((n, u) => n + u.amount, 0) };
+        changed(ctx, w, [txid]);
+        return null;
+      }
       const mine = ctx.world.send.sent[txid];
       if (mine) {
-        w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
+        const isChange = (u: Utxo) => !!mine.change && sameOutpoint(u.outpoint, mine.change);
+        // A held change was counted as pending, not confirmed.
+        for (const u of w.coins.filter((c) => isChange(c) && c.pendingUnproven)) {
+          moveBalance(w, -u.amount, "unconfirmed");
+          moveBalance(w, u.amount);
+        }
+        w.coins = [...w.coins.filter((u) => !isChange(u)), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
         delete ctx.world.send.sent[txid];
         moveBalance(w, -row.amount);
       } else {
@@ -896,10 +941,12 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         sh.abandonable = true;
         sh.abandonCharge = abandonFee(sh.reserved.length);
       }
+      ctx.world.send.restoreHeld = ctx.world.send.restoreHeld.filter((t) => t !== txid);
       changed(ctx, w, [txid]);
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
+      if (world.restored) throw refused("restored");
       const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);

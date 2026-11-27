@@ -2552,7 +2552,7 @@ fn skipped_at_restart(
 /// SPV caught up, as dash-spv reports it, so a funding of wallet `id` is
 /// held by nothing but its bring-up.
 pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
-    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
     let mut headers = BlockHeadersProgress::default();
     headers.update_target_height(100);
     headers.update_tip_height(100);
@@ -3018,6 +3018,38 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
         "{finished:?}"
     );
     pause.release.notify_one();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A Finish whose wait the close cancelled goes on to its readiness, whose
+/// protocol read asks Platform under an operation guard. The close does not
+/// wait for the answer: a connect to an unreachable node took seconds on
+/// Windows and held the gate's close for as long. The read is refused.
+#[test]
+fn a_close_does_not_wait_for_a_protocol_read_in_flight() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
+    let read = Arc::new(crate::coins::TestPause::default());
+    *guard(&s.platform.protocol.hold_fetch) = Some(Arc::clone(&read));
+    let refresh = {
+        let session = Arc::clone(&s);
+        s.rt.spawn(async move { session.refresh_protocol_version().await })
+    };
+    wait_until("the read", || read.reached.load(Ordering::SeqCst));
+    let deadline = Duration::from_secs(20);
+    let (closed, refreshed) = engine.block_on(async {
+        tokio::join!(
+            tokio::time::timeout(deadline, s.close()),
+            tokio::time::timeout(deadline, refresh),
+        )
+    });
+    read.release.notify_one();
+    assert!(closed.is_ok(), "the close waited for the read");
+    let refreshed = refreshed.expect("the close did not end the read").unwrap();
+    assert!(
+        matches!(refreshed, Err(PlatformError::NetworkNotOpen)),
+        "{refreshed:?}"
+    );
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -3903,8 +3935,6 @@ fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
 /// waits for, held past a removal.
 #[test]
 fn a_first_seen_write_held_past_a_removal_leaves_nothing() {
-    use dashcore::hashes::Hash;
-
     let (_dir, engine, s, id, wipe) = removable();
     let pause = Arc::new(JobPause::default());
     *guard(&s.hub.pause_seen) = Some(Arc::clone(&pause));

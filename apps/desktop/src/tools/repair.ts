@@ -80,11 +80,22 @@ export const RepairText = {
   shield: (mixed: boolean) => (mixed ? t("tools.repair.shieldMixed") : t("tools.repair.shieldMain")),
   /** What Repair's payment for it spends: a move of mixed coins sends back only those coins, to the
    * main balance; a shield sends every spendable coin of the main balance. */
-  shieldRepair: (mixed: boolean, coins: number, total: string, fee: string) =>
-    t(mixed ? "tools.repair.shieldRepairMixed" : "tools.repair.shieldRepairMain", { count: coins, total, fee }),
+  shieldRepair: (mixed: boolean, coins: number, total: string, fee: string, spendsOff = false) =>
+    t(
+      spendsOff
+        ? mixed
+          ? "tools.repair.shieldRepairMixedSpendsOff"
+          : "tools.repair.shieldRepairMainSpendsOff"
+        : mixed
+          ? "tools.repair.shieldRepairMixed"
+          : "tools.repair.shieldRepairMain",
+      { count: coins, total, fee },
+    ),
   resolveStuckShieldQuestion: (mixed: boolean, coins: number, total: string, fee: string) =>
     t(mixed ? "tools.repair.resolveStuckShieldMixed" : "tools.repair.resolveStuckShieldMain", { count: coins, total, fee }),
-  resolvedShield: (txid: string) => t("tools.repair.resolvedShield", { txid }),
+  /** `spendsOff`: this build cannot send from Shielded, so it names no move into Shielded. */
+  resolvedShield: (txid: string, spendsOff = false) => t(spendsOff ? "tools.repair.resolvedShieldSpendsOff" : "tools.repair.resolvedShield", { txid }),
+  stuckShieldsHint: (spendsOff = false) => t(spendsOff ? "tools.repair.stuckShieldsHintSpendsOff" : "tools.repair.stuckShieldsHint"),
   get stuckShieldsUnreadable() {
     return t("tools.repair.stuckShieldsUnreadable");
   },
@@ -103,10 +114,12 @@ const SHIELD_BLOCKED = messageTable("tools.repair.shieldBlockedReason", [
 ]);
 
 /** Why Repair cannot settle a move into Shielded now. A reason that can clear by itself says so; one
- * that cannot says that new moves into Shielded stay paused. */
-export function shieldBlockedText(b: ShieldRepairBlocked): string {
+ * that cannot says that new moves into Shielded stay paused, unless this build cannot send from
+ * Shielded (`spendsOff`), where they are off anyway. */
+export function shieldBlockedText(b: ShieldRepairBlocked, spendsOff = false): string {
   const why = b.reason === "other" ? SHIELD_BLOCKED.otherReason : SHIELD_BLOCKED[b.reason];
-  return t(b.retryLater ? "tools.repair.shieldBlockedRetry" : "tools.repair.shieldBlockedPermanent", { why });
+  const permanent = spendsOff ? "tools.repair.shieldBlockedPermanentSpendsOff" : "tools.repair.shieldBlockedPermanent";
+  return t(b.retryLater ? "tools.repair.shieldBlockedRetry" : permanent, { why });
 }
 
 /** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`); `what` is the action refused,
@@ -140,6 +153,8 @@ export function repairErrorText(e: unknown, what?: Confirmation): string {
 
 /** Why "send all coins to yourself" was refused (E0-04 §6.5). */
 export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean): string {
+  if (r.kind === "lockAbandoned") return t("tools.repair.stuckFunding.abandonedRetryLater");
+  if (r.kind === "spendUnsettled") return t("tools.repair.stuckRefusal.spendUnsettled", { txid: r.txid });
   const text = ((): string => {
     switch (r.kind) {
       case "rowsUnknown":
@@ -152,8 +167,6 @@ export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean
         return t("tools.repair.stuckRefusal.callRunning");
       case "journalUnavailable":
         return t("tools.repair.stuckRefusal.journalUnavailable");
-      case "spendUnsettled":
-        return t("tools.repair.stuckRefusal.spendUnsettled", { txid: r.txid });
       case "lockInputsSpent":
         return t("tools.repair.stuckRefusal.lockInputsSpent", { txid: r.txid });
       case "missesSignedLock":
@@ -280,6 +293,8 @@ export class RepairModel extends Model {
     private readonly api: Api,
     readonly grants: GrantModel,
     readonly walletId: string,
+    /** This build cannot send from Shielded (`shieldedSpendsOff`), read when a stuck move's outcome is said. */
+    private readonly spendsOff: () => boolean = () => false,
   ) {
     super();
   }
@@ -407,7 +422,7 @@ export class RepairModel extends Model {
         since,
       );
       if (!sent) return { kind: "idle" };
-      if (isShield(t)) return { kind: "done", text: RepairText.resolvedShield(sent.value.txid) };
+      if (isShield(t)) return { kind: "done", text: RepairText.resolvedShield(sent.value.txid, this.spendsOff()) };
       if (!isTopUp(t)) return { kind: "done", text: RepairText.resolved(sent.value.txid) };
       forgetTopUp(this.walletId);
       return { kind: "done", text: RepairText.resolvedTopUp(sent.value.txid) };

@@ -371,6 +371,25 @@ fn a_top_up_with_a_malformed_fee_input_is_refused() {
     assert_eq!(w.sent(), 0);
 }
 
+/// A top-up from Platform whose wait ends unconfirmed is pending and able
+/// to land, and holds the next one: nothing is signed again.
+#[test]
+fn top_up_from_platform_unconfirmed_is_pending() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::Unconfirmed);
+    let out = w.top_up(credits(DASH)).unwrap();
+    assert_eq!(
+        (out.state, out.may_land),
+        (PlatformActivityState::Pending, true)
+    );
+    assert_eq!(
+        w.top_up(credits(DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    assert_eq!(w.sent(), 1);
+}
+
 /// An unknown outcome leaves the record pending and able to land; the next
 /// move, send, shield quote and top-up from Platform are
 /// `credits.move_pending`, and a second submit signs nothing.
@@ -885,7 +904,6 @@ fn an_exit_reports_the_amount_it_moved() {
         "platform.grant_exceeded"
     );
     assert!(w.f.unused(&short));
-    use dpp::dashcore::hashes::Hash;
     let theirs = dpp::dashcore::Address::new(
         w.f.s.vault.network(),
         dpp::dashcore::address::Payload::PubkeyHash(dpp::dashcore::PubkeyHash::from_byte_array(
@@ -1439,13 +1457,16 @@ fn seen_at(height: u64, nonce: u32) -> Seen {
 /// #773: the structure check's refusal while the network proved a version
 /// above this build's is `credits.rules_unsupported`, with nothing signed,
 /// recorded or redeemed, for a move to Core, a send and a top-up. A session
-/// without Platform reads no version: the same refusal is the generic one.
+/// without Platform reads no version, and #855: a version proved only under
+/// quorum keys SPV has not verified counts for nothing. Either way the same
+/// refusal is the generic one.
 #[test]
 fn a_refusal_past_the_known_version_says_the_rules_changed() {
     let one = WithdrawAmount::Credits { credits: DASH };
-    for (platform, expected) in [
-        (true, CreditsError::RulesUnsupported),
-        (false, CreditsError::PreflightRefused),
+    for (platform, verified, expected) in [
+        (true, true, CreditsError::RulesUnsupported),
+        (true, false, CreditsError::PreflightRefused),
+        (false, true, CreditsError::PreflightRefused),
     ] {
         let w = if platform {
             World::with_platform()
@@ -1458,19 +1479,28 @@ fn a_refusal_past_the_known_version_says_the_rules_changed() {
         let s = Arc::clone(&w.f.s);
         s.platform
             .protocol
-            .record(PlatformVersion::latest().protocol_version + 1);
+            .record(PlatformVersion::latest().protocol_version + 1, verified);
         let grants = [
             w.f.grant(3 * DASH),
             w.f.grant(20 * DASH),
             w.f.grant(10 * DASH),
         ];
         let e = w.move_to(one, &w.to.clone(), &grants[0]).unwrap_err();
-        assert_eq!(e, expected, "move, platform {platform}");
+        assert_eq!(
+            e, expected,
+            "move, platform {platform}, verified {verified}"
+        );
         let quote = w.send_quote(one, &to).unwrap();
         let e = w.confirm(&quote.operation, &grants[1]).unwrap_err();
-        assert_eq!(e, expected, "send, platform {platform}");
+        assert_eq!(
+            e, expected,
+            "send, platform {platform}, verified {verified}"
+        );
         let e = w.top_up_as(&me(), one, &grants[2]).unwrap_err();
-        assert_eq!(e, expected, "top-up, platform {platform}");
+        assert_eq!(
+            e, expected,
+            "top-up, platform {platform}, verified {verified}"
+        );
         assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
         assert!(w.moves().is_empty(), "nothing recorded");
         assert!(grants.iter().all(|g| w.f.unused(g)), "nothing redeemed");

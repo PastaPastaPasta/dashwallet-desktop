@@ -43,6 +43,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::SharedMasternode
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
+        FlowKind::AppConnect => &[GrantKind::AppConnect],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw
@@ -84,7 +85,9 @@ pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
 /// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
 /// grant unused (none given included).
 /// `source`: a `ContactPayFromBalance` payment's (C-funding P15), whose
-/// lease carries that source's key class alone.
+/// lease carries that source's key class alone; `Shielded` for a
+/// `Registration` paid from the Shielded balance (F5), whose lease carries
+/// the shielded spend key beside the identity signer and no funding signer.
 pub(crate) fn issue(
     vault: &Vault,
     wallet: &WalletId,
@@ -130,9 +133,9 @@ pub(crate) fn issue(
     // The key-checked redemption first, so a key the vault does not hold
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
-    order.sort_by_key(|(_, k)| **k != GrantKind::PlatformOp);
+    order.sort_by_key(|(_, k)| !matches!(**k, GrantKind::PlatformOp | GrantKind::AppConnect));
     let redeem = |g: &String, kind: GrantKind| match (kind, keys) {
-        (GrantKind::PlatformOp, Some(keys)) => vault
+        (GrantKind::PlatformOp | GrantKind::AppConnect, Some(keys)) => vault
             .redeem_grant_holding_key(g, &wallet.0, keys)?
             .ok_or(VaultError::NoSecret),
         _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
@@ -213,6 +216,27 @@ pub(crate) fn issue(
             GrantPurpose::PlatformOp {
                 max_duffs,
                 max_credits,
+            } if flow == FlowKind::Registration && source == Some(PaymentSource::Shielded) => {
+                // A registration paid from the Shielded balance (C-funding
+                // F5): the identity signer, the shielded spend key and the
+                // contact crypto; never a funding signer.
+                if max_duffs > 0 || max_credits == 0 || platform_address {
+                    return Err(LeaseError::Invalid);
+                }
+                out.credits = max_credits;
+                out.crypto = true;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                let spend_key = match &key {
+                    Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
+                    None => vault.shielded_spend_key(&wallet.0, token),
+                };
+                out.signers.shielded = Some(spend_key.map_err(issuing)?);
+                out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
+            }
+            GrantPurpose::PlatformOp {
+                max_duffs,
+                max_credits,
             } => {
                 out.funding = max_duffs;
                 out.credits = max_credits;
@@ -283,6 +307,20 @@ pub(crate) fn issue(
                 };
                 out.signers.withdrawal = Some(signer.map_err(issuing)?);
             }
+            GrantPurpose::AppConnect {
+                max_credits,
+                request,
+                ..
+            } if flow == FlowKind::AppConnect => {
+                // An App Connect login: the identity keys (the MASTER key's
+                // update, the document key's response) and the request's
+                // application keys; no funding signer, no contact crypto.
+                out.credits = max_credits;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                out.signers.app_connect =
+                    Some(scoped(SignerScope::AppConnect { request }).map_err(issuing)?);
+            }
             GrantPurpose::Governance => {
                 out.voting = true;
                 let signer = match &key {
@@ -335,6 +373,21 @@ impl NetworkSession {
             .await
     }
 
+    /// A `Registration` lease paid from the Shielded balance: the identity
+    /// signer and the shielded spend key, no funding signer (C-funding F5).
+    pub(crate) async fn begin_shielded_registration_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grants: &[String],
+    ) -> Result<Lease, LeaseError> {
+        let scope = (
+            wallet,
+            FlowKind::Registration,
+            Some(PaymentSource::Shielded),
+        );
+        self.begin_issuing(scope, grants, None, false).await
+    }
+
     /// [`Self::begin_lease`] for a `ContactPayFromBalance` payment from
     /// `source` (C-funding P15).
     pub(crate) async fn begin_payout_lease(
@@ -369,6 +422,17 @@ impl NetworkSession {
         keys: Option<Vec<HeldKey>>,
         platform_address: bool,
     ) -> Result<Lease, LeaseError> {
+        if flow.moves_funds() {
+            let gate = &self.hub.restore;
+            if flow.needs_platform() && self.platform.funds_off() {
+                return Err(LeaseError::PlatformUnavailable);
+            }
+            if gate.is_restored()
+                || (flow.moves_platform_funds() && self.wallet_platform_held(wallet))
+            {
+                return Err(LeaseError::Restored);
+            }
+        }
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let grants = grants.to_vec();
@@ -389,15 +453,16 @@ impl NetworkSession {
     /// contact payout's lease pays once and is never rebound: `Invalid`
     /// before the grants are redeemed (a host begins another flow).
     pub async fn rebind_lease(&self, lease: &Lease, grants: &[String]) -> Result<(), LeaseError> {
-        self.rebind_lease_scoped(lease, grants, false).await
+        self.rebind_lease_scoped(lease, grants, (false, None)).await
     }
 
-    /// [`Self::rebind_lease`]; `platform_address` as [`issue`] takes it.
+    /// [`Self::rebind_lease`]; `platform_address` and `source` as
+    /// [`issue`] takes them.
     pub(crate) async fn rebind_lease_scoped(
         &self,
         lease: &Lease,
         grants: &[String],
-        platform_address: bool,
+        (platform_address, source): (bool, Option<PaymentSource>),
     ) -> Result<(), LeaseError> {
         if lease.flow == FlowKind::ContactPayFromBalance {
             return Err(LeaseError::Invalid);
@@ -408,7 +473,7 @@ impl NetworkSession {
         lease
             .rebind(
                 move || {
-                    let scope = (flow, None);
+                    let scope = (flow, source);
                     issue(&vault, &wallet, scope, &grants, None, platform_address)
                 },
                 move || epoch_vault.epoch(),
@@ -699,19 +764,29 @@ pub(crate) type LoadedJournal = (
 /// steps. An error: the imported spends could not be read, and the
 /// session must not open (a removal or restore before they are read would
 /// change which are archived); the next open reads them.
+///
+/// Then, before the journal is loaded, the drain of a `shielded.sqlite` an
+/// earlier build wrote (Q110 110-2), beside `persister`, this start's
+/// persister open: the second value is its verdict, which upstream's
+/// shielded store waits for. With no journal there is no drain and the
+/// verdict is a refusal, so that store stays closed.
 pub(crate) async fn open_journal(
     data_dir: &Path,
     known: HashSet<[u8; 32]>,
-) -> Result<Option<LoadedJournal>, EngineError> {
+    persister: Arc<dw_store_upgrade::PersisterOpened>,
+) -> Result<(Option<LoadedJournal>, ShieldedDrainVerdict), EngineError> {
     enum Failed {
         Unavailable(dw_appdb::AppDbError),
         Unread(dw_appdb::AppDbError),
     }
+    use crate::platform::ShieldedStoreClosed;
+    let no_journal = Err(ShieldedStoreClosed::Failed);
     if let Err(e) = crate::fsutil::create_owned_file(data_dir, Path::new(DISPATCH_DB_FILE)) {
         tracing::warn!(error = %e, "could not create the dispatch journal");
-        return Ok(None);
+        return Ok((None, no_journal));
     }
     let path = data_dir.join(DISPATCH_DB_FILE);
+    let network_dir = data_dir.to_path_buf();
     let opened = tokio::task::spawn_blocking(move || {
         let journal = match DispatchJournal::open(&path, crate::events::unix_now())
             .map_err(Failed::Unavailable)?
@@ -731,29 +806,59 @@ pub(crate) async fn open_journal(
                 "imported shielded spends read"
             );
         }
+        let drained = drain_shielded_store(&network_dir, &persister, &journal);
         let (rows, steps) = journal.load().map_err(Failed::Unavailable)?;
         let calls = journal.load_calls().map_err(Failed::Unavailable)?;
-        Ok(Some((journal, rows, steps, calls)))
+        Ok(Some(((journal, rows, steps, calls), drained)))
     })
     .await;
     match opened {
-        Ok(Ok(Some((journal, rows, steps, calls)))) => Ok(Some((
-            Arc::new(journal) as Arc<dyn JournalBackend>,
-            rows,
-            steps,
-            calls,
-        ))),
-        Ok(Ok(None)) => Ok(None),
+        Ok(Ok(Some(((journal, rows, steps, calls), drained)))) => Ok((
+            Some((
+                Arc::new(journal) as Arc<dyn JournalBackend>,
+                rows,
+                steps,
+                calls,
+            )),
+            drained,
+        )),
+        Ok(Ok(None)) => Ok((None, no_journal)),
         Ok(Err(Failed::Unread(e))) => Err(EngineError::Storage(format!(
             "the imported shielded spends could not be read: {e}"
         ))),
         Ok(Err(Failed::Unavailable(e))) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");
-            Ok(None)
+            Ok((None, no_journal))
         }
         Err(e) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");
-            Ok(None)
+            Ok((None, no_journal))
+        }
+    }
+}
+
+/// Whether upstream's shielded store may open this session: `Ok` once the
+/// drain left no fork rows in it, else why it stays closed.
+pub(crate) type ShieldedDrainVerdict = Result<(), crate::platform::ShieldedStoreClosed>;
+
+/// The drain of `network_dir`'s `shielded.sqlite` into `journal`
+/// ([`dw_shielded_drain`]), logged.
+fn drain_shielded_store(
+    network_dir: &Path,
+    opened: &dw_store_upgrade::PersisterOpened,
+    journal: &DispatchJournal,
+) -> ShieldedDrainVerdict {
+    match dw_shielded_drain::drain_fork_shielded_store(network_dir, opened, journal) {
+        Ok(outcome) => {
+            tracing::info!(?outcome, "shielded store drain");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "the shielded store drain did not finish; the shielded store stays closed"
+            );
+            Err((&e).into())
         }
     }
 }

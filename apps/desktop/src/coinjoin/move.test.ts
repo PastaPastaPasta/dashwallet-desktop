@@ -17,15 +17,19 @@ import type { MixedCoinsDestination } from "../api/generated/MixedCoinsDestinati
 import type { MixedCoinsConsolidationPlan } from "../api/generated/MixedCoinsConsolidationPlan";
 import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import { onShieldedSettled, SHIELDED_COPY } from "../shielded/flow";
+import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import {
   canRetry,
   combineResultText,
   MoveMixedFlow,
   type MoveMixedApi,
   moveErrorText,
+  moveShieldWait,
   MOVE_COPY,
   planFee,
   planReceives,
+  refusalText,
   resetMoveMixed,
   resultText,
   shieldResultText,
@@ -238,6 +242,19 @@ describe("Move mixed coins to Shielded", () => {
     expect(canRetry(flow.error)).toBe(true);
   });
 
+  it("says Dash Platform off as at a send only where the move was sent: a refused quote sent nothing", async () => {
+    const off = appError("platform.feature_off", { kind: "feature", feature: "platform" });
+    installFixture({ scenario: "coinjoin-move-mixing" });
+    const backend = new IpcBackend("fixture");
+    vi.spyOn(backend, "shieldMixedQuote").mockRejectedValue(off);
+    flow = new MoveMixedFlow(backend, W);
+    flow.begin("shielded");
+    await until(() => flow.step !== "plan");
+    expect([flow.step, flow.planFailed]).toEqual(["refused", true]);
+    expect(refusalText(flow)).toBe("Dash Platform is off until you next start Dash Wallet, and this needs it.");
+    expect(refusalText({ error: off, planFailed: false })).toBe("Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.");
+  });
+
   it("is refused while the wallet mixes, and quotes once Stop Mixing ends it", async () => {
     await open("coinjoin-move-mixing", "shielded");
     expect(flow.step).toBe("mixing");
@@ -319,6 +336,23 @@ describe("Move mixed coins to Shielded", () => {
     expect(moveErrorText(appError("shielded.not_active"))).toBe(SHIELDED_COPY.card.inactive);
     expect(canRetry(appError("shielded.move_running"))).toBe(true);
     expect([moveErrorText(appError("shielded.coins_changed")), canRetry(appError("shielded.coins_changed"))]).toEqual([MOVE_COPY.planChanged, true]);
+  });
+
+  // MG: the card waits as Add does, with the same cause lines, and offers the unlock that lets it run.
+  it("waits on Shielded's cause before the call, and names it on a refusal", () => {
+    const status = (account: ShieldedStatus["account"], ready = false) => ({ active: true, ready, account, syncing: false, lastPassFailed: false }) as ShieldedStatus;
+    expect(moveShieldWait(status("locked"))).toEqual({ why: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.", unlock: "unlock" });
+    expect(moveShieldWait(status("mixingOnly"))).toEqual({
+      why: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      unlock: "unlockFully",
+    });
+    expect(moveShieldWait(status("watchOnly"))).toEqual({ why: "Shielded isn't available in a watch-only wallet.", unlock: null });
+    expect(moveShieldWait(status("bound"))).toEqual({ why: SHIELDED_SYNC_COPY.syncing, unlock: null });
+    expect(moveShieldWait(status("bound", true))).toBeNull();
+    expect(moveShieldWait(null)).toBeNull();
+    const notSynced = appError("shielded.not_synced");
+    for (const wait of ["locked", "mixingOnly", "watchOnly", "syncing"] as const) expect(moveErrorText(notSynced, String, wait)).toBe(SHIELDED_SYNC_COPY.wait(wait));
+    expect(moveErrorText(notSynced)).toBe(SHIELDED_SYNC_COPY.syncing);
   });
 
   it("sends a drain that may be out to Tools ▸ Repair, in the Shielded screen's words", () => {

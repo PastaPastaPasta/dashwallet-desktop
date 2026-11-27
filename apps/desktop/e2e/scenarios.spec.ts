@@ -25,6 +25,11 @@ const STATES: State[] = [
     extra: "&fail=open_network:none",
     ready: (p) => p.getByRole("alert").filter({ hasText: "could not open the wallet" }).waitFor(),
   },
+  { name: "store-refused-refusedPrevious", scenario: "funded", extra: "&openRefused=refusedPrevious", ready: (p) => p.getByTestId("store-refused").waitFor() },
+  { name: "store-refused-refusedSupport", scenario: "funded", extra: "&openRefused=refusedSupport", ready: (p) => p.getByTestId("store-refused").waitFor() },
+  { name: "store-not-private", scenario: "funded", extra: "&notPrivate=groupWritable", ready: (p) => p.getByTestId("store-not-private-reason").waitFor() },
+  { name: "storage-in-use-retry", scenario: "funded", extra: "&storageInUse=retry", ready: (p) => p.getByTestId("storage-in-use-retry").waitFor() },
+  { name: "storage-in-use-restart", scenario: "funded", extra: "&storageInUse=restart", ready: (p) => p.getByTestId("storage-in-use-restart").waitFor() },
   { name: "wallets-error", scenario: "error-duffs", ready: (p) => p.getByTestId("wallets-error").waitFor() },
   {
     name: "history-error",

@@ -1937,7 +1937,7 @@ impl Vault {
         )
     }
 
-    /// Redeems a `PlatformOp` grant for `wallet` only while the vault holds
+    /// Redeems a `PlatformOp` (or `AppConnect`) grant for `wallet` only while the vault holds
     /// one of `candidates` (identity key paths and on-chain key data, as
     /// [`Self::grant_identity_key_matches`] asks): the check and the
     /// redemption are one section under the guard of the vault's record
@@ -1959,12 +1959,11 @@ impl Vault {
             Err(VaultError::NoSecret) => return Ok(None),
             signer => signer?,
         };
+        let (kind, _) = self.identity_grant(grant_id, wallet)?;
         for (path, key_data) in candidates {
             match Self::key_held(&signer, path, key_data) {
                 Ok(true) => {
-                    return self
-                        .redeem_grant(grant_id, GrantKind::PlatformOp, Some(wallet))
-                        .map(Some);
+                    return self.redeem_grant(grant_id, kind, Some(wallet)).map(Some);
                 }
                 Ok(false) | Err(VaultError::NoSecret) => {}
                 Err(e) => return Err(e),
@@ -1973,7 +1972,32 @@ impl Vault {
         Ok(None)
     }
 
-    /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` grant,
+    /// The kind and credit cap of a grant that issues a `PlatformIdentity`
+    /// signer: a `PlatformOp` or an `AppConnect` grant of `wallet`.
+    fn identity_grant(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+    ) -> Result<(GrantKind, u64), VaultError> {
+        let purpose = match self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet)) {
+            Err(VaultError::GrantPurposeMismatch) => {
+                self.grant_purpose(grant_id, GrantKind::AppConnect, Some(wallet))?
+            }
+            purpose => purpose?,
+        };
+        match purpose {
+            GrantPurpose::PlatformOp { max_credits, .. } => {
+                Ok((GrantKind::PlatformOp, max_credits))
+            }
+            GrantPurpose::AppConnect { max_credits, .. } => {
+                Ok((GrantKind::AppConnect, max_credits))
+            }
+            _ => Err(VaultError::GrantPurposeMismatch),
+        }
+    }
+
+    /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` or
+    /// `AppConnect` grant,
     /// for the yes-or-no questions above (no token is issued, so it cannot
     /// reach a lease).
     fn grant_identity_signer(
@@ -1981,11 +2005,7 @@ impl Vault {
         grant_id: &str,
         wallet: &WalletId,
     ) -> Result<VaultSigner, VaultError> {
-        let GrantPurpose::PlatformOp { max_credits, .. } =
-            self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet))?
-        else {
-            return Err(VaultError::GrantPurposeMismatch);
-        };
+        let (kind, max_credits) = self.identity_grant(grant_id, wallet)?;
         if max_credits == 0 {
             return Err(VaultError::GrantPurposeMismatch);
         }
@@ -1993,7 +2013,7 @@ impl Vault {
             Self::valid_grant(
                 inner,
                 grant_id,
-                GrantKind::PlatformOp,
+                kind,
                 Some(wallet),
                 self.now(),
                 self.clock(),
@@ -2765,24 +2785,31 @@ impl Vault {
                 | SignerScope::DashPayCrypto
                 | SignerScope::PlatformFunding { .. }
                 | SignerScope::PlatformAddress
+                | SignerScope::AppConnect { .. }
         ) {
             return Err(VaultError::InvalidArgument(format!(
                 "{scope:?} is not a Platform signer scope"
             )));
         }
-        let GrantPurpose::PlatformOp {
-            max_duffs,
-            max_credits,
-        } = token.purpose
-        else {
-            return Err(VaultError::GrantPurposeMismatch);
-        };
-        let granted = match scope {
-            SignerScope::PlatformFunding { max_duffs: wanted } => {
-                max_duffs != 0 && wanted <= max_duffs
+        let granted = match (token.purpose, scope) {
+            (GrantPurpose::PlatformOp { .. }, SignerScope::AppConnect { .. }) => false,
+            (
+                GrantPurpose::PlatformOp { max_duffs, .. },
+                SignerScope::PlatformFunding { max_duffs: wanted },
+            ) => max_duffs != 0 && wanted <= max_duffs,
+            (
+                GrantPurpose::PlatformOp { max_credits, .. },
+                SignerScope::PlatformIdentity | SignerScope::PlatformAddress,
+            ) => max_credits != 0,
+            (GrantPurpose::PlatformOp { .. }, _) => true,
+            (GrantPurpose::AppConnect { max_credits, .. }, SignerScope::PlatformIdentity) => {
+                max_credits != 0
             }
-            SignerScope::PlatformIdentity | SignerScope::PlatformAddress => max_credits != 0,
-            _ => true,
+            (
+                GrantPurpose::AppConnect { request, .. },
+                SignerScope::AppConnect { request: wanted },
+            ) => request == wanted,
+            _ => false,
         };
         if !granted {
             return Err(VaultError::GrantPurposeMismatch);
@@ -3741,6 +3768,42 @@ mod tests {
         assert_eq!(*seen.borrow(), Some(Ok(())));
     }
 
+    /// App Connect needs the passphrase even with a valid quick unlock in
+    /// range: the keys it hands out carry more than its fee.
+    #[test]
+    fn app_connect_never_takes_a_quick_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        let key = v.enroll_quick_unlock(&change.id).unwrap();
+        let connect = GrantPurpose::AppConnect {
+            max_credits: 1_000,
+            request: [1; 20],
+            plan: [2; 32],
+        };
+        let wallet = Some(&[1; 32]);
+        assert!(matches!(
+            v.authorize(connect, wallet, Credential::QuickUnlock(&key)),
+            Err(VaultError::CredentialRequired)
+        ));
+        let spend = GrantPurpose::Spend { max_duffs: 1 };
+        assert!(
+            v.authorize(spend, wallet, Credential::QuickUnlock(&key))
+                .is_ok()
+        );
+        assert!(
+            v.authorize(connect, wallet, Credential::Passphrase(pw))
+                .is_ok()
+        );
+    }
+
     /// A lower limit whose write fails (here after the new file reached the
     /// disk) keeps the limit in memory and still ends the window.
     #[test]
@@ -4090,8 +4153,8 @@ mod tests {
     /// that key's HASH160 is the address; no other key, no other address.
     #[test]
     fn a_platform_address_signer_signs_its_own_address_only() {
-        use dashcore::hashes::{Hash, hash160};
-        use dashcore::sign_message::MessageSignature;
+        use dashcore::hashes::hash160;
+        use dashcore::sign_message::{from_slice, recover_pubkey};
         use key_wallet::bip32::ExtendedPrivKey;
 
         let dir = tempfile::tempdir().unwrap();
@@ -4122,16 +4185,17 @@ mod tests {
             .unwrap()
             .derive_priv(&path)
             .unwrap();
-        let public = dashcore::secp256k1::PublicKey::from_secret_key(&key.private_key);
-        let hash = *hash160::Hash::hash(&public.serialize()).as_byte_array();
+        let public = key.private_key.public_key();
+        let hash = *hash160::Hash::hash(&public.to_compressed()).as_byte_array();
         assert_eq!(s.platform_address_matches(&path, &hash), Ok(true));
         let sig = s
             .sign_platform_address(&path, &hash, b"transition")
             .unwrap();
-        let recovered = MessageSignature::from_slice(&sig)
-            .unwrap()
-            .recover_pubkey(dashcore::hashes::sha256d::Hash::hash(b"transition"))
-            .unwrap();
+        let recovered = recover_pubkey(
+            &from_slice(&sig).unwrap(),
+            dashcore::hashes::sha256d::Hash::hash(b"transition"),
+        )
+        .unwrap();
         assert_eq!(recovered.inner, public);
 
         let mut other = hash;
@@ -4451,8 +4515,8 @@ mod tests {
         let v = vault_with_wallet(dir.path(), Some(b"old-pw"), 0x5a);
         let w = [1u8; 32];
         let key = DerivationPath::from_str("m/9'/1'/5'/0'/0'/0'/0'").unwrap();
-        let peer = dashcore::secp256k1::PublicKey::from_secret_key(
-            &dashcore::secp256k1::SecretKey::from_secret_bytes([0x42; 32]).unwrap(),
+        let peer = dpp::secp256k1::PublicKey::from_secret_key(
+            &dpp::secp256k1::SecretKey::from_secret_bytes([0x42; 32]).unwrap(),
         );
 
         v.lock();

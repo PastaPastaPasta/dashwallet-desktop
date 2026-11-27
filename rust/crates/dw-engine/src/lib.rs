@@ -24,6 +24,8 @@ pub mod csv_export;
 mod engine;
 mod error;
 mod events;
+#[cfg(test)]
+mod failed_open_tests;
 mod fees;
 mod fsutil;
 mod gate;
@@ -32,6 +34,7 @@ pub mod governance;
 mod held_writes;
 pub mod history;
 mod history_ops;
+mod input_authorization;
 mod keys;
 #[cfg(test)]
 mod kill9;
@@ -43,11 +46,13 @@ mod mempool_sync_tests;
 mod multiwallet;
 mod network;
 pub mod network_choice;
+mod network_folders;
 pub mod platform;
 mod pump;
 pub mod rates;
 mod receive;
 mod replay_record;
+mod rescan_hold;
 mod restore;
 #[cfg(all(test, unix))]
 mod restore_order_tests;
@@ -58,6 +63,8 @@ mod session;
 #[cfg(test)]
 mod startup_list_tests;
 mod store;
+mod store_repair;
+pub mod store_upgrade;
 pub mod sync;
 // Present only with the `test-support` feature, which dwcli's
 // dev-dependency and its `invitation-create-test` feature alone enable, in
@@ -78,10 +85,12 @@ pub mod mix_shield_test;
 #[doc(hidden)]
 pub struct TestSupportProbe;
 
+mod restore_gate;
 mod tools;
 mod tx_actions;
 mod wallet_read;
 mod wallets;
+mod withhold;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};
 pub use coinjoin::CoinJoinFailure;
@@ -92,7 +101,7 @@ pub use compat::{
 };
 pub use dw_appdb::BookPurpose;
 pub use engine::{CloseRefused, Engine, EngineConfig};
-pub use error::{EngineError, TASK_PANICKED, engine_poisoned};
+pub use error::{EngineError, ShieldedHold, TASK_PANICKED, engine_poisoned};
 pub use events::{EngineEvent, EventSink, NoticeCode, PlatformChange};
 pub use fees::{
     CoinSelectionSummary, FEE_TARGETS, FeePolicy, FeeSource, FeeTarget, MAX_BROADCAST_RATE_PER_KB,
@@ -115,6 +124,7 @@ pub use platform::{
     SpvState, StartupStatus, SyncLoop, SyncLoopStatus,
 };
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
+pub use restore_gate::{RestoreStatus, RestoreWait};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};
 pub use send::{
     BroadcastOutcome, ChangePolicy, CoinSource, ContactRecipient, FeeMode, MAX_TX_FEE,
@@ -131,3 +141,4 @@ pub use tx_actions::{
     DroppedNotice, TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal,
 };
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};
+pub use withhold::ExclusionReason;

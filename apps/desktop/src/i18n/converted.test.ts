@@ -21,11 +21,11 @@ const AREAS: Record<string, string[]> = {
 
   components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
 
-  app: ["app/App.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx", "fiat/rates.tsx"],
+  app: ["app/App.tsx", "screens/StoreRefusal.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx", "fiat/rates.tsx"],
 
   onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
 
-  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/DroppedNoticeBanner.tsx"],
+  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/RestoredBanner.tsx", "screens/DroppedNoticeBanner.tsx", "screens/RestoredStatePanel.tsx"],
 
   activity: ["screens/SourceDetailSheet.tsx"],
 
@@ -35,13 +35,13 @@ const AREAS: Record<string, string[]> = {
 
   contacts: ["screens/contacts"],
 
-  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/EditProfileSheet.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/MyProfile.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/TopUpSheet.tsx", "screens/dashpay/Welcome.tsx", "screens/dashpay/WithdrawSheet.tsx"],
+  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/AppConnectSheet.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/EditProfileSheet.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/MyProfile.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/TopUpSheet.tsx", "screens/dashpay/Welcome.tsx", "screens/dashpay/WithdrawSheet.tsx"],
 
   coinjoin: ["screens/coinjoin"],
 
   notifications: ["screens/notifications"],
 
-  masternodes: ["screens/masternodes/CreateProposalSheet.tsx", "screens/masternodes/MasternodesPage.tsx", "screens/masternodes/Mine.tsx", "screens/masternodes/MyMasternodes.tsx", "screens/masternodes/NameVoteSheet.tsx", "screens/masternodes/NamesTab.tsx", "screens/masternodes/NumbersSheet.tsx", "screens/masternodes/ProposalPane.tsx", "screens/masternodes/StatusItem.tsx", "screens/masternodes/VoteSheet.tsx", "screens/masternodes/common.tsx", "screens/masternodes/credential.tsx"],
+  masternodes: ["screens/masternodes/CreateProposalSheet.tsx", "screens/masternodes/MasternodesPage.tsx", "screens/masternodes/Mine.tsx", "screens/masternodes/MyMasternodes.tsx", "screens/masternodes/NameVoteSheet.tsx", "screens/masternodes/NamesTab.tsx", "screens/masternodes/NumbersSheet.tsx", "screens/masternodes/ProposalPane.tsx", "screens/masternodes/SharedPane.tsx", "screens/masternodes/StatusItem.tsx", "screens/masternodes/VoteSheet.tsx", "screens/masternodes/common.tsx", "screens/masternodes/credential.tsx"],
 
   tools: ["screens/tools"],
 

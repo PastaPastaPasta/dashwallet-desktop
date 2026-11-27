@@ -19,9 +19,11 @@ type Api = Pick<Backend, "authorize" | "revokeGrant" | "lockStatus" | "paymentAu
 export type GrantAsk = GrantPurposeSpec | { kind: "platformSend"; operation: string };
 
 /** Payments and Platform spends follow "Require authentication for every payment" (E0-13 D11);
- * the rest need the passphrase only while the vault is not fully unlocked. */
+ * an App Connect sign-in takes the passphrase every time, never the unlock in memory; the rest
+ * need the passphrase only while the vault is not fully unlocked. */
 export function needsPassphrase(purpose: GrantAsk, lock: LockStatus, paymentAuth: boolean): boolean {
   if (!lock.encrypted) return false;
+  if (purpose.kind === "appConnect") return true;
   if (purpose.kind === "spend" || purpose.kind === "platformOp" || purpose.kind === "platformSend") return paymentAuth || lock.state !== "unlocked";
   return lock.state !== "unlocked";
 }

@@ -44,7 +44,7 @@ describe("wallets list", () => {
   it("E1_closeWalletSaysAShieldedPaymentIsStillBeingConfirmed", () => {
     // DEC-1046: the engine refuses Close Wallet while a shielded payment's result is unknown.
     const refused = { code: "shielded_spend_unresolved", message: "refused", data: null };
-    expect(failureText(refused)).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(failureText(refused)).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
   });
 
   it("a refused Close keeps its reason after the list is read again", async () => {
@@ -52,7 +52,7 @@ describe("wallets list", () => {
     await model.load();
     fixture.world.settings.unloadRefusal = "unresolved";
     expect(await model.close(B)).toBe(false);
-    expect(model.error).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(model.error).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
     expect(model.rows[1].loaded).toBe(true);
     fixture.world.settings.unloadRefusal = "opening";
     expect(await model.close(B)).toBe(false);
@@ -217,11 +217,54 @@ describe("remove wallet", () => {
     expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/recovery phrase/);
   });
 
-  it("E1_removalWarnsThatASentShieldedPaymentMayStillGoThroughAndItsRecordIsDeleted", () => {
-    const question = WalletsText.removeQuestion("Main", false);
-    expect(question).toMatch(/shielded payment it already sent may still go through/);
-    expect(question).toMatch(/its pending record is deleted with the wallet/);
-    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/shielded/);
+  it("Q-PURGE: the question no longer says a removal deletes a pending shielded record", () => {
+    // A wallet holding a shielded payment is not removed at all (the refusals below).
+    expect(WalletsText.removeQuestion("Main", false)).not.toMatch(/shielded/i);
+    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/shielded/i);
+  });
+
+  const HELD = {
+    inFlight: "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed.",
+    carriedOver:
+      "Dash Wallet can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
+  } as const;
+
+  for (const reason of ["inFlight", "carriedOver"] as const) {
+    it(`Q-PURGE: a removal refused (${reason}) says why, and removes nothing`, async () => {
+      fixture.world.settings.removeRefusal = reason;
+      const model = new RemoveWalletModel(b, B);
+      await model.load();
+      await model.remove(PASS);
+      expect(model.step).toBe("held");
+      expect(model.held).toBe(HELD[reason]);
+      expect(model.error).toBeNull();
+      expect(model.busy).toBe(false);
+      expect(WalletsText.removeHeldTitle).toBe("This wallet can't be removed yet");
+      expect(fixture.calls).toContain("remove_wallet");
+      expect(fixture.calls).toContain("revoke_grant");
+      expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
+      expect([...fixture.world.lock.walletsWithSecrets].sort()).toEqual([A, B].sort());
+      expect(fixture.world.wallets).toHaveLength(2);
+      // Once the payment is settled the removal goes through.
+      fixture.world.settings.removeRefusal = null;
+      const again = new RemoveWalletModel(b, B);
+      await again.load();
+      await again.remove(PASS);
+      expect(again.step).toBe("done");
+      expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A]);
+    });
+  }
+
+  it("Q-PURGE: a refusal without a reason (the last check, the keys already deleted) says so", async () => {
+    fixture.world.settings.removeRefusal = "keysRemoved";
+    const model = new RemoveWalletModel(b, B);
+    await model.load();
+    await model.remove(PASS);
+    expect(model.step).toBe("held");
+    expect(model.held).toBe(
+      "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
+    );
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
   });
 
   it("IOS110_anUnencryptedVaultRemovesWithoutAPassphrase", async () => {

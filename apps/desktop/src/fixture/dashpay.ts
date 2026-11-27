@@ -23,10 +23,11 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { SyncLoopStatus } from "../api/generated/SyncLoopStatus";
 import type { SyncPassReport } from "../api/generated/SyncPassReport";
+import type { AddressSync } from "../api/generated/AddressSync";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { IdentitiesWorld } from "./identities";
-import type { PlatformCreateOutcome, PlatformRegisterPlan } from "./registration";
+import type { PlatformCreateOutcome, PlatformRegisterPlan, ShieldedCreateOutcome } from "./registration";
 import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -71,6 +72,9 @@ export interface DashPayWorld {
   /** C-funding F10: what each next identity create from the Platform balance comes to, first
    * first; once empty, `registered`. */
   platformCreates?: PlatformCreateOutcome[];
+  /** C-funding F12: what each next identity create from the Shielded balance comes to, first
+   * first; once empty, `registered`. */
+  shieldedCreates?: ShieldedCreateOutcome[];
   /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
    * scenario sets it (topup.ts `creditsOf`). */
   credits?: CreditsWorld;
@@ -88,6 +92,10 @@ export interface DashPayWorld {
   /** DP6-03: the pass `dashpay_sync_status` reports; absent: none (the engine's `last_pass` is
    * `None` until passes report, E0-10b §7). */
   lastPass?: SyncPassReport;
+  /** The wallet's last Platform-address pass; absent: done. */
+  addresses?: AddressSync;
+  /** `dashpay_sync_status` fails (the status bar's read of it). */
+  syncStatusFails?: boolean;
   /** H-09: how a contact payment's `prepare` ends for a contact whose data is `unverified`, under
    * the default trust mode: the engine waits for it to verify, then refuses with
    * `platform.context_unavailable`, or `platform.trust_mismatch` when it does not match. Absent:
@@ -459,6 +467,7 @@ export function contestedRow(temp: string): RegistrationStatus {
     profileFailure: null,
     invitation: null,
     fromPlatform: false,
+    fromShielded: false,
     createdAt: at(0, 2),
     updatedAt: at(0, 1),
   };
@@ -489,6 +498,7 @@ export function registering(): DashPayWorld {
         profileFailure: null,
         invitation: null,
         fromPlatform: false,
+        fromShielded: false,
         createdAt: at(0, 1),
         updatedAt: at(0, 0),
       },

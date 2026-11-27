@@ -24,7 +24,7 @@ const fixture: Fixture = {
   // Engine
   open_network: ({ network, settings }) => {
     expect(settings).toBeNull();
-    return { network: { kind: "regtest", dirName: network ?? "regtest", unitName: "tDASH" }, lock: LOCK };
+    return { network: { kind: "regtest", dirName: network ?? "regtest", unitName: "tDASH" }, lock: LOCK, notice: null };
   },
   // Vault
   create_vault: ({ passphrase }) => ({ ...LOCK, state: passphrase === null ? "unencrypted" : "unlocked" }),
@@ -140,7 +140,7 @@ describe("generated commands", () => {
       .sort();
     expect(wrappers).toEqual(Object.keys(cmd.COMMANDS).map(camel).sort());
     expect(new Set(Object.values(cmd.COMMANDS))).toEqual(
-      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units", "shell", "files", "scan", "governance", "masternodes", "rates", "updates", "selftest"]),
+      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "connect", "console", "units", "shell", "files", "scan", "governance", "masternodes", "rates", "updates", "selftest"]),
     );
   });
 });

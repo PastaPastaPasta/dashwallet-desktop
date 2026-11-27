@@ -13,10 +13,11 @@
 //! two `=`, no stray bits).
 
 use dashcore::Network;
-use dashcore::hashes::{Hash, HashEngine, hash160, sha256d};
-use dashcore::secp256k1::{self, Message, SecretKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaRecSignature, EcdsaSecretKey};
+use dashcore::hashes::{HashEngine, hash160, sha256d};
 use dw_uri::keyio::{self, Destination, Secret};
 use std::fmt;
+use zeroize::Zeroize;
 
 /// The magic prefix Dash Core signs messages under.
 pub const MESSAGE_MAGIC: &str = "DarkCoin Signed Message:\n";
@@ -71,16 +72,12 @@ impl std::error::Error for SignError {}
 /// deterministic (RFC 6979, no extra entropy), as in Core's `SignCompact`.
 pub fn sign_message(secret: &Secret, message: &[u8]) -> Result<String, SignError> {
     let mut sk =
-        SecretKey::from_secret_bytes(*secret.key).map_err(|_| SignError::InvalidPrivateKey)?;
-    let sig = ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
-        Message::from_digest(message_hash(message)),
-        &sk,
-    );
-    sk.non_secure_erase();
-    let (recid, rs) = sig.serialize_compact();
-    let mut out = [0u8; COMPACT_SIGNATURE_SIZE];
-    out[0] = 27 + recid.to_u8() + if secret.compressed { 4 } else { 0 };
-    out[1..].copy_from_slice(&rs);
+        EcdsaSecretKey::from_bytes(&secret.key).map_err(|_| SignError::InvalidPrivateKey)?;
+    let mut out = sk.sign_recoverable(&message_hash(message)).to_bytes();
+    sk.zeroize();
+    if !secret.compressed {
+        out[0] -= 4;
+    }
     Ok(encode_base64(&out))
 }
 
@@ -178,22 +175,16 @@ pub fn verify_message(
 /// `CPubKey::RecoverCompact(MessageHash(message), sig)`: the serialized public
 /// key (33 or 65 bytes, as the header's compressed flag says), or `None`.
 pub fn recover_pubkey(sig: &[u8], message: &[u8]) -> Option<Vec<u8>> {
-    if sig.len() != COMPACT_SIGNATURE_SIZE {
-        return None;
-    }
+    let mut sig = <[u8; COMPACT_SIGNATURE_SIZE]>::try_from(sig).ok()?;
     // Core computes with `int`: (vchSig[0] - 27) can be negative and the
     // bit masks then act on the two's-complement value.
-    let h = i32::from(sig[0]) - 27;
-    let recid = ecdsa::RecoveryId::try_from(h & 3).ok()?;
-    let compressed = h & 4 != 0;
-    let rsig = ecdsa::RecoverableSignature::from_compact(&sig[1..], recid).ok()?;
-    let pk: secp256k1::PublicKey = rsig
-        .recover_ecdsa(Message::from_digest(message_hash(message)))
-        .ok()?;
-    Some(if compressed {
-        pk.serialize().to_vec()
+    sig[0] = 27 + (sig[0].wrapping_sub(27) & 7);
+    let sig = EcdsaRecSignature::from(sig);
+    let pk = EcdsaPublicKey::recover(&message_hash(message), &sig).ok()?;
+    Some(if sig.is_compressed().ok()? {
+        pk.to_compressed().to_vec()
     } else {
-        pk.serialize_uncompressed().to_vec()
+        pk.to_uncompressed().to_vec()
     })
 }
 

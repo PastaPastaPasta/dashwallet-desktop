@@ -3,10 +3,10 @@ use crate::peer::{decode_inv, encode_inv};
 use crate::store::ListEntry;
 use crate::vote::{VoteOutcome, to_recoverable_compact};
 use dashcore::OutPoint;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+use dashcore::hashes::hash160;
 use dw_p2p::commands;
 use dw_p2p::testing::MockPeer;
+use secp256k1::{Message, PublicKey, SecretKey};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -21,8 +21,8 @@ fn resigned(v: &GovernanceVote, key: u8) -> GovernanceVote {
     let pk = PublicKey::from_secret_key(&sk);
     let mut f = v.clone();
     let d = f.signing_digest(Network::Regtest);
-    let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
-    f.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+    let s = secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+    f.signature = to_recoverable_compact(&s.serialize_compact(), &pk.into(), &d)
         .unwrap()
         .to_vec();
     assert_eq!(f.hash(), v.hash());

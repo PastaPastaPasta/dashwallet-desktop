@@ -35,7 +35,6 @@ use std::sync::{Arc, Mutex};
 
 use dashcore::address::Payload;
 use dashcore::consensus::encode::serialize_hex;
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction, TxOut};
 use dw_uri::keyio::{AddressKind, Destination, classify_address};
 use dw_vault::{GrantKind, VaultError};
@@ -174,6 +173,10 @@ pub enum SendFailure {
     InvalidChangeAddress,
     #[error("watch-only wallet")]
     WatchOnly,
+    /// The network's data was restored from its backup: sends wait for its
+    /// first full sync (the money gate, `restore_gate`).
+    #[error("sends wait for the first sync after a restore")]
+    Restored,
     #[error("vault locked")]
     VaultLocked,
     #[error("grant invalid")]
@@ -231,10 +234,13 @@ pub(crate) fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
     match e {
         // Mode B call steps only; a `TxDraft` never takes one.
         LeaseError::JournalUnavailable => return EngineError::Storage(e.to_string()),
-        LeaseError::StepKeyMismatch | LeaseError::FundingBlocked(_) => {
+        LeaseError::StepKeyMismatch
+        | LeaseError::FundingBlocked(_)
+        | LeaseError::PlatformUnavailable => {
             return EngineError::Internal(e.to_string());
         }
         LeaseError::Revoked(_) | LeaseError::Locked => SendFailure::Cancelled,
+        LeaseError::Restored => SendFailure::Restored,
         LeaseError::Ended | LeaseError::Invalid => SendFailure::GrantInvalid,
         // A coin send names no identity keys, so `KeysNotHeld` cannot arise.
         LeaseError::Parked(_)
@@ -1149,6 +1155,9 @@ impl TxDraft {
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        if self.session.hub.restore.is_restored() {
+            return Err(SendFailure::Restored.into());
+        }
         let contact = self.state().contact;
         if let Some(pair) = contact {
             return self.prepare_contact(grant_id, pair).await;
@@ -2294,11 +2303,11 @@ impl PreparedTx {
                 .table
                 .unbind_spend(lease.id(), lease.wallet(), *artifact);
         }
-        session.spends.release(&self.wallet_id, self.owner);
         let signed = self.signed().take();
         if let (Some(signed), Ok(wallet)) = (signed, session.wallet(&self.wallet_id).await) {
             wallet.core().abandon_transaction(&signed).await;
         }
+        session.spends.release(&self.wallet_id, self.owner);
     }
 }
 
@@ -2306,6 +2315,9 @@ impl PreparedTx {
 /// outcome is unknown releases nothing: it may be on the network, so its
 /// inputs stay reserved until the wallet sees them spent or the session
 /// closes (platform-wallet's pending-spend fence holds them the same way).
+/// The engine's claim goes only after key-wallet's reservation (#745): a
+/// coin read in between still reads reserved, so no plan takes a coin
+/// key-wallet's build would then drop.
 impl Drop for PreparedTx {
     fn drop(&mut self) {
         if *self.phase() != Phase::Pending {
@@ -2318,20 +2330,48 @@ impl Drop for PreparedTx {
         }
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
-        let signed = self.signed().take();
-        session.spends.release(&wallet_id, self.owner);
-        let Some(signed) = signed else { return };
+        let owner = self.owner;
+        let Some(signed) = self.signed().take() else {
+            session.spends.release(&wallet_id, owner);
+            return;
+        };
+        let claim = ReleaseClaim {
+            session: Arc::clone(&session),
+            wallet_id,
+            owner,
+        };
         let rt = session.rt.clone();
         rt.spawn(async move {
+            let _claim = claim;
             // Admitted like any operation, so a close in progress is not
             // raced; after the close there is no wallet left to release in.
-            let Ok(_op) = session.enter().await else {
-                return;
-            };
-            if let Ok(wallet) = session.wallet(&wallet_id).await {
+            if let Ok(_op) = session.enter().await
+                && let Ok(wallet) = session.wallet(&wallet_id).await
+            {
+                #[cfg(test)]
+                let pause = session.hub.pause_release.lock().unwrap().take();
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    pause.mark_reached();
+                    pause.release.notified().await;
+                }
                 wallet.core().abandon_transaction(&signed).await;
             }
         });
+    }
+}
+
+/// The engine's claim of a dropped payment, released when its task ends,
+/// panics or is dropped unpolled at shutdown.
+struct ReleaseClaim {
+    session: Arc<NetworkSession>,
+    wallet_id: WalletId,
+    owner: SpendOwner,
+}
+
+impl Drop for ReleaseClaim {
+    fn drop(&mut self) {
+        self.session.spends.release(&self.wallet_id, self.owner);
     }
 }
 

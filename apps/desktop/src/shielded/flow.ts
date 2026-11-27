@@ -17,9 +17,11 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
-import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
+import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing";
+import { spendsOffRefusal, spendsOffText } from "./spends";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
+import { platformHoldText } from "../api/platformHold";
 
 export type ShieldedApi = Pick<
   Backend,
@@ -66,6 +68,8 @@ export const SHIELDED_COPY = {
     },
     unfinished: (amount: string) => t("transfer.shielded.card.unfinished", { amount }),
   },
+  /** What payments that may still go through hold of the balance. */
+  held: (amount: string, count: number) => t("transfer.shielded.held", { amount, count }),
   titles: {
     get add() {
       return t("transfer.shielded.titles.add");
@@ -291,11 +295,23 @@ export const SHIELDED_COPY = {
     get copy() {
       return t("transfer.shielded.receive.copy");
     },
-    get notSynced() {
-      return SHIELDED_SYNC_COPY.syncing;
-    },
     get loading() {
       return t("transfer.shielded.receive.loading");
+    },
+    get early() {
+      return t("transfer.shielded.receive.early");
+    },
+    get locked() {
+      return t("transfer.shielded.receive.locked");
+    },
+    get unlock() {
+      return t("transfer.shielded.receive.unlock");
+    },
+    get mixingOnly() {
+      return t("transfer.shielded.receive.mixingOnly");
+    },
+    get watchOnly() {
+      return t("transfer.shielded.receive.watchOnly");
     },
   },
 };
@@ -310,13 +326,36 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 /** Whether `e` is the app error `code`. */
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
+/** Why the Shielded store stays closed this session (`shielded.store_closed`): the engine's reasons;
+ * one it does not name reads as `failed`. */
+export type ShieldedClosedReason = "in_use" | "damaged" | "failed" | "no_upgrade_copy";
+
+/** Each reason's text (MG). */
+export const SHIELDED_CLOSED_TEXT = {
+  in_use: "transfer.shielded.closed.inUse",
+  damaged: "transfer.shielded.closed.damaged",
+  failed: "transfer.shielded.closed.failed",
+  no_upgrade_copy: "transfer.shielded.closed.noUpgradeCopy",
+} as const satisfies Record<ShieldedClosedReason, string>;
+
+/** Why `e` says the Shielded store stays closed, or `null` for any other error. */
+export function shieldedClosedReason(e: unknown): ShieldedClosedReason | null {
+  const err = errorLike(e);
+  if (err?.code !== SHIELDED_CODES.storeClosed) return null;
+  const reason = err.data?.reason;
+  return typeof reason === "string" && reason in SHIELDED_CLOSED_TEXT ? (reason as ShieldedClosedReason) : "failed";
+}
+
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. `max`:
  * the refusal of a Core Max. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false, max = false): string {
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false, max = false, spendsOff = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
-  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
+  if (spendsOffRefusal(err.code, kind, spendsOff)) return spendsOffText(kind);
+  if (syncingRefusal(err.code, wait !== false && wait !== null)) return SHIELDED_SYNC_COPY.wait(typeof wait === "string" ? wait : "syncing");
   const maxText = coreMaxRefusal(err, max, duffs);
   if (maxText) return maxText;
   switch (err.code) {
@@ -338,6 +377,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return t("transfer.shielded.error.coinsLocked");
     case SHIELDED_CODES.unrecordedSpend:
       return SHIELDED_COPY.unrecorded.refused;
+    case SHIELDED_CODES.storeClosed:
+      return t(SHIELDED_CLOSED_TEXT[shieldedClosedReason(e) ?? "failed"]);
     case SHIELDED_CODES.tooManyInputs:
       return t("transfer.shielded.error.tooManyInputs");
     case SHIELDED_CODES.shieldPending:

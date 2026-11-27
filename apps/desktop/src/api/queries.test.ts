@@ -1,10 +1,12 @@
 // Platform activity is read again while a move or send is held.
 
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
+import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
-import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedReading } from "./queries";
+import { keys, PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, restoredQuery, seedRestored, settledBalance, shieldedHold, shieldedReading } from "./queries";
 
 const row = (over: Partial<PlatformActivity>): PlatformActivity => ({
   id: "r",
@@ -63,11 +65,72 @@ describe("Home's reading of a pool query", () => {
 });
 
 describe("the wallet balance the screens read", () => {
-  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, catchingUp: false };
+  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, withheld: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
 
   it("is withheld while the wallet is catching up, and passed on once it is not", () => {
     expect(settledBalance({ ...known, catchingUp: true })).toBeNull();
     expect(settledBalance(known)).toBe(known);
     expect(settledBalance(null)).toBeNull();
+  });
+});
+
+describe("restored: absent is not known yet", () => {
+  const NETWORK = { kind: "testnet", dirName: "testnet", unitName: "tDASH" };
+  const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  async function read(activeNetwork: () => Promise<unknown>): Promise<boolean | undefined> {
+    const observer = new QueryObserver(client(), restoredQuery({ activeNetwork } as unknown as Backend));
+    const stop = observer.subscribe(() => undefined);
+    try {
+      await expect.poll(() => observer.getCurrentResult().isFetching).toBe(false);
+      return observer.getCurrentResult().data;
+    } finally {
+      stop();
+    }
+  }
+
+  it("reads an absent restored as undefined, false as false and true as true", async () => {
+    expect(await read(async () => NETWORK)).toBeUndefined();
+    expect(await read(async () => ({ ...NETWORK, restored: null }))).toBeUndefined();
+    expect(await read(async () => null)).toBeUndefined();
+    expect(await read(async () => "testnet")).toBeUndefined();
+    expect(await read(async () => ({ ...NETWORK, restored: false }))).toBe(false);
+    expect(await read(async () => ({ ...NETWORK, restored: true }))).toBe(true);
+  });
+
+  it("keeps a failed read undefined", async () => {
+    expect(await read(() => Promise.reject(new Error("engine gone")))).toBeUndefined();
+  });
+
+  it("seeds only a known value from the open", () => {
+    for (const [network, seeded] of [
+      [NETWORK, undefined],
+      ["testnet", undefined],
+      [{ ...NETWORK, restored: false }, false],
+      [{ ...NETWORK, restored: true }, true],
+    ] as const) {
+      const c = client();
+      seedRestored(c, network);
+      expect(c.getQueryData(keys.restored), JSON.stringify(network)).toBe(seeded);
+      expect(c.getQueryState(keys.restored) === undefined, JSON.stringify(network)).toBe(seeded === undefined);
+    }
+  });
+});
+
+
+describe("what payments that may still go through hold of Shielded", () => {
+  const status = (held: string, credits: string[], active = true) =>
+    ({ active, held, heldSpends: credits.map((c, i) => ({ activityId: `h${i}`, transition: "00", credits: c })) }) as unknown as ShieldedStatus;
+
+  it("counts the spends that still hold notes, with the held total", () => {
+    expect(shieldedHold(status("60000000000", ["30000000000", "30000000000"]))).toEqual({ count: 2, credits: "60000000000", duffs: 60_000_000 });
+    expect(shieldedHold(status("30000000000", ["30000000000", "0"]))).toEqual({ count: 1, credits: "30000000000", duffs: 30_000_000 });
+  });
+
+  it("shows no hold when nothing is held, even while a spend is listed", () => {
+    expect(shieldedHold(status("0", ["0"]))).toBeNull();
+    expect(shieldedHold(status("0", []))).toBeNull();
+    expect(shieldedHold(status("30000000000", ["30000000000"], false))).toBeNull();
+    expect(shieldedHold(null)).toBeNull();
   });
 });

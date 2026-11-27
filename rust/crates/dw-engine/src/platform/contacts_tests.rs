@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dashcore::Txid;
-use dashcore::hashes::Hash;
 use dpp::identity::Identity;
 use dpp::identity::v0::IdentityV0;
 use dpp::platform_value::string_encoding::Encoding;
@@ -1273,6 +1272,7 @@ fn a_mined_payment_moves_last_activity_on_history_changed() {
     };
 
     (f.s.hub).apply_wallet_event(&WalletEvent::TransactionDetected {
+        locked_outpoints: Vec::new(),
         wallet_id: f.wallet.0,
         record: Box::new(mempool),
         balance: Default::default(),
@@ -1293,6 +1293,7 @@ fn a_mined_payment_moves_last_activity_on_history_changed() {
         crate::events::process_to(&mut wallet.state_mut().await.core_wallet, 10);
     });
     (f.s.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
+        locked_outpoints: Vec::new(),
         wallet_id: f.wallet.0,
         height: 10,
         chain_lock: None,

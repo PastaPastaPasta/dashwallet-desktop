@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use dashcore::Transaction;
-use dashcore::secp256k1::{PublicKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
 use dw_vault::SignerError;
 use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Signer, SignerMethod, Utxo};
@@ -140,7 +140,7 @@ impl<S: Signer<Error = SignerError>> Signer for Capped<S> {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         if self.refused() {
             return Err(SignerError::PathNotAllowed(format!(
                 "{path}: the asset lock's build was refused for its inputs"
@@ -161,7 +161,7 @@ impl<S: Signer<Error = SignerError>> Signer for Capped<S> {
         self.inner.sign_ecdsa(path, sighash).await
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
         self.inner.public_key(path).await
     }
 

@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dashcore::bls_sig_utils::BLSSignature;
-use dashcore::hashes::Hash;
 use dashcore::{BlockHash, ChainLock, InstantLock, OutPoint, Transaction, TxIn, Txid};
 use key_wallet::account::{AccountType, StandardAccountType};
 use key_wallet::managed_account::transaction_record::{TransactionDirection, TransactionRecord};
@@ -203,6 +202,7 @@ fn block(height: u32) -> BlockInfo {
 
 fn detected(w: WalletId, r: TransactionRecord) -> WalletEvent {
     WalletEvent::TransactionDetected {
+        locked_outpoints: Vec::new(),
         wallet_id: w.0,
         record: Box::new(r),
         balance: Default::default(),
@@ -217,6 +217,7 @@ fn in_block(
     updated: Vec<TransactionRecord>,
 ) -> WalletEvent {
     WalletEvent::BlockProcessed {
+        locked_outpoints: Vec::new(),
         wallet_id: w.0,
         height: 10,
         chain_lock: None,

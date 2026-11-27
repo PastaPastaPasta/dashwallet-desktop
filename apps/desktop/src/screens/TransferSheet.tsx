@@ -22,7 +22,8 @@ import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { heldExitOps, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
-import { shieldedSyncing } from "../shielded/syncing";
+import { shieldedSpendsOff } from "../shielded/spends";
+import { shieldedSyncing, shieldedWait } from "../shielded/syncing";
 import {
   canSwap,
   defaultRoute,
@@ -52,6 +53,7 @@ import { FundBody } from "./PlatformFundSheet";
 import { MoveBody, usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedBody } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
+import { platformHoldText } from "../api/platformHold";
 
 /** The balances the sheet shows and checks, from the reads Home's cards use. */
 export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
@@ -70,8 +72,9 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
+    coreCoins: coins.isError ? undefined : (coins.data?.filter((c) => !c.userLocked && !c.reserved).reduce((n, c) => n + c.amount, 0) ?? null),
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
-    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : status,
+    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), wait: shieldedWait(status), duffs: shieldedDuffs(status), spendsOff: shieldedSpendsOff(status) } : status,
     platform:
       !known(pools.platform)
         ? pools.platform === "loading"
@@ -254,6 +257,12 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const amount = useParsed(text, network);
   const blocked = why !== null || flow.running;
   const probe = balanceOf(ROUTES[route].from, pools);
+  // A Core Max is offered while the Dash wallet holds any coin not locked or reserved: its refusal says why it
+  // moves none.
+  const coins = isCoreRoute(route) && pools.coreCoins !== undefined ? pools.coreCoins : probe;
+  const canMax = !!coins && probe !== null;
+  // With nothing a Core Max could take, the line under the amount says so (beside Max it squeezed the field).
+  const noCoins = why === null && isCoreRoute(route) && coins === 0;
   // The fee line follows the amount once it is read, and the source balance; nothing is quoted while
   // the route can't run.
   useEffect(() => {
@@ -269,14 +278,17 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const refusal =
     line.state.kind !== "refused"
       ? null
-      : route === "coreToPlatform"
-        ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
-        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status), maxRefused);
+      : (platformHoldText(line.state.error, false) ??
+        (route === "coreToPlatform"
+          ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
+          : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedWait(status), maxRefused, shieldedSpendsOff(status))));
   const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere;
-  const continueWhy = why ?? amountProblem ?? refusal ?? (amount == null ? T.why.amount : null);
+  // Max's own refusal says why it moved nothing ahead of the typed amount's problem, until the amount is edited.
+  const problem = maxRefused && refusal !== null ? refusal : (amountProblem ?? refusal);
+  const continueWhy = why ?? problem ?? (amount == null ? T.why.amount : null);
   return (
     <form
       className="topup-form"
@@ -322,17 +334,17 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           size="medium"
           data-testid="transfer-max"
           aria-busy={line.maxing}
-          disabled={blocked || !own || !probe || line.maxing}
-          why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : null)}
+          disabled={blocked || !own || !canMax || line.maxing}
+          why={why ?? (probe === null || coins === null ? T.loading : null)}
           title={line.maxing ? T.why.max : undefined}
           whyId={why ? `${id}-why` : undefined}
-          onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
+          onClick={() => probe !== null && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
           {T.max}<span className="spinner" aria-hidden="true" style={{ visibility: line.maxing ? "visible" : "hidden" }} />
         </DashButton>
       </div>
-      <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
-        {amountProblem ?? refusal ?? fee ?? ""}
+      <p className={problem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
+        {problem ?? (noCoins ? T.noCoreBalance : fee) ?? ""}
       </p>
       {route === "coreToPlatform" && mixing && mixing.state !== "idle" && <div className="card-actions"><DashButton variant="plainBlue" data-testid="transfer-pause-mixing" disabled={pause.busy} onClick={() => void pause.run("stop")}>{tr("transfer.pauseMixing")}</DashButton></div>}
       {pause.problem && <p className="form-problem" role="alert">{pause.problem}</p>}
@@ -340,7 +352,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         <DashButton variant="tintedGray" size="large" type="button" data-testid="transfer-cancel" onClick={() => t.close()}>
           {T.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : refusal || amountProblem ? `${id}-fee` : undefined}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : problem ? `${id}-fee` : undefined}>
           {T.continue}
         </DashButton>
       </div>
@@ -363,7 +375,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
   const q = quote.data;
   const credits = (c: string) => fmt(creditsToDuffs(c));
   const movable = pools.platform?.duffs ?? null;
-  const refusal = quote.isError ? moveErrorText(quote.error, credits, activity.data) : null;
+  const refusal = quote.isError ? (platformHoldText(quote.error, false) ?? moveErrorText(quote.error, credits, activity.data)) : null;
   const ready = !blocked && !!q && !quote.isError;
   const p = pools.platform;
   // A move Platform has not confirmed holds this route: Activity shows it.
@@ -505,7 +517,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       {route === "unsupported" ? (
         <>
           <p className="field-hint" role="status" data-testid="transfer-unavailable">
-            {unsupportedText(t.from, t.to, t.mainnet)}
+            {unsupportedText(t.from, t.to, t.mainnet, pools.shielded?.spendsOff)}
           </p>
           {t.from === "core" && t.to === "platform" && <StuckAdds walletId={walletId} network={network} />}
         </>

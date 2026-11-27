@@ -6,7 +6,8 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
-import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useRestoreStatus, useSyncStatus, useWallets } from "../api/queries";
+import { useSyncItems } from "../api/syncItems";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
@@ -20,6 +21,7 @@ import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
 import { PreReleaseNotice } from "../screens/PreReleaseNotice";
+import { StorageInUseScreen, StoreNotPrivateScreen, StoreRefusalScreen, StoreRestoreScreen, StoreRetryScreen } from "../screens/StoreRefusal";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
@@ -27,6 +29,7 @@ import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
+import { AppConnectSheet } from "../screens/dashpay/AppConnectSheet";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
 import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
@@ -62,14 +65,24 @@ import { navigate, ui, useUi } from "./ui";
 const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null, mnKeysRole: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
 const closeForgot = () => ui.set({ forgotPassphrase: false });
+const closeConnect = () => {
+  const [next = null, ...rest] = ui.get().appConnectQueue;
+  ui.set({ appConnect: next, appConnectQueue: rest });
+};
 
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
 
 /** Splash (UX-SPEC §4.2) while the engine opens the network, or its error, with a retry unless the file is from a newer
- * build (DP3-04b D35). */
-function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => void }) {
+ * build (DP3-04b D35). A refused store, a restore that stopped the open, an upgrade that stopped on the machine, a
+ * data folder others can change and a store still held have their own screens instead. */
+function Splash({ error, retrying, onRetry }: { error: OpenFailure | null; retrying: boolean; onRetry: () => void }) {
   const tr = useT();
+  if (error?.kind === "notPrivate") return <StoreNotPrivateScreen notPrivate={error.notPrivate} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "refused") return <StoreRefusalScreen refusal={error.refusal} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "restore") return <StoreRestoreScreen restore={error.restore} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "retry") return <StoreRetryScreen retrying={retrying} />;
+  if (error?.kind === "inUse") return <StorageInUseScreen retryable={error.retryable} retrying={retrying} onRetry={onRetry} />;
   return (
     <div className="splash" data-testid="splash">
       <DashLogo className="splash-logo" />
@@ -161,6 +174,7 @@ function WalletChrome({
   const open = (row: TxRow) => ui.set({ detail: row.txid });
 
   const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
+  const syncItems = useSyncItems(wallet?.walletId ?? null);
   useEffect(() => {
     if (route === "masternodes" && masternodesItem.settled && !masternodesItem.shown) navigate("home");
   }, [route, masternodesItem.settled, masternodesItem.shown]);
@@ -235,6 +249,7 @@ function WalletChrome({
           </div>
           <StatusBar
             sync={sync.data}
+            items={syncItems}
             lock={lock.data}
             unitName={unitName}
             hd={wallet?.hd ?? false}
@@ -289,6 +304,8 @@ function Shell() {
   }, [client, locked]);
   // Read once the vault is not locked; the shell holds no wallet until then.
   const wallets = useWallets(!locked);
+  // Platform's refusals read the session's platformOff from it, on whatever page (api/platformHold.ts).
+  useRestoreStatus(!locked);
   const wallet = locked ? undefined : (wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0]);
   // Back from the lock screen, once the page is there again, focus lands on its title, as a link
   // or a menu leaves it.
@@ -363,14 +380,18 @@ function Shell() {
 
   const sheet = !!(detail && wallet);
   const layered = useLayeredSheet();
+  // A sign-in request waits while locked, during onboarding and behind the notice; it opens once
+  // a wallet is open.
+  const connect = useUi((s) => s.appConnect);
+  const connectWallet = connect && wallet && !locked && !onboarding && !notice ? wallet : null;
   const savedLinks = useSavedLinksOffer(backend, {
     hasWallet: !!wallet,
     locked,
-    covered: onboarding || wiping || forgot || sheet || layered || dialog !== null,
+    covered: onboarding || wiping || forgot || sheet || layered || dialog !== null || connectWallet !== null,
   });
   const pictures = usePictureScopeValue(wallet?.walletId);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
-  const shown = notice || locked || onboarding || sheet || layered ? null : dialog;
+  const shown = notice || locked || onboarding || sheet || layered || connectWallet ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
@@ -386,10 +407,20 @@ function Shell() {
           walletsLoading={walletsLoading}
           walletsError={walletsError}
           sheet={sheet}
-          inert={notice || onboarding || forgot || sheet || layered || shown !== null}
+          inert={notice || onboarding || forgot || sheet || layered || shown !== null || connectWallet !== null}
           layerInert={notice || onboarding}
           canLock={canLock}
           onLock={lockNow}
+        />
+      )}
+      {connect && connectWallet && (
+        <AppConnectSheet
+          key={`${connectWallet.walletId}-${connect.linkId}`}
+          walletId={connectWallet.walletId}
+          linkId={connect.linkId}
+          returnsTo={connect.returnsTo}
+          network={network.dirName}
+          onClose={closeConnect}
         />
       )}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}
@@ -397,7 +428,7 @@ function Shell() {
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} watchOnly={wallet.watchOnly} role={mnKeysRole} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
-      {shown === "sync" && <SyncSheet onClose={closeDialog} />}
+      {shown === "sync" && <SyncSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {/* In place of the wallet's views, not over them: a locked window holds nothing of the wallet. */}
@@ -442,7 +473,7 @@ export function App() {
         {network.isSuccess ? (
           <Shell />
         ) : (
-          <Splash error={network.isError ? openFailure(network.error) : null} onRetry={() => void network.refetch()} />
+          <Splash error={network.isError ? openFailure(network.error) : null} retrying={network.isFetching} onRetry={() => void network.refetch()} />
         )}
       </div>
       <SwitchingCard />

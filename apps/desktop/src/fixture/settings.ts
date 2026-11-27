@@ -102,6 +102,10 @@ export interface SettingsWorld {
   /** Why the next `unload_wallet` is refused (DEC-1046, E1 r2): a shielded payment is still being
    * confirmed, or a wallet is still opening. `null`: it closes. */
   unloadRefusal: "unresolved" | "opening" | null;
+  /** Why the next `remove_wallet` is refused (Q86 Q-PURGE C2): its `shieldedHold` reason, or
+   * `keysRemoved` for the last check's refusal, with none, after the seed was deleted. `null`: it
+   * removes. */
+  removeRefusal: "inFlight" | "carriedOver" | "keysRemoved" | null;
   /** Wallets left out of the load-on-startup list. */
   notAtStartup: string[];
   backups: BackupSummary[];
@@ -131,6 +135,7 @@ export function newSettingsWorld(): SettingsWorld {
     ui: { ...DEFAULT_UI_SETTINGS },
     closed: [],
     unloadRefusal: null,
+    removeRefusal: null,
     notAtStartup: [],
     backups: [],
     backupFailures: [],
@@ -180,6 +185,8 @@ export function withAutomaticBackups(s: SettingsWorld, walletId: string, phrase:
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
+/** The engine's refusal of every way to add a wallet but its recovery phrase while RESTORED is set (Q107 C1). */
+export const restoreOnly = () => fail("restore_only", "the wallet data is a restore not yet synced; add a wallet from its recovery phrase");
 
 function backupFile(wallets: NonNullable<FixtureFile["wallets"]>, passphrase: string, createdAt: number, automatic: boolean): FixtureFile {
   return {
@@ -311,6 +318,14 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       const { world } = ctx;
       wallet(world, walletId);
       if (!grant(world, grantId, walletId, ["wipe"])) throw fail("vault.grant_invalid", "grant invalid");
+      const held = world.settings.removeRefusal;
+      if (held === "keysRemoved") {
+        useGrant(world, grantId);
+        delete world.phrases[walletId];
+        world.lock = { ...world.lock, walletsWithSecrets: world.lock.walletsWithSecrets.filter((id) => id !== walletId) };
+        throw fail("shielded_spend_unresolved", "a shielded payment is still being confirmed");
+      }
+      if (held) throw fail("shielded_spend_unresolved", "a shielded payment from this wallet may still be going through", { kind: "shieldedHold", reason: held });
       useGrant(world, grantId);
       world.wallets = world.wallets.filter((x) => x.summary.walletId !== walletId);
       delete world.phrases[walletId];
@@ -327,6 +342,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return null;
     },
     import_watch_only: ({ xpub, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const x = xpub.trim();
       if (!/^tpub[1-9A-HJ-NP-Za-km-z]{100,}$/.test(x)) throw fail("invalid_xpub", "not a testnet account xpub");
       if (options.lookahead !== null && (options.lookahead < 1 || options.lookahead > 1000)) throw fail("invalid_argument", "lookahead must be 1 to 1000");
@@ -358,6 +374,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
     restore_backup: ({ path, passphrase }, ctx) => {
       const { world } = ctx;
+      if (world.restored) throw restoreOnly();
       const f = file(world, path, "io");
       if (f.info.kind !== "dwBackup" || !f.wallets) throw fail("backup.corrupt", "not a backup");
       if (f.info.network?.dirName !== network(world)) throw fail("backup.network_mismatch", "a backup of another network");
@@ -421,6 +438,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return f.info;
     },
     import_dump_wallet: ({ path, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "dumpWallet") throw fail("compat.unsupported_format", "not a dumpwallet file");
       if (f.info.network && f.info.network.dirName !== network(ctx.world))
@@ -429,6 +447,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return coreImport(ctx, path, options, f);
     },
     import_wallet_dat: ({ path, walletPassphrase, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "walletDatSqlite" && f.info.kind !== "walletDatBdb") throw fail("compat.unsupported_format", "not a wallet.dat");
       if (f.refusal) throw fail(f.refusal, "fixture: refused on purpose");
@@ -440,6 +459,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return coreImport(ctx, path, options, f);
     },
     import_key_material: ({ material, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const ok =
         material.kind === "hdSeed"
           ? /^([0-9a-f]{2}){16,64}$/i.test(material.seedHex.trim())

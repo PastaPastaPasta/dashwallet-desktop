@@ -104,7 +104,10 @@ impl From<PlatformAddressRow> for engine::PlatformAddressRow {
 /// (`failed`);
 /// `recovered`: the value left on a transfer to Shielded that Platform
 /// refused after a penalty, recovered to this wallet's Platform address
-/// (`address`), pending until Platform proves it applied.
+/// (`address`), pending until Platform proves it applied;
+/// `registrationRefund`: what Platform returned to this wallet's Platform
+/// address (`address`) when it could not create the identity a username
+/// paid from the Shielded balance (the payment less a penalty).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -117,10 +120,12 @@ pub enum PlatformActivityKind {
     ContactPayment,
     FromShielded,
     Recovered,
+    RegistrationRefund,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded, Recovered
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded, Recovered,
+    RegistrationRefund
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -172,6 +177,12 @@ pub struct PlatformActivity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub winner_known: Option<bool>,
+    /// A `send` that cancels the held move or contact payment of this id:
+    /// to one of the wallet's own Platform addresses, it pays no one;
+    /// absent on every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cancels: Option<String>,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -190,6 +201,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             estimated,
             contact,
             unattributed,
+            cancels,
         } = a;
         PlatformActivity {
             id,
@@ -205,6 +217,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             estimated,
             contact: contact.map(Into::into),
             winner_known: unattributed.then_some(false),
+            cancels,
         }
     }
 }
@@ -223,9 +236,47 @@ pub struct MoveToCoreQuote {
     /// The wallet's own Core receive address: `platformMoveToCore` pays it.
     pub to: String,
     pub grant: GrantRequest,
-    /// The held top-up from Platform this move is the exit of: pass it to
-    /// `platformMoveToCore`.
+    /// The held top-up or send from Platform this move is the exit of:
+    /// pass it to `platformMoveToCore`.
     pub exit_of: Option<String>,
+}
+
+/// What cancelling a held move or contact payment takes: its inputs, at its
+/// nonces and amounts, to one of the wallet's own Platform addresses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformCancelQuote {
+    /// The held move or contact payment it cancels.
+    pub of: String,
+    /// The held record's amount; the fee comes out of it.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// The wallet's own Platform address: `platformCancel` pays it.
+    pub to: String,
+    pub grant: GrantRequest,
+}
+
+impl From<engine::PlatformCancelQuote> for PlatformCancelQuote {
+    fn from(q: engine::PlatformCancelQuote) -> Self {
+        let engine::PlatformCancelQuote {
+            of,
+            credits,
+            fee_credits,
+            to,
+            grant,
+        } = q;
+        PlatformCancelQuote {
+            of,
+            credits,
+            fee_credits,
+            to,
+            grant: grant.into(),
+        }
+    }
 }
 
 impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
@@ -654,6 +705,7 @@ mod tests {
             estimated: false,
             contact: None,
             unattributed,
+            cancels: None,
         }))
         .unwrap()
     }

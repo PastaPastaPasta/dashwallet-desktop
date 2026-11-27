@@ -109,13 +109,12 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use dashcore::blockdata::script::Instruction;
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::{Message, ecdsa};
 use dashcore::sighash::SighashCache;
 use dashcore::{OutPoint, PublicKey, ScriptBuf, Transaction, Txid};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{Message, ecdsa};
 use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
 
 use super::call::{CallPermit, CallStep, FundingKey, FundingQuote};
@@ -148,6 +147,8 @@ impl From<&AssetLockStatus> for TrackedStatus {
             AssetLockStatus::ChainLocked => Self::ChainLocked,
             AssetLockStatus::Consumed => Self::Consumed,
             AssetLockStatus::RecoveredFromChain => Self::RecoveredFromChain,
+            // Only the library's own wallet drain writes it: the lock is out and spent.
+            AssetLockStatus::DrainCompleted => Self::Consumed,
         }
     }
 }
@@ -272,7 +273,7 @@ fn signed_sighashes(tx: &Transaction) -> Option<Vec<[u8; 32]>> {
                 .legacy_signature_hash(n, &script, u32::from(SIGHASH_ALL))
                 .ok()?
                 .to_byte_array();
-            ecdsa::verify(&signature, Message::from_digest(sighash), &key.inner).ok()?;
+            ecdsa::verify(&signature, Message::from_digest(sighash), &key.inner.into()).ok()?;
             Some(sighash)
         })
         .collect()
@@ -926,10 +927,11 @@ pub enum StuckFundingRefusal {
     #[error("the dispatch journal is unavailable")]
     JournalUnavailable,
     /// A transaction spending coins of the funding accounts is not
-    /// ChainLocked yet (an earlier self-spend, a payment, the lost lock
-    /// itself): a lock that conflicts only with it could still confirm
-    /// over a self-spend of the other coins. Wait for its ChainLock, or
-    /// abandon it.
+    /// ChainLocked yet (an earlier self-spend or a payment): a lock that
+    /// conflicts only with it could still confirm over a self-spend of the
+    /// other coins. Wait for its ChainLock, or abandon it in Activity. The
+    /// step's own lock, while only in the mempool, is not this refusal on
+    /// Resolve: Resolve abandons it itself (`LockAbandoned`).
     #[error("transaction {0} spends the wallet's coins and is not ChainLocked yet")]
     SpendUnsettled(Txid),
     /// A lock a call of the step signed, or a tracked `Built` or
@@ -938,6 +940,12 @@ pub enum StuckFundingRefusal {
     /// the signed lock's row may be gone).
     #[error("asset lock {0}: every coin it spends is already spent")]
     LockInputsSpent(Txid),
+    /// The step's own lock, which the wallet recorded as a payment that is
+    /// not ChainLocked, was abandoned by Repair (its rebroadcast stopped):
+    /// the coins it spent come back after the rescan every abandon runs
+    /// (`crate::rescan_hold`). Resolve again then.
+    #[error("asset lock {0} was abandoned: its coins come back after the rescan")]
+    LockAbandoned(Txid),
     /// The self-spend to record spends no input of a lock a call of the step
     /// signed, so it would show nothing about that lock (review P2b r3).
     #[error("the self-spend spends no input of signed asset lock {0}")]
@@ -975,6 +983,7 @@ impl StuckFundingRefusal {
             Self::JournalUnavailable => "journal_unavailable",
             Self::SpendUnsettled(_) => "spend_unsettled",
             Self::LockInputsSpent(_) => "lock_inputs_spent",
+            Self::LockAbandoned(_) => "lock_abandoned",
             Self::MissesSignedLock(_) => "misses_signed_lock",
             Self::UnattributedLock(_) => "unattributed_lock",
             Self::NoKnownLock => "no_known_lock",
@@ -990,6 +999,7 @@ impl StuckFundingRefusal {
             Self::RowsUnknown
                 | Self::CallRunning
                 | Self::SpendUnsettled(_)
+                | Self::LockAbandoned(_)
                 | Self::JournalUnavailable
         )
     }
@@ -1469,6 +1479,10 @@ impl LeaseTable {
     /// Records the shielded spends `redrives` of `wallet` the library holds
     /// to re-send, `(activity, transition)` (schema 9, 0.1 E1, DEC-1032);
     /// each first record stands. On the blocking pool.
+    #[allow(
+        dead_code,
+        reason = "admit gates every re-send, so the engine no longer re-records pre-hook spends"
+    )]
     pub(crate) async fn record_shielded_redrives(
         &self,
         wallet: WalletId,
@@ -1503,6 +1517,83 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// The notes `wallet`'s drained fork dispositions hold, by account
+    /// (schema 12); an error while the journal is not open or cannot be
+    /// read. On the blocking pool.
+    pub(crate) async fn shielded_drained_holds(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(u32, [u8; 32])>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_drained_holds(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// The drained spends a completed pass may release (Q110 110-3); an
+    /// error while the journal is not open or cannot be read. On the
+    /// blocking pool.
+    pub(crate) async fn shielded_drained_release_candidates(
+        &self,
+    ) -> Result<Vec<dw_appdb::dispatch::DrainedReleaseCandidate>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.shielded_drained_release_candidates(dw_shielded_drain::SHIELDED_STORE_FILE)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Keeps the height a completed pass recorded `wallet`'s drained spend
+    /// `st_hash`'s anchor at. On the blocking pool.
+    pub(crate) async fn record_drained_anchor_height(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+        height: u64,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.record_drained_anchor_height(&wallet.0, &st_hash, height)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Releases `wallet`'s drained spend `st_hash`, which `pass` proved can
+    /// never execute; `false` when the journal flags it. On the blocking
+    /// pool.
+    pub(crate) async fn release_drained_spend(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+        pass: u64,
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.release_drained_spend(&wallet.0, &st_hash, pass))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Whether a drained hold or an unreadable drained disposition names
+    /// `wallet`'s transition `st_hash` (schema 12); an error while the
+    /// journal is not open or cannot be read. On the blocking pool.
+    pub(crate) async fn shielded_drain_names(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_drain_names(&wallet.0, &st_hash))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// The shielded artifact of `wallet`'s spend `activity` (schema 11),
     /// archived or not; an error while the journal is not open or cannot
     /// be read. On the blocking pool.
@@ -1528,8 +1619,8 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
-    /// Settles `wallet`'s artifacts of transition `st_hash` from the
-    /// library's disposition of it (`disposition`: its stored strings), in
+    /// Settles `wallet`'s artifacts of transition `st_hash` from the outcome
+    /// the library reports of it (`disposition`: its stored strings), in
     /// dispatch.sqlite (`synchronous=FULL`): written when this returns
     /// `Ok`. On the blocking pool.
     pub(crate) async fn settle_shielded_artifact(
@@ -1545,6 +1636,37 @@ impl LeaseTable {
             .spawn_blocking(move || {
                 backend.settle_shielded_artifact(&wallet.0, &st_hash, status, disposition, acked)
             })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Marks `wallet`'s Shielded create `st_hash` consumed in
+    /// dispatch.sqlite (`synchronous=FULL`): written when this returns
+    /// `Ok(true)`; `Ok(false)` when no unresolved create of the wallet has
+    /// that transition. On the blocking pool.
+    pub(crate) async fn mark_create_consumed(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.mark_create_consumed(&wallet.0, &st_hash))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Which of `wallet`'s creates `st_hashes` are marked consumed; an
+    /// error while the journal is not open or cannot be read. On the
+    /// blocking pool.
+    pub(crate) async fn consumed_creates(
+        &self,
+        wallet: WalletId,
+        st_hashes: Vec<[u8; 32]>,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.consumed_creates(&wallet.0, &st_hashes))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -1585,6 +1707,42 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// Marks the fork's held spends `holds` (DEC-1057), each once. A wallet
+    /// of one not marked is held for the session instead
+    /// ([`Self::marks_unrecorded`]). On the blocking pool.
+    pub(crate) async fn import_fork_holds(&self, holds: Vec<dw_appdb::dispatch::ForkHold>) {
+        if holds.is_empty() {
+            return;
+        }
+        let wallets: BTreeSet<WalletId> = holds.iter().map(|h| WalletId(h.wallet)).collect();
+        let imported: Result<usize, String> = async {
+            let backend = self.journal.get().ok_or("the journal is closed")?;
+            (self.rt)
+                .spawn_blocking(move || backend.import_fork_holds(&holds))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        .await;
+        match imported {
+            Ok(n) => tracing::info!(marked = n, "the fork's held shielded spends are marked"),
+            Err(e) => {
+                tracing::error!(error = %e, "the fork's held shielded spends were not marked; their wallets are held");
+                self.hold_fork_wallets(Some(wallets));
+            }
+        }
+    }
+
+    /// Holds `wallets` for the session as marked ([`Self::marks_unrecorded`]);
+    /// `None` holds every wallet.
+    pub(crate) fn hold_fork_wallets(&self, wallets: Option<BTreeSet<WalletId>>) {
+        let mut held = (self.fork_held.lock()).unwrap_or_else(std::sync::PoisonError::into_inner);
+        match (wallets, held.as_mut()) {
+            (Some(wallets), Some(held)) => held.extend(wallets),
+            (Some(_), None) => {}
+            (None, _) => *held = None,
+        }
+    }
+
     /// The marked shielded spends of `wallet` (schema 10); none while the
     /// journal is not open (nothing can be marked then). On the blocking
     /// pool.
@@ -1604,6 +1762,13 @@ impl LeaseTable {
     /// Whether `wallet` has a marked shielded spend; `true` when the
     /// markers cannot be read (fail closed).
     pub(crate) async fn marks_unrecorded(&self, wallet: WalletId) -> bool {
+        if (self.fork_held.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(|held| held.contains(&wallet))
+        {
+            return true;
+        }
         match self.unrecorded_spends(wallet).await {
             Ok(markers) => !markers.is_empty(),
             Err(e) => {
@@ -1621,20 +1786,25 @@ impl LeaseTable {
         let Some(backend) = self.journal.get() else {
             return;
         };
-        match backend.note_spent_nullifiers(&wallet.0, nullifiers) {
-            Ok(cleared) => {
-                for activity in cleared {
-                    tracing::info!(
-                        wallet_id = %wallet,
-                        activity = %hex::encode(activity),
-                        "a marked shielded spend's notes are all spent"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
-            }
-        }
+        log_spent_noted(wallet, backend.note_spent_nullifiers(&wallet.0, nullifiers));
+    }
+
+    /// [`Self::note_spent_nullifiers`] on the blocking pool, for an async
+    /// caller.
+    pub(crate) async fn note_spent_nullifiers_off_thread(
+        &self,
+        wallet: WalletId,
+        nullifiers: Vec<[u8; 32]>,
+    ) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        let noted = (self.rt)
+            .spawn_blocking(move || backend.note_spent_nullifiers(&wallet.0, &nullifiers))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        log_spent_noted(wallet, noted);
     }
 
     /// The open journal's `synchronous` pragma (2 = FULL), which the
@@ -1932,7 +2102,6 @@ impl TrackedLocks for SessionTracked {
     }
 
     async fn chain_locked(&self, wallet: WalletId, txid: &[u8; 32]) -> bool {
-        use dashcore::hashes::Hash;
         let Some(session) = self.session.upgrade() else {
             return false;
         };
@@ -1973,6 +2142,9 @@ impl Resumer for SessionTracked {
             let Some(session) = self.session.upgrade() else {
                 return Resumed::NotRun;
             };
+            if session.wallet_platform_held(wallet) {
+                return Resumed::NotRun;
+            }
             match session.wallet(&wallet).await {
                 Ok(w) => w,
                 Err(_) => return Resumed::NotRun,
@@ -2159,5 +2331,24 @@ impl NetworkSession {
                 }
                 e => e.into(),
             })
+    }
+}
+
+/// Logs what [`LeaseTable::note_spent_nullifiers`] did: each marker cleared,
+/// or the failure.
+fn log_spent_noted(wallet: WalletId, noted: Result<Vec<[u8; 32]>, String>) {
+    match noted {
+        Ok(cleared) => {
+            for activity in cleared {
+                tracing::info!(
+                    wallet_id = %wallet,
+                    activity = %hex::encode(activity),
+                    "a marked shielded spend's notes are all spent"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
+        }
     }
 }

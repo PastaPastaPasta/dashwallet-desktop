@@ -67,6 +67,9 @@ pub enum TxActionRefusal {
     /// what descends from this one is unknown: removing and restoring that
     /// wallet clears it.
     RecordUnreadable,
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer that hasn't finished, which the wallet sends again.
+    PlatformFunding,
 }
 
 /// One row of a transaction notification (QT-031): one per dash-qt record,
@@ -129,25 +132,38 @@ impl From<dw_engine::EngineError> for TxActionError {
         let detail = e.to_string();
         match e {
             E::TxNotFound(txid) => Self::TxNotFound { txid },
-            E::TxActionRefused(r) => Self::Refused { refusal: r.into() },
+            // The frozen Swift shells have no money gate: its refusal comes
+            // as `internal`, its text saying why.
+            E::TxActionRefused(r) => match TxActionRefusal::of(r) {
+                Some(refusal) => Self::Refused { refusal },
+                None => Self::Internal { detail },
+            },
             E::SpvNotRunning => Self::SpvNotRunning,
             E::NoPeers => Self::NoPeers,
             E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {
-                Self::Storage { detail }
-            }
+            E::StorageInUse { .. }
+            | E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
+            | E::RetryableIo(_)
+            | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(call) => Self::NotImplemented { call },
             _ => Self::Internal { detail },
         }
     }
 }
 
-impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
-    fn from(r: dw_engine::TxActionRefusal) -> Self {
+impl TxActionRefusal {
+    /// The engine's refusal `r`, or `None` for one the frozen bindings
+    /// don't name.
+    fn of(r: dw_engine::TxActionRefusal) -> Option<Self> {
         use dw_engine::TxActionRefusal as R;
-        match r {
+        Some(match r {
             R::Confirmed => Self::Confirmed,
             R::InstantLocked => Self::InstantLocked,
             R::AlreadyAbandoned => Self::AlreadyAbandoned,
@@ -157,7 +173,9 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
             R::RescanFirst => Self::RescanFirst,
             R::SettledDescendant => Self::SettledDescendant,
             R::RecordUnreadable(_) => Self::RecordUnreadable,
-        }
+            R::PlatformFunding => Self::PlatformFunding,
+            R::Restored => return None,
+        })
     }
 }
 crate::api::common::export_error_code!(TxActionError);

@@ -2,8 +2,8 @@
 //! the engine's `code()`s; `tests::codes_match_the_engine` holds them equal.
 
 use dw_engine::platform::{
-    AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError, ShieldedError,
+    AvatarError, ConnectError, ConnectFailure, ContactError, CreditsError, IdentityError,
+    InvitationError, NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 
 use super::{AppError, EngineCode, ErrorData, codes};
@@ -23,6 +23,7 @@ codes! {
         BroadcastUnknown = "platform.broadcast_unknown",
         WillBeSent = "platform.will_be_sent",
         Cancelled = "platform.cancelled",
+        Restored = "platform.restored",
         NeedsGrant = "platform.needs_grant",
         LeaseRevoked = "platform.lease_revoked",
         LeaseExpired = "platform.lease_expired",
@@ -63,6 +64,7 @@ codes! {
         ShieldedNotReady = "registration.shielded_not_ready",
         QuoteChanged = "registration.quote_changed",
         Refunded = "registration.refunded",
+        PaymentConsumed = "registration.payment_consumed",
     }
 }
 
@@ -151,6 +153,7 @@ codes! {
         CoinsUnconfirmed = "shielded.coins_unconfirmed",
         MoveRunning = "shielded.move_running",
         CoinsChanged = "shielded.coins_changed",
+        StoreClosed = "shielded.store_closed",
     }
 }
 
@@ -197,6 +200,8 @@ impl From<ShieldedError> for AppError {
                         min,
                         duffs: m.duffs,
                         left_duffs: m.left_duffs,
+                        arriving_duffs: m.arriving_duffs,
+                        arriving_clears: m.arriving_clears,
                     },
                     None => ErrorData::Number { value: min },
                 }),
@@ -223,6 +228,12 @@ impl From<ShieldedError> for AppError {
             ),
             S::MoveRunning => (ShieldedCode::MoveRunning, None),
             S::CoinsChanged => (ShieldedCode::CoinsChanged, None),
+            S::StoreClosed { reason } => (
+                ShieldedCode::StoreClosed,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
             S::Platform(e) => return e.into(),
         };
         AppError {
@@ -262,15 +273,17 @@ impl From<PlatformError> for AppError {
                     remaining,
                 }),
             ),
+            // No artifact when the SDK named none: nothing to look up.
             P::BroadcastUnknown { artifact } => (
                 PlatformCode::BroadcastUnknown.into(),
-                Some(ErrorData::Artifact { artifact }),
+                (!artifact.is_empty()).then_some(ErrorData::Artifact { artifact }),
             ),
             P::WillBeSent { artifact } => (
                 PlatformCode::WillBeSent.into(),
                 Some(ErrorData::Artifact { artifact }),
             ),
             P::Cancelled => (PlatformCode::Cancelled.into(), None),
+            P::Restored => (PlatformCode::Restored.into(), None),
             P::NeedsGrant { purpose } => (
                 PlatformCode::NeedsGrant.into(),
                 Some(ErrorData::NeedsGrant {
@@ -372,6 +385,7 @@ impl From<RegistrationError> for AppError {
             ),
             R::QuoteChanged => (RegistrationCode::QuoteChanged, None),
             R::Refunded => (RegistrationCode::Refunded, None),
+            R::PaymentConsumed => (RegistrationCode::PaymentConsumed, None),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
             R::Credits(e) => return e.into(),
@@ -462,6 +476,105 @@ impl From<InvitationError> for AppError {
     }
 }
 
+codes! {
+    ConnectCode {
+        Network = "connect.network",
+        MainnetOff = "connect.mainnet_off",
+        Unsupported = "connect.unsupported",
+        Invalid = "connect.invalid",
+        Stale = "connect.stale",
+        Protocol = "connect.protocol",
+        NoIdentity = "connect.no_identity",
+        Hint = "connect.hint",
+        Owner = "connect.owner",
+        Answered = "connect.answered",
+        Credits = "connect.credits",
+        PlanChanged = "connect.plan_changed",
+        SendFailed = "connect.send_failed",
+        Failed = "connect.failed",
+    }
+}
+
+/// Why an approved App Connect login stopped (`connect.failed`), from the
+/// engine's fixed list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectFailureName {
+    KeyConflict,
+    NotConfirmed,
+    NoResponseKey,
+    NothingToSend,
+    ScopeChanged,
+}
+
+/// The network an App Connect request is for (`connect.network`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectNetworkName {
+    Mainnet,
+    Testnet,
+    Devnet,
+}
+
+impl From<dw_uri::connect::NetworkSel> for ConnectNetworkName {
+    fn from(n: dw_uri::connect::NetworkSel) -> Self {
+        match n {
+            dw_uri::connect::NetworkSel::Mainnet => Self::Mainnet,
+            dw_uri::connect::NetworkSel::Testnet => Self::Testnet,
+            dw_uri::connect::NetworkSel::Devnet => Self::Devnet,
+        }
+    }
+}
+
+impl From<ConnectFailure> for ConnectFailureName {
+    fn from(f: ConnectFailure) -> Self {
+        match f {
+            ConnectFailure::KeyConflict => Self::KeyConflict,
+            ConnectFailure::NotConfirmed => Self::NotConfirmed,
+            ConnectFailure::NoResponseKey => Self::NoResponseKey,
+            ConnectFailure::NothingToSend => Self::NothingToSend,
+            ConnectFailure::ScopeChanged => Self::ScopeChanged,
+        }
+    }
+}
+
+impl From<ConnectError> for AppError {
+    fn from(e: ConnectError) -> Self {
+        use ConnectError as C;
+        let message = e.code().to_owned();
+        let (code, data) = match e {
+            C::Network => (ConnectCode::Network, None),
+            C::MainnetOff => (ConnectCode::MainnetOff, None),
+            C::Unsupported => (ConnectCode::Unsupported, None),
+            C::Invalid => (ConnectCode::Invalid, None),
+            C::Stale => (ConnectCode::Stale, None),
+            C::Protocol => (ConnectCode::Protocol, None),
+            C::NoIdentity => (ConnectCode::NoIdentity, None),
+            C::Hint => (ConnectCode::Hint, None),
+            C::Owner => (ConnectCode::Owner, None),
+            C::Answered => (ConnectCode::Answered, None),
+            C::Credits { needed, available } => (
+                ConnectCode::Credits,
+                Some(ErrorData::Credits { needed, available }),
+            ),
+            C::PlanChanged => (ConnectCode::PlanChanged, None),
+            C::SendFailed => (ConnectCode::SendFailed, None),
+            C::Failed { failure } => (
+                ConnectCode::Failed,
+                Some(ErrorData::ConnectFailure {
+                    failure: failure.into(),
+                }),
+            ),
+            C::Platform(e) => return e.into(),
+        };
+        AppError {
+            code: code.into(),
+            message,
+            data,
+        }
+    }
+}
+
 impl From<AvatarError> for AppError {
     fn from(e: AvatarError) -> Self {
         use AvatarError as A;
@@ -497,6 +610,8 @@ impl From<CreditsError> for AppError {
                         min,
                         duffs: m.duffs,
                         left_duffs: m.left_duffs,
+                        arriving_duffs: m.arriving_duffs,
+                        arriving_clears: m.arriving_clears,
                     },
                     None => ErrorData::Limit { duffs: min },
                 }),
@@ -551,7 +666,7 @@ impl From<CreditsError> for AppError {
 mod tests {
     use dw_engine::platform::{
         BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RecipientProblem, RevokeCause,
-        ShieldedCheck, ShieldedSyncWait, UsernameRule,
+        ShieldedCheck, ShieldedStoreClosed, ShieldedSyncWait, UsernameRule,
     };
 
     use super::*;
@@ -582,6 +697,7 @@ mod tests {
             PlatformError::BroadcastUnknown { artifact: s() },
             PlatformError::WillBeSent { artifact: s() },
             PlatformError::Cancelled,
+            PlatformError::Restored,
             PlatformError::NeedsGrant {
                 purpose: BudgetPurpose::Spend,
             },
@@ -637,6 +753,7 @@ mod tests {
             },
             RegistrationError::QuoteChanged,
             RegistrationError::Refunded,
+            RegistrationError::PaymentConsumed,
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
             RegistrationError::Credits(CreditsError::MovePending { id: s() }),
@@ -771,11 +888,44 @@ mod tests {
             ShieldedError::CoinsUnconfirmed { coins: 2 },
             ShieldedError::MoveRunning,
             ShieldedError::CoinsChanged,
+            ShieldedError::StoreClosed {
+                reason: ShieldedStoreClosed::NoUpgradeCopy,
+            },
             ShieldedError::Platform(PlatformError::Unavailable),
         ];
         for e in shielded {
             assert_eq!(AppError::from(e.clone()).code_str(), e.code());
         }
+        let connect = [
+            ConnectError::Network,
+            ConnectError::MainnetOff,
+            ConnectError::Unsupported,
+            ConnectError::Invalid,
+            ConnectError::Stale,
+            ConnectError::Protocol,
+            ConnectError::NoIdentity,
+            ConnectError::Hint,
+            ConnectError::Owner,
+            ConnectError::Answered,
+            ConnectError::Credits {
+                needed: 2,
+                available: 1,
+            },
+            ConnectError::PlanChanged,
+            ConnectError::SendFailed,
+            ConnectError::Failed {
+                failure: dw_engine::platform::ConnectFailure::KeyConflict,
+            },
+        ];
+        assert_eq!(connect.len(), ConnectCode::ALL.len());
+        for e in connect {
+            let code = e.code();
+            assert_eq!(AppError::from(e).code_str(), code);
+        }
+        assert_eq!(
+            AppError::from(ConnectError::Platform(PlatformError::Timeout)).code_str(),
+            "platform.timeout"
+        );
     }
 
     #[test]
@@ -793,6 +943,35 @@ mod tests {
                 "needed": "30000000000000000",
                 "remaining": "7"
             })
+        );
+        // An unknown outcome with no artifact carries no data to look up.
+        let e = AppError::from(PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            (&v["code"], &v["data"]),
+            (
+                &serde_json::json!("platform.broadcast_unknown"),
+                &serde_json::Value::Null
+            )
+        );
+        let e = AppError::from(PlatformError::BroadcastUnknown {
+            artifact: "st".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({"kind": "artifact", "artifact": "st"})
+        );
+        // Q110 110-2: why the shielded store stays closed.
+        let e = AppError::from(ShieldedError::StoreClosed {
+            reason: ShieldedStoreClosed::InUse,
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "shielded.store_closed");
+        assert_eq!(
+            v["data"],
+            serde_json::json!({"kind": "reason", "reason": "in_use"})
         );
         // DEC-1058 #4: what Shielded is still syncing.
         let e = AppError::from(ShieldedError::NotSynced {
@@ -876,9 +1055,12 @@ mod tests {
         let short = Some(dw_engine::platform::CoreMaxShort {
             duffs: 1_200,
             left_duffs: 40_000,
+            arriving_duffs: 5_000,
+            arriving_clears: true,
         });
         let max = serde_json::json!({
-            "kind": "maxMinimum", "min": 30_000, "duffs": 1_200, "leftDuffs": 40_000
+            "kind": "maxMinimum", "min": 30_000, "duffs": 1_200, "leftDuffs": 40_000,
+            "arrivingDuffs": 5_000, "arrivingClears": true
         });
         let below = [
             (

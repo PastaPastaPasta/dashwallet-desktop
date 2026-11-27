@@ -184,6 +184,12 @@ pub struct CoreMaxShort {
     pub duffs: u64,
     /// As [`CoreMax`]'s: spendable coins of the wallet's other accounts.
     pub left_duffs: u64,
+    /// As [`CoreMax`]'s: coins of the account not final yet.
+    pub arriving_duffs: u64,
+    /// Whether the plan would clear the floor were every arriving coin
+    /// final: none held, within the input cap, worth the floor plus the
+    /// lock's fee bound over all the coins. False with nothing arriving.
+    pub arriving_clears: bool,
 }
 
 /// What a withdrawal of `amount` takes and pays out, at the network's
@@ -352,6 +358,7 @@ impl DashPay {
         duffs: u64,
         grant: String,
     ) -> Result<TopUpOutcome, CreditsError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
             topup::top_up(&session, wallet, &*lib, &identity, duffs, &grant).await
@@ -386,6 +393,7 @@ impl DashPay {
         txid: String,
         grant: String,
     ) -> Result<TopUpOutcome, CreditsError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
             topup::resume(&session, wallet, &*lib, &txid, &grant).await
@@ -428,6 +436,7 @@ impl DashPay {
         amount: WithdrawAmount,
         grant: String,
     ) -> Result<WithdrawOutcome, CreditsError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
@@ -456,7 +465,7 @@ impl DashPay {
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
             let network = session.vault.network();
-            credit_transfer::quote(&net, &wallet, network, &identity, amount).await
+            credit_transfer::quote(&net, &session, &wallet, network, &identity, amount).await
         })
         .await
     }
@@ -470,6 +479,7 @@ impl DashPay {
         amount: WithdrawAmount,
         grant: String,
     ) -> Result<WithdrawToPlatformOutcome, CreditsError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
@@ -512,6 +522,7 @@ impl DashPay {
         fee_input: Option<PlatformAddressRow>,
         grant: String,
     ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = platform_moves::SdkMoves {

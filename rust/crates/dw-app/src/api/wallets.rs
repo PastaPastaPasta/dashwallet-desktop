@@ -459,6 +459,9 @@ commands! {
 
     /// Deletes the wallet's vault records, then unloads it and deletes its
     /// state and metadata (QT-101, IOS-109). Needs a `wipe` grant for it.
+    /// Refused with `shielded_spend_unresolved` (data `shieldedHold`: why)
+    /// before anything changes while the wallet holds a shielded payment
+    /// whose result is not known.
     #[facade("NetworkSession::remove_wallet")]
     fn remove_wallet(state, wallet_id: String, grant_id: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;

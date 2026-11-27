@@ -7,16 +7,30 @@ export const activity = {
     unknownInputs:
       "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     rescanFirst: "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
+    /** Beside Abandon on a payment whose coin is pending because it may never confirm
+     * (`coins.pendingUnproven`). */
+    unprovenParentHint:
+      "This payment may never confirm, for example if the coins it spends were already spent elsewhere. If it stays unconfirmed, you can abandon it so Dash Wallet stops showing its pending coin. Coins the payment spent come back once Dash Wallet has checked that they haven't been spent elsewhere. If it confirms anyway, the coin is counted again.",
+    /** In an abandoned payment's details while a rescan checks a coin it spent before giving it back. */
+    checkingSpentCoins:
+      "Dash Wallet is checking the coins this payment spent. Any that haven't been spent elsewhere come back to your balance when the check finishes.",
     /** The engine refused with `rescan_in_progress`: after a chain fork it catches up for about a block. */
     catchingUp: "The wallet is catching up with the network. You can abandon this payment once it has finished.",
     settledChild:
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    platformFunding:
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
     /** A saved transaction of {wallet} doesn't read; more than one wallet is open. */
     recordUnreadable:
       "Dash Wallet can't read one of the transaction records in {wallet}, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove {wallet} and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in {settings} ▸ {walletTab}, remove {wallet} and restore it with {addWallet} and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     /** As `recordUnreadable`, with only {wallet} open. */
     recordUnreadableOnly:
       "Dash Wallet can't read one of the transaction records in {wallet}, so Abandon and Remove Unconfirmed are unavailable until it's fixed. To fix it, you'll remove {wallet} and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in {settings} ▸ {walletTab}: add another wallet (a new one is fine), remove {wallet}, and restore it with {addWallet} and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed. You can remove the extra wallet afterwards.",
+    /** Above the confirm, while the payment holds its hold from before a restore (Q92 H2). */
+    restoredHint:
+      "This payment was still pending in your wallet data from before the upgrade, and it hasn't confirmed since. Anything you did with it after the upgrade, such as abandoning it, is no longer recorded here.",
+    /** Instead of Abandon, while the restored wallet data is still being checked. */
+    restoredGate: "Dash Wallet is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
   },
   /** A transaction Dash Wallet dropped itself because it can never confirm: its chip and status
    * word, and the line its details show for where the engine says its coins are. */
@@ -88,5 +102,17 @@ export const activity = {
     feeEstimated: "Fee (estimated)",
     platformBlock: "Platform block",
     copyAddress: "Copy address",
+    /** A Platform payment that may still go through: its way out moves the same funds to the Dash wallet. */
+    moveToCore: "Move to Dash wallet",
+    /** A Shielded payment Platform refused when it was sent. */
+    refusal: {
+      /** Its funds ({amount}) stay held until Dash Wallet proves it can no longer go through. */
+      held: "Dash Platform didn't accept this payment when it was sent, but it may still accept it later. Until Dash Wallet can prove it no longer can, the Shielded funds it spends ({amount}) stay held. Don't send this payment again: both could go through. If it goes through, Activity shows it as sent. If it can no longer go through, the funds become spendable again. This can take hours, or days when Shielded is quiet.",
+      /** As `held`, with no amount known. */
+      heldNoAmount:
+        "Dash Platform didn't accept this payment when it was sent, but it may still accept it later. Until Dash Wallet can prove it no longer can, the Shielded funds it spends stay held. Don't send this payment again: both could go through. If it goes through, Activity shows it as sent. If it can no longer go through, the funds become spendable again. This can take hours, or days when Shielded is quiet.",
+      /** After Dash Wallet proved it can no longer go through. */
+      released: "Dash Platform didn't accept this payment, and it can no longer go through, so Dash Wallet has stopped holding the Shielded funds it used. Any of those funds that another payment hasn't spent are spendable again.",
+    },
   },
 } as const satisfies Tree;

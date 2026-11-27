@@ -37,6 +37,22 @@ inMempool: boolean | null, abandoned: boolean, canAbandon: boolean, canResend: b
  */
 dustLockedOutputs: Array<OutPoint>,
 /**
+ * Outputs of this transaction shown as pending, kept out of spending
+ * and every balance while it, or one it was built on, may never
+ * confirm.
+ */
+withheldOutputs: Array<OutPoint>,
+/**
+ * Abandoned, with a coin it spent still being checked by a rescan
+ * before it comes back.
+ */
+checkingSpentCoins: boolean,
+/**
  * UNIX seconds the engine last announced it (send or resend).
  */
-lastAnnouncedAt: number | null, };
+lastAnnouncedAt: number | null,
+/**
+ * A restore holds it: it was pending in the wallet data from before
+ * the restore and hasn't confirmed since (`activity.abandon.restoredHint`).
+ */
+restoreHeld: boolean, };

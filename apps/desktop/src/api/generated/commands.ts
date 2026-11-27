@@ -31,6 +31,10 @@ import type { CoinJoinSettings } from "./CoinJoinSettings";
 import type { CoinJoinStatus } from "./CoinJoinStatus";
 import type { CoinSelectionSummary } from "./CoinSelectionSummary";
 import type { CoinSource } from "./CoinSource";
+import type { ConnectChoice } from "./ConnectChoice";
+import type { ConnectDone } from "./ConnectDone";
+import type { ConnectQuote } from "./ConnectQuote";
+import type { ConnectSheet } from "./ConnectSheet";
 import type { ConsoleCommand } from "./ConsoleCommand";
 import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
@@ -63,6 +67,8 @@ import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
+import type { DissolvePreview } from "./DissolvePreview";
+import type { DissolveRequest } from "./DissolveRequest";
 import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
@@ -92,6 +98,7 @@ import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
 import type { JoinSharedRequest } from "./JoinSharedRequest";
 import type { JsonValue } from "./serde_json/JsonValue";
+import type { KeyChangeRequest } from "./KeyChangeRequest";
 import type { KeyCheckName } from "./KeyCheckName";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
@@ -103,6 +110,7 @@ import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
+import type { MaintenanceSent } from "./MaintenanceSent";
 import type { MasternodeDetail } from "./MasternodeDetail";
 import type { MasternodeKeyInfo } from "./MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "./MasternodeKeyRoleName";
@@ -144,6 +152,7 @@ import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
 import type { PlatformAddressRow } from "./PlatformAddressRow";
+import type { PlatformCancelQuote } from "./PlatformCancelQuote";
 import type { PlatformFundOutcome } from "./PlatformFundOutcome";
 import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
@@ -181,6 +190,7 @@ import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
 import type { RescanStart } from "./RescanStart";
 import type { RescanStatus } from "./RescanStatus";
+import type { RestoreStatus } from "./RestoreStatus";
 import type { RevealedMasternodeKey } from "./RevealedMasternodeKey";
 import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
@@ -191,6 +201,7 @@ import type { SharedImport } from "./SharedImport";
 import type { SharedMessage } from "./SharedMessage";
 import type { SharedOutcome } from "./SharedOutcome";
 import type { SharedSession } from "./SharedSession";
+import type { SharedShares } from "./SharedShares";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
 import type { ShieldOutcome } from "./ShieldOutcome";
@@ -200,7 +211,10 @@ import type { ShieldedAddress } from "./ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
+import type { ShieldedSyncInfo } from "./ShieldedSyncInfo";
 import type { SpvStateName } from "./SpvStateName";
+import type { Standby } from "./Standby";
+import type { StandbyVariantName } from "./StandbyVariantName";
 import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
 import type { StuckShieldFunding } from "./StuckShieldFunding";
@@ -324,6 +338,23 @@ export function openProjectLink(link: ProjectLinkName): Promise<null> {
 }
 
 /**
+ * Quits the app through its normal exit path: the engine flushes and
+ * closes, as the menu's Quit does. A refused open's screen offers it.
+ */
+export function quitApp(): Promise<null> {
+  return invoke<null>("quit_app");
+}
+
+/**
+ * Quits through the normal exit path, as `quit_app`, and starts the
+ * app again: the restart `storage_in_use` asks for when the wallet
+ * store is held until the process ends.
+ */
+export function restartApp(): Promise<null> {
+  return invoke<null>("restart_app");
+}
+
+/**
  * Registered but granted by no capability: the U6 probe that the ACL
  * refuses an unlisted command (`api::UNGRANTED`).
  */
@@ -373,6 +404,32 @@ export function switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch> {
 }
 
 /**
+ * The way out of a restore that waits for Platform (`restoreStatus`):
+ * closes the active network as `switchNetwork` closes it (refused with
+ * `app.network_busy` while a Platform flow holds a lease, a wallet
+ * mixes or a broadcast has not returned, `draining` when the running
+ * operations do not finish within 2 s, then the engine's own
+ * refusals with [`ErrorData::NetworkCloseRefused`]; a refusal changes
+ * nothing) and opens it again with Platform off, for this session
+ * only: the next start, or `openNetwork` after a close, opens it with
+ * Platform. Without Platform the restore's gate opens once Core has
+ * caught up and every wallet's history has loaded. While the gate is
+ * open, or does not wait for Platform (the network already runs
+ * without it, or only Core or a history load is waited for), or only
+ * Platform's check is left (`platformOnly`), or no wallet is open
+ * (`wallet`: nothing restored to check), it does nothing and
+ * returns the active network. A
+ * failed open reopens the network with Platform and is
+ * `app.network_switch_failed` ([`ErrorData::NetworkSwitch`],
+ * `rolledBack` false when that failed too, the window then without a
+ * network). `network_not_open` before `openNetwork`. The renderer
+ * boots again on success.
+ */
+export function finishWithoutPlatform(): Promise<OpenedNetwork> {
+  return invoke<OpenedNetwork>("finish_without_platform");
+}
+
+/**
  * Closes the active network and drops its draft handles; `false` when
  * none was open.
  */
@@ -381,10 +438,28 @@ export function closeNetwork(): Promise<boolean> {
 }
 
 /**
- * The active network, `null` before `openNetwork`.
+ * The active network, `null` before `openNetwork`, with whether its
+ * wallet data was restored (read again at each call).
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
+}
+
+/**
+ * What the active network's restore waits for before funds actions
+ * run again; `null` when they run. A change is a `sync` event.
+ */
+export function restoreStatus(): Promise<RestoreStatus | null> {
+  return invoke<RestoreStatus | null>("restore_status");
+}
+
+/**
+ * Asks Platform for a fresh check and the restore to try opening the
+ * gate at once, a failed attempt's delay cut short. Nothing while the
+ * gate is open.
+ */
+export function restoreRetry(): Promise<null> {
+  return invoke<null>("restore_retry");
 }
 
 /**
@@ -400,6 +475,62 @@ export function getNetworkChoice(): Promise<NetworkChoiceView> {
  */
 export function existingNetworks(): Promise<Array<NetworkData>> {
   return invoke<Array<NetworkData>>("existing_networks");
+}
+
+/**
+ * Whether `network` (`null`: the window's) has a verified
+ * before-upgrade snapshot to restore: "Restore earlier data" shows
+ * only then.
+ */
+export function restoreAvailable(network: string | null): Promise<boolean> {
+  return invoke<boolean>("restore_available", { network });
+}
+
+/**
+ * Restore earlier data: asks for the restore of `network`'s
+ * (`null`: the window's) verified before-upgrade snapshot at the next
+ * start; the renderer then calls `restartApp`. Nothing is restored in
+ * this process. Without a verified snapshot, `storage_restore`
+ * (refused, missingBackup). While a wallet of `network` holds a
+ * shielded spend whose result is not known, or its stores don't read,
+ * `shielded_spend_unresolved` with its `shieldedHold` reason.
+ */
+export function requestRestore(network: string | null): Promise<null> {
+  return invoke<null>("request_restore", { network });
+}
+
+/**
+ * The foreign-lineage screen's Keep the current files: ends
+ * `network`'s (`null`: the window's) part-done restore keeping its
+ * files as they are; the renderer then opens the network again.
+ */
+export function keepCurrentFiles(network: string | null): Promise<null> {
+  return invoke<null>("keep_current_files", { network });
+}
+
+/**
+ * Cancel restore: drops `network`'s (`null`: the window's) restore
+ * request while it hasn't begun replacing files; once it has,
+ * `storage_restore` (incomplete).
+ */
+export function cancelRestore(network: string | null): Promise<null> {
+  return invoke<null>("cancel_restore", { network });
+}
+
+/**
+ * The refused open's way back to the funds (Q107 C1): the window's
+ * network starts over in a new, empty folder beside its own, with the
+ * restore's RESTORED mark, so the wallet set up there from its recovery
+ * phrase stays held until its first full sync. Nothing in the refused
+ * folder changes. The next start opens the new folder; the renderer
+ * restarts the app after this (`restart_app`). `invalid_argument`
+ * unless the network's last open was refused by the store-upgrade
+ * check as damaged, or Restore earlier data was refused for a shielded
+ * hold since an open refused with it or at that open's swap, and while
+ * it is open.
+ */
+export function recoverInFreshFolder(): Promise<null> {
+  return invoke<null>("recover_in_fresh_folder");
 }
 
 export function lockStatus(): Promise<LockStatus> {
@@ -619,7 +750,9 @@ export function destroyVault(credential: CredentialSpec): Promise<LockStatus> {
 /**
  * A fresh BIP39 phrase of 12, 15, 18, 21 or 24 words. Nothing is
  * stored: the UI shows it, checks the user wrote it down (QT-103,
- * IOS-004) and passes it to `importWallet`.
+ * IOS-004) and passes it to `importWallet`. `restore_only` while the
+ * open network's RESTORED mark is set: a new wallet waits for it to
+ * clear.
  */
 export function generateMnemonic(wordCount: number, language: MnemonicLanguageName): Promise<string> {
   return invoke<string>("generate_mnemonic", { wordCount, language });
@@ -688,6 +821,9 @@ export function importWatchOnly(xpub: string, options: WatchOnlyOptions): Promis
 /**
  * Deletes the wallet's vault records, then unloads it and deletes its
  * state and metadata (QT-101, IOS-109). Needs a `wipe` grant for it.
+ * Refused with `shielded_spend_unresolved` (data `shieldedHold`: why)
+ * before anything changes while the wallet holds a shielded payment
+ * whose result is not known.
  */
 export function removeWallet(walletId: string, grantId: string): Promise<null> {
   return invoke<null>("remove_wallet", { walletId, grantId });
@@ -1992,6 +2128,22 @@ export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to:
 }
 
 /**
+ * What cancelling the held move or contact payment `of` takes: its
+ * inputs at its nonces to one of the wallet's own Platform addresses.
+ */
+export function platformCancelQuote(walletId: string, of: string): Promise<PlatformCancelQuote> {
+  return invoke<PlatformCancelQuote>("platform_cancel_quote", { walletId, of });
+}
+
+/**
+ * Cancels the held move or contact payment `of` to `to` (the quote's,
+ * one of the wallet's own Platform addresses) under `grant`.
+ */
+export function platformCancel(walletId: string, of: string, to: string, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_cancel", { walletId, of, to, grant });
+}
+
+/**
  * The wallet's Platform receive address: the lowest unused one.
  */
 export function platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress> {
@@ -2189,6 +2341,14 @@ export function setTrustedQuorumsOnly(on: boolean): Promise<null> {
  */
 export function shieldedStatus(walletId: string): Promise<ShieldedStatus> {
   return invoke<ShieldedStatus>("shielded_status", { walletId });
+}
+
+/**
+ * Where the wallet's Shielded sync stands, for the status bar, Sync
+ * progress and Receive; answers while a pass runs.
+ */
+export function shieldedSyncInfo(walletId: string): Promise<ShieldedSyncInfo> {
+  return invoke<ShieldedSyncInfo>("shielded_sync_info", { walletId });
 }
 
 /**
@@ -2569,6 +2729,65 @@ export function loadContactPictures(): Promise<boolean> {
  */
 export function setLoadContactPictures(on: boolean): Promise<null> {
   return invoke<null>("set_load_contact_pictures", { on });
+}
+
+/**
+ * The approval sheet of the App Connect request `link_id` for the
+ * wallet `wallet_id`, which the inbox then keeps as the one on screen.
+ * A refusal answers the request (its status goes back with the return
+ * link).
+ */
+export function appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet> {
+  return invoke<ConnectSheet>("app_connect_sheet", { walletId, linkId });
+}
+
+/**
+ * What approving `choice` costs and the `appConnect` grant to ask
+ * for, bound to what this quote read.
+ */
+export function appConnectQuote(walletId: string, linkId: string, choice: ConnectChoice): Promise<ConnectQuote> {
+  return invoke<ConnectQuote>("app_connect_quote", { walletId, linkId, choice });
+}
+
+/**
+ * Approves `choice` under `grant` (an `appConnect` grant from this
+ * request's quote): adds the keys and sends the app its response.
+ */
+export function appConnectApprove(walletId: string, linkId: string, choice: ConnectChoice, grant: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_approve", { walletId, linkId, choice, grant });
+}
+
+/**
+ * Sends the response an approval of `link_id` could not send; a
+ * request with no approval started has none (`invalid_argument`).
+ */
+export function appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_retry_send", { walletId, linkId });
+}
+
+/**
+ * The user denied the request: nothing is read, derived or signed.
+ * Refused once an approval started (`connect.answered`).
+ */
+export function appConnectDeny(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_deny", { linkId });
+}
+
+/**
+ * Opens the return link of an answered request the OS delivered, with
+ * its answer, in the system browser, after the user's click. A request
+ * typed, pasted or scanned, or not answered yet, opens nothing:
+ * `invalid_argument`.
+ */
+export function appConnectReturn(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_return", { linkId });
+}
+
+/**
+ * Forgets the request: the sheet closed.
+ */
+export function appConnectDismiss(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_dismiss", { linkId });
 }
 
 /**
@@ -3146,6 +3365,23 @@ export function mnSharedSession(walletId: string, session: string): Promise<Shar
 }
 
 /**
+ * A shared masternode's shares from the wallet's history: amounts,
+ * refund and reward addresses, the early period and whether a share
+ * may dissolve or change keys now. No session is needed.
+ */
+export function mnSharedShares(walletId: string, proTxHash: string): Promise<SharedShares> {
+  return invoke<SharedShares>("mn_shared_shares", { walletId, proTxHash });
+}
+
+/**
+ * The wallet's stored standbys of a shared masternode, by share and
+ * fee; their signed bytes stay in Rust.
+ */
+export function mnSharedStandby(walletId: string, proTxHash: string): Promise<Array<Standby>> {
+  return invoke<Array<Standby>>("mn_shared_standby", { walletId, proTxHash });
+}
+
+/**
  * Starts a session as its coordinator: reserves the coordinator's share
  * and the fee, signs nothing, and returns the Invitation.
  */
@@ -3268,6 +3504,90 @@ export function mnSharedImport(walletId: string, text: string, target: string | 
  */
 export function mnSharedImportFile(walletId: string, target: string | null): Promise<Array<SharedImport> | null> {
   return invoke<Array<SharedImport> | null>("mn_shared_import_file", { walletId, target });
+}
+
+/**
+ * Plans a dissolution alone by one of this wallet's shares: what each
+ * share gets back, the penalty, the fee and `totalDebit`. Signs nothing.
+ */
+export function mnSharedPreviewDissolve(walletId: string, request: DissolveRequest): Promise<DissolvePreview> {
+  return invoke<DissolvePreview>("mn_shared_preview_dissolve", { walletId, request });
+}
+
+/**
+ * Signs the preview's dissolution with the share's owner key and sends
+ * it, under a `masternodeOp` grant covering its `totalDebit`. Refused on
+ * mainnet before the engine is called (`app.shared_send_off`).
+ */
+export function mnSharedDissolve(walletId: string, request: DissolveRequest, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_shared_dissolve", { walletId, request, grant });
+}
+
+/**
+ * Signs and stores the standby dissolutions paying `fee` of each of this
+ * wallet's shares, under a `masternodeOp` grant covering each share's
+ * penalty and fee. Sends nothing.
+ */
+export function mnSharedCreateStandby(walletId: string, proTxHash: string, fee: number, grant: string): Promise<Array<Standby>> {
+  return invoke<Array<Standby>>("mn_shared_create_standby", { walletId, proTxHash, fee, grant });
+}
+
+/**
+ * Shows the save dialog and writes the stored standby of `share` paying
+ * `fee` there as Core's file (0600 on Unix), under a `masternodeOp`
+ * grant of 0. Returns the file's name, `null` when the user cancelled
+ * (the grant unused). The file's text never reaches the renderer.
+ */
+export function mnSharedExportStandby(walletId: string, proTxHash: string, share: number, fee: number, grant: string): Promise<string | null> {
+  return invoke<string | null>("mn_shared_export_standby", { walletId, proTxHash, share, fee, grant });
+}
+
+/**
+ * Sends a variant of the stored standby of `share` paying `fee`, under a
+ * `masternodeOp` grant covering the fee and, for the immediate variant,
+ * the penalty (0 for another share's). Refused on mainnet before the
+ * engine is called (`app.shared_send_off`).
+ */
+export function mnSharedSendStandby(walletId: string, proTxHash: string, share: number, fee: number, variant: StandbyVariantName, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_shared_send_standby", { walletId, proTxHash, share, fee, variant, grant });
+}
+
+/**
+ * Prepares a dissolution together with this wallet's share the actor
+ * paying `fee`, and signs this wallet's shares under a `masternodeOp`
+ * grant covering the fee. Returns the session and its request.
+ */
+export function mnSharedStartDissolveTogether(walletId: string, request: DissolveRequest, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_start_dissolve_together", { walletId, request, grant });
+}
+
+/**
+ * Prepares a change of the registrar keys together, this wallet the
+ * funder: reserves the fee coins and signs this wallet's shares under a
+ * `masternodeOp` grant of 0. Returns the session and its request.
+ */
+export function mnSharedStartKeyChange(walletId: string, request: KeyChangeRequest, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_start_key_change", { walletId, request, grant });
+}
+
+/**
+ * Signs this wallet's unsigned shares of a dissolution together or a
+ * key change. A dissolution's grant covers `actorFee` when the request
+ * takes the fee from this wallet's share (`accept_actor_fee`), else 0; a
+ * key change's is 0.
+ */
+export function mnSharedApproveMaintenance(walletId: string, session: string, grant: string, acceptActorFee: boolean): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_approve_maintenance", { walletId, session, grant, acceptActorFee });
+}
+
+/**
+ * Sends a complete dissolution together, under a `masternodeOp` grant of
+ * 0. Refused before the engine is called on mainnet
+ * (`app.shared_send_off`) and for any other kind of session
+ * (`app.shared_send_unsupported`): this version sends no key change.
+ */
+export function mnSharedSendMaintenance(walletId: string, session: string, grant: string): Promise<MaintenanceSent> {
+  return invoke<MaintenanceSent>("mn_shared_send_maintenance", { walletId, session, grant });
 }
 
 /**
@@ -3425,13 +3745,23 @@ export type CommandArgs = {
   set_ui_settings: { settings: UiSettings };
   open_releases_page: {  };
   open_project_link: { link: ProjectLinkName };
+  quit_app: {  };
+  restart_app: {  };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
+  finish_without_platform: {  };
   close_network: {  };
   active_network: {  };
+  restore_status: {  };
+  restore_retry: {  };
   get_network_choice: {  };
   existing_networks: {  };
+  restore_available: { network: string | null };
+  request_restore: { network: string | null };
+  keep_current_files: { network: string | null };
+  cancel_restore: { network: string | null };
+  recover_in_fresh_folder: {  };
   lock_status: {  };
   unlock: { passphrase: string };
   unlock_mixing_only: { passphrase: string };
@@ -3625,6 +3955,8 @@ export type CommandArgs = {
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_shield_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string };
+  platform_cancel_quote: { walletId: string; of: string };
+  platform_cancel: { walletId: string; of: string; to: string; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
@@ -3650,6 +3982,7 @@ export type CommandArgs = {
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
   shielded_status: { walletId: string };
+  shielded_sync_info: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
   shield_quote: { walletId: string; amount: FundAmount };
@@ -3699,6 +4032,13 @@ export type CommandArgs = {
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
   load_contact_pictures: {  };
   set_load_contact_pictures: { on: boolean };
+  app_connect_sheet: { walletId: string; linkId: string };
+  app_connect_quote: { walletId: string; linkId: string; choice: ConnectChoice };
+  app_connect_approve: { walletId: string; linkId: string; choice: ConnectChoice; grant: string };
+  app_connect_retry_send: { walletId: string; linkId: string };
+  app_connect_deny: { linkId: string };
+  app_connect_return: { linkId: string };
+  app_connect_dismiss: { linkId: string };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -3767,6 +4107,8 @@ export type CommandArgs = {
   mn_shared_sessions: { walletId: string };
   mn_shared_unreadable: { walletId: string };
   mn_shared_session: { walletId: string; session: string };
+  mn_shared_shares: { walletId: string; proTxHash: string };
+  mn_shared_standby: { walletId: string; proTxHash: string };
   mn_shared_start: { walletId: string; request: StartSharedRequest };
   mn_shared_set_fee: { walletId: string; session: string; fee: number };
   mn_shared_join: { walletId: string; session: string; request: JoinSharedRequest };
@@ -3782,6 +4124,15 @@ export type CommandArgs = {
   mn_shared_discard: { walletId: string; session: string };
   mn_shared_import: { walletId: string; text: string; target: string | null };
   mn_shared_import_file: { walletId: string; target: string | null };
+  mn_shared_preview_dissolve: { walletId: string; request: DissolveRequest };
+  mn_shared_dissolve: { walletId: string; request: DissolveRequest; grant: string };
+  mn_shared_create_standby: { walletId: string; proTxHash: string; fee: number; grant: string };
+  mn_shared_export_standby: { walletId: string; proTxHash: string; share: number; fee: number; grant: string };
+  mn_shared_send_standby: { walletId: string; proTxHash: string; share: number; fee: number; variant: StandbyVariantName; grant: string };
+  mn_shared_start_dissolve_together: { walletId: string; request: DissolveRequest; grant: string };
+  mn_shared_start_key_change: { walletId: string; request: KeyChangeRequest; grant: string };
+  mn_shared_approve_maintenance: { walletId: string; session: string; grant: string; acceptActorFee: boolean };
+  mn_shared_send_maintenance: { walletId: string; session: string; grant: string };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -3808,13 +4159,23 @@ export type CommandResults = {
   set_ui_settings: UiSettings;
   open_releases_page: null;
   open_project_link: null;
+  quit_app: null;
+  restart_app: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
+  finish_without_platform: OpenedNetwork;
   close_network: boolean;
   active_network: NetworkInfo | null;
+  restore_status: RestoreStatus | null;
+  restore_retry: null;
   get_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
+  restore_available: boolean;
+  request_restore: null;
+  keep_current_files: null;
+  cancel_restore: null;
+  recover_in_fresh_folder: null;
   lock_status: LockStatus;
   unlock: LockStatus;
   unlock_mixing_only: LockStatus;
@@ -4008,6 +4369,8 @@ export type CommandResults = {
   platform_move_to_core_quote: MoveToCoreQuote;
   platform_shield_quote: PlatformShieldQuote;
   platform_move_to_core: MoveToCoreOutcome;
+  platform_cancel_quote: PlatformCancelQuote;
+  platform_cancel: PlatformSendOutcome;
   platform_receive_address: PlatformReceiveAddress;
   platform_send_quote: PlatformSendQuote;
   platform_send: PlatformSendOutcome;
@@ -4033,6 +4396,7 @@ export type CommandResults = {
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
   shielded_status: ShieldedStatus;
+  shielded_sync_info: ShieldedSyncInfo;
   shielded_sync: ShieldedStatus;
   shielded_receive_address: ShieldedAddress;
   shield_quote: ShieldQuote;
@@ -4082,6 +4446,13 @@ export type CommandResults = {
   dashpay_avatar: AvatarThumbnail | null;
   load_contact_pictures: boolean;
   set_load_contact_pictures: null;
+  app_connect_sheet: ConnectSheet;
+  app_connect_quote: ConnectQuote;
+  app_connect_approve: ConnectDone;
+  app_connect_retry_send: ConnectDone;
+  app_connect_deny: null;
+  app_connect_return: null;
+  app_connect_dismiss: null;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -4150,6 +4521,8 @@ export type CommandResults = {
   mn_shared_sessions: Array<SharedSession>;
   mn_shared_unreadable: Array<UnreadableSession>;
   mn_shared_session: SharedSession;
+  mn_shared_shares: SharedShares;
+  mn_shared_standby: Array<Standby>;
   mn_shared_start: SharedOutcome;
   mn_shared_set_fee: SharedOutcome;
   mn_shared_join: SharedOutcome;
@@ -4165,6 +4538,15 @@ export type CommandResults = {
   mn_shared_discard: null;
   mn_shared_import: SharedImport;
   mn_shared_import_file: Array<SharedImport> | null;
+  mn_shared_preview_dissolve: DissolvePreview;
+  mn_shared_dissolve: ProTxOperation;
+  mn_shared_create_standby: Array<Standby>;
+  mn_shared_export_standby: string | null;
+  mn_shared_send_standby: ProTxOperation;
+  mn_shared_start_dissolve_together: SharedOutcome;
+  mn_shared_start_key_change: SharedOutcome;
+  mn_shared_approve_maintenance: SharedOutcome;
+  mn_shared_send_maintenance: MaintenanceSent;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -4193,13 +4575,23 @@ export const COMMANDS: Record<CommandName, string> = {
   set_ui_settings: "app",
   open_releases_page: "app",
   open_project_link: "app",
+  quit_app: "app",
+  restart_app: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
+  finish_without_platform: "network",
   close_network: "network",
   active_network: "network",
+  restore_status: "network",
+  restore_retry: "network",
   get_network_choice: "network",
   existing_networks: "network",
+  restore_available: "network",
+  request_restore: "network",
+  keep_current_files: "network",
+  cancel_restore: "network",
+  recover_in_fresh_folder: "network",
   lock_status: "vault",
   unlock: "vault",
   unlock_mixing_only: "vault",
@@ -4393,6 +4785,8 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_move_to_core_quote: "identity",
   platform_shield_quote: "identity",
   platform_move_to_core: "identity",
+  platform_cancel_quote: "identity",
+  platform_cancel: "identity",
   platform_receive_address: "identity",
   platform_send_quote: "identity",
   platform_send: "identity",
@@ -4418,6 +4812,7 @@ export const COMMANDS: Record<CommandName, string> = {
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
   shielded_status: "identity",
+  shielded_sync_info: "identity",
   shielded_sync: "identity",
   shielded_receive_address: "identity",
   shield_quote: "identity",
@@ -4467,6 +4862,13 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar: "social",
   load_contact_pictures: "social",
   set_load_contact_pictures: "social",
+  app_connect_sheet: "connect",
+  app_connect_quote: "connect",
+  app_connect_approve: "connect",
+  app_connect_retry_send: "connect",
+  app_connect_deny: "connect",
+  app_connect_return: "connect",
+  app_connect_dismiss: "connect",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",
@@ -4535,6 +4937,8 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_sessions: "masternodes",
   mn_shared_unreadable: "masternodes",
   mn_shared_session: "masternodes",
+  mn_shared_shares: "masternodes",
+  mn_shared_standby: "masternodes",
   mn_shared_start: "masternodes",
   mn_shared_set_fee: "masternodes",
   mn_shared_join: "masternodes",
@@ -4550,6 +4954,15 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_discard: "masternodes",
   mn_shared_import: "masternodes",
   mn_shared_import_file: "masternodes",
+  mn_shared_preview_dissolve: "masternodes",
+  mn_shared_dissolve: "masternodes",
+  mn_shared_create_standby: "masternodes",
+  mn_shared_export_standby: "masternodes",
+  mn_shared_send_standby: "masternodes",
+  mn_shared_start_dissolve_together: "masternodes",
+  mn_shared_start_key_change: "masternodes",
+  mn_shared_approve_maintenance: "masternodes",
+  mn_shared_send_maintenance: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",
@@ -4609,6 +5022,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "storage_in_use",
   "storage",
   "storage_too_new",
+  "storage_refused",
+  "storage_not_private",
+  "storage_restore",
+  "storage_retry",
   "wallet_not_found",
   "invalid_mnemonic",
   "wallet_already_exists",
@@ -4640,6 +5057,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "stuck_funding",
   "shielded_spend_unresolved",
   "last_startup_wallet",
+  "restored",
+  "restore_only",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -4682,6 +5101,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "send.tx_too_large",
   "send.invalid_change_address",
   "send.watch_only",
+  "send.restored",
   "send.vault_locked",
   "send.grant_invalid",
   "send.grant_exceeded",
@@ -4728,6 +5148,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "psbt.broadcast_rejected",
   "psbt.broadcast_unknown",
   "coinjoin.disabled",
+  "coinjoin.restored",
   "coinjoin.watch_only",
   "coinjoin.insufficient_funds",
   "coinjoin.vault_locked",
@@ -4762,6 +5183,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "platform.broadcast_unknown",
   "platform.will_be_sent",
   "platform.cancelled",
+  "platform.restored",
   "platform.needs_grant",
   "platform.lease_revoked",
   "platform.lease_expired",
@@ -4787,6 +5209,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.shielded_not_ready",
   "registration.quote_changed",
   "registration.refunded",
+  "registration.payment_consumed",
   "name.invalid",
   "name.taken",
   "name.contest_open",
@@ -4806,6 +5229,20 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "invitation.claimed",
   "invitation.expired",
   "invitation.already_has_identity",
+  "connect.network",
+  "connect.mainnet_off",
+  "connect.unsupported",
+  "connect.invalid",
+  "connect.stale",
+  "connect.protocol",
+  "connect.no_identity",
+  "connect.hint",
+  "connect.owner",
+  "connect.answered",
+  "connect.credits",
+  "connect.plan_changed",
+  "connect.send_failed",
+  "connect.failed",
   "avatar.too_large",
   "avatar.unsupported",
   "avatar.fetch_failed",
@@ -4845,6 +5282,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "shielded.coins_unconfirmed",
   "shielded.move_running",
   "shielded.coins_changed",
+  "shielded.store_closed",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

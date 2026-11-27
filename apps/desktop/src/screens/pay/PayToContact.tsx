@@ -4,14 +4,14 @@
 // subtract fee, note, coin control. Review opens U-03's confirm sheet with the contact, which can
 // accept their request and pay in one step; U-03's result follows.
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type Ref } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { keys, useLockStatus, usePlatformActivity, usePoolBalances, useWallets } from "../../api/queries";
+import { keys, useLockStatus, usePlatformActivity, usePoolBalances, useShieldedStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
@@ -30,6 +30,7 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { BalanceAmount, BalancePaySheet, FromStep, useBalancePay } from "./PayFromBalance";
 import { chosenReason, fromRows, liveSources, type PaySource } from "./fromBalance";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
@@ -359,15 +360,18 @@ function ContactForm({
   const { phase } = sheets;
   const reviewButton = useRef<HTMLButtonElement>(null);
   const amountField = useRef<HTMLInputElement>(null);
-  const backToForm = () => (reviewButton.current?.disabled === false ? reviewButton.current : amountField.current);
+  const retryButton = useRef<HTMLButtonElement>(null);
+  // A notice in place of a result takes the focus, so it is read.
+  const backToForm = () => retryButton.current ?? (reviewButton.current?.disabled === false ? reviewButton.current : amountField.current);
 
   const { duffs } = amount;
   // "From" (C-funding D-C5, P16): the Dash wallet each time the form opens, never remembered.
   const discreet = useUi((s) => s.discreet);
   const pools = usePoolBalances(walletId);
+  const spendsOff = shieldedSpendsOff(useShieldedStatus(walletId).data);
   const [chosen, setChosen] = useState<PaySource>("core");
   const coreAvailable = useAvailable(walletId, advanced, sheets.held);
-  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), live: liveSources(network.kind) });
+  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), shieldedHold: pools.shieldedHold, live: liveSources(network.kind), shieldedSpendsOff: spendsOff });
   // The choice stays the user's: a source that can no longer pay holds Review with its reason.
   const source = chosen;
   const activity = usePlatformActivity(walletId);
@@ -397,16 +401,40 @@ function ContactForm({
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
   const available = coreAvailable;
-  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held || sheets.held || balance.active, shown);
+  const hold = locked || held || sheets.held || balance.active;
+  const { estimate, general, notice: estimateNotice, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, hold, shown);
   const ready = estimated && amount.settled && !amount.fiat.error;
+  // Send's prepare refused until the contacts are re-checked (H-09) says so here, not as a result.
+  const notice = sheets.notice ?? estimateNotice;
+  const specKey = spec && JSON.stringify(spec);
+  // After a refused Send, the review opens again once this payment's new estimate is in; Send there
+  // runs the check again. A change to the form, a refusal or a hold drops it.
+  const [reopen, setReopen] = useState<{ spec: string; at: number } | null>(null);
+  const tryAgain = () => {
+    const again = sheets.notice !== null;
+    sheets.dismissNotice();
+    if (!spec || !specKey || hold) return;
+    if (again) setReopen({ spec: specKey, at: Date.now() });
+    void estimate.refetch();
+  };
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
     setSubtractFee(true);
   });
 
   const review = () => {
-    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);
+    if (!ready || !estimate.data || !spec) return;
+    sheets.dismissNotice();
+    sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);
   };
+  useEffect(() => {
+    if (!reopen) return;
+    if (reopen.spec !== specKey || estimate.isError || hold) setReopen(null);
+    else if (ready && estimate.dataUpdatedAt >= reopen.at) {
+      setReopen(null);
+      review();
+    }
+  });
 
   return (
     <>
@@ -435,6 +463,7 @@ function ContactForm({
           </DashButton>
         </section>
         {shownBanner && <PayBanner banner={shownBanner} contact={contact} checking={lostHeld ? flow.checking : resolve.isPending} onCheck={lostHeld ? recheck : check} retry={() => void detail.refetch()} />}
+        {notice && !held && !balance.active && <PayBanner banner={notice} contact={contact} checking={estimate.isFetching || reopen !== null} onCheck={check} retry={tryAgain} actionRef={retryButton} />}
         <ActionLine ok={shownFound?.resolved ?? true} text={shownFound?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
           <section className="pay-card card-l1">
@@ -543,7 +572,21 @@ function ContactForm({
 }
 
 /** Why the payee cannot be paid now, and what to do (D6, D7). */
-function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Banner; contact: string; checking: boolean; onCheck: () => void; retry: () => void }) {
+function PayBanner({
+  banner,
+  contact,
+  checking,
+  onCheck,
+  retry,
+  actionRef,
+}: {
+  banner: Banner;
+  contact: string;
+  checking: boolean;
+  onCheck: () => void;
+  retry: () => void;
+  actionRef?: Ref<HTMLButtonElement>;
+}) {
   const t = useT();
   if (banner.kind === "loading") return <LoadingState testId="pay-contact-loading" text={t("pay.contact.reading")} />;
   let action = null;
@@ -552,6 +595,13 @@ function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Bann
       action = (
         <DashButton variant="tintedBlue" size="small" onClick={retry}>
           {t("pay.contact.retry")}
+        </DashButton>
+      );
+      break;
+    case "updating":
+      action = (
+        <DashButton ref={actionRef} variant="tintedBlue" size="small" data-testid="pay-banner-retry" disabled={checking} onClick={retry}>
+          {t("pay.notice.tryAgain")}
         </DashButton>
       );
       break;

@@ -33,7 +33,7 @@ import {
   type RecoveryModel,
 } from "../recovery/model";
 import { SHIELDED_COPY as S, shieldedErrorText, shieldedFor } from "../shielded/flow";
-import { SHIELDED_SYNC_COPY, shieldedSyncing } from "../shielded/syncing";
+import { shieldedSyncing, shieldedWait, shieldedWaitText } from "../shielded/syncing";
 import { shieldedRoute, transferFor } from "../transfer/model";
 import { preparingText } from "../transfer/preparing";
 import { usePlatformHold } from "./PlatformMoveSheet";
@@ -51,8 +51,8 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const query = useUnfinishedTransfers(walletId);
   const fmt = useFormats(network, "compact");
   const [details, setDetails] = useState(false);
-  const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
   const status = useShieldedStatus(walletId);
+  const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs, undefined, shieldedWait(status.data));
   const data = query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null;
   useEffect(() => model.settle(data), [model, data]);
   const view = cardView(data, model.state, fmt.duffs, errorText, network.kind === "mainnet");
@@ -81,7 +81,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   const s = status.data ?? null;
   const shields = s?.pendingShields ?? [];
   const shieldSyncing = s !== null && shieldedSyncing(s);
-  const shieldWhy = shieldSyncing ? SHIELDED_SYNC_COPY.syncing : shielded.running ? S.card.why.busy : shielded.unseen ? S.unseen : null;
+  const shieldWhy = shieldSyncing ? shieldedWaitText(s) : shielded.running ? S.card.why.busy : shielded.unseen ? S.unseen : null;
   // A lock this version can't finish has no action: Transfer's Add to Platform names it.
   const funds = (usePendingPlatformFunds(walletId).data ?? []).map((p) => ({ p, row: fundRowView(p, fmt.duffs) })).filter(({ row }) => row.action !== null);
   const checkFailed = platformKnown && block === "failed" && !move.running;
@@ -193,8 +193,8 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
   const fmt = useFormats(network, "compact");
-  const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs);
   const status = useShieldedStatus(walletId);
+  const errorText = (e: unknown) => shieldedErrorText(e, fmt.credits, fmt.duffs, undefined, shieldedWait(status.data));
   const mainnet = network.kind === "mainnet";
   const rows = sheetRows(query.isSuccess ? withoutPendingShields(query.data, status.data?.pendingShields) : null, model.results);
   const failed = model.state.kind === "failed" ? model.state.error : null;

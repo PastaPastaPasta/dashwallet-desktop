@@ -140,6 +140,25 @@ pub mod base64 {
     }
 }
 
+/// Fixed-size bytes as lower-case hex: `#[ts(type = "string")]
+/// #[serde(with = "crate::dto::hex_array")]`.
+pub mod hex_array {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer, const N: usize>(v: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[u8; N], D::Error> {
+        let bytes = hex::decode(String::deserialize(d)?).map_err(D::Error::custom)?;
+        bytes
+            .try_into()
+            .map_err(|_| D::Error::custom(format!("expected {N} bytes")))
+    }
+}
+
 /// A transaction output reference, `txid:vout`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +221,24 @@ pub struct NetworkInfo {
     pub dir_name: String,
     /// dash-qt's unit name on this network: `DASH` on mainnet, `tDASH` elsewhere (QT-003).
     pub unit_name: String,
+    /// The open network's wallet data is the one from before the upgrade,
+    /// put back by a restore the engine has not yet cleared (its RESTORED
+    /// mark; one that can't be checked reads as true). Read at each
+    /// `openNetwork` and `activeNetwork`; absent where no open network is
+    /// meant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub restored: Option<bool>,
+}
+
+impl NetworkInfo {
+    /// `session`'s network, with whether its wallet data was restored.
+    pub fn opened(session: &dw_engine::NetworkSession) -> Self {
+        Self {
+            restored: Some(dw_engine::store_upgrade::restored(session.data_dir())),
+            ..Self::from(session.network())
+        }
+    }
 }
 
 impl From<&DashNetwork> for NetworkInfo {
@@ -214,6 +251,7 @@ impl From<&DashNetwork> for NetworkInfo {
         };
         NetworkInfo {
             kind,
+            restored: None,
             dir_name: n.dir_name(),
             unit_name: if kind == NetworkKind::Mainnet {
                 "DASH"
@@ -309,6 +347,9 @@ pub struct Balances {
     /// The fully mixed CoinJoin balance once computed; before that, the
     /// spendable balance of the CoinJoin accounts.
     pub coinjoin: u64,
+    /// Coins kept out of every bucket above, and out of spending, while
+    /// the payment they come from may never confirm: shown as pending.
+    pub withheld: u64,
     /// The wallet is still catching up (its scan has not reached the birth
     /// block): the buckets hold what it has seen so far, payments seen in
     /// the mempool or locked by InstantSend included, and can miss coins in
@@ -316,6 +357,14 @@ pub struct Balances {
     /// scanned: a wallet born long ago is still behind the tip while the
     /// sync status says so.
     pub catching_up: bool,
+    /// The coins held while what beat a payment that can never confirm is
+    /// unfinished, summed: in no bucket above.
+    pub held_unfinished: u64,
+    /// The held coins whose value is unknown, not in `heldUnfinished`.
+    pub held_unvalued: u32,
+    /// A held coin awaits a transaction that isn't final yet: no way out
+    /// is offered until it is.
+    pub held_awaiting: bool,
 }
 
 impl From<WalletBalances> for Balances {
@@ -327,7 +376,11 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            withheld,
             catching_up,
+            held_unfinished,
+            held_unvalued,
+            held_awaiting,
         } = b;
         Balances {
             confirmed,
@@ -336,7 +389,11 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            withheld,
             catching_up,
+            held_unfinished,
+            held_unvalued,
+            held_awaiting,
         }
     }
 }
@@ -350,6 +407,9 @@ pub struct WalletSummary {
     pub watch_only: bool,
     /// The vault holds the wallet's recovery phrase.
     pub has_mnemonic: bool,
+    /// Imported from a Dash Core wallet.dat with legacy issued address
+    /// ranges, which a recovery phrase doesn't restore.
+    pub legacy_issued: bool,
     pub hd: bool,
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device, when known.
@@ -366,6 +426,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,
@@ -376,6 +437,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,

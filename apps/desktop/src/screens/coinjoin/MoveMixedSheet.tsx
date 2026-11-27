@@ -12,15 +12,17 @@ import {
   canRetry,
   combineResultText,
   MOVE_COPY,
-  moveErrorText,
   planFee,
   planReceives,
+  refusalText,
   resultText,
   shieldResultText,
   type MoveMixedFlow,
 } from "../../coinjoin/move";
 import { useCoinJoinAmount, useMaskedAmount } from "../../coinjoin/queries";
 import { useT } from "../../i18n";
+import { useShieldedStatus } from "../../api/queries";
+import { shieldedWait } from "../../shielded/syncing";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 
@@ -38,6 +40,7 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
 export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network: NetworkInfo }) {
   useT();
   useModel(flow);
+  const shieldedStatus = useShieldedStatus(flow.walletId).data;
   const plain = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);
   const amount = (duffs: number) => masked ?? plain(duffs);
@@ -204,7 +207,7 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="move-mixed-refusal">
-                {moveErrorText(flow.error, amount)}
+                {refusalText(flow, amount, shieldedWait(shieldedStatus))}
               </p>
               <div className="sheet-actions">
                 {canRetry(flow.error) && (

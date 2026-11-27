@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
-import { orAbsent, orUnavailable } from "./pending";
+import { absentAsUnavailable, orAbsent, orUnavailable } from "./pending";
 import { formatLocale, systemRegionLocale } from "../i18n";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
@@ -67,6 +67,7 @@ export class IpcBackend implements Backend {
 
   launchInfo = () => cmd.launchInfo();
   openNetwork = () => cmd.openNetwork(null, null);
+  activeNetwork = () => cmd.activeNetwork();
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
   recentNotices = () => cmd.recentNotices();
@@ -101,6 +102,7 @@ export class IpcBackend implements Backend {
   networkChoice = () => orAbsent(cmd.getNetworkChoice());
   switchNetwork = (...a: Parameters<typeof cmd.switchNetwork>) => orUnavailable(cmd.switchNetwork(...a));
   shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
+  shieldedSyncInfo = (walletId: string) => orAbsent(cmd.shieldedSyncInfo(walletId));
   shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
   shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
   shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
@@ -124,6 +126,8 @@ export class IpcBackend implements Backend {
   platformReceiveAddress = (...a: Parameters<typeof cmd.platformReceiveAddress>) => orUnavailable(cmd.platformReceiveAddress(...a));
   platformSendQuote = (...a: Parameters<typeof cmd.platformSendQuote>) => orUnavailable(cmd.platformSendQuote(...a));
   platformSend = (...a: Parameters<typeof cmd.platformSend>) => orUnavailable(cmd.platformSend(...a));
+  platformCancelQuote = (...a: Parameters<typeof cmd.platformCancelQuote>) => orUnavailable(cmd.platformCancelQuote(...a));
+  platformCancel = (...a: Parameters<typeof cmd.platformCancel>) => orUnavailable(cmd.platformCancel(...a));
   platformFundQuote = (...a: Parameters<typeof cmd.platformFundQuote>) => orUnavailable(cmd.platformFundQuote(...a));
   platformFund = (...a: Parameters<typeof cmd.platformFund>) => orUnavailable(cmd.platformFund(...a));
   pendingPlatformFunds = (walletId: string) => orAbsent(cmd.pendingPlatformFunds(walletId));
@@ -174,6 +178,16 @@ export class IpcBackend implements Backend {
   checkForUpdate = () => cmd.checkForUpdate();
   installUpdate = cmd.installUpdate;
   restartToUpdate = () => cmd.restartToUpdate();
+  quitApp = () => absentAsUnavailable(invoke<null>("quit_app"));
+  restartApp = () => absentAsUnavailable(invoke<null>("restart_app"));
+  restoreAvailable = () => orAbsent(invoke<boolean>("restore_available", { network: null }));
+  requestRestore = () => absentAsUnavailable(invoke<null>("request_restore", { network: null }));
+  keepCurrentFiles = () => absentAsUnavailable(invoke<unknown>("keep_current_files", { network: null }));
+  cancelRestore = () => absentAsUnavailable(invoke<null>("cancel_restore", { network: null }));
+  restoreStatus = () => cmd.restoreStatus();
+  restoreRetry = () => cmd.restoreRetry();
+  finishWithoutPlatform = () => cmd.finishWithoutPlatform();
+  recoverInFreshFolder = () => cmd.recoverInFreshFolder();
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();
@@ -264,6 +278,13 @@ export class IpcBackend implements Backend {
   dismissStashedLink = cmd.dismissStashedLink;
   invitationStatus = cmd.invitationStatus;
   stashInvitation = cmd.stashInvitation;
+  appConnectSheet = cmd.appConnectSheet;
+  appConnectQuote = cmd.appConnectQuote;
+  appConnectApprove = cmd.appConnectApprove;
+  appConnectRetrySend = cmd.appConnectRetrySend;
+  appConnectDeny = cmd.appConnectDeny;
+  appConnectReturn = cmd.appConnectReturn;
+  appConnectDismiss = cmd.appConnectDismiss;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();
@@ -384,6 +405,8 @@ export class IpcBackend implements Backend {
   mnSharedSessions = cmd.mnSharedSessions;
   mnSharedUnreadable = cmd.mnSharedUnreadable;
   mnSharedSession = cmd.mnSharedSession;
+  mnSharedShares = cmd.mnSharedShares;
+  mnSharedStandby = cmd.mnSharedStandby;
   mnSharedStart = cmd.mnSharedStart;
   mnSharedSetFee = cmd.mnSharedSetFee;
   mnSharedJoin = cmd.mnSharedJoin;
@@ -399,6 +422,15 @@ export class IpcBackend implements Backend {
   mnSharedSend = cmd.mnSharedSend;
   mnSharedImport = cmd.mnSharedImport;
   mnSharedImportFile = cmd.mnSharedImportFile;
+  mnSharedPreviewDissolve = cmd.mnSharedPreviewDissolve;
+  mnSharedDissolve = cmd.mnSharedDissolve;
+  mnSharedCreateStandby = cmd.mnSharedCreateStandby;
+  mnSharedExportStandby = cmd.mnSharedExportStandby;
+  mnSharedSendStandby = cmd.mnSharedSendStandby;
+  mnSharedStartDissolveTogether = cmd.mnSharedStartDissolveTogether;
+  mnSharedStartKeyChange = cmd.mnSharedStartKeyChange;
+  mnSharedApproveMaintenance = cmd.mnSharedApproveMaintenance;
+  mnSharedSendMaintenance = cmd.mnSharedSendMaintenance;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
   onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();

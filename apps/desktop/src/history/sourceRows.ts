@@ -8,6 +8,7 @@
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { creditsToDuffs } from "../api/pending";
 import { t } from "../i18n";
 
@@ -28,6 +29,9 @@ export const SourceRowText = {
   fromShielded: "From Shielded",
   /** The value left on a transfer to Shielded that Platform refused, recovered to the Platform balance. */
   recovered: "Recovered from an unfinished transfer",
+  /** What Platform returned to this wallet's Platform address when it could not create the
+   * identity a username paid from Shielded (C-funding F12). */
+  registrationRefund: "Username payment refund",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
   /** A move, send or top-up that failed by height but may still execute: not "Not accepted". */
@@ -40,6 +44,10 @@ export const SourceRowText = {
   shieldedPaid: "Paid from Shielded",
   /** A payment to a DashPay contact from the Platform balance (C-funding P10). */
   contactPayment: "Paid from Platform",
+  /** The cancel of a held move to the Dash wallet: a send to the wallet's own Platform address. */
+  cancelMove: "Cancel of an earlier move",
+  /** The cancel of a held contact payment from Platform. */
+  cancelPayment: "Cancel of an earlier payment",
 };
 
 const REPLACED = ":replaced";
@@ -49,7 +57,8 @@ const SETTLED_UNKNOWN = ":unknown";
 /** A Platform move the engine replaced with a retry: it carries no amount and is never a loss. */
 export const isReplacedRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(REPLACED);
 
-/** A failed Platform move or send that may still execute: shown as unconfirmed, never as a problem. */
+/** A failed Platform move or send, or a Shielded spend Platform refused whose funds stay held, that
+ * may still execute: shown as unconfirmed, never as a problem. */
 export const isMayLandRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(MAY_LAND);
 
 /** A row of a group that settled with no evidence of which member went through: only the newest
@@ -92,15 +101,24 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
   involvesWatchOnly: false,
 });
 
+/** The kind a row's txid carries: a cancel's names what it cancels (`all`: the activity it is in;
+ * a cancel of a row no longer listed reads as a move's). */
+function rowKind(a: PlatformActivity, all: readonly PlatformActivity[] | null | undefined): string {
+  if (!a.cancels) return a.kind;
+  return all?.find((b) => b.id === a.cancels)?.kind === "contactPayment" ? "cancelPayment" : "cancelMove";
+}
+
 /** A Platform-address activity row as a history row. A move shows what arrives in the Dash wallet
  * (an internal move: no sign); a send pays its recipient (`to`); a failed one is the "not accepted"
- * problem row, unless it may still execute (`mayLand`): that one is unconfirmed, with its amount. */
-export function platformRow(a: PlatformActivity): TxRow {
+ * problem row, unless it may still execute (`mayLand`): that one is unconfirmed, with its amount. A
+ * cancel is a send to the wallet's own address: its amount out, what arrives an incoming row. `all`:
+ * the activity the row is in, which names what a cancel cancels. */
+export function platformRow(a: PlatformActivity, all?: readonly PlatformActivity[] | null): TxRow {
   const move = a.kind === "moveToCore";
   const unknown = a.winnerKnown === false;
   const replaced = a.state === "replaced" && !unknown;
-  // What a fund, an unshield or a recover adds to the Platform addresses reads as a receipt there.
-  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded" || a.kind === "recovered";
+  // What a fund, an unshield, a recover or a registration refund adds to the Platform addresses reads as a receipt there.
+  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded" || a.kind === "recovered" || a.kind === "registrationRefund";
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
   const amount = replaced || (unknown && a.state !== "done") ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   const topUp = a.kind === "toIdentity";
@@ -108,7 +126,7 @@ export function platformRow(a: PlatformActivity): TxRow {
   const mayLand = !unknown && a.state === "failed" && a.mayLand && (move || a.kind === "send" || a.kind === "contactPayment" || topUp);
   const kind = a.state === "done" || replaced || unknown ? "confirmed" : a.state === "pending" || mayLand ? "unconfirmed" : "notAccepted";
   return {
-    ...base(`platform:${a.kind}:${a.id}${unknown ? SETTLED_UNKNOWN : replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, paid && amount !== 0 ? -amount : amount),
+    ...base(`platform:${rowKind(a, all)}:${a.id}${unknown ? SETTLED_UNKNOWN : replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, paid && amount !== 0 ? -amount : amount),
     txType: move ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : received ? "received" : "sent",
     address: move || a.kind === "send" || a.kind === "contactPayment" ? a.to : a.address,
@@ -118,13 +136,20 @@ export function platformRow(a: PlatformActivity): TxRow {
 
 /** A shielded activity row as a history row. Adding to the pool and a withdrawal to the Dash wallet
  * are internal moves (no sign); an `unshield` pays a Platform address (E1's contract), so it is
- * a payment out unless the engine says it is a self-transfer; the rest are received or paid. */
-export function shieldedRow(a: ShieldedActivity): TxRow {
+ * a payment out unless the engine says it is a self-transfer; the rest are received or paid. A
+ * spend the engine holds open (`refusal: held`: refused, or its outcome not known yet), or with no refusal whose
+ * notes are held (`held`, the status's `heldSpends`), may still go through: unconfirmed, with its
+ * amount, never "Not accepted". A released refusal reads as released whatever `held` says. */
+export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): TxRow {
   const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "withdrawal" || a.direction === "selfTransfer";
   const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
+  // The engine's refusal reads the library's holds with the journal, and a release is final: it
+  // outranks the status's `heldSpends`, which may be from an earlier read.
+  const mayLand = a.status !== "confirmed" && (a.refusal ? a.refusal === "held" : !!held?.has(a.id));
+  const kind = a.status === "confirmed" ? "confirmed" : a.status === "failed" && !mayLand ? "notAccepted" : "unconfirmed";
   return {
-    ...base(`shielded:${a.kind}:${a.id}`, statusOf(a.status === "confirmed" ? "confirmed" : a.status === "failed" ? "notAccepted" : "unconfirmed"), a.createdAt, a.direction === "out" ? -amount : amount),
+    ...base(`shielded:${a.kind}:${a.id}${mayLand ? MAY_LAND : ""}`, statusOf(kind), a.createdAt, a.direction === "out" ? -amount : amount),
     blockHeight: a.blockHeight,
     txType: internal ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: internal ? "platform" : received ? "received" : "sent",
@@ -132,6 +157,9 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
     label: a.memo,
   };
 }
+
+/** The history ids of the Shielded spends whose notes are held. */
+export const heldActivities = (status: ShieldedStatus | null | undefined): ReadonlySet<string> => new Set(status?.heldSpends.map((h) => h.activityId));
 
 export type SourceRecord =
   | { source: "platform"; row: TxRow; record: PlatformActivity }
@@ -142,17 +170,17 @@ export type SourceRecord =
 const recordKey = (txid: string) => txid.replace(/:(replaced|mayland|unknown)$/, "");
 
 /** The activity record a synthetic row was made from, by its txid; `null` for a Core txid or a
- * record no longer in the read. */
-export function findSourceRecord(txid: string, platform: readonly PlatformActivity[] | null | undefined, shielded: readonly ShieldedActivity[] | null | undefined): SourceRecord | null {
+ * record no longer in the read. `held`: the Shielded spends whose notes are held. */
+export function findSourceRecord(txid: string, platform: readonly PlatformActivity[] | null | undefined, shielded: readonly ShieldedActivity[] | null | undefined, held?: ReadonlySet<string>): SourceRecord | null {
   const key = recordKey(txid);
   const source = rowSource({ txid });
   if (source === "platform") {
-    const record = platform?.find((a) => recordKey(platformRow(a).txid) === key);
-    return record ? { source, row: platformRow(record), record } : null;
+    const record = platform?.find((a) => recordKey(platformRow(a, platform).txid) === key);
+    return record ? { source, row: platformRow(record, platform), record } : null;
   }
   if (source === "shielded") {
-    const record = shielded?.find((a) => shieldedRow(a).txid === key);
-    return record ? { source, row: shieldedRow(record), record } : null;
+    const record = shielded?.find((a) => recordKey(shieldedRow(a).txid) === key);
+    return record ? { source, row: shieldedRow(record, held), record } : null;
   }
   return null;
 }
@@ -160,7 +188,7 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
   if (rowSource(row) === "platform")
-    return isSettledUnknownRow(row) ? settledUnknownText(row).title : kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "recovered" ? SourceRowText.recovered : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+    return isSettledUnknownRow(row) ? settledUnknownText(row).title : kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "cancelMove" ? SourceRowText.cancelMove : kind === "cancelPayment" ? SourceRowText.cancelPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "recovered" ? SourceRowText.recovered : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "registrationRefund" ? SourceRowText.registrationRefund : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

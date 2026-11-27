@@ -12,7 +12,7 @@ import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useBackend, usePoolBalances } from "../../api/queries";
-import { PAY_WITH_COPY, payWithRows } from "../../dashpay/payWith";
+import { PRIVACY_COPY, privacyHeading, privacyStep, shieldedReason, type PaySource, type PaySourceRow } from "../../dashpay/payWith";
 import { timeText } from "../../fiat/rates";
 import { known } from "../../format/homeBalance";
 import { useInstantChecks, useLabelQuote, useNameChecks, useNameCredits, usePlatformSource, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
@@ -35,7 +35,9 @@ import type { StatusInputs } from "../../dashpay/status";
 import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
-import { useT } from "../../i18n";
+import { t, useT } from "../../i18n";
+import { navigate } from "../../app/ui";
+import { transferFor } from "../../transfer/model";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { ShareSheet } from "./ShareSheet";
 import { WelcomeSteps } from "./Welcome";
@@ -333,16 +335,26 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
   );
 }
 
+/** Why a Shielded quote cannot be paid now (C-funding F16), its first failing check; `null` for
+ * another source's quote or one that can. */
+function useShieldedBlock(wiz: RegistrationWizard, quote: RegistrationQuote | undefined, inputs: StatusInputs): string | null {
+  const b = useBackend();
+  if (!wiz.fromShielded || !quote) return null;
+  return shieldedReason(quote.readiness, inputs.amount, (secs) => timeText(secs, b.locale));
+}
+
 /** Step 2's cost: the quote in Dash (D2) from the Dash wallet or the Platform balance (C-funding
  * F9), or what the identity's credits may pay (D6). */
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
   useT();
-  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform, wiz.temporaryLabel);
+  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.source ?? "core", wiz.temporaryLabel);
   const credits = useNameCredits(walletId, identity, wiz.label);
-  // Either read failing says so (review r2 L1); a Platform quote's refusal says why.
+  const pools = usePoolBalances(walletId);
+  const block = useShieldedBlock(wiz, quote.data, inputs);
+  // Either read failing says so (review r2 L1); a balance quote's refusal says why.
   const failed = identity !== null ? credits : quote;
   if (failed.isError) {
-    const why = (wiz.fromPlatform && platformRefusalText(failed.error, inputs.amount)) || REG_COPY.confirm.quoteFailed;
+    const why = ((wiz.fromPlatform || wiz.fromShielded) && platformRefusalText(failed.error, inputs.amount)) || REG_COPY.confirm.quoteFailed;
     return (
       <p className="registration-line registration-problem" data-testid="registration-quote-failed">
         {why}
@@ -352,7 +364,7 @@ function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizar
   if (identity !== null)
     return <p className="registration-line">{credits.data ? REG_COPY.confirm.fromCredits(credits.data.maxCredits) : REG_COPY.confirm.quoting}</p>;
   if (!quote.data || !wiz.quoteStands(quote.dataUpdatedAt)) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
-  const model = confirmModel(quote.data, inputs.amount);
+  const model = confirmModel(quote.data, inputs.amount, wiz.fromShielded && known(pools.shielded) ? pools.shielded : null, inputs.discreet);
   return (
     <>
       <p className="registration-fee">
@@ -371,6 +383,11 @@ function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizar
           {model.shortfall}
         </p>
       )}
+      {block !== null && (
+        <p className="registration-line registration-problem" data-testid="registration-shielded-block">
+          {block}
+        </p>
+      )}
     </>
   );
 }
@@ -382,7 +399,7 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const [accepted, setAccepted] = useState(false);
   const identity = wiz.mode.kind === "credits" ? wiz.mode.identity : null;
   // The same reads as CostLines (shared through the query cache).
-  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.fromPlatform, wiz.temporaryLabel);
+  const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.source ?? "core", wiz.temporaryLabel);
   // F4: a start refused for a changed cost shows the new one; F22: so does a run's.
   const stands = wiz.quoteStands(quote.dataUpdatedAt);
   const { refetch } = quote;
@@ -392,9 +409,13 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   const credits = useNameCredits(walletId, identity, wiz.label);
   const check = useUsernameCheck(wiz.label);
   const contested = identity !== null ? (check.data?.contested ?? false) : (quote.data?.contested ?? false);
-  // A refetch that fails keeps the last quote: Pay waits for one that stands.
+  const block = useShieldedBlock(wiz, quote.data, inputs);
+  // A refetch that fails keeps the last quote: Pay waits for one that stands, and a Shielded one
+  // for every readiness check.
   const ready =
-    identity !== null ? credits.data !== undefined : quote.data !== undefined && !quote.isError && stands && confirmModel(quote.data, inputs.amount).shortfall === null;
+    identity !== null
+      ? credits.data !== undefined
+      : quote.data !== undefined && !quote.isError && stands && confirmModel(quote.data, inputs.amount).shortfall === null && block === null;
   const disabled = !ready || wiz.running !== null || (contested && !accepted);
   const pay = () => {
     if (identity !== null) void wiz.registerName(identity);
@@ -438,34 +459,86 @@ function ConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
   );
 }
 
-/** "Pay with" (C-funding F19): each source with its balance and, when it cannot pay, its one
- * reason; Dash wallet selected each time. A source that cannot pay cannot be chosen. */
-function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
+/** One source to pick: its label, its note or balance, and why it cannot pay. */
+function SourceChoice({ id, row, note, wiz }: { id: string; row: PaySourceRow; note: string | null; wiz: RegistrationWizard }) {
+  return (
+    <label className="topup-choice pay-with-source" data-testid={`pay-with-${row.source}`} data-disabled={row.reason !== null || undefined}>
+      <input
+        type="radio"
+        name={`${id}-source`}
+        checked={wiz.source === row.source}
+        disabled={row.reason !== null}
+        aria-describedby={`${id}-${row.source}-note`}
+        onChange={() => wiz.setSource(row.source)}
+      />
+      <span className="topup-choice-amount">{row.label}</span>
+      <span className="topup-choice-buys" id={`${id}-${row.source}-note`}>
+        {note !== null && <span data-testid={`pay-with-${row.source}-note`}>{note}</span>}
+        {row.balance !== null && (
+          <span className="pay-with-balance" data-testid={`pay-with-${row.source}-balance`}>
+            <bdi dir="ltr">{row.balance}</bdi>
+          </span>
+        )}
+        {row.reason !== null && (
+          <span className="pay-with-reason" data-testid={`pay-with-${row.source}-reason`}>
+            {row.reason}
+          </span>
+        )}
+      </span>
+    </label>
+  );
+}
+
+const SOURCE_NOTE: Partial<Record<PaySource, () => string>> = { shielded: () => PRIVACY_COPY.shieldedNote, core: () => PRIVACY_COPY.coreNote };
+
+/** "Make your username private" (C-funding F19; the iOS and Android wallets' step): Shielded first
+ * when it can pay, Dash wallet always, Platform behind Advanced when it can pay; nothing chosen
+ * until a tap. While Shielded cannot pay, a tip card replaces the sources, with "Shield your funds
+ * first" (Transfer to Shielded) and "Continue without privacy". */
+function PrivacyStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs }) {
   useT();
   const id = useId();
   const b = useBackend();
+  const [advanced, setAdvanced] = useState(false);
   const core = useUsernameQuote(walletId, true) ?? null;
   const pools = usePoolBalances(walletId);
   const readiness = useShieldedReadiness(walletId);
   const platform = usePlatformSource(walletId);
-  const rows = payWithRows({
+  const step = privacyStep({
     core,
     platformDuffs: known(pools.platform) ? pools.platform : null,
     platform,
     shieldedDuffs: known(pools.shielded) ? pools.shielded : null,
     readiness,
+    shieldedHold: pools.shieldedHold,
     amount: inputs.amount,
     clock: (secs) => timeText(secs, b.locale),
     discreet: inputs.discreet,
   });
-  const chosen = rows.find((r) => r.source === wiz.source);
+  const preselect = step.kind === "sources" ? step.preselect : null;
+  useEffect(() => {
+    if (preselect !== null && wiz.source === null) wiz.setSource(preselect);
+  }, [preselect, wiz]);
+  const offered = step.kind === "sources" ? [...step.rows, ...(advanced && step.platform ? [step.platform] : [])] : advanced && step.platform ? [step.platform] : [];
+  const chosen = offered.find((r) => r.source === wiz.source);
+  const shieldFirst = () => {
+    wiz.close();
+    navigate("home");
+    transferFor(b, walletId).start("coreToShielded");
+  };
+  const heading = privacyHeading(step);
   return (
-    <section className="registration card-l1" data-testid="registration-pay-with" aria-labelledby={`${id}-title`}>
+    <section className="registration card-l1" data-testid="registration-pay-with" data-kind={step.kind} aria-labelledby={`${id}-title`}>
       <header className="registration-header">
         <h2 className="registration-title" id={`${id}-title`}>
-          {PAY_WITH_COPY.title}
+          {heading.title}
         </h2>
       </header>
+      {heading.body !== null && (
+        <p className="registration-line" data-testid="privacy-body">
+          {heading.body}
+        </p>
+      )}
       <form
         className="registration-form"
         onSubmit={(e) => {
@@ -473,52 +546,62 @@ function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
           if (chosen?.reason === null) wiz.pickSource();
         }}
       >
-        <fieldset className="topup-choices pay-with-sources" aria-labelledby={`${id}-title`}>
-          {rows.map((r) => (
-            <label key={r.source} className="topup-choice pay-with-source" data-testid={`pay-with-${r.source}`} data-disabled={r.reason !== null || undefined}>
-              <input
-                type="radio"
-                name={`${id}-source`}
-                checked={wiz.source === r.source}
-                disabled={r.reason !== null}
-                aria-describedby={r.reason !== null ? `${id}-${r.source}-reason` : undefined}
-                onChange={() => wiz.setSource(r.source)}
-              />
-              <span className="topup-choice-amount">{r.label}</span>
-              {r.balance !== null && (
-                <span className="topup-choice-buys" data-testid={`pay-with-${r.source}-balance`}>
-                  <bdi dir="ltr">{r.balance}</bdi>
-                </span>
-              )}
-              {r.reason !== null && (
-                <span className="topup-choice-buys pay-with-reason" id={`${id}-${r.source}-reason`} data-testid={`pay-with-${r.source}-reason`}>
-                  {r.reason}
-                </span>
-              )}
-            </label>
-          ))}
-        </fieldset>
+        {step.kind === "loading" && <p className="registration-line">{t("transfer.loading")}</p>}
+        {step.kind === "tip" && (
+          <div className="privacy-tip" role="note" data-testid="privacy-tip" data-kind={step.tip.kind} data-tone={step.tip.kind === "pool" ? "warning" : undefined}>
+            <p className="privacy-tip-title">{step.tip.title}</p>
+            <p className="privacy-tip-text">{step.tip.text}</p>
+          </div>
+        )}
+        {offered.length > 0 && (
+          <fieldset className="topup-choices pay-with-sources" aria-labelledby={`${id}-title`}>
+            {offered.map((r) => (
+              <SourceChoice key={r.source} id={id} row={r} note={SOURCE_NOTE[r.source]?.() ?? null} wiz={wiz} />
+            ))}
+          </fieldset>
+        )}
+        {step.platform !== null && !advanced && (
+          <DashButton variant="plainBlue" size="small" data-testid="privacy-advanced" onClick={() => setAdvanced(true)}>
+            {PRIVACY_COPY.advanced}
+          </DashButton>
+        )}
         <div className="registration-actions">
           <DashButton variant="tintedGray" data-testid="registration-cancel" onClick={() => wiz.close()}>
             {REG_COPY.name.cancel}
           </DashButton>
-          <DashButton variant="filledBlue" type="submit" data-testid="registration-next" disabled={chosen?.reason !== null}>
-            {REG_COPY.name.next}
-          </DashButton>
+          {step.kind === "tip" ? (
+            <>
+              <DashButton variant="tintedGray" data-testid="privacy-without" onClick={() => wiz.withoutPrivacy()}>
+                {PRIVACY_COPY.withoutPrivacy}
+              </DashButton>
+              {chosen && (
+                <DashButton variant="tintedGray" type="submit" data-testid="registration-next" disabled={chosen.reason !== null}>
+                  {REG_COPY.name.next}
+                </DashButton>
+              )}
+              <DashButton variant="filledBlue" data-testid="privacy-shield-first" disabled={!step.shieldFirst} onClick={shieldFirst}>
+                {PRIVACY_COPY.shieldFirst}
+              </DashButton>
+            </>
+          ) : (
+            <DashButton variant="filledBlue" type="submit" data-testid="registration-next" disabled={chosen === undefined || chosen.reason !== null}>
+              {REG_COPY.name.next}
+            </DashButton>
+          )}
         </div>
       </form>
     </section>
   );
 }
 
-/** Steps 1 and 2 (after "Pay with" when it was opened), and the passphrase prompt their grants
+/** Steps 1 and 2 (after the source step when it was opened), and the passphrase prompt their grants
  * ask for. */
 export function WizardSteps({ wiz, walletId, inputs, network }: { wiz: RegistrationWizard; walletId: string; inputs: StatusInputs; network: NetworkKind }) {
   useT();
   useModel(wiz);
   return (
     <>
-      {wiz.step === "source" && <PayWithStep wiz={wiz} walletId={walletId} inputs={inputs} />}
+      {wiz.step === "source" && <PrivacyStep wiz={wiz} walletId={walletId} inputs={inputs} />}
       {wiz.step === "name" && <NameStep wiz={wiz} walletId={walletId} network={network} />}
       {wiz.step === "instant" && <InstantStep wiz={wiz} walletId={walletId} />}
       {wiz.step === "confirm" && <ConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />}

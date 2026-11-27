@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
-use dashcore::hashes::Hash;
 use dashcore::{Network, OutPoint, Transaction, Txid};
 use dpp::identity::IdentityPublicKey;
 use dpp::identity::core_script::CoreScript;
@@ -545,6 +544,9 @@ impl NetworkSession {
         grant: &str,
         sibling_of: Option<&str>,
     ) -> Result<WithdrawalRow, WithdrawalError> {
+        if self.platform.enabled() && self.wallet_platform_held(wallet) {
+            return Err(crate::platform::PlatformError::Restored.into());
+        }
         let hash = parse_pro_tx_hash(&call.pro_tx_hash)?;
         // The grant names the masternode the user acted on: one for
         // another is refused here, unredeemed, and its signer would refuse
@@ -646,15 +648,24 @@ impl WithdrawalRuntime {
         if !session.platform.enabled() {
             return;
         }
+        #[cfg(test)]
+        {
+            let gate = &session.hub.restore;
+            *gate.restored_at_recheck_start.lock().unwrap() = Some(gate.is_restored());
+        }
         let weak = Arc::downgrade(session);
         let task = async move {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 let every = s.masternodes.withdrawals.waits().recheck;
-                if let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
-                    && let Err(e) = recheck_all(&env, &net).await
+                if !s.any_platform_held()
+                    && let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
                 {
-                    tracing::info!(error = %e, "the masternode withdrawals' recheck");
+                    #[cfg(test)]
+                    (s.hub.restore.recheck_runs).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Err(e) = recheck_all(&env, &net).await {
+                        tracing::info!(error = %e, "the masternode withdrawals' recheck");
+                    }
                 }
                 drop(s);
                 tokio::time::sleep(every).await;

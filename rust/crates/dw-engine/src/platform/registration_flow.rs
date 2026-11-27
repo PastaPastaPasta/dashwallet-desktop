@@ -74,6 +74,7 @@ use super::registration_ledger::{
 };
 use super::registration_platform::{self, RegisterPlan};
 use super::registration_rows::{Decoded, Funding, Phase, PlatformPlan, ProfileRecord};
+use super::registration_shielded::{ShieldedAsk, ShieldedOutcome};
 use super::startup::StartupStatus;
 use crate::coins::CoinFence;
 use crate::{DashNetwork, NetworkSession, WalletId};
@@ -441,6 +442,16 @@ pub(crate) trait RegistrationLib: Send + Sync {
         inviter: &str,
         lease: &Lease,
     ) -> impl Future<Output = Result<(), ContactError>> + Send;
+    /// The wallet's own Platform receive address, bech32m: a Shielded-funded
+    /// row's fallback, fixed at Draft (C-funding F13).
+    fn fallback_address(&self) -> impl Future<Output = Result<String, PlatformError>> + Send;
+    /// One funding pass of a Shielded-funded row (C-funding F11, F12, F16):
+    /// the evidence of a create the row named, else a create under `lease`.
+    fn shielded_fund(
+        &self,
+        ask: ShieldedAsk,
+        lease: Option<&Lease>,
+    ) -> impl Future<Output = Result<ShieldedOutcome, PlatformError>> + Send;
 }
 
 /// How an invitation's claim failed (DP5-02 §3).
@@ -585,8 +596,9 @@ where
     consumed_verdict(found, keys)
 }
 
-/// `identity` holds exactly `keys`: the same ids, types and data, as the
-/// library's adoption compares.
+/// `identity` holds exactly `keys`: the same ids, types and data. Only our
+/// signer can prove those keys, so the identity is our claim's. The
+/// library's adoption also compares each key's other creation fields.
 fn carries_keys(identity: &Identity, keys: &BTreeMap<KeyID, IdentityPublicKey>) -> bool {
     let actual = identity.public_keys();
     actual.len() == keys.len()
@@ -1178,10 +1190,8 @@ pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'sta
             feature: String::new(),
         }
         .code()),
-        // No flow step runs it yet (C4b-2): never funded, discarded or
-        // advanced here.
-        Funding::Shielded { .. } => Err(unsupported()),
-        Funding::CoreBalance { .. }
+        Funding::Shielded { .. }
+        | Funding::CoreBalance { .. }
         | Funding::ExistingIdentity
         | Funding::Invitation { .. }
         | Funding::PlatformAddresses { .. } => Ok((phase, funding)),
@@ -1242,9 +1252,26 @@ pub(crate) fn platform_committed(row: &RegistrationRow) -> bool {
     )
 }
 
-/// Why a Platform-funded row must not be discarded (C-funding F6).
+/// A Shielded-funded row whose create named its identity (C-funding F11):
+/// the create may have been sent, and only evidence that it never executes,
+/// or that Platform refunded it, clears the name. The name stays once the
+/// identity exists.
+pub(crate) fn shielded_committed(row: &RegistrationRow) -> bool {
+    matches!(
+        Funding::decode(&row.funding),
+        Decoded::Known(Funding::Shielded {
+            identity: Some(_),
+            ..
+        })
+    )
+}
+
+/// Why a Platform- or Shielded-funded row must not be discarded
+/// (C-funding F6, F12).
 pub(crate) fn platform_discard_refused(row: &RegistrationRow) -> Option<&'static str> {
-    platform_committed(row).then_some("the registration's payment may have reached the network")
+    let committed = platform_committed(row)
+        || (shielded_committed(row) && Phase::parse(&row.phase) == Some(Phase::KeysPrepared));
+    committed.then_some("the registration's payment may have reached the network")
 }
 
 /// A claim row stopped on `invitation.already_has_identity` (DP5-03 D24):
@@ -1930,6 +1957,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 } => {
                     let numbers = (funding_credits, fee_reserve_credits);
                     self.platform_fund(row, numbers, plan).await
+                }
+                Funding::Shielded {
+                    denomination,
+                    fallback,
+                    identity,
+                } => {
+                    self.shielded_fund(row, (denomination, fallback), identity)
+                        .await
                 }
                 _ => Ok(Step::Fail(internal(), false)),
             },
@@ -2827,6 +2862,122 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
+    /// KeysPrepared → IdentityRegistered for a row funded from the Shielded
+    /// balance (C-funding F11–F13, F16): one pass under the wallet's
+    /// shielded lock. A row whose create named its identity is settled by
+    /// evidence alone; a new create needs the run's lease.
+    async fn shielded_fund(
+        &self,
+        row: &RegistrationRow,
+        (denomination, fallback): (u64, String),
+        identity: Option<String>,
+    ) -> Result<Step, PlatformError> {
+        let Some(index) = row.identity_index else {
+            return Ok(Step::Fail(internal(), false));
+        };
+        if identity.is_none() {
+            if let Some(wait) = self.lib.claim_hold() {
+                return Ok(hold_step(wait));
+            }
+            // An identity the seed already holds at the row's index is the
+            // row's: creating again would pay Platform's penalty.
+            if let Some(identity) = self.identity_at(index).await? {
+                let change = RegistrationChange {
+                    phase: Some(Phase::IdentityRegistered.as_str().into()),
+                    identity: Some(identity),
+                    ..Default::default()
+                };
+                return self.advance(row, change).await;
+            }
+        }
+        let lease = self.lease();
+        if lease.is_none() && identity.is_none() {
+            return Ok(Step::Park(self.authority_wait()));
+        }
+        let in_call = match self.flows().enter_call(self.claim) {
+            Ok(in_call) => in_call,
+            Err(step) => return Ok(step),
+        };
+        let ask = ShieldedAsk {
+            draft: row.id,
+            owner: self.claim.owner,
+            index,
+            denomination,
+            fallback: fallback.clone(),
+            identity,
+        };
+        let outcome = self.lib.shielded_fund(ask, lease.as_ref()).await;
+        drop(in_call);
+        let unnamed = move |failure: Option<(&str, bool)>| RegistrationChange {
+            funding: Some(
+                Funding::Shielded {
+                    denomination,
+                    fallback,
+                    identity: None,
+                }
+                .encode(),
+            ),
+            failure: failure.map(|(code, retryable)| Some((code.to_owned(), retryable))),
+            ..Default::default()
+        };
+        let registered = |identity: String| RegistrationChange {
+            phase: Some(Phase::IdentityRegistered.as_str().into()),
+            identity: Some(identity),
+            ..Default::default()
+        };
+        match outcome {
+            Ok(ShieldedOutcome::Registered(identity)) => {
+                self.advance(row, registered(identity)).await
+            }
+            Ok(ShieldedOutcome::Unknown) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
+            // F12, F13: Platform refused the keys and refunded the payment;
+            // an identity of the seed at the row's index is the row's, else
+            // the penalty was taken and nothing retries. The one the create
+            // named was just proved absent, whatever the library recorded.
+            // Consumed: its notes are spent with no identity, by its fallback
+            // or by another spend of them, so it adopts as a fallback does
+            // and otherwise claims no refund.
+            Ok(
+                ref spent @ (ShieldedOutcome::Fallback(ref named)
+                | ShieldedOutcome::Consumed(ref named)),
+            ) => match (self.lib.identities().await?)
+                .into_iter()
+                .find(|(i, id)| *i == index && id != named)
+            {
+                Some((_, identity)) => self.advance(row, registered(identity)).await,
+                None => {
+                    let failure = match spent {
+                        ShieldedOutcome::Fallback(_) => RegistrationError::Refunded,
+                        _ => RegistrationError::PaymentConsumed,
+                    };
+                    let code = failure.code();
+                    tracing::warn!(
+                        draft = row.id,
+                        code,
+                        "a Shielded-funded create made no identity"
+                    );
+                    self.advance(row, unnamed(Some((code, false)))).await
+                }
+            },
+            Ok(ShieldedOutcome::Cleared) => self.advance(row, unnamed(None)).await,
+            Ok(ShieldedOutcome::Unsent) => {
+                let code = super::errors::ShieldedError::SpendRefused.code();
+                self.advance(row, unnamed(Some((code, true)))).await
+            }
+            Ok(ShieldedOutcome::NotReady(reason, ready_at)) => {
+                let not_ready = RegistrationError::ShieldedNotReady { reason, ready_at };
+                Ok(Step::Fail(not_ready.code(), true))
+            }
+            Ok(ShieldedOutcome::Refused(super::errors::ShieldedError::Platform(e))) => {
+                Ok(self.failed(&e))
+            }
+            Ok(ShieldedOutcome::Refused(e)) => Ok(Step::Fail(e.code(), true)),
+            Ok(ShieldedOutcome::Unaccepted) => Ok(Step::Fail(internal(), false)),
+            Err(e @ PlatformError::Storage { .. }) => Err(e),
+            Err(e) => Ok(self.failed(&e)),
+        }
+    }
+
     /// Wipes the claimed link from the stash (D13); a failure is logged and
     /// the next step tries again.
     async fn forget_link(&self, link_id: &str) {
@@ -3411,6 +3562,8 @@ pub(crate) fn lock_status(
         S::ChainLocked => LockStatus::ChainLocked,
         S::Consumed => LockStatus::Consumed,
         S::RecoveredFromChain => LockStatus::RecoveredFromChain,
+        // Only the library's own wallet drain writes it: the lock is out and spent.
+        S::DrainCompleted => LockStatus::Consumed,
     }
 }
 
@@ -3442,11 +3595,15 @@ pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
 /// The fields of `profile` the library publishes. Avatar bytes are DP4-02's;
 /// a registration's profile names its avatar by URL only.
 fn profile_update(profile: &ProfileRecord) -> platform_wallet::wallet::identity::ProfileUpdate {
+    use platform_wallet::wallet::identity::PaymentAddressUpdate;
     platform_wallet::wallet::identity::ProfileUpdate {
         display_name: profile.display_name.clone(),
         public_message: profile.public_message.clone(),
         avatar_url: profile.avatar_url.clone(),
         avatar_bytes: None,
+        core_payment_address: PaymentAddressUpdate::Keep,
+        platform_payment_address: PaymentAddressUpdate::Keep,
+        shielded_address: PaymentAddressUpdate::Keep,
     }
 }
 
@@ -3661,6 +3818,7 @@ impl RegistrationLib for PwLib {
         match self.session.replay_guard(self.wallet_id, 0).await {
             Err(crate::EngineError::RescanInProgress) => Some(PlatformError::ContextUnavailable),
             Err(crate::EngineError::RescanInterrupted) => Some(PlatformError::RescanInterrupted),
+            Err(crate::EngineError::Restored) => Some(PlatformError::Restored),
             _ => None,
         }
     }
@@ -3748,6 +3906,9 @@ impl RegistrationLib for PwLib {
         {
             return Ok(facts);
         }
+        if !super::shielded_pool::session_keyset_spends(&self.session) {
+            return Err(PlatformError::Unavailable);
+        }
         let pool = super::shielded_pool::PwShielded::open(&self.session, self.wallet_id).await?;
         super::shielded_pool::registration_facts(&self.session, self.wallet_id, &pool, &mut facts)
             .await?;
@@ -3816,6 +3977,28 @@ impl RegistrationLib for PwLib {
         )
         .await
         .map(drop)
+    }
+
+    async fn fallback_address(&self) -> Result<String, PlatformError> {
+        let network = self.session.vault.network();
+        super::platform_moves::fallback_address(&self.session, &self.wallet, network).await
+    }
+
+    async fn shielded_fund(
+        &self,
+        ask: ShieldedAsk,
+        lease: Option<&Lease>,
+    ) -> Result<ShieldedOutcome, PlatformError> {
+        let mainnet = self.session.vault.network() == dpp::dashcore::Network::Mainnet;
+        let spends = super::shielded_pool::session_keyset_spends(&self.session);
+        if ask.identity.is_none() && !mainnet && lease.is_some() && !spends {
+            return Err(PlatformError::Unavailable);
+        }
+        let pool = super::shielded_pool::PwShielded::open(&self.session, self.wallet_id).await?;
+        let net = super::registration_shielded::SdkEvidence(Arc::clone(&self.sdk));
+        let version = self.platform_version().await;
+        let libs = (&pool, &net, version);
+        super::registration_shielded::fund(&self.session, self.wallet_id, libs, ask, lease).await
     }
 
     async fn funding_permit(
@@ -3988,9 +4171,7 @@ impl RegistrationLib for PwLib {
         let locks = identity_locks(self.wallet_id, id);
         let _write = locks.write.lock().await;
         self.wallet
-            .identity()
-            .dashpay()
-            .create_profile_with_external_signer(&id, profile_update(profile), &signer)
+            .write_dashpay_profile(&id, profile_update(profile), &signer, true)
             .await?;
         Ok(())
     }
@@ -4010,9 +4191,7 @@ impl RegistrationLib for PwLib {
         let locks = identity_locks(self.wallet_id, id);
         let _write = locks.write.lock().await;
         self.wallet
-            .identity()
-            .dashpay()
-            .update_profile_with_external_signer(&id, profile_update(profile), &signer)
+            .write_dashpay_profile(&id, profile_update(profile), &signer, false)
             .await?;
         Ok(())
     }

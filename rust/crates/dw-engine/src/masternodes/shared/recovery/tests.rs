@@ -2,7 +2,6 @@
 //! the blocked reason, derived from constructed rows, coins and history
 //! (MG-10 §4.4 change 2, rules 2, 3 and 9).
 
-use dashcore::hashes::Hash;
 use dashcore::{ScriptBuf, Transaction, TxIn, TxOut};
 use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 

@@ -52,7 +52,7 @@ beforeEach(() => {
   resetPlatformFunds();
   resetRecovery();
   resetTransfers();
-  reads.shielded = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true };
+  reads.shielded = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true, spendsAvailable: true, account: "bound", scan: null, lastPassFailed: false };
   reads.funds = [];
   reads.activity = [];
   reads.activityRead = { isPending: false, isError: false };
@@ -93,6 +93,10 @@ describe("Home has no Platform or Shielded pool section", () => {
     }],
     ["an unresolved Shielded payment", () => {
       reads.shielded!.unresolvedSpends = [{ activityId: "unresolved", transition: "00", attempts: 0 }];
+    }],
+    ["a held Shielded payment", () => {
+      reads.shielded!.heldSpends = [{ activityId: "held", transition: "00", credits: "30000000000" }];
+      reads.shielded!.held = "30000000000";
     }],
     ["an unrecorded Shielded payment", () => {
       reads.shielded!.unrecordedSpends = [{ activityId: "lost", since: 1 }];

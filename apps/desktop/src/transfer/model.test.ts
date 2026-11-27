@@ -17,6 +17,7 @@ import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
+import { SHIELDED_SPENDS_COPY } from "../shielded/spends";
 import { canSwap, coreMaxNotes, defaultRoute, feeText, heldExitRest, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
 
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
@@ -110,6 +111,12 @@ describe("routes", () => {
     expect(Object.keys(ROUTES).sort()).toEqual(["coreToPlatform", "coreToShielded", "platformToCore", "shieldedToCore", "shieldedToPlatform"]);
     expect(MAX_DERIVE.shieldedToPlatform).toBe(shieldedSpendMax);
     expect(unsupportedText("platform", "shielded")).toBe(TRANSFER_COPY.unsupported);
+    for (const mainnet of [false, true]) {
+      expect(unsupportedText("platform", "shielded", mainnet, true)).toBe(SHIELDED_SPENDS_COPY.shieldIn);
+      expect(unsupportedText("shielded", "platform", mainnet, true)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+      expect(unsupportedText("core", "platform", mainnet, true)).toBe(unsupportedText("core", "platform", mainnet));
+      expect(unsupportedText("platform", "shielded", mainnet, false)).toBe(unsupportedText("platform", "shielded", mainnet));
+    }
     expect(canSwap("shielded", "platform")).toBe(false);
   });
 
@@ -190,6 +197,18 @@ describe("routes", () => {
     expect(listedPools({ ...POOLS, shielded: null, platform: null })).toEqual(["core"]);
   });
 
+  it("hold the moves out of Shielded with one reason, and into it with another, where this build cannot spend from it", () => {
+    const { shielded, fund, move } = flows();
+    const f = { shielded, fund, move };
+    const off: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: true } };
+    expect(routeWhy("shieldedToCore", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(routeWhy("shieldedToPlatform", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(routeWhy("coreToShielded", off, f)).toBe(SHIELDED_SPENDS_COPY.shieldIn);
+    expect(routeWhy("coreToPlatform", off, f)).toBeNull();
+    const on: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: false } };
+    for (const r of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) expect(routeWhy(r, on, f), r).toBe(routeWhy(r, POOLS, f));
+  });
+
   it("each say why they can't start, with the text the Home card gave", () => {
     const { shielded, fund, move } = flows();
     const f = { shielded, fund, move };
@@ -199,6 +218,9 @@ describe("routes", () => {
     const syncing = { ...POOLS, shielded: { active: true, syncing: true, duffs: null } };
     expect(routeWhy("coreToShielded", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
     expect(routeWhy("shieldedToCore", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
+    // The vault's lock holding the account is named, for Add and Transfer out alike.
+    const mixingOnly = { ...POOLS, shielded: { active: true, syncing: true, wait: "mixingOnly" as const, duffs: null } };
+    for (const r of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) expect(routeWhy(r, mixingOnly, f), r).toBe(SHIELDED_SYNC_COPY.wait("mixingOnly"));
     expect(routeWhy("shieldedToCore", { ...POOLS, shielded: { active: true, syncing: false, duffs: 0 } }, f)).toBe(SHIELDED_COPY.card.why.empty);
     expect(routeWhy("shieldedToPlatform", inactive, f)).toBe(SHIELDED_COPY.card.inactive);
     expect(routeWhy("shieldedToPlatform", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
@@ -267,6 +289,13 @@ describe("the default route", () => {
     expect(defaultRoute(POOLS)).toBe("coreToShielded");
     expect(defaultRoute({ ...POOLS, shielded: { active: false, syncing: false, duffs: null } })).toBe("coreToPlatform");
     expect(defaultRoute({ ...POOLS, shielded: null })).toBe("coreToPlatform");
+  });
+
+  it("is → Platform where this build cannot spend from Shielded, and → Shielded, held, without Platform", () => {
+    const off = { active: true, syncing: false, duffs: 125_000_000, spendsOff: true };
+    expect(defaultRoute({ ...POOLS, shielded: off })).toBe("coreToPlatform");
+    expect(defaultRoute({ ...POOLS, shielded: off, platform: null })).toBe("coreToShielded");
+    expect(defaultRoute({ ...POOLS, shielded: off, platform: undefined })).toBeUndefined();
   });
 
   it("is none when neither is there, and the sheet says why", () => {

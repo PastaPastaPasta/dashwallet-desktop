@@ -77,13 +77,13 @@ fn test_qt_106_wallet_dat_restores_dashd_addresses() {
             }
             (None, None) => {
                 let xprv = ExtendedPrivKey::from_str(w["xprv"].as_str().unwrap()).unwrap();
-                assert_eq!(xprv.private_key.to_secret_bytes(), *root.master_secret);
+                assert_eq!(*xprv.private_key.to_bytes(), *root.master_secret);
                 xprv
             }
             other => panic!("{file}: mnemonic presence differs: {:?}", other.1),
         };
         assert_eq!(
-            master.private_key.public_key().serialize(),
+            master.private_key.public_key().to_compressed(),
             root.master_pubkey,
             "{file}: phrase does not give the wallet's master key"
         );

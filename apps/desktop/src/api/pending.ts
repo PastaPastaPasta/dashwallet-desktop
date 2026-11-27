@@ -41,7 +41,9 @@ export function coreMaxRefusal(e: unknown, max: boolean, duffs: (d: number) => s
       return max && data?.kind === "number" ? t("transfer.maxTooMany", { count: String(data.value) }) : null;
     case "below_minimum":
       if (!max || data?.kind !== "maxMinimum") return null;
-      return t(data.leftDuffs > 0 ? "transfer.maxBelowMinimum" : "transfer.maxBelowMinimumAll", { amount: duffs(data.duffs), min: duffs(data.min) });
+      if (data.duffs > 0) return t(data.leftDuffs > 0 ? "transfer.maxBelowMinimum" : "transfer.maxBelowMinimumAll", { amount: duffs(data.duffs), min: duffs(data.min) });
+      if (data.arrivingDuffs > 0) return t(data.arrivingClears ? "transfer.maxAllArriving" : "transfer.maxArrivingTooSmall", { arriving: duffs(data.arrivingDuffs) });
+      return t(data.leftDuffs > 0 ? "transfer.maxNothing" : "transfer.maxEmpty");
     default:
       return null;
   }
@@ -72,6 +74,7 @@ export const SHIELDED_CODES = {
   moveRunning: "shielded.move_running",
   coinsChanged: "shielded.coins_changed",
   unrecordedSpend: "shielded.unrecorded_spend",
+  storeClosed: "shielded.store_closed",
 } as const satisfies Record<string, ShieldedCode>;
 
 /** Whether `e` says the command does not exist in this dw-app. dw-app's ACL manifest lists every
@@ -100,4 +103,15 @@ export async function orUnavailable<T>(call: Promise<T>): Promise<T> {
   const got = await orAbsent(call);
   if (got === null) throw new Error(t("app.unavailableInBuild"));
   return got;
+}
+
+/** `call`'s answer, `null` included; against a dw-app without the command, the same error as
+ * `orUnavailable`. For a command whose success is `null` (quit, restart). */
+export async function absentAsUnavailable<T>(call: Promise<T>): Promise<T> {
+  try {
+    return await call;
+  } catch (e) {
+    if (commandAbsent(e)) throw new Error(t("app.unavailableInBuild"));
+    throw e;
+  }
 }
