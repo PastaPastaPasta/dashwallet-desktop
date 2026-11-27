@@ -7699,6 +7699,50 @@ fn invoice_payment_and_send_record_commit_together() {
 }
 
 #[test]
+fn invoice_payment_recovered_in_activity_cannot_be_resent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    f.engine
+        .block_on(draft.mark_sent(&prepared, true, Some([4; 32])))
+        .unwrap();
+    drop(prepared);
+    drop(draft);
+
+    let f = f.reopen();
+    let page = f
+        .engine
+        .block_on(f.session.history_page(
+            f.wallet,
+            crate::HistoryQuery {
+                filter: Default::default(),
+                sort: crate::HistorySort::NewestFirst,
+                cursor: None,
+                limit: 10,
+            },
+        ))
+        .unwrap();
+    assert!(page.records.iter().any(|record| record.txid == txid));
+    let txid = txid.parse().unwrap();
+    let extras = f
+        .engine
+        .block_on(f.session.tx_detail_extras(f.wallet, txid))
+        .unwrap();
+    assert!(!extras.can_resend);
+    let result = f
+        .engine
+        .block_on(f.session.resend_transaction(f.wallet, txid));
+    assert!(
+        matches!(result, Err(EngineError::InvalidArgument(message)) if message.contains("gift card order"))
+    );
+}
+
+#[test]
 fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
     let f = fixture(false);
     f.credit(1, COIN);

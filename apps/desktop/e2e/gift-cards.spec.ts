@@ -50,7 +50,7 @@ for (const theme of THEMES) {
     await page.getByTestId("pay-result-close").click();
     await expect(page.getByText("FIXTURE-GIFT-CODE")).toBeVisible();
     await expect(page.getByText("0000", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Redeem at redeem.fixture.invalid" }).click();
+    await page.getByRole("button", { name: "Redeem at link-only.fixture.invalid" }).click();
     await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("gift_card_open_claim"))).toBe(true);
     await expect(page.getByRole("button", { name: "Continue to Pay" })).toHaveCount(0);
     const paid = await page.evaluate(() => window.__dwFixture!.calls);
@@ -60,10 +60,15 @@ for (const theme of THEMES) {
 }
 
 test("returning to an order with an unknown broadcast cannot start a second payment", async ({ page }) => {
+  await page.clock.install();
   await quote(page, "light");
   await openConfirmation(page);
   await page.evaluate(() => { window.__dwFixture!.world.send.broadcast = "unknown"; });
   await send(page);
+  await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
+  await expect(page.getByTestId("pay-result-retry")).toBeVisible();
+  await page.clock.fastForward(125_000);
+  await expect(page.getByTestId("pay-result-retry")).toHaveCount(0);
   await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
   await page.getByTestId("pay-result-close").click();
   await page.getByTestId("sidebar-home").click();

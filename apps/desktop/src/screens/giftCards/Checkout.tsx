@@ -91,7 +91,7 @@ export function Checkout({ details, invoice, network, walletId }: {
       {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet outcome={phase.outcome} network={network} draft={draft} returnFocus={backToReview}
-          retrying={phase.retrying} onRetry={sheets.retry} onDone={(show) => {
+          retrying={phase.retrying} allowRetry={!expired} onRetry={sheets.retry} onDone={(show) => {
             sheets.done(show);
             refresh();
           }} />
