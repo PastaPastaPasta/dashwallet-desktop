@@ -495,7 +495,10 @@ pub(super) async fn nonce_for(
                         id: transition_hash,
                     });
                 }
-                super::app_connect::DisconnectNonceKind::Reserved => {
+                super::app_connect::DisconnectNonceKind::Reserved { observed_tip } => {
+                    if observed_tip.is_none_or(|obs| tip < obs) {
+                        return Err(PlatformError::Unavailable.into());
+                    }
                     reserved_floor = reserved_floor.max(d_nonce.saturating_add(1));
                 }
             }

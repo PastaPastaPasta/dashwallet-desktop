@@ -431,13 +431,15 @@ impl NetworkSession {
             .await
     }
 
-    async fn begin_issuing(
-        self: &Arc<Self>,
-        (wallet, flow, source): (WalletId, FlowKind, Option<PaymentSource>),
-        grants: &[String],
-        keys: Option<Vec<HeldKey>>,
-        platform_address: bool,
-    ) -> Result<Lease, LeaseError> {
+    /// Refuses a funds-moving flow when Platform funds are off or when the
+    /// network or wallet is under a restore hold. Shared between
+    /// [`begin_issuing`](Self::begin_issuing) and pending-Disconnect
+    /// rebroadcast (which submits already-signed bytes without a lease).
+    pub(crate) fn check_funds_gate(
+        &self,
+        wallet: WalletId,
+        flow: FlowKind,
+    ) -> Result<(), LeaseError> {
         if flow.moves_funds() {
             let gate = &self.hub.restore;
             if flow.needs_platform() && self.platform.funds_off() {
@@ -449,6 +451,17 @@ impl NetworkSession {
                 return Err(LeaseError::Restored);
             }
         }
+        Ok(())
+    }
+
+    async fn begin_issuing(
+        self: &Arc<Self>,
+        (wallet, flow, source): (WalletId, FlowKind, Option<PaymentSource>),
+        grants: &[String],
+        keys: Option<Vec<HeldKey>>,
+        platform_address: bool,
+    ) -> Result<Lease, LeaseError> {
+        self.check_funds_gate(wallet, flow)?;
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let grants = grants.to_vec();
