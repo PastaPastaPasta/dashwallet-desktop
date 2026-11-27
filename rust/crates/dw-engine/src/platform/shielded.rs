@@ -25,6 +25,8 @@ use super::shielded_pool::{
 };
 use crate::EngineError;
 
+pub(super) mod move_progress;
+
 /// The protocol version from which Platform takes shielded-pool
 /// transitions (`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`).
 pub const SHIELDED_ACTIVATION_VERSION: u32 =
@@ -670,11 +672,19 @@ impl DashPay {
         &self,
         amount: FundAmount,
         grant: String,
+        progress_id: Option<u32>,
     ) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
+        let call = on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             pool::shield(&session, wallet, &lib, amount, &grant).await
-        })
+        });
+        move_progress::report(
+            &self.session,
+            wallet,
+            progress_id,
+            call,
+            move_progress::shield_outcome,
+        )
         .await
     }
 
@@ -809,11 +819,15 @@ impl DashPay {
         to: Option<String>,
         grant: String,
         confirm_unrecorded: bool,
+        progress_id: Option<u32>,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
+        let call = on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield(&session, wallet, &lib, credits, to, &grant, confirmed).await
+        });
+        move_progress::report(&self.session, wallet, progress_id, call, |outcome| {
+            move_progress::spend_outcome(outcome.state)
         })
         .await
     }
@@ -844,12 +858,20 @@ impl DashPay {
         to: Option<String>,
         grant: String,
         confirm_unrecorded: bool,
+        progress_id: Option<u32>,
     ) -> Result<UnshieldToPlatformOutcome, ShieldedError> {
-        pool::refuse_on_mainnet(self.session.network().core_network())?;
         let wallet = self.wallet_id;
-        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
-            let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
-            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
+        let call = async {
+            pool::refuse_on_mainnet(self.session.network().core_network())?;
+            on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
+                let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
+                pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed)
+                    .await
+            })
+            .await
+        };
+        move_progress::report(&self.session, wallet, progress_id, call, |outcome| {
+            move_progress::spend_outcome(outcome.state)
         })
         .await
     }

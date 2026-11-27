@@ -11,6 +11,10 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { COMMANDS, ENGINE_EVENT, SHELL_EVENT, type AppError, type AppEvent, type CommandName, type ShellEvent } from "../api/generated/commands";
 import type { LinkRoute } from "../api/generated/LinkRoute";
+import type { MoveProgressStatus } from "../api/generated/MoveProgressStatus";
+import type { MoveStage } from "../api/generated/MoveStage";
+import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
+import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { NetworkKind } from "../api/generated/NetworkKind";
@@ -112,7 +116,9 @@ export interface FixtureHandle {
   fail(command: CommandName, cls: ErrorClass | null): void;
   /** Holds the next call of `command`: it answers from the world as it is when called, a result
    * or an error, but only once the returned function is called (a reply that arrives late). */
-  hold(command: CommandName): () => void;
+  hold(command: CommandName, atMoveStage?: MoveStage): () => void;
+  /** Delays the next successful move's settled event while allowing its reply through. */
+  holdMoveSettlement(): () => void;
   /** Releases the call a `hold=` URL option held at the start (no-op when none is out). */
   release(command: CommandName): void;
   /** Every command called so far, in order. */
@@ -151,6 +157,17 @@ function oneOf<T extends string>(p: URLSearchParams, name: string, allowed: read
 
 /** Where `relaunch` leaves the world for the next page load (one tab's session). */
 const RELAUNCH_KEY = "dw-fixture-relaunch";
+const MOVE_COMMANDS = new Set(["shield_from_core", "unshield_to_core", "unshield_to_platform"]);
+
+type FixtureAnswer = { result: unknown } | { error: unknown };
+
+function moveOutcome(answer: FixtureAnswer): MoveProgressStatus {
+  if ("error" in answer) return { kind: "failed", code: (answer.error as Partial<AppError> | null)?.code ?? "internal" };
+  const { state } = answer.result as ShieldOutcome | ShieldedSpendOutcome;
+  if (state === "done" || (typeof state !== "string" && state.kind === "applied")) return { kind: "done" };
+  if (typeof state !== "string" && state.kind === "notApplied") return { kind: "failed", code: state.error };
+  return { kind: "pending" };
+}
 
 /** The world `relaunch` left, if this load is one; consumed. */
 function relaunchedWorld(): World | null {
@@ -186,10 +203,11 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   if (!carried && opts.restored) world.restored = true;
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
-  const held = new Map<string, Promise<void>>();
-  const startHold = (command: string) => {
+  let heldSettlement: Promise<void> | null = null;
+  const held = new Map<string, { promise: Promise<void>; atMoveStage?: MoveStage }>();
+  const startHold = (command: string, atMoveStage?: MoveStage) => {
     let release = () => {};
-    held.set(command, new Promise<void>((r) => (release = r)));
+    held.set(command, { promise: new Promise<void>((r) => (release = r)), atMoveStage });
     return () => release();
   };
   const startReleases = new Map<string, () => void>();
@@ -207,21 +225,45 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       // `delay` is a slow engine; the launch reads are dw-app's own, before any engine (U-04 D29).
       if (opts.delayMs && !UNDELAYED.has(cmd)) await new Promise((r) => setTimeout(r, opts.delayMs));
       const cls = failures.get(cmd as CommandName);
+      const { walletId, progressId } = (payload ?? {}) as { walletId?: string; progressId?: number };
+      const network = world.launch.network.dirName;
+      const progress = (MOVE_COMMANDS.has(cmd) && walletId && typeof progressId === "number")
+        ? (stage: MoveStage, status: MoveProgressStatus) => ctx.emit({
+          kind: "moveProgress", network, walletId, progressId, stage, status,
+        })
+        : null;
       // A held call that is set to fail fails late, as it answers.
-      if (cls && !held.has(cmd)) throw sampleError(cls);
+      if (cls && !held.has(cmd) && !progress) throw sampleError(cls);
       const handler = (HANDLERS[cmd as CommandName] ?? PENDING_HANDLERS[cmd]) as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
-      let answer: { result: unknown } | { error: unknown };
+      const stages: MoveStage[] = ["checkTransfer"];
+      const callContext: Ctx = progress ? { ...ctx, moveStage: (stage) => stages.push(stage) } : ctx;
+      let answer: FixtureAnswer;
       try {
+        if (cls === "artifact" && progress) {
+          if (cmd === "shield_from_core") stages.push("coreAssetLock");
+          else stages.push("shieldedProof", "platformSubmission");
+        }
         if (cls) throw sampleError(cls);
-        answer = { result: handler(payload ?? {}, ctx) };
+        answer = { result: handler(payload ?? {}, callContext) };
       } catch (error) {
         answer = { error };
       }
+      const last = stages[stages.length - 1];
       const release = held.get(cmd);
       if (release) {
         held.delete(cmd);
-        await release;
+        const pause = release.atMoveStage ? stages.indexOf(release.atMoveStage) : Math.min(1, stages.length - 1);
+        for (const stage of stages.splice(0, Math.max(1, pause + 1))) progress?.(stage, { kind: "running" });
+        await release.promise;
+      }
+      if (progress) {
+        for (const stage of stages) progress(stage, { kind: "running" });
+        const status = moveOutcome(answer);
+        if (status.kind === "done" && heldSettlement) {
+          void heldSettlement.then(() => progress(last, status));
+          heldSettlement = null;
+        } else progress(last, status);
       }
       if ("error" in answer) throw answer.error;
       return answer.result;
@@ -243,6 +285,11 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     setLanguage: (language) => ui.set({ prefs: { ...ui.get().prefs, language } }),
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
     hold: startHold,
+    holdMoveSettlement: () => {
+      let release = () => {};
+      heldSettlement = new Promise<void>((resolve) => (release = resolve));
+      return release;
+    },
     release: (command) => void startReleases.get(command)?.(),
     advanceRegistration: (draft, walletId = FIXTURE_WALLET_ID) => registrationRun.advance(ctx, walletId, draft),
     failRegistration: (draft, code, retryable, walletId = FIXTURE_WALLET_ID) => registrationRun.fail(ctx, walletId, draft, code, retryable),

@@ -25,7 +25,7 @@ function setup(lock = { encrypted: false }) {
   let answer: ((o: ShieldedSpendOutcome) => void) | null = null;
   const api = {
     ...vault.api,
-    shieldFromCore: vi.fn(async (_w: string, a: FundAmount, grant: string) => (calls.push(`add ${duffsOf(a)} ${grant}`), APPLIED)),
+    shieldFromCore: vi.fn(async (_w: string, a: FundAmount, grant: string, _progressId?: number) => (calls.push(`add ${duffsOf(a)} ${grant}`), APPLIED)),
     resumeShield: vi.fn(async (_w: string, txid: string, grant: string) => (calls.push(`resume ${txid} ${grant}`), APPLIED)),
     shieldedSend: vi.fn(
       (_w: string, to: string, c: string, memo: string | null, grant: string) =>
@@ -45,35 +45,39 @@ function setup(lock = { encrypted: false }) {
 afterEach(() => resetShielded());
 
 describe("the shielded flow", () => {
-  it("says it is preparing once a shield's call has been pending for a second, and only for a shield", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const { flow, api, answer } = setup();
-      let shielded: ((o: ShieldOutcome) => void) | null = null;
-      api.shieldFromCore.mockImplementation(() => new Promise<ShieldOutcome>((resolve) => (shielded = resolve)));
-      flow.begin("add");
-      flow.next({ kind: "add", duffs: 100_000 });
-      const going = flow.run({ maxDuffs: 101_000, maxCredits: "0" });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(flow.step).toBe("running");
-      await vi.advanceTimersByTimeAsync(999);
-      expect(flow.preparing.shown).toBe(false);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(flow.preparing.shown).toBe(true);
-      shielded!(APPLIED);
-      await going;
-      expect([flow.step, flow.preparing.shown]).toEqual(["done", false]);
+  it("shows the engine's current, completed, and failed steps for this move", async () => {
+    const { flow, api } = setup();
+    let refuse!: (reason: unknown) => void;
+    api.shieldFromCore.mockImplementation(() => new Promise<ShieldOutcome>((_, reject) => (refuse = reject)));
+    flow.begin("add");
+    flow.next({ kind: "add", duffs: 100_000 });
+    const going = flow.run({ maxDuffs: 101_000, maxCredits: "0" });
+    await vi.waitFor(() => expect(api.shieldFromCore).toHaveBeenCalled());
+    const progressId = api.shieldFromCore.mock.calls[0][3]!;
+    expect(flow.moveSteps).toEqual([]);
+    flow.recordProgress({ progressId: progressId + 1, stage: "shieldedProof", status: { kind: "running" } });
+    expect(flow.moveSteps).toEqual([]);
+    flow.recordProgress({ progressId, stage: "coreAssetLock", status: { kind: "running" } });
+    expect(flow.moveSteps.map((row) => row.state)).toEqual(["done", "current", "upcoming", "upcoming", "upcoming"]);
+    flow.recordProgress({ progressId, stage: "shieldedProof", status: { kind: "failed", code: "platform.unavailable" } });
+    refuse(appError("platform.unavailable"));
+    await going;
+    expect(flow.moveSteps.map((row) => row.state)).toEqual(["done", "done", "failed", "upcoming", "upcoming"]);
+  });
 
-      flow.begin("send");
-      flow.next({ kind: "send", credits: "10000000000", to: TO, memo: null });
-      const sending = flow.run(GRANT);
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect([flow.step, flow.preparing.shown]).toEqual(["running", false]);
-      answer(SPEND);
-      await sending;
-    } finally {
-      vi.useRealTimers();
-    }
+  it("reveals a successful outcome only after the settled event, even when the command answers first", async () => {
+    const { flow, api } = setup();
+    flow.begin("add");
+    flow.next({ kind: "add", duffs: 100_000 });
+    await flow.run({ maxDuffs: 101_000, maxCredits: "0" });
+    const progressId = api.shieldFromCore.mock.calls[0][3]!;
+    flow.recordProgress({ progressId, stage: "refreshShielded", status: { kind: "running" } });
+    expect(flow.displayStep).toBe("running");
+    flow.moveEventsOverflowed();
+    expect(flow.displayStep).toBe("checkActivity");
+    flow.recordProgress({ progressId, stage: "refreshShielded", status: { kind: "done" } });
+    expect(flow.displayStep).toBe("done");
+    expect(flow.moveSteps.every((row) => row.state === "done")).toBe(true);
   });
 
   it("adds to Shielded under a duffs grant and reads again", async () => {
@@ -96,7 +100,7 @@ describe("the shielded flow", () => {
     flow.begin("add");
     flow.next({ kind: "add", duffs: 199_998_956, all: true });
     await flow.run({ maxDuffs: 200_000_000, maxCredits: "0" });
-    expect(api.shieldFromCore.mock.calls).toEqual([[WALLET_A, { kind: "all" }, "grant-1"]]);
+    expect(api.shieldFromCore.mock.calls).toEqual([[WALLET_A, { kind: "all" }, "grant-1", expect.any(Number)]]);
   });
 
   it("a Core Max's refusals say what Max needs; an amount's keep their own words", () => {

@@ -1584,16 +1584,21 @@ fn without_platform_every_platform_funds_flow_is_refused_up_front() {
         1000,
         None,
         g.clone(),
-        false
+        false,
+        None
     ));
     call!("unshield_to_platform", |g| dp.unshield_to_platform(
         1000,
         None,
         g.clone(),
-        false
+        false,
+        None
     ));
-    call!("shield_from_core", |g| dp
-        .shield_from_core(fund(), g.clone()));
+    call!("shield_from_core", |g| dp.shield_from_core(
+        fund(),
+        g.clone(),
+        None
+    ));
     call!("shield_mixed_coins", |g| dp.shield_mixed_coins(g.clone()));
     call!("resume_shield", |g| dp
         .resume_shield(txid.clone(), g.clone()));

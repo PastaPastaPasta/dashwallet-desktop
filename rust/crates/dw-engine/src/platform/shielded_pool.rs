@@ -172,11 +172,11 @@ use super::shielded::{
     ShieldedAccount, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
     ShieldedAddress, ShieldedDirection, ShieldedScanProgress, ShieldedSpendOutcome,
     ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo, UnrecordedSpend,
-    UnresolvedSpend, UnshieldToPlatformOutcome,
+    UnresolvedSpend, UnshieldToPlatformOutcome, move_progress,
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
-use crate::{NetworkSession, PlatformChange, WalletId};
+use crate::{MoveStage, NetworkSession, PlatformChange, WalletId};
 
 /// The coordinator's commitment tree, in the network directory.
 pub(crate) const SHIELDED_DB_FILE: &str = "shielded.sqlite";
@@ -1634,6 +1634,7 @@ pub(super) async fn send_armed(
         _ => None,
     };
     let sent = leased(&lease, async {
+        move_progress::advance(MoveStage::ShieldedProof);
         match to {
             To::Shielded(address, _) => lib.transfer(&permit, address, quote.credits, memo).await,
             To::Core(address) => lib.withdraw(&permit, address, quote.credits).await,
@@ -1650,6 +1651,7 @@ pub(super) async fn send_armed(
         .mark_platform(wallet, [PlatformChange::Shielded]);
     match sent {
         Ok(()) => {
+            move_progress::advance(MoveStage::RefreshShielded);
             drop(hold);
             // The change note is the library's once a pass finds it.
             lib.sync_now().await;
@@ -2214,6 +2216,7 @@ pub(crate) async fn shield(
     let signer = lease
         .uncounted_funding_signer()
         .map_err(PlatformError::from)?;
+    move_progress::advance(MoveStage::CoreAssetLock);
     let funded = lease
         .scope_step(Some(step.clone()), async {
             let (permit, funded) = match max {
@@ -2336,6 +2339,7 @@ pub(super) async fn apply(
     signer: &VaultSigner,
     outpoint: OutPoint,
 ) -> ShieldState {
+    move_progress::advance(MoveStage::ShieldedProof);
     let applied = lease
         .scope(async {
             let permit = lease.call_permit("shield", None)?;
@@ -2350,6 +2354,7 @@ pub(super) async fn apply(
         .mark_platform(wallet, [PlatformChange::Shielded]);
     match applied {
         Ok(Applied::Done) => {
+            move_progress::advance(MoveStage::RefreshShielded);
             if let Err(e) = lib.settle(outpoint.txid).await {
                 tracing::warn!(%outpoint, error = %e, "could not record a shield's lock settled");
             }
@@ -3146,6 +3151,7 @@ impl ShieldedDispatch for EngineDispatch {
     /// outcome the journal has not recorded yet ([`undecided_import_note`]),
     /// and its artifact is in the dispatch journal when this returns `Ok`.
     async fn dispatch(&self, payload: ShieldedDispatchPayload) -> Result<(), DispatchRefused> {
+        move_progress::advance(MoveStage::PlatformSubmission);
         let (session, coordinator) = self.open()?;
         let subwallet = Self::account(payload.wallet_id, payload.account_index)?;
         if transition_hash(&payload.st_bytes) != payload.st_hash {
@@ -3508,7 +3514,7 @@ where
 {
     let session = Arc::clone(session);
     let rt = session.rt.clone();
-    rt.spawn(async move {
+    rt.spawn(move_progress::inherit(async move {
         if signing {
             session.refuse_platform_funds(wallet_id)?;
         }
@@ -3528,7 +3534,7 @@ where
         }
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
-    })
+    }))
     .await
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
@@ -4443,6 +4449,7 @@ impl<S: key_wallet::Signer<Error = dw_vault::SignerError>> key_wallet::Signer fo
         ),
         Self::Error,
     > {
+        move_progress::advance(MoveStage::PlatformSubmission);
         let signature = self.inner.sign_ecdsa(path, sighash).await?;
         self.signed.store(true, Ordering::SeqCst);
         Ok(signature)

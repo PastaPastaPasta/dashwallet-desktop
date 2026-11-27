@@ -11,6 +11,8 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
+import type { AppEvent } from "../api/generated/AppEvent";
+import type { MoveStage } from "../api/generated/MoveStage";
 import { coreMaxRefusal, fundAmount, SHIELDED_CODES } from "../api/pending";
 import { RESCAN_TEXT } from "../app/rescan";
 import { platformOp } from "../dashpay/topup";
@@ -20,7 +22,6 @@ import { moveErrorText } from "../platform/move";
 import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing";
 import { spendsOffRefusal, spendsOffText } from "./spends";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { Preparing } from "../transfer/preparing";
 import { platformHoldText } from "../api/platformHold";
 
 export type ShieldedApi = Pick<
@@ -45,6 +46,18 @@ export type ShieldedRequest =
 export type ShieldedStep = "form" | "confirm" | "running" | "done" | "refused";
 
 export type ShieldedResult = { kind: "shield"; outcome: ShieldOutcome } | { kind: "spend"; outcome: ShieldedSpendOutcome };
+
+type MoveProgress = Pick<Extract<AppEvent, { kind: "moveProgress" }>, "progressId" | "stage" | "status">;
+type MoveStep = { stage: MoveStage; state: "upcoming" | "current" | "done" | "waiting" } | { stage: MoveStage; state: "failed"; code: string };
+
+const SPEND_STAGES: readonly MoveStage[] = ["checkTransfer", "shieldedProof", "platformSubmission", "refreshShielded"];
+const SHIELD_STAGES: readonly MoveStage[] = ["checkTransfer", "coreAssetLock", "shieldedProof", "platformSubmission", "refreshShielded"];
+
+function moveStages(kind: ShieldedKind): readonly MoveStage[] {
+  if (kind === "add") return SHIELD_STAGES;
+  if (kind === "out" || kind === "toPlatform") return SPEND_STAGES;
+  return [];
+}
 
 export const SHIELDED_COPY = {
   card: {
@@ -422,8 +435,6 @@ export class ShieldedFlow extends Model {
   open = false;
   kind: ShieldedKind = "add";
   step: ShieldedStep = "form";
-  /** A shield's call has been pending for a second. */
-  readonly preparing = new Preparing(() => this.changed());
   /** The form's fields as typed (the amount in the display unit). */
   text = "";
   to = "";
@@ -433,6 +444,9 @@ export class ShieldedFlow extends Model {
   error: unknown = null;
   running = false;
   readonly grants: GrantModel;
+  private progressId: number | undefined;
+  private progress: MoveProgress | null = null;
+  private progressInterrupted = false;
 
   constructor(
     private readonly api: ShieldedApi,
@@ -447,6 +461,40 @@ export class ShieldedFlow extends Model {
   /** A result that came while the sheet was hidden, not yet seen. */
   get unseen(): boolean {
     return !this.open && !this.running && (this.step === "done" || this.step === "refused");
+  }
+
+  get displayStep(): ShieldedStep | "checkActivity" {
+    if (this.step !== "done" || this.progressId === undefined || this.progress?.status.kind === "done") return this.step;
+    const result = this.result;
+    const confirmed = result?.kind === "shield" ? result.outcome.state.kind === "applied" : result?.outcome.state === "done";
+    if (!confirmed) return this.step;
+    return this.progressInterrupted ? "checkActivity" : "running";
+  }
+
+  get moveSteps(): MoveStep[] {
+    if (this.step === "form" || this.step === "confirm" || !this.progress) return [];
+    const { stage, status } = this.progress;
+    if (status.kind === "running" && this.displayStep === "done") return [];
+    const stages = moveStages(this.kind);
+    const current = stages.indexOf(stage);
+    return stages.map((step, index) => {
+      if (index < current || status.kind === "done") return { stage: step, state: "done" };
+      if (index > current) return { stage: step, state: "upcoming" };
+      if (status.kind === "failed") return { stage: step, state: "failed", code: status.code };
+      return { stage: step, state: status.kind === "pending" ? "waiting" : "current" };
+    });
+  }
+
+  recordProgress(progress: MoveProgress) {
+    if (progress.progressId !== this.progressId || !moveStages(this.kind).includes(progress.stage)) return;
+    this.progress = progress;
+    this.changed();
+  }
+
+  moveEventsOverflowed() {
+    if (this.progressId === undefined || this.progress?.status.kind === "done") return;
+    this.progressInterrupted = true;
+    this.changed();
   }
 
   /** Opens the sheet for `kind`: at a fresh form, or where a running or unseen call is. */
@@ -536,12 +584,15 @@ export class ShieldedFlow extends Model {
     let ran = false;
     this.running = true;
     this.error = null;
+    this.progressId = undefined;
+    this.progress = null;
+    this.progressInterrupted = false;
     this.changed();
     try {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
         ran = true;
         this.step = "running";
-        if (request.kind === "add") this.preparing.start();
+        if (moveStages(request.kind).length) this.progressId = crypto.getRandomValues(new Uint32Array(1))[0];
         this.changed();
         return this.call(request, g.id, confirmUnrecorded);
       });
@@ -559,7 +610,6 @@ export class ShieldedFlow extends Model {
       this.step = "refused";
     } finally {
       this.running = false;
-      this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) shieldedSettled();
       this.changed();
@@ -575,20 +625,28 @@ export class ShieldedFlow extends Model {
   private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
-        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, fundAmount(r), grant) };
+        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, fundAmount(r), grant, this.progressId) };
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":
         return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, confirmUnrecorded) };
       case "out":
-        return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, confirmUnrecorded) };
+        return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, confirmUnrecorded, this.progressId) };
       case "toPlatform":
-        return { kind: "spend", outcome: await this.api.unshieldToPlatform(this.walletId, r.credits, null, grant, confirmUnrecorded) };
+        return { kind: "spend", outcome: await this.api.unshieldToPlatform(this.walletId, r.credits, null, grant, confirmUnrecorded, this.progressId) };
     }
   }
 }
 
 const flows = new Map<string, ShieldedFlow>();
+
+export function recordMoveProgress(event: Extract<AppEvent, { kind: "moveProgress" }>) {
+  flows.get(event.walletId)?.recordProgress(event);
+}
+
+export function moveEventsOverflowed() {
+  for (const flow of flows.values()) flow.moveEventsOverflowed();
+}
 
 /** The wallet's shielded flow, created on first use and kept while the app runs. */
 export function shieldedFor(api: ShieldedApi, walletId: string): ShieldedFlow {

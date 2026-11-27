@@ -102,7 +102,9 @@ pub use compat::{
 pub use dw_appdb::BookPurpose;
 pub use engine::{CloseRefused, Engine, EngineConfig};
 pub use error::{EngineError, ShieldedHold, TASK_PANICKED, engine_poisoned};
-pub use events::{EngineEvent, EventSink, NoticeCode, PlatformChange};
+pub use events::{
+    EngineEvent, EventSink, MoveProgressStatus, MoveStage, NoticeCode, PlatformChange,
+};
 pub use fees::{
     CoinSelectionSummary, FEE_TARGETS, FeePolicy, FeeSource, FeeTarget, MAX_BROADCAST_RATE_PER_KB,
     fee_policy,

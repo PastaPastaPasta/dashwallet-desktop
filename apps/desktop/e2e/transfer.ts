@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import type { MoveStage } from "../src/api/generated/MoveStage";
 import { authorize, openTransfer, type TransferRoute } from "./helpers";
 
 // Transfer's states (POLISH 25) on the fixture backend: each route × idle, unavailable, insufficient,
@@ -26,8 +27,8 @@ export const callsOf = (page: Page, command: string) => page.evaluate((c) => win
 export const lastGrant = (page: Page) => page.evaluate(() => window.__dwFixture!.world.grants.at(-1)?.grant.purpose ?? null);
 
 /** Holds the next call of `command`; `release(page)` lets it answer. */
-export async function hold(page: Page, command: string) {
-  await page.evaluate((c) => void ((window as unknown as { __release: () => void }).__release = window.__dwFixture!.hold(c as never)), command);
+export async function hold(page: Page, command: string, atMoveStage?: MoveStage) {
+  await page.evaluate(({ c, stage }) => void ((window as unknown as { __release: () => void }).__release = window.__dwFixture!.hold(c as never, stage)), { c: command, stage: atMoveStage });
 }
 export const release = (page: Page) => page.evaluate(() => (window as unknown as { __release: () => void }).__release());
 
@@ -183,6 +184,14 @@ async function inProgress(page: Page, route: TransferRoute, command: string, pro
   await progress(page);
 }
 
+const MOVE_COMMAND = { coreToShielded: "shield_from_core", shieldedToCore: "unshield_to_core", shieldedToPlatform: "unshield_to_platform" };
+
+export async function moveProgressAt(page: Page, route: keyof typeof MOVE_COMMAND, stage: MoveStage) {
+  await hold(page, MOVE_COMMAND[route], stage);
+  await run(page, route);
+  await expect(page.getByTestId("shielded-progress").locator('[aria-current="step"]')).toHaveAttribute("data-stage", stage);
+}
+
 export const TRANSFER_STATES: TransferState[] = [
   // Dash wallet → Shielded (the default route).
   {
@@ -260,7 +269,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("shielded-quote-total")).toContainText("0.00101");
     },
   },
-  { id: "coreToShielded-progress", scenario: "funded", go: (page) => inProgress(page, "coreToShielded", "shield_from_core", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible().then(() => expect(p.getByTestId("transfer-preparing")).toBeVisible())) },
+  { id: "coreToShielded-progress", scenario: "funded", go: (page) => moveProgressAt(page, "coreToShielded", "coreAssetLock") },
   {
     id: "coreToShielded-done",
     scenario: "funded",
@@ -434,7 +443,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("shielded-quote-receive")).toContainText("0.5");
     },
   },
-  { id: "shieldedToCore-progress", scenario: "funded", go: (page) => inProgress(page, "shieldedToCore", "unshield_to_core", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible()) },
+  { id: "shieldedToCore-progress", scenario: "funded", go: (page) => moveProgressAt(page, "shieldedToCore", "shieldedProof") },
   {
     id: "shieldedToCore-done",
     scenario: "funded",
@@ -515,7 +524,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await expect(page.getByTestId("shielded-slow")).toBeVisible();
     },
   },
-  { id: "shieldedToPlatform-progress", scenario: "funded", go: (page) => inProgress(page, "shieldedToPlatform", "unshield_to_platform", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible()) },
+  { id: "shieldedToPlatform-progress", scenario: "funded", go: (page) => moveProgressAt(page, "shieldedToPlatform", "shieldedProof") },
   {
     id: "shieldedToPlatform-done",
     scenario: "funded",
@@ -539,6 +548,7 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await page.evaluate(() => window.__dwFixture!.fail("unshield_to_platform", "artifact"));
       await run(page, "shieldedToPlatform");
+      await expect(page.getByTestId("shielded-progress").locator('[data-state="failed"]')).toHaveAttribute("data-stage", "platformSubmission");
       await expect(page.getByTestId("shielded-refusal")).toHaveText("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
       await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
     },

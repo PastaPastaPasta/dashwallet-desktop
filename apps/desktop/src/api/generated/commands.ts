@@ -2380,8 +2380,8 @@ export function shieldQuote(walletId: string, amount: FundAmount): Promise<Shiel
  * Core → Shielded: moves `amount` of the Core balance into the pool
  * under `grant`.
  */
-export function shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome> {
-  return invoke<ShieldOutcome>("shield_from_core", { walletId, amount, grant });
+export function shieldFromCore(walletId: string, amount: FundAmount, grant: string, progressId: number | null): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_from_core", { walletId, amount, grant, progressId });
 }
 
 /**
@@ -2442,8 +2442,8 @@ export function unshieldQuote(walletId: string, credits: string, to: string | nu
 /**
  * Shielded → Core: withdraws `credits` to `to` under `grant`.
  */
-export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
-  return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant, confirmUnrecorded });
+export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean, progressId: number | null): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant, confirmUnrecorded, progressId });
 }
 
 /**
@@ -2458,8 +2458,8 @@ export function unshieldToPlatformQuote(walletId: string, credits: string, to: s
  * Shielded → Platform: unshields `credits` to the wallet's own Platform
  * address `to` under `grant`.
  */
-export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<UnshieldToPlatformOutcome> {
-  return invoke<UnshieldToPlatformOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean, progressId: number | null): Promise<UnshieldToPlatformOutcome> {
+  return invoke<UnshieldToPlatformOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded, progressId });
 }
 
 /**
@@ -4013,7 +4013,7 @@ export type CommandArgs = {
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
   shield_quote: { walletId: string; amount: FundAmount };
-  shield_from_core: { walletId: string; amount: FundAmount; grant: string };
+  shield_from_core: { walletId: string; amount: FundAmount; grant: string; progressId: number | null };
   shield_mixed_quote: { walletId: string };
   stuck_shield_fundings: { walletId: string };
   shield_mixed_coins: { walletId: string; grant: string };
@@ -4021,9 +4021,9 @@ export type CommandArgs = {
   shielded_send_quote: { walletId: string; to: string; credits: string };
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
-  unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean; progressId: number | null };
   unshield_to_platform_quote: { walletId: string; credits: string; to: string | null };
-  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean; progressId: number | null };
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };

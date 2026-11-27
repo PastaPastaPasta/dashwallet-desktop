@@ -424,7 +424,7 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
   }
   if (s.shield === "notApplied") {
     s.pendingShields = [...s.pendingShields.filter((p) => p.txid !== txid), { txid, duffs, proved: true, consumptionUnknown: false }];
-    return { txid, state: { kind: "notApplied", error: "fixture: Platform refused the lock" } };
+    return { txid, state: { kind: "notApplied", error: "platform.unavailable" } };
   }
   s.pendingShields = s.pendingShields.filter((p) => p.txid !== txid);
   s.balance = String(BigInt(s.balance) + credits);
@@ -467,8 +467,13 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     useGrant(ctx.world, grant);
     // The engine's funding gate: a shield's asset lock waits while Core sync is not caught up.
     if (ctx.world.sync.running && !ctx.world.sync.caughtUp) raise(SHIELDED_CODES.notSynced, "Core sync is not caught up", { kind: "reason", reason: "core" });
+    ctx.moveStage?.("coreAssetLock");
     if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the shield");
-    return shieldEnd(s, `lock${(s.activity.length + 1).toString(16).padStart(8, "0")}`, duffs);
+    const outcome = shieldEnd(s, `lock${(s.activity.length + 1).toString(16).padStart(8, "0")}`, duffs);
+    if (outcome.state.kind !== "proofWaiting") ctx.moveStage?.("shieldedProof");
+    if (outcome.state.kind === "applied" || outcome.state.kind === "consumptionUnknown") ctx.moveStage?.("platformSubmission");
+    if (outcome.state.kind === "applied") ctx.moveStage?.("refreshShielded");
+    return outcome;
   },
   resume_shield: ({ walletId, txid, grant }: { walletId: string; txid: string; grant: string }, ctx: Ctx): ShieldOutcome => {
     const s = shieldedOf(ctx, walletId, "resume_shield");
@@ -536,10 +541,17 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
     const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
-    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
+    if (s.poolTooSmall) {
+      ctx.moveStage?.("shieldedProof");
+      ctx.moveStage?.("platformSubmission");
+      raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
+    }
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
+    ctx.moveStage?.("shieldedProof");
+    ctx.moveStage?.("platformSubmission");
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
+    if (end.state === "done") ctx.moveStage?.("refreshShielded");
     return { credits, balance: s.balance, to, ...end };
   },
   unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => {
@@ -555,10 +567,13 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const s = ctx.world.pending.shielded!;
     // As the engine: the grant is redeemed before Platform's pool floor refuses, so a floor refusal uses it up.
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
+    ctx.moveStage?.("shieldedProof");
+    ctx.moveStage?.("platformSubmission");
     if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "unshield", direction: "out", credits, feeCredits: q.feeCredits, counterparty: address, memo: null });
     // Until the From Shielded attribution lands, the address's rise reads as an incoming row.
     if (end.state === "done") creditPlatform(p, address, BigInt(credits));
+    if (end.state === "done") ctx.moveStage?.("refreshShielded");
     return { credits, balance: s.balance, to: address, ...end };
   },
   shielded_history: ({ walletId, offset, limit }: { walletId: string; offset: number; limit: number }, ctx: Ctx) => {

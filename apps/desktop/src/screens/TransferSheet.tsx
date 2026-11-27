@@ -594,7 +594,7 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   const steps = t.stepFlow();
   const route = t.route;
   const here = steps ?? (route && route !== "unsupported" ? route : null);
-  const stepName = steps === null ? "form" : steps === "coreToPlatform" ? fund.step : steps === "platformToCore" ? move.step : shielded.step;
+  const stepName = steps === null ? "form" : steps === "coreToPlatform" ? fund.step : steps === "platformToCore" ? move.step : shielded.displayStep;
   return (
     <>
       <Sheet title={T.title} width="small" testId="transfer-sheet" onClose={() => t.close()} focusKey={`${here ?? ""}:${stepName}`}>

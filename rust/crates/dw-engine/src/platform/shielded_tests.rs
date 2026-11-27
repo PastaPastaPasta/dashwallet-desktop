@@ -4041,9 +4041,9 @@ fn the_spends_off_refusals_wait_for_no_pass() {
             refused!(dp.shield_mixed_quote()),
             refused!(dp.platform_shield_quote(super::WithdrawAmount::All)),
             refused!(dp.shielded_send(String::new(), 1, None, String::new(), true)),
-            refused!(dp.unshield_to_core(1, None, String::new(), true)),
-            refused!(dp.unshield_to_platform(1, None, String::new(), true)),
-            refused!(dp.shield_from_core(one, String::new())),
+            refused!(dp.unshield_to_core(1, None, String::new(), true, None)),
+            refused!(dp.unshield_to_platform(1, None, String::new(), true, None)),
+            refused!(dp.shield_from_core(one, String::new(), None)),
             refused!(dp.shield_mixed_coins(String::new())),
         ];
         assert_eq!(codes, ["platform.unavailable"; 12]);
@@ -5089,7 +5089,7 @@ fn shielded_spends_are_off_until_their_funds_review() {
             let sent =
                 engine.block_on(dp.shielded_send(to.clone(), CREDITS, None, grant.clone(), false));
             let unshielded =
-                engine.block_on(dp.unshield_to_core(CREDITS, None, grant.clone(), false));
+                engine.block_on(dp.unshield_to_core(CREDITS, None, grant.clone(), false, None));
             let kept = (s.vault())
                 .grant_purpose(&grant, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
                 .is_ok();
@@ -5107,7 +5107,7 @@ fn shielded_spends_are_off_until_their_funds_review() {
         );
         if network == DashNetwork::Mainnet {
             let to_platform =
-                engine.block_on(dp.unshield_to_platform(CREDITS, None, "g".into(), false));
+                engine.block_on(dp.unshield_to_platform(CREDITS, None, "g".into(), false, None));
             assert_eq!(to_platform.unwrap_err().code(), "platform.feature_off");
         }
         let (sent, unshielded, kept) = refusals(Some(true));
@@ -5518,6 +5518,89 @@ fn shield_on(fx: &Fixture, lib: &Arc<FakeShielded>) -> (OutPoint, ShieldState) {
     let outpoint = lib.funded.lock().unwrap()[funded].outpoint;
     assert_eq!(shielded.txid, outpoint.txid.to_string());
     (outpoint, shielded.state)
+}
+
+#[test]
+fn shield_move_reports_order_and_the_failed_step() {
+    use super::shielded::move_progress;
+    use crate::{EngineEvent, MoveProgressStatus as Status, MoveStage as Stage};
+
+    for applied in [true, false] {
+        let fx = Fixture::new(0);
+        let lib = real_rows(&fx);
+        *lib.applies.lock().unwrap() = Some(if applied {
+            Ok(Applied::Done)
+        } else {
+            Err(PlatformError::Unavailable)
+        });
+        if applied {
+            *lib.sign_next.lock().unwrap() = vec!["m/9'/1'/5'/5'/0".parse().unwrap()];
+        }
+        let (wallet, grant) = (fx.wallet, shield_grant(&fx, 2_000_000));
+        let result = run(&fx, &lib, move |s, lib| async move {
+            move_progress::report(
+                &s,
+                wallet,
+                Some(42),
+                pool::shield(
+                    &s,
+                    wallet,
+                    &*lib,
+                    FundAmount::Duffs { duffs: 1_000_000 },
+                    &grant,
+                ),
+                move_progress::shield_outcome,
+            )
+            .await
+        })
+        .unwrap();
+        assert_eq!(matches!(result.state, ShieldState::Applied { .. }), applied);
+        let events: Vec<_> = fx
+            .events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| {
+                let EngineEvent::MoveProgress {
+                    network,
+                    wallet_id,
+                    progress_id,
+                    stage,
+                    status,
+                } = event
+                else {
+                    return None;
+                };
+                assert_eq!(
+                    (network, *wallet_id, *progress_id),
+                    (fx.s.network(), wallet, 42)
+                );
+                Some((*stage, status.clone()))
+            })
+            .collect();
+        let mut expected = vec![
+            (Stage::CheckTransfer, Status::Running),
+            (Stage::CoreAssetLock, Status::Running),
+            (Stage::ShieldedProof, Status::Running),
+        ];
+        if applied {
+            assert_eq!(*lib.signed.lock().unwrap(), [true]);
+            expected.extend([
+                (Stage::PlatformSubmission, Status::Running),
+                (Stage::RefreshShielded, Status::Running),
+                (Stage::RefreshShielded, Status::Done),
+            ]);
+        } else {
+            expected.push((
+                Stage::ShieldedProof,
+                Status::Failed {
+                    code: "platform.unavailable".into(),
+                },
+            ));
+        }
+        assert_eq!(events, expected);
+    }
 }
 
 /// "Check again" on the pending shield of `outpoint`, its apply (if any)

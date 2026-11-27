@@ -105,7 +105,7 @@ export class IpcBackend implements Backend {
   shieldedSyncInfo = (walletId: string) => orAbsent(cmd.shieldedSyncInfo(walletId));
   shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
   shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
-  shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
+  shieldFromCore: Backend["shieldFromCore"] = (walletId, amount, grant, progressId) => orUnavailable(cmd.shieldFromCore(walletId, amount, grant, progressId ?? null));
   resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
   unfinishedTransfers = (walletId: string) => orAbsent(cmd.unfinishedTransfers(walletId));
   finishTransfer = (...a: Parameters<typeof cmd.finishTransfer>) => orUnavailable(cmd.finishTransfer(...a));
@@ -114,9 +114,9 @@ export class IpcBackend implements Backend {
   shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
   shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
   unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
-  unshieldToCore = (...a: Parameters<typeof cmd.unshieldToCore>) => orUnavailable(cmd.unshieldToCore(...a));
+  unshieldToCore: Backend["unshieldToCore"] = (walletId, credits, to, grant, confirmed, progressId) => orUnavailable(cmd.unshieldToCore(walletId, credits, to, grant, confirmed, progressId ?? null));
   unshieldToPlatformQuote = (...a: Parameters<typeof cmd.unshieldToPlatformQuote>) => orUnavailable(cmd.unshieldToPlatformQuote(...a));
-  unshieldToPlatform = (...a: Parameters<typeof cmd.unshieldToPlatform>) => orUnavailable(cmd.unshieldToPlatform(...a));
+  unshieldToPlatform: Backend["unshieldToPlatform"] = (walletId, credits, to, grant, confirmed, progressId) => orUnavailable(cmd.unshieldToPlatform(walletId, credits, to, grant, confirmed, progressId ?? null));
   shieldedHistory = (walletId: string, offset: number, limit: number) => orAbsent(cmd.shieldedHistory(walletId, offset, limit));
   platformAddresses = (walletId: string) => orAbsent(cmd.platformAddresses(walletId));
   platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));

@@ -65,6 +65,7 @@ import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } fro
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
+  moveStage?: (stage: import("../api/generated/MoveStage").MoveStage) => void;
   world: World;
   emit(event: AppEvent): void;
   /** Quits and relaunches the page as `FixtureHandle.relaunch` does (absent outside a page). */

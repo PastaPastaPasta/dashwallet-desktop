@@ -128,6 +128,13 @@ pub enum EngineEvent {
         wallet_id: WalletId,
         change: PlatformChange,
     },
+    MoveProgress {
+        network: DashNetwork,
+        wallet_id: WalletId,
+        progress_id: u32,
+        stage: MoveStage,
+        status: MoveProgressStatus,
+    },
     /// DashPay news for the OS notifier (DP2-05): journal rows of the
     /// identity that this session added unread and that notify: never
     /// catch-up, our own accept or name, or a payment (the
@@ -190,6 +197,7 @@ impl EngineEvent {
     pub fn engine_side(&self) -> bool {
         match self {
             Self::Platform { .. }
+            | Self::MoveProgress { .. }
             | Self::Masternodes { .. }
             | Self::DashPayNews { .. }
             | Self::LeaseChanged { .. }
@@ -202,6 +210,23 @@ impl EngineEvent {
             _ => false,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MoveStage {
+    CheckTransfer,
+    CoreAssetLock,
+    ShieldedProof,
+    PlatformSubmission,
+    RefreshShielded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveProgressStatus {
+    Running,
+    Done,
+    Pending,
+    Failed { code: String },
 }
 
 /// The domain of an [`EngineEvent::Platform`] signal (DASHPAY §3.5).

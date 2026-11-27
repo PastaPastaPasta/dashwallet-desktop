@@ -196,6 +196,13 @@ pub enum AppEvent {
         network: String,
         progress: LockProgress,
     },
+    MoveProgress {
+        network: String,
+        wallet_id: String,
+        progress_id: u32,
+        stage: MoveStage,
+        status: MoveProgressStatus,
+    },
     DispatchResolved {
         network: String,
         settled: DispatchSettled,
@@ -331,6 +338,43 @@ mirror_enum!(NoticeCode => NoticeCodeName {
     DispatchJournalUnavailable, PlatformTrustMismatch, ExportStagingDeleted, ExportStagingNotDeleted
 });
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum MoveStage {
+    CheckTransfer,
+    CoreAssetLock,
+    ShieldedProof,
+    PlatformSubmission,
+    RefreshShielded,
+}
+
+mirror_enum!(dw_engine::MoveStage => MoveStage {
+    CheckTransfer, CoreAssetLock, ShieldedProof, PlatformSubmission, RefreshShielded
+});
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MoveProgressStatus {
+    Running,
+    Done,
+    Pending,
+    Failed { code: String },
+}
+
+impl From<dw_engine::MoveProgressStatus> for MoveProgressStatus {
+    fn from(status: dw_engine::MoveProgressStatus) -> Self {
+        use dw_engine::MoveProgressStatus as Status;
+        match status {
+            Status::Running => Self::Running,
+            Status::Done => Self::Done,
+            Status::Pending => Self::Pending,
+            Status::Failed { code } => Self::Failed {
+                code: cap_text(code, MAX_ID_BYTES),
+            },
+        }
+    }
+}
+
 impl From<EngineEvent> for AppEvent {
     fn from(event: EngineEvent) -> Self {
         let net = |n: DashNetwork| n.dir_name();
@@ -347,6 +391,19 @@ impl From<EngineEvent> for AppEvent {
             },
             EngineEvent::SessionClosed { network } => AppEvent::SessionClosed {
                 network: net(network),
+            },
+            EngineEvent::MoveProgress {
+                network,
+                wallet_id,
+                progress_id,
+                stage,
+                status,
+            } => AppEvent::MoveProgress {
+                network: net(network),
+                wallet_id: wallet_id.to_string(),
+                progress_id,
+                stage: stage.into(),
+                status: status.into(),
             },
             EngineEvent::WalletCreated { network, wallet_id } => AppEvent::WalletCreated {
                 network: net(network),
@@ -752,6 +809,22 @@ mod tests {
         });
         assert_eq!(done["progress"]["kind"], "done");
         assert_eq!(done["progress"]["report"]["status"]["state"], "locked");
+        assert_eq!(
+            json(EngineEvent::MoveProgress {
+                network: DashNetwork::Regtest,
+                wallet_id,
+                progress_id: 42,
+                stage: dw_engine::MoveStage::ShieldedProof,
+                status: dw_engine::MoveProgressStatus::Failed {
+                    code: "platform.unavailable".into(),
+                },
+            }),
+            serde_json::json!({
+                "kind": "moveProgress", "network": "regtest", "walletId": wallet_id.to_string(),
+                "progressId": 42, "stage": "shieldedProof",
+                "status": { "kind": "failed", "code": "platform.unavailable" }
+            })
+        );
         let settled = json(EngineEvent::DispatchResolved {
             network: DashNetwork::Mainnet,
             resolved: DispatchResolved {
@@ -964,6 +1037,15 @@ mod tests {
                 EngineEvent::Governance { network: network() },
                 EngineEvent::Rates,
                 EngineEvent::Backups { network: network() },
+                EngineEvent::MoveProgress {
+                    network: network(),
+                    wallet_id,
+                    progress_id: u32::MAX,
+                    stage: dw_engine::MoveStage::PlatformSubmission,
+                    status: dw_engine::MoveProgressStatus::Failed {
+                        code: text(MAX_ID_BYTES),
+                    },
+                },
                 // More than the engine sends: the bridge cuts too.
                 EngineEvent::DashPayNews {
                     network: network(),
@@ -1016,9 +1098,10 @@ mod tests {
                 AppEvent::Governance { .. } => 20,
                 AppEvent::Rates => 21,
                 AppEvent::Backups { .. } => 22,
+                AppEvent::MoveProgress { .. } => 23,
             };
             let seen: std::collections::BTreeSet<_> = events.iter().map(variant).collect();
-            assert_eq!(seen, (0..23).collect());
+            assert_eq!(seen, (0..24).collect());
 
             let mut largest = (0, None);
             for event in &events {
