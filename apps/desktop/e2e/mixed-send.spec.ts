@@ -31,7 +31,7 @@ async function open(page: Page, theme: Theme, tab: "address" | "contact") {
     f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: wallet.summary.walletId });
   })()`);
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await page.getByTestId(`pay-tabs-${tab}`).click();
+  if (tab === "contact") await page.getByTestId("pay-contacts").click();
   await fontsReady(page);
   return errors;
 }

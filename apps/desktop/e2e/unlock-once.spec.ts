@@ -21,7 +21,6 @@ async function open(page: Page, theme: Theme = "light") {
 
 async function review(page: Page, amount: string) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(PAYEE);
   await page.getByTestId("pay-amount").fill(amount);
   await expect(page.getByTestId("pay-continue")).toBeEnabled();

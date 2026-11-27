@@ -428,14 +428,18 @@ async function main() {
       if (await exists(tid("contacts-add"))) await sheet("contacts: add contact (header)", tid("contacts-add"), "add-contact");
       else skip("contacts: add contact (header)");
     };
-    // Every sidebar screen; Pay's tabs; Join DashPay's sheets.
+    // Every sidebar screen, the Pay contact list, and Join DashPay’s sheets.
     let contactsWalked = false;
     for (const id of await ids(`${tid("sidebar")} button[data-testid^="sidebar-"]`)) {
       const route = id.slice("sidebar-".length);
       await wd.press(tid(id));
       const more = route === "home" ? [`${tid("history-empty")}, ${tid("history-syncing")}`] : route === "activity" ? [`${tid("tx-empty")}, ${tid("tx-syncing")}`] : [];
       await walkAt(`${(await texts(`${tid(id)} .sidebar-title`))[0] || route}`, [tid(`page-${route}`), ...more]);
-      if (route === "pay") await eachTab("pay-tabs", "Pay", { contact: "pay-contact-none", address: "pay-address-form" });
+      if (route === "pay") {
+        await wd.press(tid("pay-contacts"));
+        await walkAt("Pay: contacts", [tid("pay-contact-none"), tid("pay-address")]);
+        await wd.press(tid("pay-contacts"));
+      }
       if (route === "receive") {
         // A request for any amount: the wallet issues an address and keeps the request, offline.
         await poll(TIMEOUT_MS, "Create Request to be enabled", async () =>

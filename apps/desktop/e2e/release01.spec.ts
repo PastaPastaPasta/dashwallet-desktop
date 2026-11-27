@@ -202,7 +202,6 @@ test("a release build has no context menu on the page, and keeps a text field's"
     }, selector);
   expect(await prevented("[data-testid=hero]")).toBe(true);
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   expect(await prevented("[data-testid=pay-address]")).toBe(false);
 });
 

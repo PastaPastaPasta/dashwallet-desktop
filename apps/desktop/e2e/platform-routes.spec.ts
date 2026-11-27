@@ -18,7 +18,6 @@ async function open(page: Page, scenario: string) {
 
 async function payTo(page: Page, address: string) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(address);
   await page.locator("[data-testid=platform-send-intro], [data-testid=platform-send-empty]").first().waitFor();
 }

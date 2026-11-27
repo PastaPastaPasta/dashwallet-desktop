@@ -1,4 +1,4 @@
-// What Pay's two forms share (U-03; DP3-06 D8): a labelled field, the amount as typed and as the
+// The Pay form (U-03; DP3-06 D8): a labelled field, the amount as typed and as the
 // engine parses it, the live estimate of the draft and the refusal it brings, Max, and the footer
 // with the fee line and Review.
 
@@ -288,12 +288,12 @@ export function useAvailable(walletId: string, advanced: Advanced, hold: boolean
 /** The draft's live estimate of `spec` and what its refusal says: on a field, or under the form
  * (`general`, with what holds the payment back besides), or as a `notice`. `hold`: estimate
  * nothing (locked, or the form says why not). */
-export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec | null, advanced: Advanced, hold: boolean, shown: Shown) {
+export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec | null, advanced: Advanced, hold: boolean, shown: Shown, recipientRevision: string) {
   const b = useBackend();
   const { chain, amountUnit } = shown;
   // Under the wallet's coin keys: a payment or new coins refresh the estimate (events.ts).
   const estimate = useQuery({
-    queryKey: [...keys.coinsAll(walletId), "estimate", spec] as const,
+    queryKey: [...keys.coinsAll(walletId), "estimate", recipientRevision, spec] as const,
     queryFn: () => draft.estimate(spec!),
     enabled: !!spec && !hold,
     retry: false,
@@ -313,7 +313,7 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   // With added recipients the offer would make a second one subtract the fee: none is offered.
   const subtracted = mixed && spec && spec.more.length === 0 ? { ...spec, recipient: withSubtractFee(spec.recipient) } : null;
   const offer = useQuery({
-    queryKey: [...keys.coinsAll(walletId), "estimate", subtracted] as const,
+    queryKey: [...keys.coinsAll(walletId), "estimate", recipientRevision, subtracted] as const,
     queryFn: () => draft.estimate(subtracted!),
     enabled: !!subtracted && !hold,
     retry: false,
@@ -336,13 +336,15 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */
-export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void, othersTotal = 0, othersPending = false) {
+export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void, othersTotal = 0, othersPending = false, recipientRevision = "") {
   const b = useBackend();
   const [error, setError] = useState<string | null>(null);
   const fee = feeMode(advanced);
   // The added recipients' total now: an answer for another total is dropped.
   const others = useRef(othersTotal);
   others.current = othersTotal;
+  const revision = useRef(recipientRevision);
+  revision.current = recipientRevision;
   const run = async () => {
     setError(null);
     if (!fee || othersPending) return;
@@ -350,9 +352,9 @@ export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: 
     try {
       const max = await b.maxSpendable(walletId, coinSource(advanced), fee);
       // With added recipients, Max is what is left once they are paid.
-      if (asked === others.current) set(shown.full(Math.max(0, max - asked)));
+      if (recipientRevision === revision.current && asked === others.current) set(shown.full(Math.max(0, max - asked)));
     } catch (e) {
-      setError(sendErrorText(e, shown.chain, shown.amountUnit)?.text ?? errorMessage(e));
+      if (recipientRevision === revision.current) setError(sendErrorText(e, shown.chain, shown.amountUnit)?.text ?? errorMessage(e));
     }
   };
   return { run, error, disabled: !fee || othersPending };

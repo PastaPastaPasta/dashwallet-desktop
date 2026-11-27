@@ -190,7 +190,6 @@ async function expectNotResubmittable(page: Page) {
   await expect(page.getByTestId("pay-continue")).toBeDisabled();
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await expect(page.getByTestId("pay-address")).toHaveValue("");
   await expect(page.getByTestId("pay-amount")).toHaveValue("");
 }

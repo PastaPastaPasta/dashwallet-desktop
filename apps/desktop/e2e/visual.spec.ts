@@ -71,8 +71,8 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
     scenario: "funded",
     go: async (page) => {
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-address").fill("tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
+      await page.getByTestId("platform-send-intro").waitFor();
       await page.getByTestId("pay-amount").fill("0.01");
       await page.getByTestId("pay-fee-line").waitFor();
     },
@@ -81,8 +81,8 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
     scenario: "funded",
     go: async (page) => {
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-address").fill("tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
+      await page.getByTestId("platform-send-intro").waitFor();
       await page.getByTestId("pay-amount").fill("0.01");
       await page.getByTestId("pay-fee-line").waitFor();
       await page.getByTestId("pay-continue").click();
@@ -372,7 +372,6 @@ for (const theme of THEMES) {
       const where = view === "receive-fiat" ? "request" : "pay";
       if (where === "pay") {
         await page.getByTestId("sidebar-pay").click();
-        await page.getByTestId("pay-tabs-address").click();
         await page.getByTestId("pay-address").fill("XXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
       } else {
         await page.getByTestId("sidebar-receive").click();
@@ -843,6 +842,7 @@ async function openPayContact(page: Page, theme: Theme) {
   await page.goto(fixtureUrl("dashpay-registered", theme));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-frequent-chip").first().waitFor();
   await page.getByTestId("pay-picker-contacts").waitFor();
 }
@@ -1146,6 +1146,7 @@ const AVATAR_LISTS: Record<string, (page: Page) => Promise<void>> = {
   },
   pay: async (p) => {
     await p.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+    await p.getByTestId("pay-contacts").click();
     await p.getByTestId("pay-picker-row").first().locator(".contact-avatar[data-picture]").waitFor();
   },
   bell: async (p) => {

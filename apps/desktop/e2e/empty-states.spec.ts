@@ -242,7 +242,7 @@ for (const theme of THEMES) {
   test(`pay with no contacts keeps the username search and shows no add action (${theme})`, async ({ page }) => {
     const errors = await open(page, "dashpay-contacts-empty", theme);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-contact").click();
+    await page.getByTestId("pay-contacts").click();
     const empty = page.getByTestId("pay-picker-empty");
     await expect(empty).toContainText("No contacts yet");
     await expect(empty).toContainText("Type a username above to find someone on DashPay.");
@@ -311,15 +311,15 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("contacts-split")).toHaveClass(/is-solo/);
   });
 
-  test(`clearing the pay picker search focuses the search (${theme})`, async ({ page }) => {
+  test(`dismissing Pay suggestions leaves the recipient field focused (${theme})`, async ({ page }) => {
     await open(page, "dashpay-registered", theme);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-contact").click();
-    await page.getByTestId("pay-contact-search").locator("input").fill("z");
-    await expect(page.getByTestId("pay-picker-none")).toContainText("No contacts match");
-    await page.getByTestId("pay-picker-clear").click();
-    await expect(page.getByTestId("pay-contact-search").locator("input")).toBeFocused();
+    const field = page.getByTestId("pay-address");
+    await field.fill("bob");
     await expect(page.getByTestId("pay-picker-row").first()).toBeVisible();
+    await field.press("Escape");
+    await expect(field).toBeFocused();
+    await expect(page.getByTestId("pay-recipient-popover")).toHaveCount(0);
   });
 
   test(`clearing an address-book search focuses the search (${theme})`, async ({ page }) => {
@@ -373,7 +373,6 @@ for (const theme of THEMES) {
   test(`a failed refetch of the wallet list keeps the page and what was typed (${theme})`, async ({ page }) => {
     const errors = await open(page, "funded", theme);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     const amount = page.getByTestId("pay-amount");
     await amount.fill("0.5");
     const before = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "list_wallets").length);

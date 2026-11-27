@@ -291,7 +291,6 @@ test.describe("Address Book", () => {
   test("QT097: Pay's address field chooses from the sending book, with its label", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address-book").click();
     const picker = page.getByTestId("address-book-picker");
     await picker.locator("tr", { hasText: "Bob's shop" }).getByRole("button", { name: /Choose/ }).click();
@@ -441,7 +440,6 @@ test.describe("PSBT", () => {
     await fakeClipboard(page);
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await expect(page.getByTestId("pay-continue")).toBeEnabled();
@@ -459,7 +457,6 @@ test.describe("PSBT", () => {
     await fakeClipboard(page);
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await expect(page.getByTestId("pay-continue")).toBeEnabled();
@@ -481,7 +478,6 @@ test.describe("PSBT", () => {
     await fakeClipboard(page);
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await page.getByTestId("pay-continue").click();
@@ -497,7 +493,6 @@ test.describe("PSBT", () => {
   test("QT076_D18: a watch-only wallet's confirm sheet offers Create Unsigned instead of Send", async ({ page }) => {
     await open(page, "watch-only");
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await expect(page.getByTestId("pay-continue")).toBeEnabled();
