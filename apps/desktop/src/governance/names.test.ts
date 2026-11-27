@@ -173,7 +173,6 @@ describe("the list", () => {
     expect(listContests(all, "", "name", NOW).map((c) => c.label)).toEqual(["dash-pay", "mara", "a11ce", "c0ra", "zara"]);
     expect(listContests(all, "Cora", "ending", NOW).map((c) => c.label)).toEqual(["c0ra"]);
   });
-  });
 
   it("closes a contest at its end time and says when", () => {
     const c = a11ce();
