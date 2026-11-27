@@ -9,7 +9,7 @@ use dashcore::blockdata::script::{Builder, Instruction, PushBytes};
 use dashcore::{Address, PublicKey, ScriptBuf};
 use dpp::secp256k1::{Message, SecretKey, ecdsa};
 use dw_protx::shared::SpecialTx;
-use key_wallet::transaction_checking::TransactionContext;
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 
 use super::super::recovery::{SIGNER_RUNS, spend_fee};
 use super::*;
@@ -17,6 +17,7 @@ use crate::masternodes::{
     AbandonSpendState, BlockedReason, HandoffErrorOutcome, HandoffTx, RecoveryAction, SettledBy,
     Settlement, SharedRecovery,
 };
+use crate::withhold::ExclusionReason;
 
 const OVERDUE_SECS: u64 = 3 * 60 * 60;
 
@@ -241,6 +242,106 @@ fn abandon_action(r: &SharedRecovery) -> Option<(u64, bool, Option<String>)> {
         } => Some((*charge, *spends, replaces.clone())),
         _ => None,
     })
+}
+
+fn assert_reserved_coin_excluded(f: &Fx, coin: OutPoint, reason: ExclusionReason) {
+    assert!(f.held_coin(1, coin).is_some());
+    let wallet = f.wallets[1];
+    let session = Arc::clone(&f.session);
+    let exclusions = f
+        .run(f.session.on_runtime(async move {
+            let w = session.wallet(&wallet).await?;
+            let state = w.state_mut().await;
+            Ok(session.hub.excluded_coins(wallet, &state.core_wallet))
+        }))
+        .unwrap();
+    assert_eq!(exclusions.get(&coin), Some(&reason));
+}
+
+fn assert_abandon_cannot_spend(f: &Fx, id: &str) {
+    let offered = abandon_action(&f.recovery(1, id));
+    let result = f.abandon(1, id);
+    let signed = f.row(1, id).abandon_tx.is_some();
+    let sent = f.net.sent().len();
+    assert_eq!((offered, signed, sent), (None, false, 0));
+    assert_stage(result.unwrap_err(), "funding_signed");
+}
+
+#[test]
+fn test_recovery_excludes_a_rescan_held_reservation() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    let coins = reserved_coins(&f, 1, &id);
+    let [coin] = coins.as_slice() else {
+        panic!("expected one reserved coin");
+    };
+    let hold = |held| {
+        f.session.hub.history.with_wallet(f.wallets[1], |h| {
+            if held {
+                h.rescan_holds
+                    .insert(*coin, crate::rescan_hold::RescanHold::new(0, 100));
+            } else {
+                h.rescan_holds.remove(coin);
+            }
+        });
+    };
+
+    hold(true);
+    assert_reserved_coin_excluded(&f, *coin, ExclusionReason::RescanHold);
+    let discard = f.recovery(1, &id).actions;
+    hold(false);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    assert_eq!(
+        abandon_action(&f.recovery(1, &id)),
+        Some((spend_fee(1), true, None))
+    );
+    hold(true);
+    assert_abandon_cannot_spend(&f, &id);
+    assert_eq!(discard, [RecoveryAction::Discard { releases: 0 }]);
+    assert_eq!(f.locked(1), HashSet::from([*coin]));
+}
+
+#[test]
+fn test_recovery_excludes_a_pending_unproven_reservation() {
+    let f = fx(3, true);
+    let value = 300 * COIN + 50_000;
+    let parent = f.credit(1, 40, value + 10_000);
+    let template = f.credit(1, 41, value);
+    let mut payment = foreign_spend(&[parent], value);
+    payment.output[0].script_pubkey = f.coin_of(1, template).1.script_pubkey();
+    let coin = OutPoint::new(payment.txid(), 0);
+    let (session, wallet) = (Arc::clone(&f.session), f.wallets[1]);
+    f.run(f.session.on_runtime(async move {
+        let w = session.wallet(&wallet).await?;
+        let mut state = w.state_mut().await;
+        let coins = &mut state
+            .core_wallet
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .unwrap()
+            .utxos;
+        let mut utxo = coins.remove(&template).unwrap();
+        utxo.outpoint = coin;
+        coins.insert(coin, utxo);
+        Ok(())
+    }))
+    .unwrap();
+    f.record(1, &payment);
+    f.history_edit(1, payment.txid(), |e| {
+        e.context =
+            TransactionContext::InBlock(BlockInfo::new(1, dashcore::BlockHash::all_zeros(), 0));
+    });
+    let id = three_approved_after_b(&f, COIN, RewardChoice::Refund, 1);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    assert_eq!(reserved_coins(&f, 1, &id), [coin]);
+    f.history_edit(1, payment.txid(), |e| {
+        e.context = TransactionContext::Mempool
+    });
+    assert_reserved_coin_excluded(&f, coin, ExclusionReason::PendingUnproven);
+    assert_abandon_cannot_spend(&f, &id);
 }
 
 fn grant_exceeded<T: std::fmt::Debug>(r: Result<T, MasternodesError>) {

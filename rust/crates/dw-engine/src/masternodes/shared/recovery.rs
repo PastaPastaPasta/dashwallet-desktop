@@ -177,7 +177,7 @@ pub(super) enum AbandonCoins {
 /// What the coin test reads of a session, gathered once.
 pub(super) struct CoinFacts {
     pub reserved: Vec<OutPoint>,
-    /// The reserved coins the wallet holds unspent, outpoint order.
+    /// The unspent, non-excluded reserved coins, in outpoint order.
     pub held: Vec<(Utxo, Option<DerivationPath>)>,
     pub pending: HashSet<OutPoint>,
     /// The session's own transactions, in lookup order.
@@ -377,10 +377,13 @@ impl NetworkSession {
         let w = self.wallet(&wallet).await?;
         let mut held: Vec<(Utxo, Option<DerivationPath>)> = {
             let state = crate::wallet_read::info_of(&w).await?;
+            let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
-                .filter(|c| reserved.contains(&c.utxo.outpoint))
+                .filter(|c| {
+                    reserved.contains(&c.utxo.outpoint) && !excluded.contains_key(&c.utxo.outpoint)
+                })
                 .map(|c| {
                     let path =
                         own_address_info(&state.core_wallet, &c.utxo.address).map(|i| i.path);
@@ -890,7 +893,7 @@ impl NetworkSession {
             .is_some_and(|tx| self.check_resend_inputs(wallet, &tx).is_ok())
     }
 
-    /// What a discard of `row` releases: the reserved coins the wallet holds.
+    /// What a discard of `row` makes available from its reservation.
     async fn reserved_total(
         &self,
         wallet: WalletId,
@@ -902,10 +905,13 @@ impl NetworkSession {
         }
         let w = self.wallet(&wallet).await?;
         let state = crate::wallet_read::info_of(&w).await?;
+        let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
         Ok(read_coins(&state.core_wallet)
             .coins
             .iter()
-            .filter(|c| reserved.contains(&c.utxo.outpoint))
+            .filter(|c| {
+                reserved.contains(&c.utxo.outpoint) && !excluded.contains_key(&c.utxo.outpoint)
+            })
             .map(|c| c.utxo.value())
             .sum())
     }
