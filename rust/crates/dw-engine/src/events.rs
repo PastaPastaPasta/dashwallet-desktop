@@ -1312,6 +1312,13 @@ impl SessionHub {
         }
         for id in &wallets {
             self.pump.mark_history(*id, Some(&[txid]));
+            if let Some(reread) = self.balance_reread.get()
+                && self
+                    .history
+                    .read_wallet(id, |h| h.fork_kept_locks.contains(&txid))
+            {
+                reread(*id);
+            }
         }
         if let Some(rerun) = self.lock_rerun.get() {
             rerun(txid, lock.clone(), wallets);

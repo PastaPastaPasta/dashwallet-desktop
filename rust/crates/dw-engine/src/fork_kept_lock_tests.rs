@@ -253,9 +253,10 @@ impl Scenario {
     }
 
     fn assert_restarted_from_old_block(&self) {
-        assert!(
-            matches!(self.row(), Some((status, false, _)) if status != TxStatusKind::Unconfirmed)
-        );
+        assert!(matches!(
+            self.row(),
+            Some((TxStatusKind::Confirming | TxStatusKind::Confirmed, false, _))
+        ));
         assert!(!spendable(&self.engine, &self.session, self.id, self.a));
     }
 }
@@ -441,6 +442,19 @@ fn a_payment_without_a_lock_a_fork_removed_goes_and_frees_its_coin() {
     assert_eq!(s.row(), None, "P is gone");
     assert!(spendable(&s.engine, &s.session, s.id, s.a), "a is offered");
     assert_eq!(balances(&s.session, s.id).total, 12 * COIN);
+}
+
+#[test]
+fn a_lock_verified_after_the_fork_recovers_the_payment_and_holds_its_input() {
+    let s = scenario();
+    s.mined();
+    s.fork();
+    assert_eq!(s.row(), None);
+    assert!(s.max().1.contains(&s.a));
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
 }
 
 #[test]

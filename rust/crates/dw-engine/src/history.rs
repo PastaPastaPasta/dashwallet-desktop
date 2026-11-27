@@ -1532,6 +1532,9 @@ pub(crate) struct WalletHistory {
     pub(crate) uncertain_fork_spends: HashMap<Txid, BTreeSet<OutPoint>>,
     /// Inputs restored by a fork whose hold cannot rely on a spender row.
     pub(crate) restored_fork_inputs: BTreeSet<OutPoint>,
+    /// Own spends a fork removed before the wallet knew their lock.
+    /// A later verified lock can restore the pending row and its hold.
+    fork_removed_spends: HashMap<Txid, ForkRemovedSpend>,
     /// The last load of the history missed a stored record or mark.
     pub load_incomplete: bool,
     /// The claims the store's repair put back pending, as the last load
@@ -1584,6 +1587,12 @@ pub(crate) struct WalletHistory {
     pub(crate) restore_holds_built: bool,
     /// The last load could not read the restore holds.
     pub(crate) restore_holds_unread: bool,
+}
+
+#[derive(Debug)]
+struct ForkRemovedSpend {
+    entry: TxEntry,
+    own_outputs: BTreeMap<u32, (u64, bool)>,
 }
 
 impl WalletHistory {
@@ -1682,6 +1691,7 @@ impl WalletHistory {
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
         self.fork_kept_locks.remove(txid);
+        self.fork_removed_spends.remove(txid);
     }
 
     /// The ProRegTxs kept out of sight that the history has no own entry
@@ -1712,6 +1722,7 @@ impl WalletHistory {
         }
         let new = !self.txs.contains_key(&record.txid);
         self.fork_kept_locks.remove(&record.txid);
+        self.fork_removed_spends.remove(&record.txid);
         let entry = self.txs.entry(record.txid).or_insert_with(|| TxEntry {
             tx: record.transaction.clone(),
             context: record.context.clone(),
@@ -1852,6 +1863,23 @@ impl WalletHistory {
         }
     }
 
+    fn restore_fork_removed_spend(&mut self, txid: Txid) -> bool {
+        let Some(ForkRemovedSpend {
+            mut entry,
+            own_outputs,
+        }) = self.fork_removed_spends.remove(&txid)
+        else {
+            return false;
+        };
+        entry.context = TransactionContext::Mempool;
+        entry.instant_locked = true;
+        entry.abandoned = false;
+        self.txs.insert(txid, entry);
+        self.own_outputs.insert(txid, own_outputs);
+        self.fork_kept_locks.insert(txid);
+        true
+    }
+
     /// A fork replaced the blocks above the wallet's truncation height:
     /// `removed` are gone, and `unconfirmed` (InstantSend-locked, so the
     /// network mines them again) are out of a block, locked. A removed one
@@ -1896,8 +1924,17 @@ impl WalletHistory {
                 continue;
             }
             self.hidden_registrations.remove(txid);
-            self.own_outputs.remove(txid);
-            if self.txs.remove(txid).is_some() {
+            let own_outputs = self.own_outputs.remove(txid);
+            if let Some(entry) = self.txs.remove(txid) {
+                if !self.owned_inputs_of(txid, &entry).is_empty() {
+                    self.fork_removed_spends.insert(
+                        *txid,
+                        ForkRemovedSpend {
+                            entry,
+                            own_outputs: own_outputs.unwrap_or_default(),
+                        },
+                    );
+                }
                 changed.push(*txid);
             }
         }
@@ -2207,15 +2244,18 @@ impl HistoryStore {
         }
         let mut marked = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
+            let restored = verified_inputs.is_some() && h.restore_fork_removed_spend(*txid);
             let entry = h.txs.get(txid);
             if verified_inputs
                 .is_some_and(|inputs| entry.is_some() || inputs.iter().any(|o| h.owns_output(o)))
             {
                 h.session_locks.insert(*txid);
             }
-            if h.loaded
-                && entry.is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
-                && h.set_instant_locked(txid)
+            if restored
+                || (h.loaded
+                    && entry
+                        .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
+                    && h.set_instant_locked(txid))
             {
                 marked.push(*id);
             }
