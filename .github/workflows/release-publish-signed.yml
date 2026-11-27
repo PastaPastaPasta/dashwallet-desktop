@@ -7,6 +7,10 @@
 # created locally by the release signer and stored in the detached-sigs repository (mirroring
 # dashpay/dash-detached-sigs). The `release` environment holds NO secrets; it exists solely for
 # v* tag deployment restrictions and optional required reviewers configured by the release owner.
+#
+# release-sign.yml calls this workflow too (workflow_call). Its signing job made the signatures in CI
+# and left them, with the signed .dmg, in the run artifact named by `signed_artifact`; they are read from
+# there instead of the detached-sigs repository and the staging draft. Every verification is the same.
 name: Publish signed release
 
 on:
@@ -37,6 +41,34 @@ on:
         type: string
       dry_run:
         description: "Verify and attach everything on macos-15, then stop BEFORE final attestation, publication, and staging cleanup"
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      release_run_id:
+        required: true
+        type: string
+      signed_artifact:
+        description: "Artifact of the calling run holding signatures.tar and the signed .dmg"
+        required: true
+        type: string
+      sigs_repo:
+        required: false
+        default: PastaPastaPasta/dashwallet-detached-sigs
+        type: string
+      sigs_ref:
+        required: false
+        default: ""
+        type: string
+      dmg_draft_tag:
+        required: false
+        default: ""
+        type: string
+      dry_run:
         required: false
         default: false
         type: boolean
@@ -199,6 +231,7 @@ jobs:
             exit 1
           }
       - name: Fetch detached signatures repository
+        if: ${{ !inputs.signed_artifact }}
         env:
           SIGS_REPO: ${{ inputs.sigs_repo }}
         run: |
@@ -212,6 +245,7 @@ jobs:
             echo "SIGS_DIR=$RUNNER_TEMP/sigs-repo" >> "$GITHUB_ENV"
           fi
       - name: Fetch staged signed macOS .dmg from draft release
+        if: ${{ !inputs.signed_artifact }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -220,6 +254,23 @@ jobs:
           gh release download "$DMG_TAG" --repo "$GITHUB_REPOSITORY" \
             -p "$dmg_name" -D "$RUNNER_TEMP/dmg-stage"
           echo "SIGNED_DMG=$RUNNER_TEMP/dmg-stage/$dmg_name" >> "$GITHUB_ENV"
+      - name: Download the signatures and the .dmg signed in CI
+        if: ${{ inputs.signed_artifact }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.signed_artifact }}
+          path: ${{ runner.temp }}/ci-signed
+      - name: Unpack the signatures signed in CI
+        if: ${{ inputs.signed_artifact }}
+        run: |
+          dmg="$RUNNER_TEMP/ci-signed/dash-wallet-$VERSION-macos-universal.dmg"
+          [[ -f "$dmg" && ! -L "$dmg" ]] || { echo "::error::the signing job's artifact has no $(basename "$dmg")" >&2; exit 1; }
+          mkdir "$RUNNER_TEMP/ci-sigs"
+          python3 ci/github/unpack-signatures.py "$RUNNER_TEMP/ci-signed/signatures.tar" "$RUNNER_TEMP/ci-sigs"
+          {
+            echo "SIGS_DIR=$RUNNER_TEMP/ci-sigs/sigs"
+            echo "SIGNED_DMG=$dmg"
+          } >> "$GITHUB_ENV"
       - name: Attach and verify all detached signatures against repo-pinned identities
         run: |
           # H2 / M4 / Decision 5: Pinned identities (docs/release/signing-identities.json and
@@ -270,7 +321,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish
       - name: Clean up staging draft release after successful publish
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && !inputs.signed_artifact }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

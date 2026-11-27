@@ -70,6 +70,11 @@ before.
 
 The examples use `v1.0.0-rc.1`. Substitute the real tag everywhere.
 
+**Signing in CI instead.** [`CI-SIGNING.md`](CI-SIGNING.md) runs sections 4 to 6 of this file on a hosted runner
+(`release-sign.yml`), with the keys in a protected `release-signing` environment and the same verification before
+anything is published. It also takes a Windows signature made here on the YubiKey (sections 4.1, 4.3 and 5) while
+macOS and PGP are signed in CI.
+
 ## What a signed candidate publishes
 
 A signed candidate is a prerelease, never Latest, with 9 assets, all attested by `release-publish-signed.yml`:

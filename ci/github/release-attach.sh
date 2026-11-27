@@ -17,6 +17,7 @@
 #     [--pgp-fingerprint <40-hex>] \
 #     [--apple-team-id <10-alnum>] \
 #     [--win-leaf-hash <sha256:64-hex>] \
+#     [--win-signer-org <organization> --win-signer-eku <OID>] \
 #     [--win-ca-file <path>] \
 #     [--skip-win-chain-verify] \
 #     [--allow-non-darwin]
@@ -25,6 +26,15 @@
 # cert SHA-256) are loaded from the main repository at the tag (docs/release/signing-identities.json
 # and docs/release/release-key.asc) and NEVER from --sigs-dir. All three identities fail closed
 # until populated.
+#
+# The Windows signer is pinned one of two ways, never both:
+#   windows_leaf_sha256   the SHA-256 of one long-lived leaf certificate (a hardware token, a CA-issued
+#                         certificate in a cloud HSM);
+#   windows_signer        {"organization": <name>, "eku": <OID>} for a service that issues a new
+#                         short-lived leaf every day (Azure Artifact Signing): the signing leaf must name
+#                         exactly that organization (O), carry the Code Signing usage and that identity's own
+#                         EKU, and chain to a root in --win-ca-file, which is then required and is also the
+#                         only trust for the timestamp (docs/release/CI-SIGNING.md).
 #
 # Must run on macOS (Darwin) for codesign, spctl, stapler, and .dmg layout verification; non-Darwin
 # hosts fail closed unless --allow-non-darwin is explicitly passed (for Linux test suites only).
@@ -58,6 +68,8 @@ pgp_fingerprint=
 apple_team_id=
 win_ca_file=
 win_leaf_hash=
+win_signer_org=
+win_signer_eku=
 skip_win_chain_verify=0
 allow_non_darwin=0
 
@@ -76,6 +88,8 @@ while (($#)); do
     --apple-team-id) apple_team_id=${2:?}; shift 2 ;;
     --win-ca-file) win_ca_file=${2:?}; shift 2 ;;
     --win-leaf-hash) win_leaf_hash=${2:?}; shift 2 ;;
+    --win-signer-org) win_signer_org=${2:?}; shift 2 ;;
+    --win-signer-eku) win_signer_eku=${2:?}; shift 2 ;;
     --skip-win-chain-verify) skip_win_chain_verify=1; shift ;;
     --allow-non-darwin) allow_non_darwin=1; shift ;;
     *) echo "release-attach: unknown option: $1" >&2; exit 1 ;;
@@ -111,6 +125,8 @@ if [[ -f "$identities_file" ]]; then
   [[ -n "$pgp_fingerprint" ]] || pgp_fingerprint=$(jq -r '.pgp_fingerprint // empty' "$identities_file")
   [[ -n "$apple_team_id" ]] || apple_team_id=$(jq -r '.apple_team_id // empty' "$identities_file")
   [[ -n "$win_leaf_hash" ]] || win_leaf_hash=$(jq -r '.windows_leaf_sha256 // empty' "$identities_file")
+  [[ -n "$win_signer_org" ]] || win_signer_org=$(jq -r '.windows_signer.organization? // empty' "$identities_file")
+  [[ -n "$win_signer_eku" ]] || win_signer_eku=$(jq -r '.windows_signer.eku? // empty' "$identities_file")
 fi
 
 want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
@@ -121,8 +137,22 @@ want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '
   die "pinned Apple Team ID must be 10 uppercase alphanumerics (got '${apple_team_id:-<empty>}'; populate docs/release/signing-identities.json)"
 
 win_leaf_hash=$(printf '%s' "$win_leaf_hash" | tr '[:upper:]' '[:lower:]')
-[[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-  die "pinned Windows leaf cert hash must be sha256:<64-hex> (got '${win_leaf_hash:-<empty>}'; populate docs/release/signing-identities.json)"
+win_pin=leaf
+if [[ -n "$win_signer_org$win_signer_eku" ]]; then
+  win_pin=signer
+  [[ ! "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "pin the Windows signer by windows_leaf_sha256 or by windows_signer, not both (docs/release/signing-identities.json)"
+  [[ -n "$win_signer_org" && "$win_signer_org" != *REPLACE_* && "$win_signer_org" != *$'\n'* ]] ||
+    die "pinned windows_signer.organization must be the signer's organization name (got '${win_signer_org:-<empty>}'; populate docs/release/signing-identities.json)"
+  [[ "$win_signer_eku" =~ ^[0-9]+(\.[0-9]+){5,}$ ]] ||
+    die "pinned windows_signer.eku must be a dotted OID (got '${win_signer_eku:-<empty>}'; populate docs/release/signing-identities.json)"
+  [[ -n "$win_ca_file" ]] ||
+    die "windows_signer needs --win-ca-file: an organization and an EKU identify the signer only under a pinned root (populate docs/release/windows-ca.pem)"
+  win_leaf_hash=
+else
+  [[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "pinned Windows leaf cert hash must be sha256:<64-hex> (got '${win_leaf_hash:-<empty>}'; populate docs/release/signing-identities.json)"
+fi
 
 [[ -n "$pgp_pubkey" && -f "$pgp_pubkey" && ! -L "$pgp_pubkey" ]] ||
   die "pinned PGP public key file not found: ${pgp_pubkey:-<empty>} (populate docs/release/release-key.asc)"
@@ -205,6 +235,15 @@ command -v osslsigncode >/dev/null 2>&1 || die "osslsigncode is required to atta
 attach_help=$(osslsigncode attach-signature --help 2>&1 || true)
 verify_help=$(osslsigncode verify --help 2>&1 || true)
 
+# windows_signer: the one certificate in the signature that names the pinned organization and carries the
+# Code Signing usage and the pinned EKU becomes the required leaf, so osslsigncode proves below that it is
+# the signer.
+if [[ "$win_pin" == signer ]]; then
+  win_leaf_hash=$(python3 "$here/windows-signer-leaf.py" "$win_sig" "$win_signer_org" "$win_signer_eku") ||
+    die "no certificate in $win_sig matches the pinned windows_signer ($win_signer_org, EKU $win_signer_eku)"
+  [[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] || die "windows-signer-leaf.py returned no leaf hash"
+fi
+
 attach_args=(attach-signature -in "$win_unsigned" -sigin "$win_sig" -out "$win_signed")
 verify_args=(verify -in "$win_signed" -require-leaf-hash "$win_leaf_hash")
 if [[ -n "$win_ca_file" ]]; then
@@ -229,6 +268,11 @@ PY
   # >= 2.14 does digest-only attach and accepts -CAfile/-require-leaf-hash on verify only.
   [[ "$attach_help" == *"-CAfile"* ]] && attach_args+=(-CAfile "$win_ca_file")
   verify_args+=(-CAfile "$win_ca_file")
+  if [[ "$win_pin" == signer ]]; then
+    [[ "$verify_help" == *"-TSA-CAfile"* ]] || die "this osslsigncode cannot pin the timestamp root (-TSA-CAfile), which windows_signer needs"
+    [[ "$attach_help" == *"-TSA-CAfile"* ]] && attach_args+=(-TSA-CAfile "$win_ca_file")
+    verify_args+=(-TSA-CAfile "$win_ca_file")
+  fi
 fi
 [[ "$attach_help" == *"-require-leaf-hash"* ]] && attach_args+=(-require-leaf-hash "$win_leaf_hash")
 if ((skip_win_chain_verify)); then
@@ -239,7 +283,11 @@ fi
 
 echo "release-attach: attaching detached Authenticode signature to $win_name"
 osslsigncode "${attach_args[@]}"
-echo "release-attach: verifying signed $win_name (pinned leaf $win_leaf_hash)"
+if [[ "$win_pin" == signer ]]; then
+  echo "release-attach: verifying signed $win_name (pinned signer $win_signer_org, EKU $win_signer_eku; today's leaf $win_leaf_hash)"
+else
+  echo "release-attach: verifying signed $win_name (pinned leaf $win_leaf_hash)"
+fi
 osslsigncode "${verify_args[@]}"
 
 # 4. macOS .app: extract unsigned .app, attach detached signatures, verify, pack deterministic .app.tar.gz.
@@ -385,12 +433,12 @@ sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); ex
 echo "release-attach: verified PGP signature SHA256SUMS.asc (GOODSIG + pinned primary key $sig_primary)"
 
 # L4 / H2: Record pinned identities and SHA-256 of ALL published files (11; 9 on a candidate) in signed-manifest.json.
-python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" "${expected_names[@]}" <<'PY'
+python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" "$win_signer_org" "$win_signer_eku" "${expected_names[@]}" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 
-version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path = sys.argv[1:8]
-expected = sys.argv[8:] + ["SHA256SUMS", "SHA256SUMS.asc"]
+version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path, win_org, win_eku = sys.argv[1:10]
+expected = sys.argv[10:] + ["SHA256SUMS", "SHA256SUMS.asc"]
 files = {}
 for name in sorted(expected):
     p = Path(dist_dir) / name
@@ -412,6 +460,8 @@ manifest = {
     "windows_leaf_sha256": win_leaf,
     "files": files,
 }
+if win_org:
+    manifest["windows_signer"] = {"organization": win_org, "eku": win_eku}
 Path(out_path).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 PY
 

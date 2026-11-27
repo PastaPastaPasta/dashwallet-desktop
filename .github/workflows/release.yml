@@ -70,6 +70,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - .github/workflows/release-publish-signed.yml
+      - .github/workflows/release-sign.yml
       - ci/**
       - packaging/**
       - rust/crates/dw-app/tauri.conf.json
