@@ -5806,9 +5806,10 @@ fn a_rescan_restores_the_coin_of_an_abandon_stopped_without_its_rewind_record() 
     });
     assert!(before.is_some(), "the abandon stored no rewind record");
     assert!(
-        after.is_none(),
-        "the rewind record is still stored: {after:?}"
+        after.is_some(),
+        "a commit before the rewind cleared its record"
     );
+    engine.block_on(replay.restore(id, None)).unwrap();
 
     let session = reopen(&engine, session);
     start_spv(&engine, &session);

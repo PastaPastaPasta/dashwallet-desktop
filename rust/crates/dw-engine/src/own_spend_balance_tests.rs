@@ -2368,6 +2368,7 @@ fn an_abandon_rescan_and_restart_keep_a_coin_with_a_surviving_spender_out() {
             !held(&engine, &session, id).contains(&b),
             "reopened (mined: {mined_spender})"
         );
+        engine.block_on(session.cancel_rescan()).unwrap();
         rescan_from_birth(&engine, &session);
         let mut chain = vec![(TIP, vec![paid])];
         if mined_spender {
@@ -2764,6 +2765,7 @@ fn a_rescan_from_the_birth_frees_a_coin_a_half_done_abandon_could_not_name() {
     assert_eq!(stored_spent(&session, id, a), Some(true), "A is released");
     assert!(!spendable(&engine, &session, id, a), "A is offered");
     start_offline_spv(&engine, &session);
+    engine.block_on(session.cancel_rescan()).unwrap();
     engine
         .block_on(session.rescan(crate::RescanFrom::WalletBirth))
         .unwrap();
