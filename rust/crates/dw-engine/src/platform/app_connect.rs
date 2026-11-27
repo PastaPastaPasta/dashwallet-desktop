@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
+use dashcore::hashes::{Hash, HashEngine, HmacEngine, sha256};
 use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
 use dpp::identity::accessors::IdentityGettersV0;
@@ -2766,15 +2767,16 @@ fn disconnect_conflict_marker(record: &ConnectRecord) -> Result<Option<[u8; 16]>
         .last_conflict
         .as_ref()
         .map(|conflict| {
-            let mut input = [0; 64];
-            input[..32].copy_from_slice(&*DISCLOSURE_KEY);
-            hex::decode_to_slice(&conflict.transition_hash, &mut input[32..]).map_err(|_| {
+            let mut hash = [0; 32];
+            hex::decode_to_slice(&conflict.transition_hash, &mut hash).map_err(|_| {
                 PlatformError::Internal {
                     detail: "invalid disconnect conflict hash".into(),
                 }
             })?;
+            let mut mac = HmacEngine::<sha256::HashEngine>::new(&*DISCLOSURE_KEY);
+            mac.input(&hash);
             let mut marker = [0; 16];
-            marker.copy_from_slice(&hash_double(&input)[..16]);
+            marker.copy_from_slice(&mac.finalize().to_byte_array()[..16]);
             Ok(marker)
         })
         .transpose()
@@ -3094,7 +3096,6 @@ pub(crate) async fn disconnect(
     let request_hash = parse_request_hash(request)?;
     let index = wallet_identity_index(session, wallet_id, id)?;
     let owner = b58(&id);
-    let _refresh = session.after_spend(wallet_id, id);
     let locks = identity_locks(wallet_id, id);
     let _write = locks.write.lock().await;
     let all_records = records(session, wallet_id).await?;
@@ -3117,6 +3118,7 @@ pub(crate) async fn disconnect(
                 == ResponseDelivery::BroadcastUnknown,
         });
     }
+    let _refresh = session.after_spend(wallet_id, id);
     let mut other_live_pendings: Vec<u64> = Vec::new();
     let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
     for r in all_records
