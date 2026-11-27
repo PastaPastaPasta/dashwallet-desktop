@@ -1877,44 +1877,6 @@ impl WalletHistory {
         }
     }
 
-    fn hold_forked_ancestors(&mut self, removed: &[Txid], unconfirmed: &[Txid]) {
-        if removed.is_empty() {
-            return;
-        }
-        let removed: HashSet<_> = removed.iter().copied().collect();
-        let mut parents: Vec<_> = self
-            .lock_parent_links()
-            .flat_map(|(_, parents)| parents.iter().copied())
-            .chain(
-                unconfirmed
-                    .iter()
-                    .filter_map(|t| self.txs.get(t))
-                    .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output.txid)),
-            )
-            .collect();
-        let mut walked = HashSet::new();
-        while let Some(parent) = parents.pop() {
-            if !walked.insert(parent) {
-                continue;
-            }
-            if let Some(inputs) = self.fork_kept_ancestor_inputs.get(&parent) {
-                parents.extend(inputs.iter().map(|o| o.txid));
-                continue;
-            }
-            let forked = removed.contains(&parent);
-            if let Some(entry) = self.txs.get(&parent)
-                && (forked || (entry.context.block_info().is_none() && !entry.is_abandoned()))
-            {
-                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
-                parents.extend(inputs.clone().map(|o| o.txid));
-                if forked {
-                    self.fork_kept_ancestor_inputs
-                        .insert(parent, inputs.collect());
-                }
-            }
-        }
-    }
-
     /// A fork replaced the blocks above the wallet's truncation height:
     /// `removed` are gone, and `unconfirmed` (InstantSend-locked, so the
     /// network mines them again) are out of a block, locked. A removed one
@@ -1926,7 +1888,6 @@ impl WalletHistory {
         unconfirmed: &[Txid],
         lock_overflow: bool,
     ) -> Vec<Txid> {
-        self.hold_forked_ancestors(removed, unconfirmed);
         let mut changed = Vec::new();
         for txid in removed {
             if lock_overflow
@@ -2053,6 +2014,66 @@ impl EarlyInstantLocks {
     }
 }
 
+fn forked_ancestor_inputs(
+    wallets: &HashMap<WalletId, WalletHistory>,
+    wallet: WalletId,
+    height: u32,
+    removed: &[Txid],
+    unconfirmed: &[Txid],
+) -> Vec<(Txid, Vec<OutPoint>)> {
+    let mut held = Vec::new();
+    if removed.is_empty() {
+        return held;
+    }
+    let removed: HashSet<_> = removed.iter().copied().collect();
+    let mut parents: Vec<_> = wallets
+        .values()
+        .flat_map(WalletHistory::lock_parent_links)
+        .flat_map(|(_, parents)| parents.iter().copied())
+        .chain(
+            wallets
+                .get(&wallet)
+                .into_iter()
+                .flat_map(|h| unconfirmed.iter().filter_map(move |t| h.txs.get(t)))
+                .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output.txid)),
+        )
+        .collect();
+    let mut walked = HashSet::new();
+    while let Some(parent) = parents.pop() {
+        if !walked.insert(parent) {
+            continue;
+        }
+        let forked = removed.contains(&parent);
+        // A different wallet may still show the old block, or may already
+        // have removed this record and kept its inputs.
+        for h in wallets.values() {
+            if let Some(inputs) = h.fork_kept_ancestor_inputs.get(&parent) {
+                parents.extend(inputs.iter().map(|o| o.txid));
+                if forked {
+                    held.push((parent, inputs.clone()));
+                }
+                break;
+            }
+            if let Some(entry) = h.txs.get(&parent)
+                && (forked
+                    || (!entry.is_abandoned()
+                        && entry
+                            .context
+                            .block_info()
+                            .is_none_or(|b| b.height() > height)))
+            {
+                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
+                parents.extend(inputs.clone().map(|o| o.txid));
+                if forked {
+                    held.push((parent, inputs.collect()));
+                }
+                break;
+            }
+        }
+    }
+    held
+}
+
 impl HistoryStore {
     pub fn with_wallet<R>(&self, wallet: WalletId, f: impl FnOnce(&mut WalletHistory) -> R) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
@@ -2081,12 +2102,16 @@ impl HistoryStore {
     pub(crate) fn truncate(
         &self,
         wallet: WalletId,
+        height: u32,
         removed: &[Txid],
         unconfirmed: &[Txid],
     ) -> Vec<Txid> {
-        self.with_wallet_records(wallet, |history, locks| {
-            history.truncate(removed, unconfirmed, locks.overflow)
-        })
+        let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+        let held = forked_ancestor_inputs(&wallets, wallet, height, removed, unconfirmed);
+        let history = wallets.entry(wallet).or_default();
+        history.fork_kept_ancestor_inputs.extend(held);
+        history.truncate(removed, unconfirmed, locks.overflow)
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the

@@ -227,6 +227,35 @@ impl Scenario {
         );
         assert!(!spendable(&self.engine, &self.session, self.id, self.a));
     }
+
+    fn assert_fork_holds_funding_coin(&self) {
+        let b = balances(&self.session, self.id);
+        let (max, inputs) = self.max();
+        assert_eq!(
+            (
+                b.total,
+                b.confirmed,
+                b.withheld,
+                max,
+                inputs.len(),
+                inputs.contains(&self.a),
+                self.a_listed(),
+                spendable(&self.engine, &self.session, self.id, self.a)
+            ),
+            (11 * COIN, 11 * COIN, 0, 11 * COIN, 11, false, false, false),
+            "balance, Max, Send selection and coin control after the fork"
+        );
+        assert!(
+            !self
+                .session
+                .hub
+                .wallet_state(&self.id)
+                .unwrap()
+                .excluded
+                .waiting()
+                .contains(&self.a)
+        );
+    }
 }
 
 fn assert_forked_parent_protected(child_mined: bool) {
@@ -257,31 +286,7 @@ fn assert_forked_parent_protected(child_mined: bool) {
     }
     assert!(history.read_wallet(&s.id, |h| !h.session_locks.contains(&s.p.txid())));
 
-    let b = balances(&s.session, s.id);
-    let (max, inputs) = s.max();
-    assert_eq!(
-        (
-            b.total,
-            b.confirmed,
-            b.withheld,
-            max,
-            inputs.len(),
-            inputs.contains(&s.a),
-            s.a_listed(),
-            spendable(&s.engine, &s.session, s.id, s.a)
-        ),
-        (11 * COIN, 11 * COIN, 0, 11 * COIN, 11, false, false, false),
-        "balance, Max, Send selection and coin control after the fork"
-    );
-    assert!(
-        !s.session
-            .hub
-            .wallet_state(&s.id)
-            .unwrap()
-            .excluded
-            .waiting()
-            .contains(&s.a)
-    );
+    s.assert_fork_holds_funding_coin();
 
     mined(&s.engine, &s.session, s.id, TIP + 1, payments);
     assert!(!s.a_held(), "the parent spends its coin again");
@@ -345,6 +350,32 @@ fn a_child_lock_through_a_pending_parent_protects_its_forked_grandparent() {
         (before.confirmed, max_before, inputs_before, false, false),
         "balance, Max, Send selection and coin control after the fork"
     );
+}
+
+#[test]
+fn a_child_lock_in_another_wallet_protects_the_senders_forked_input() {
+    let s = scenario();
+    let recipient = second_wallet(&s.engine, &s.session);
+    let script = fresh_address(&s.engine, &s.session, recipient).script_pubkey();
+    let payment = super::spend_of(s.a, vec![(script, PAID_OUT)]);
+    let sent = OutPoint::new(payment.txid(), 0);
+    mined(&s.engine, &s.session, s.id, TIP + 1, vec![payment.clone()]);
+    mined(&s.engine, &s.session, recipient, TIP + 1, vec![payment]);
+    assert!(!s.a_held());
+
+    let child = super::spend_of(sent, vec![(super::elsewhere(), PAID_OUT / 2)]);
+    s.hear_verified_lock(InstantLock {
+        txid: child.txid(),
+        inputs: vec![sent],
+        ..InstantLock::default()
+    });
+    let history = &s.session.hub.history;
+    assert!(history.read_wallet(&recipient, |h| h.session_locks.contains(&child.txid())));
+    assert!(history.read_wallet(&s.id, |h| !h.session_locks.contains(&child.txid())));
+
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the sender's funding coin");
+    s.assert_fork_holds_funding_coin();
 }
 
 fn assert_recordless_child_protects_pending_parent(buffered: bool) {
