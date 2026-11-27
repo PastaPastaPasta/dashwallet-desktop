@@ -210,17 +210,25 @@ may hold one of the two, never both.
 
    Open the run, check it is on your tag and commit, and choose **Review deployments ▸ release-signing ▸ Approve
    and deploy**. Most of the `sign` job's time is Apple's notary service, usually a few minutes for each of its two
-   submissions. If the `release` environment has a required reviewer too, the `publish` job asks once more. A green rehearsal ends with the notice `dry_run=true on
+   submissions. If the `release` environment has a required reviewer too, the `publish` job asks once more; give that
+   approval within three days, while the signing job's artifact still exists. A green rehearsal ends with the notice `dry_run=true on
    v1.0.0-rc.2 …`.
 3. Publish: the same command without `-f dry_run=true`, and the same approval.
 4. Verify the published candidate as in [`RC-SIGNING.md`](RC-SIGNING.md) section 7. With a `windows_signer` pin
-   there is no leaf hash to require; the Windows check is the publisher and the pinned root:
+   the identities file has no leaf hash to require, so find the leaf the pin selects and require that one. From a
+   checkout of the tag:
 
    ```sh
-   osslsigncode verify -in dash-wallet-1.0.0-rc.2-windows-x64-setup.exe \
+   exe=dash-wallet-1.0.0-rc.2-windows-x64-setup.exe ids=docs/release/signing-identities.json
+   osslsigncode extract-signature -pem -in "$exe" -out sig.pem
+   leaf=$(python3 ci/github/windows-signer-leaf.py sig.pem \
+     "$(jq -r .windows_signer.organization "$ids")" "$(jq -r .windows_signer.eku "$ids")")
+   osslsigncode verify -in "$exe" -require-leaf-hash "$leaf" \
      -CAfile docs/release/windows-ca.pem -TSA-CAfile docs/release/windows-ca.pem
-   # expect the pinned organization in "Subject:", a "Timestamp time:" line and "Succeeded"
+   # expect "Leaf hash match: ok", a "Timestamp time:" line and "Succeeded"
    ```
+
+   The organization alone is not the check: only the EKU is unique to this publisher.
 
 With the Windows signature from the YubiKey, add `-f windows_sig_ref=<commit in dashwallet-detached-sigs>` to both
 commands.

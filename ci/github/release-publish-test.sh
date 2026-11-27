@@ -1651,7 +1651,7 @@ PY
     '[[ "$impostor_leaf" =~ ^sha256:[0-9a-f]{64}$ && "$impostor_leaf" != "$e2e_leaf" ]]'
   expect_attach_fail \
     "windows_signer: release-attach refuses a signer with the pinned organization and EKU that no pinned root issued" \
-    "self[- ]signed|unable to get local issuer|verify error" "$e2e/attach-signer-impostor.out" \
+    "self[- ]signed|unable to get local issuer" "$e2e/attach-signer-impostor.out" \
     "${attach_base[@]}" "${signer_ids[@]}" --sigs-dir "$e2e/sigs-impostor" --out-dir "$e2e/attached-signer-impostor"
   printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$e2e/work/garbage.pem"
   leaf_rc=0
@@ -2019,7 +2019,7 @@ JV
   js_rc=0
   PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/evil.crt" > "$js/badca.log" 2>&1 || js_rc=$?
   check "sign-windows --jsign-jar: fails when the signer does not chain to --ca-file" \
-    '[[ $js_rc -ne 0 ]] && grep -qE "self[- ]signed|unable to get local issuer|verify error" "$js/badca.log"'
+    '[[ $js_rc -ne 0 ]] && grep -qE "self[- ]signed|unable to get local issuer" "$js/badca.log"'
 
   su_rc=0
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" "$here/../release/sign-updater.sh" --version 0.1.0 --dist-dir "$l3/dist" \

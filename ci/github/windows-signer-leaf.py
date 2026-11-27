@@ -9,8 +9,10 @@ key usages. Exits 1 when no certificate matches, or more than one does. This onl
 release-attach.sh then has osslsigncode require that leaf as the signer and verify its chain to the pinned
 roots.
 
-The certificates are read from their DER encoding, never from text a tool printed: text can be forged by a
-string inside a certificate. Anything that is not plain DER refuses the whole signature.
+The certificates are read from their encoding, never from text a tool printed: text can be forged by a
+string inside a certificate. An indefinite length, a multi-byte tag, a repeated extension or trailing data
+refuses the whole signature. This is not a strict DER validator: osslsigncode parses the same bytes again,
+and it is the hash of exactly these bytes that it requires of the signer.
 """
 import base64
 import hashlib
@@ -138,9 +140,9 @@ def main():
     if len(sys.argv) != 4:
         raise SystemExit(__doc__)
     sig_path, want_org, want_eku = sys.argv[1:4]
-    with open(sig_path, "r", encoding="ascii", errors="strict") as f:
-        blocks = re.findall(r"^-----BEGIN PKCS7-----$(.+?)^-----END PKCS7-----$", f.read(), re.S | re.M)
     try:
+        with open(sig_path, "r", encoding="ascii", errors="strict") as f:
+            blocks = re.findall(r"^-----BEGIN PKCS7-----$(.+?)^-----END PKCS7-----$", f.read(), re.S | re.M)
         if len(blocks) != 1:
             raise Malformed(f"{len(blocks)} PKCS7 blocks, need exactly 1")
         certs = certificates(base64.b64decode("".join(blocks[0].split()), validate=True))
@@ -149,7 +151,7 @@ def main():
             orgs, usages, is_ca = describe(cert)
             if not is_ca and orgs == [want_org] and want_eku in usages and OID_CODE_SIGNING in usages:
                 matches.add(hashlib.sha256(cert).hexdigest())
-    except (Malformed, ValueError, IndexError) as e:
+    except (Malformed, ValueError, IndexError, OSError) as e:
         print(f"windows-signer-leaf: refusing {sig_path}: {e}", file=sys.stderr)
         return 1
     if len(matches) != 1:

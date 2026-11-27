@@ -146,12 +146,12 @@ jobs:
           }
           # Azure signs under windows_signer; a YubiKey signature (windows_sig_ref) under windows_leaf_sha256.
           if [[ -z "$INPUT_WIN_REF" ]]; then
-            jq -e '(has("windows_signer")) and (.windows_signer | (.organization | type == "string" and length > 0 and (contains("REPLACE_") | not)) and (.eku | type == "string" and test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) and (((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-f]{64}$")) | not)' "$ids" >/dev/null || {
+            jq -e '(has("windows_signer")) and (.windows_signer | (.organization | type == "string" and length > 0 and (test("REPLACE_|[\\n\\r]") | not)) and (.eku | type == "string" and test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) and (((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-fA-F]{64}$")) | not)' "$ids" >/dev/null || {
               echo "::error::signing Windows with Azure needs windows_signer (organization and the identity's own EKU) and no windows_leaf_sha256 in $ids at $TAG" >&2
               exit 1
             }
           else
-            jq -e '(has("windows_signer") | not) and ((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-f]{64}$"))' "$ids" >/dev/null || {
+            jq -e '(has("windows_signer") | not) and ((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-fA-F]{64}$"))' "$ids" >/dev/null || {
               echo "::error::windows_sig_ref takes a YubiKey signature, which needs windows_leaf_sha256 and no windows_signer in $ids at $TAG" >&2
               exit 1
             }
@@ -286,13 +286,14 @@ jobs:
           COPYFILE_DISABLE=1 tar -cf "$RUNNER_TEMP/ci-signed/signatures.tar" -C "$RUNNER_TEMP" sigs
           cp "$OUT/dist/dash-wallet-$VERSION-macos-universal.dmg" "$RUNNER_TEMP/ci-signed/"
           tar -tf "$RUNNER_TEMP/ci-signed/signatures.tar"
-      # One day: the publish job reads it minutes later, and a signed .dmg should not linger on the run.
+      # Three days: the publish job reads it once its own approval, if any, is given; a signed .dmg should
+      # not linger on the run longer.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-signed-${{ inputs.tag }}
           path: ${{ runner.temp }}/ci-signed/
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 3
 
   publish:
     name: Verify, attest and publish
