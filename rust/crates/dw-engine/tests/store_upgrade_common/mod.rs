@@ -132,13 +132,18 @@ pub fn tree(dir: &Path) -> BTreeMap<String, String> {
             let entry = entry.unwrap();
             let rel = (entry.path().strip_prefix(base).unwrap())
                 .to_string_lossy()
-                .into_owned();
+                .replace(std::path::MAIN_SEPARATOR, "/");
             let meta = fs::symlink_metadata(entry.path()).unwrap();
             if meta.is_dir() {
                 out.insert(rel, format!("{} dir", mode(&meta)));
                 walk(base, &entry.path(), out);
             } else {
-                let bytes = fs::read(entry.path()).unwrap();
+                // Windows denies even an EOF read on an exclusively locked file.
+                let bytes = if meta.is_file() && meta.len() == 0 {
+                    Vec::new()
+                } else {
+                    fs::read(entry.path()).unwrap()
+                };
                 out.insert(
                     rel,
                     format!("{} {}", mode(&meta), hex::encode(Sha256::digest(&bytes))),

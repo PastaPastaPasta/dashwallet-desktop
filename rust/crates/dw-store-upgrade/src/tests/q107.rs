@@ -323,7 +323,10 @@ fn a_fault_rereading_the_snapshot_under_the_lock_is_retried() {
     let (f, _) = failed_open();
     let part = start(&f, later(60)).unwrap().snapshot.unwrap();
     crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| {
-        *h.borrow_mut() = Some((part.dir().to_path_buf(), std::io::ErrorKind::Interrupted))
+        *h.borrow_mut() = Some((
+            part.dir().canonicalize().unwrap(),
+            std::io::ErrorKind::Interrupted,
+        ))
     });
     let err = reconcile_fork_store(&config(&f.net), &part, build()).unwrap_err();
     crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| *h.borrow_mut() = None);
