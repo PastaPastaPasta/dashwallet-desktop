@@ -187,7 +187,7 @@ test("keys not confirmed in time leave the sheet open, and approving again finis
 
 test("a reopened sheet whose quote failed offers Try again, which quotes the same choice and turns Approve on", async ({ page }) => {
   await openConnect(page, "quoteOffline");
-  await expect(page.getByTestId("connect-quote-error")).toHaveText("Couldn't check this request with Platform. Try again.");
+  await expect(page.getByTestId("connect-quote-error")).toHaveText("Dash Platform is unavailable for this request. Make sure Dash Platform is on and connected, then try again.");
   await expect(page.getByTestId("connect-limit")).toBeDisabled();
   await expect(page.getByTestId("connect-approve")).toBeDisabled();
   await page.getByTestId("connect-quote-retry").click();
