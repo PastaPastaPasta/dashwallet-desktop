@@ -1095,21 +1095,23 @@ fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
         let penalty =
             || serde_json::to_value(&standbys(&restored, 0, txid)[0]).unwrap()["penalty"].clone();
         assert_eq!(penalty(), serde_json::json!(COIN));
-        restored
-            .session
-            .hub
-            .history
-            .truncate(restored.wallets[0], &[], &[txid], &[]);
+        restored.session.hub.history.truncate(
+            restored.wallets[0],
+            &[],
+            &[txid],
+            crate::history::ForkRestorations::Reported(&[]),
+        );
         assert_eq!(
             penalty(),
             serde_json::json!(COIN),
             "mempool registration, full_only={full_only}"
         );
-        restored
-            .session
-            .hub
-            .history
-            .truncate(restored.wallets[0], &[txid], &[], &[]);
+        restored.session.hub.history.truncate(
+            restored.wallets[0],
+            &[txid],
+            &[],
+            crate::history::ForkRestorations::Reported(&[]),
+        );
         assert!(
             penalty().is_null(),
             "unknown penalty, full_only={full_only}"

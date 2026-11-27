@@ -27,7 +27,7 @@ use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
-use crate::history::HistoryStore;
+use crate::history::{ForkRestorations, HistoryStore};
 use crate::pump::{EventPump, NewTxs, PumpTarget, TxidSet};
 use crate::sync::{SyncSnapshot, SyncTracker};
 use crate::tools::{RescanState, better_chainlock, count_masternodes};
@@ -489,11 +489,7 @@ pub(crate) struct Truncated<'a> {
     /// InstantSend-locked transactions recorded in blocks above the
     /// height, out of a block now.
     pub unconfirmed: &'a [Txid],
-    /// Coins key-wallet returned, including those it held spent without a record.
-    pub restored: &'a [dashcore::OutPoint],
-    /// Found in key-wallet ([`SessionHub::detect_truncation`]), not
-    /// announced by its event.
-    pub detected: bool,
+    pub restored: ForkRestorations<'a>,
 }
 
 /// Display name and creation time of a wallet (dw-appdb `wallets`).
@@ -1306,19 +1302,17 @@ impl SessionHub {
     fn fan_out_lock(&self, lock: &InstantLock, unloaded: &HashSet<WalletId>, verified: bool) {
         let txid = lock.txid;
         let inputs = verified.then_some(lock.inputs.as_slice());
-        let wallets = self.history.note_instant_lock(&txid, inputs, unloaded);
+        let (wallets, withheld) = self.history.note_instant_lock(&txid, inputs, unloaded);
+        if let Some(reread) = self.balance_reread.get() {
+            for id in withheld {
+                reread(id);
+            }
+        }
         if wallets.is_empty() && self.unstored_locks().is_empty() {
             return;
         }
         for id in &wallets {
             self.pump.mark_history(*id, Some(&[txid]));
-            if let Some(reread) = self.balance_reread.get()
-                && self
-                    .history
-                    .read_wallet(id, |h| h.fork_kept_locks.contains(&txid))
-            {
-                reread(*id);
-            }
         }
         if let Some(rerun) = self.lock_rerun.get() {
             rerun(txid, lock.clone(), wallets);
@@ -2232,6 +2226,7 @@ impl SessionHub {
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) -> bool {
+        let detected = matches!(found.restored, ForkRestorations::Detected(_));
         let lowered = {
             let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
             let state = map.entry(id).or_default();
@@ -2239,14 +2234,14 @@ impl SessionHub {
             // alone. That holds while a truncation's event reaches the hub
             // before the new chain's progress past its height does, so a
             // truncation is never found above its own event's height.
-            let heard = !found.detected
+            let heard = !detected
                 && state.detected.is_some_and(|d| {
                     height == d || (height > d && state.processed_height <= height)
                 });
-            if heard || (!found.detected && state.detected.is_some_and(|d| height <= d)) {
+            if heard || (!detected && state.detected.is_some_and(|d| height <= d)) {
                 state.detected = None;
             }
-            let news = !heard && (!found.detected || state.processed_height > height);
+            let news = !heard && (!detected || state.processed_height > height);
             news.then(|| {
                 let catching_up = state.catching_up();
                 let from = state.scan_target.max(state.processed_height);
@@ -2254,14 +2249,15 @@ impl SessionHub {
                 state.synced_height = state.synced_height.min(height);
                 state.scan_target = state.scan_target.min(height);
                 state.processed_height = state.processed_height.min(height);
-                if found.detected {
+                if detected {
                     state.detected = Some(height);
                 }
                 (from, catching_up != state.catching_up(), checkpoint_lowered)
             })
         };
         let Some((from, flipped, checkpoint_lowered)) = lowered else {
-            if self.history.hold_fork_restorations(id, found.restored)
+            if let ForkRestorations::Reported(coins) = found.restored
+                && self.history.hold_fork_restorations(id, coins)
                 && self.update_balance(id, balance, accounts)
             {
                 self.pump.mark_balances(id);
@@ -2373,12 +2369,11 @@ impl SessionHub {
                     .filter(|t| h.session_held.contains(t) && !still_recorded(t) && !finalized(t)),
             );
         });
-        let funding = core.accounts.all_funding_accounts();
-        let restored: Vec<_> = self
-            .history
-            .locked_inputs_without_record(&id)
+        let unspent: Vec<_> = core
+            .accounts
+            .all_funding_accounts()
             .into_iter()
-            .filter(|o| funding.iter().any(|account| account.utxos.contains_key(o)))
+            .flat_map(|account| account.utxos.keys().copied())
             .collect();
         self.apply_truncation(
             &truncating,
@@ -2387,8 +2382,7 @@ impl SessionHub {
             Truncated {
                 removed: &removed,
                 unconfirmed: &unconfirmed,
-                restored: &restored,
-                detected: true,
+                restored: ForkRestorations::Detected(&unspent),
             },
             &core.balance(),
             &core.account_balances(),
@@ -2715,8 +2709,7 @@ impl SessionHub {
                     Truncated {
                         removed: txids,
                         unconfirmed: unconfirmed_txids,
-                        restored: restored_outpoints,
-                        detected: false,
+                        restored: ForkRestorations::Reported(restored_outpoints),
                     },
                     balance,
                     account_balances,

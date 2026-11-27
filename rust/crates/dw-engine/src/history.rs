@@ -1532,6 +1532,9 @@ pub(crate) struct WalletHistory {
     pub(crate) uncertain_fork_spends: HashMap<Txid, BTreeSet<OutPoint>>,
     /// Inputs restored by a fork whose hold cannot rely on a spender row.
     pub(crate) restored_fork_inputs: BTreeSet<OutPoint>,
+    /// The latest detected fork's unspent wallet inputs. A verified lock
+    /// arriving after detection can identify a restored coin in this set.
+    detected_fork_coins: HashSet<OutPoint>,
     /// Own spends a fork removed before the wallet knew their lock.
     /// A later verified lock can restore the pending row and its hold.
     fork_removed_spends: HashMap<Txid, ForkRemovedSpend>,
@@ -1975,6 +1978,14 @@ pub(crate) struct HistoryStore {
 pub(crate) const EARLY_LOCK_LIMIT: usize = 4096;
 const EARLY_LOCK_INPUT_LIMIT: usize = 65_536;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ForkRestorations<'a> {
+    /// Exact outpoints returned in a wallet event.
+    Reported(&'a [OutPoint]),
+    /// Currently unspent coins to check when detection has no event.
+    Detected(&'a [OutPoint]),
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct EarlyInstantLocks {
     order: VecDeque<Txid>,
@@ -2073,11 +2084,31 @@ impl HistoryStore {
         wallet: WalletId,
         removed: &[Txid],
         unconfirmed: &[Txid],
-        restored: &[OutPoint],
+        restored: ForkRestorations<'_>,
     ) -> Vec<Txid> {
         self.with_wallet_records(wallet, |history, locks| {
             let changed = history.truncate(removed, unconfirmed, locks.overflow);
-            locks.hold_restorations(history, restored);
+            match restored {
+                ForkRestorations::Reported(coins) => {
+                    locks.hold_restorations(history, coins);
+                }
+                ForkRestorations::Detected(unspent) => {
+                    history.detected_fork_coins = unspent.iter().copied().collect();
+                    history.restored_fork_inputs.extend(
+                        locks
+                            .spends
+                            .iter()
+                            .filter(|(coin, spenders)| {
+                                history.detected_fork_coins.contains(*coin)
+                                    && spenders.iter().any(|txid| {
+                                        history.session_locks.contains(txid)
+                                            && !history.txs.contains_key(txid)
+                                    })
+                            })
+                            .map(|(coin, _)| *coin),
+                    );
+                }
+            }
             changed
         })
     }
@@ -2085,27 +2116,6 @@ impl HistoryStore {
     pub(crate) fn hold_fork_restorations(&self, wallet: WalletId, restored: &[OutPoint]) -> bool {
         !restored.is_empty()
             && self.with_wallet_records(wallet, |h, locks| locks.hold_restorations(h, restored))
-    }
-
-    /// For a truncation detected without an event, a matched verified lock
-    /// can identify its input even when the wallet never recorded the spend.
-    pub(crate) fn locked_inputs_without_record(&self, wallet: &WalletId) -> Vec<OutPoint> {
-        self.read_wallet(wallet, |h| {
-            if h.session_locks.is_empty() {
-                return Vec::new();
-            }
-            let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
-            locks
-                .spends
-                .iter()
-                .filter_map(|(outpoint, spenders)| {
-                    spenders
-                        .iter()
-                        .any(|txid| h.session_locks.contains(txid) && !h.txs.contains_key(txid))
-                        .then_some(*outpoint)
-                })
-                .collect()
-        })
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the
@@ -2225,8 +2235,9 @@ impl HistoryStore {
 
     /// Marks `txid` InstantSend-locked in each loaded history but those of
     /// `skip` that holds it out of a block without a known lock: key-wallet
-    /// tells only the wallets holding its record or coins (#828). The
-    /// wallets marked. `verified_inputs` is present only for a verified
+    /// tells only the wallets holding its record or coins (#828).
+    /// Returns the wallets whose history or balances changed.
+    /// `verified_inputs` is present only for a verified
     /// lock. Each history that holds `txid` or owns one of those inputs
     /// keeps it among its [`WalletHistory::session_locks`].
     pub(crate) fn note_instant_lock(
@@ -2234,7 +2245,7 @@ impl HistoryStore {
         txid: &Txid,
         verified_inputs: Option<&[OutPoint]>,
         skip: &HashSet<WalletId>,
-    ) -> Vec<WalletId> {
+    ) -> (Vec<WalletId>, Vec<WalletId>) {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         if let Some(inputs) = verified_inputs {
             self.early_locks
@@ -2243,6 +2254,7 @@ impl HistoryStore {
                 .remember(*txid, inputs);
         }
         let mut marked = Vec::new();
+        let mut withheld = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
             let restored = verified_inputs.is_some() && h.restore_fork_removed_spend(*txid);
             let entry = h.txs.get(txid);
@@ -2250,6 +2262,19 @@ impl HistoryStore {
                 .is_some_and(|inputs| entry.is_some() || inputs.iter().any(|o| h.owns_output(o)))
             {
                 h.session_locks.insert(*txid);
+            }
+            let mut held = restored;
+            if let Some(inputs) = verified_inputs
+                && entry.is_none()
+            {
+                for coin in inputs {
+                    if h.detected_fork_coins.contains(coin) && h.owns_output(coin) {
+                        held |= h.restored_fork_inputs.insert(*coin);
+                    }
+                }
+            }
+            if held {
+                withheld.push(*id);
             }
             if restored
                 || (h.loaded
@@ -2260,7 +2285,7 @@ impl HistoryStore {
                 marked.push(*id);
             }
         }
-        marked
+        (marked, withheld)
     }
 
     /// Forgets a load's claims of `txids` once their marks are gone or
@@ -3487,7 +3512,12 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 3);
         store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
-        store.truncate(wallet, &[removed.txid()], &[kept.txid()], &[]);
+        store.truncate(
+            wallet,
+            &[removed.txid()],
+            &[kept.txid()],
+            ForkRestorations::Reported(&[]),
+        );
         assert_eq!(
             store.registration_collaterals(&wallet),
             vec![kept_collateral],

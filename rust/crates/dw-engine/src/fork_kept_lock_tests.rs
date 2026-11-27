@@ -403,6 +403,38 @@ fn a_fork_detected_without_an_event_holds_the_unrecorded_locked_spenders_input()
 }
 
 #[test]
+fn a_verified_lock_during_detection_holds_an_unrecorded_spenders_input() {
+    use std::sync::Barrier;
+
+    let s = unrecorded_spender(false);
+    let reached = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    *s.session.hub.pause_truncation.lock().unwrap() =
+        Some((Arc::clone(&reached), Arc::clone(&release)));
+
+    std::thread::scope(|scope| {
+        let detecting = scope.spawn(|| s.detect_fork());
+        reached.wait();
+        s.hear_lock();
+        release.wait();
+        detecting.join().unwrap();
+    });
+
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_verified_lock_after_detection_holds_an_unrecorded_spenders_input() {
+    let s = unrecorded_spender(false);
+    s.detect_fork();
+    assert_restored_input(&s, false);
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+}
+
+#[test]
 fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
     let s = unrecorded_spender(false);
     s.overflow_early_locks();

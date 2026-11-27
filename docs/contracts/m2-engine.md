@@ -148,8 +148,10 @@ eviction or a lock too large for the buffer, a forked-out payment spending the w
 status is unknown stays pending. Its inputs stay excluded for the session, and Abandon and Resend refuse it.
 When a truncation returns a coin whose spender was never recorded, Desktop keeps it excluded for the session
 if a wallet-matched verified lock names it or the buffer has overflowed. A detected truncation without an event
-can use the verified lock while its input is still buffered. Without the event or that lock evidence, it cannot
-identify the restored outpoint. For a recorded own spend that was removed before its lock verified, the
+can match the live wallet's unspent coins against buffered verified locks in the same write that holds the
+inputs. A verified lock received afterward can still name an input from that read. Without the event or
+verified lock evidence, Desktop cannot identify the restored outpoint. For a recorded own spend that was
+removed before its lock verified, the
 removed record stays in memory for the session. A subsequent verified lock restores the pending row and
 excludes its inputs that are still unspent.
 
