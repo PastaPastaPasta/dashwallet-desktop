@@ -133,6 +133,30 @@ export const transfer = {
       done: "Moved to Dash wallet. The payment to {recipient} didn't go through, so {recipient} wasn't paid.",
       lost: "The payment went through before the move, so {recipient} was paid. The move wasn't charged.",
     },
+    /** The move is the way out of a cancel that may still go through, beside the move or payment it
+     * cancels: only one of the three goes through. */
+    exitCancel: {
+      line: {
+        move: "This cancel of {amount}, and the move it cancels, may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the three can go through. If this move goes through, neither of the others does, and the amount, less fees, goes to your Dash wallet.",
+        payment:
+          "This cancel of {amount}, and the payment to {recipient} it cancels, may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the three can go through. If this move goes through, neither of the others does, so {recipient} isn't paid, and the amount, less fees, goes to your Dash wallet.",
+      },
+      done: {
+        move: "Moved to Dash wallet. The cancel and the earlier move didn't go through.",
+        payment: "Moved to Dash wallet. The cancel and the payment to {recipient} didn't go through, so {recipient} wasn't paid.",
+      },
+      lostToCancel: {
+        move: "The cancel went through before the move, so the amount is in your Platform balance, minus the cancel's fee. The move wasn't charged.",
+        payment: "The cancel went through before the move, so {recipient} wasn't paid, and the amount is in your Platform balance, minus the cancel's fee. The move wasn't charged.",
+      },
+      lostToMove: "The earlier move went through first, so the amount is in your Dash wallet. This move wasn't charged.",
+      lostToPayment: "The payment went through before the move, so {recipient} was paid. The move wasn't charged.",
+    },
+    /** The move is the way out of a move to the Dash wallet too small to cancel: only one of the two goes through. */
+    exitMove: {
+      line: "This move of {amount} may still go through. Moving again uses the same Platform funds, so only one of the two can go through, and either way the amount, less fees, reaches your Dash wallet.",
+      lost: "The earlier move went through first, so the amount is in your Dash wallet. This move wasn't charged.",
+    },
     failed: { title: "The move did not go through", text: "Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again." },
     unseen: "Your move has an update.",
     waiting: {

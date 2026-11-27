@@ -3,7 +3,7 @@
 
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
-import { errorMessage } from "../api/backend";
+import { errorMessage, hasCode } from "../api/backend";
 import { creditsToDuffs } from "../api/pending";
 import { useBackend, usePlatformActivity, usePlatformAddresses, useShieldedHistory, useShieldedStatus } from "../api/queries";
 import { ui } from "../app/ui";
@@ -16,7 +16,7 @@ import { detailDate, isProblem, rowDate, shownAmount } from "../format/tx";
 import { useModel } from "../onboarding/model";
 import { cancelFor, cancelResult, CANCEL_COPY, recipientOf, type CancelKind, type PlatformCancelFlow } from "../platform/cancel";
 import { addressSendsOff } from "../platform/mainnetOff";
-import { cancelOf, isHeldSend, MOVE_COPY, moveErrorText } from "../platform/move";
+import { cancelOf, isHeldCancel, isHeldSend, MOVE_COPY, moveErrorText } from "../platform/move";
 import { moveToDashWallet } from "./dashpay/DashPayCard";
 import { GrantSheet } from "./tools/common";
 import { findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
@@ -27,14 +27,35 @@ function Address({ value }: { value: string }) {
   return <CopyValue value={value} action={t("activity.sourceDetail.copyAddress")} mono />;
 }
 
+/** "Move to Dash wallet": the way out of a held send or cancel, or of a held move or contact payment
+ * the cancel refused (too small, or its re-send refused). */
+function MoveButton({ onMove }: { onMove: () => void }) {
+  const t = useT();
+  return (
+    <DashButton variant="filledBlue" size="large" data-testid="source-detail-move-to-core" onClick={onMove}>
+      {t("activity.sourceDetail.moveToCore")}
+    </DashButton>
+  );
+}
+
+/** A cancel refusal that leaves "Move to Dash wallet" as the way out: the held item is too small to
+ * cancel, or Platform's pre-check refused the cancel. */
+const movesInstead = (e: unknown) => hasCode(e, "credits.send_out_of_range") || hasCode(e, "credits.preflight_refused") || hasCode(e, "credits.rules_unsupported");
+
 /** The cancel of a held move or contact payment, in place of the details' actions: its confirmation,
- * progress and outcome. The outcome follows Activity's row of the cancel. */
-function CancelPanel({ flow, record, kind, activity, network }: { flow: PlatformCancelFlow; record: PlatformActivity; kind: CancelKind; activity: readonly PlatformActivity[] | null | undefined; network: NetworkInfo }) {
+ * progress and outcome. The outcome follows Activity's row of the cancel. `onMove`: Move to Dash wallet,
+ * offered where the cancel is refused. */
+function CancelPanel({ flow, record, kind, activity, network, onMove }: { flow: PlatformCancelFlow; record: PlatformActivity; kind: CancelKind; activity: readonly PlatformActivity[] | null | undefined; network: NetworkInfo; onMove: () => void }) {
   useModel(flow);
   const display = useDisplay(network);
   const credits = (c: string) => display.withUnit(creditsToDuffs(c));
   const recipient = recipientOf(record);
   const { step, quote } = flow;
+  const refusal = (e: unknown) => (hasCode(e, "credits.send_out_of_range") ? CANCEL_COPY.tooSmall(kind, credits(record.credits), recipient) : moveErrorText(e, credits, activity));
+  const move = () => {
+    flow.close();
+    onMove();
+  };
   if (step === "running")
     return (
       <p className="sheet-text" role="status" data-testid="platform-cancel-running">
@@ -59,12 +80,13 @@ function CancelPanel({ flow, record, kind, activity, network }: { flow: Platform
     return (
       <div data-testid="platform-cancel-refused">
         <p className="form-problem" role="alert">
-          {moveErrorText(flow.error, credits, activity)}
+          {refusal(flow.error)}
         </p>
         <div className="sheet-actions">
-          <DashButton variant="filledBlue" size="large" data-testid="platform-cancel-close" onClick={() => flow.close()}>
+          <DashButton variant={movesInstead(flow.error) ? "tintedGray" : "filledBlue"} size="large" data-testid="platform-cancel-close" onClick={() => flow.close()}>
             {MOVE_COPY.close}
           </DashButton>
+          {movesInstead(flow.error) && <MoveButton onMove={move} />}
         </div>
       </div>
     );
@@ -73,7 +95,7 @@ function CancelPanel({ flow, record, kind, activity, network }: { flow: Platform
       <p className="topup-title">{CANCEL_COPY.title(kind)}</p>
       {flow.quoteError ? (
         <p className="form-problem" role="alert" data-testid="platform-cancel-quote-error">
-          {moveErrorText(flow.quoteError, credits, activity)}
+          {refusal(flow.quoteError)}
         </p>
       ) : !quote ? (
         <p className="sheet-text" role="status">
@@ -88,39 +110,37 @@ function CancelPanel({ flow, record, kind, activity, network }: { flow: Platform
         <DashButton variant="tintedGray" size="large" data-testid="platform-cancel-dismiss" disabled={flow.running} onClick={() => flow.dismiss()}>
           {CANCEL_COPY.dismiss}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="platform-cancel-go" disabled={!quote || !!flow.quoteError || flow.running} onClick={() => void flow.confirm()}>
-          {CANCEL_COPY.confirm(kind)}
-        </DashButton>
+        {movesInstead(flow.quoteError) ? (
+          <MoveButton onMove={move} />
+        ) : (
+          <DashButton variant="filledBlue" size="large" data-testid="platform-cancel-go" disabled={!quote || !!flow.quoteError || flow.running} onClick={() => void flow.confirm()}>
+            {CANCEL_COPY.confirm(kind)}
+          </DashButton>
+        )}
       </div>
     </div>
   );
 }
 
-/** A held Platform item's way out: Move to Dash wallet beside a held send (Transfer plans it from the
- * send's inputs), Cancel beside a held move or contact payment. */
+/** A held Platform item's way out: Move to Dash wallet beside a held send or cancel (Transfer plans it
+ * from that item's inputs), Cancel beside a held move or contact payment. */
 function HeldActions({ record, walletId, network }: { record: PlatformActivity; walletId: string; network: NetworkInfo }) {
-  const t = useT();
   const backend = useBackend();
   const activity = usePlatformActivity(walletId).data;
   const sendsOff = addressSendsOff(network, usePlatformAddresses(walletId).data);
   const flow = cancelFor(backend, walletId);
   useModel(flow);
   const kind = cancelOf(record, activity, sendsOff);
-  if (flow.of === record.id && (kind || flow.step !== "confirm")) return <CancelPanel flow={flow} record={record} kind={kind ?? (record.kind === "contactPayment" ? "payment" : "move")} activity={activity} network={network} />;
-  if (isHeldSend(record))
+  const onMove = () => {
+    ui.set({ detail: null });
+    moveToDashWallet(backend, walletId);
+  };
+  if (flow.of === record.id && (kind || flow.step !== "confirm"))
+    return <CancelPanel flow={flow} record={record} kind={kind ?? (record.kind === "contactPayment" ? "payment" : "move")} activity={activity} network={network} onMove={onMove} />;
+  if (isHeldSend(record) || isHeldCancel(record))
     return (
       <div className="sheet-actions">
-        <DashButton
-          variant="filledBlue"
-          size="large"
-          data-testid="source-detail-move-to-core"
-          onClick={() => {
-            ui.set({ detail: null });
-            moveToDashWallet(backend, walletId);
-          }}
-        >
-          {t("activity.sourceDetail.moveToCore")}
-        </DashButton>
+        <MoveButton onMove={onMove} />
       </div>
     );
   if (!kind) return null;

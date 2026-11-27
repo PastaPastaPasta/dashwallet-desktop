@@ -11,7 +11,6 @@ import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformCancelQuote } from "../api/generated/PlatformCancelQuote";
 import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import { platformOp } from "../dashpay/topup";
-import { contactName, shortAddress } from "../format/tx";
 import { t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
@@ -21,8 +20,7 @@ export type PlatformCancelApi = Pick<Backend, "platformCancelQuote" | "platformC
 
 export type CancelKind = "move" | "payment";
 
-/** Who a held payment from Platform pays, as its row shows it: the contact, else the shortened address. */
-export const recipientOf = (a: PlatformActivity): string => contactName(a.contact) ?? (a.to ? shortAddress(a.to) : "");
+export { recipientOf } from "./move";
 
 export const CANCEL_COPY = {
   action: (kind: CancelKind) => t(`platform.cancel.${kind}.action`),
@@ -31,6 +29,8 @@ export const CANCEL_COPY = {
   confirm: (kind: CancelKind) => t(`platform.cancel.${kind}.confirm`),
   done: (kind: CancelKind, recipient: string) => t(`platform.cancel.${kind}.done`, { recipient }),
   lost: (kind: CancelKind, recipient: string) => t(`platform.cancel.${kind}.lost`, { recipient }),
+  /** The held item is too small to cancel (`credits.send_out_of_range`): Move to Dash wallet instead. */
+  tooSmall: (kind: CancelKind, amount: string, recipient: string) => t(`platform.cancel.${kind}.tooSmall`, { amount, recipient }),
   get dismiss() {
     return t("platform.cancel.dismiss");
   },

@@ -143,3 +143,104 @@ test.describe("A held move or contact payment from Platform: Cancel", () => {
     await expect(page.getByTestId("platform-cancel-outcome")).toContainText("Payment cancelled. Bob Builder wasn't paid, and the amount is in your Platform balance, minus the fee.");
   });
 });
+
+test.describe("A held cancel, or a held item too small to cancel: Move to Dash wallet", () => {
+  const CANCEL = "platform:cancelMove:pc-held:mayland";
+  const PAYMENT_CANCEL = "platform:cancelPayment:pc-held:mayland";
+  async function moveFromDetails(page: Page) {
+    await page.getByTestId("source-detail-move-to-core").click();
+    await expect(page.getByTestId("source-detail")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "platformToCore");
+    await page.getByTestId("transfer-continue").click();
+  }
+
+  for (const theme of THEMES) {
+    test(`a held cancel's details offer the move, whose Confirm names the cancel and the move it cancels (${theme})`, async ({ page }) => {
+      const errors = await details(page, "platform-cancel-failed-may-land", CANCEL, theme);
+      await expect(page.getByTestId("source-detail-cancel")).toHaveCount(0);
+      await moveFromDetails(page);
+      await expect(page.getByTestId("platform-move-exit-send")).toHaveAttribute("data-exit", "cancel");
+      await expect(page.getByTestId("platform-move-exit-send")).toHaveText(
+        "This cancel of 0.40000000 tDASH, and the move it cancels, may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the three can go through. If this move goes through, neither of the others does, and the amount, less fees, goes to your Dash wallet.",
+      );
+      await expect(page.getByTestId("platform-move-quote")).toBeVisible();
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+
+    test(`a held move too small to cancel offers the move instead, whose Confirm names it (${theme})`, async ({ page }) => {
+      const errors = await details(page, "platform-move-too-small-may-land", "platform:moveToCore:pm-small:mayland", theme);
+      await page.getByTestId("source-detail-cancel").click();
+      await expect(page.getByTestId("platform-cancel-quote-error")).toHaveText(
+        "This move of 0.00015000 tDASH is too small to cancel. You can move the same funds to your Dash wallet instead. Only one of the two can go through, and either way the amount, less fees, reaches your Dash wallet.",
+      );
+      await expect(page.getByTestId("platform-cancel-go")).toHaveCount(0);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await moveFromDetails(page);
+      await expect(page.getByTestId("platform-move-exit-send")).toHaveText(
+        "This move of 0.00015000 tDASH may still go through. Moving again uses the same Platform funds, so only one of the two can go through, and either way the amount, less fees, reaches your Dash wallet.",
+      );
+      expect(await calls(page, "platform_cancel")).toBe(0);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test("the move goes through: neither the cancel nor the earlier move did", async ({ page }) => {
+    await details(page, "platform-cancel-failed-may-land", CANCEL);
+    await moveFromDetails(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Moved to Dash wallet. The cancel and the earlier move didn't go through.");
+    const rows = await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.filter((a) => a.id === "pm-held" || a.id === "pc-held"));
+    expect(rows.map((a) => [a.id, a.state, a.mayLand])).toEqual([
+      ["pc-held", "failed", false],
+      ["pm-held", "failed", false],
+    ]);
+  });
+
+  test("the cancel went through first: the amount is back on Platform and the move wasn't charged", async ({ page }) => {
+    await details(page, "platform-cancel-failed-may-land", CANCEL);
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "lostToCancel"));
+    await moveFromDetails(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("The cancel went through before the move, so the amount is in your Platform balance, minus the cancel's fee. The move wasn't charged.");
+  });
+
+  test("beside a held payment's cancel: the payment went through first, so Bob was paid", async ({ page }) => {
+    await details(page, "platform-payout-cancel-failed-may-land", PAYMENT_CANCEL);
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "lost"));
+    await moveFromDetails(page);
+    await expect(page.getByTestId("platform-move-exit-send")).toContainText("This cancel of 0.04000000 tDASH, and the payment to Bob Builder it cancels, may still go through.");
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("The payment went through before the move, so Bob Builder was paid. The move wasn't charged.");
+  });
+
+  test("a held cancel's re-send that Platform's rules refuse offers the move instead", async ({ page }) => {
+    await details(page, "platform-cancel-failed-may-land", "platform:moveToCore:pm-held:mayland");
+    await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.cancelPreCheck = "rulesUnsupported"));
+    await page.getByTestId("source-detail-cancel").click();
+    await page.getByTestId("platform-cancel-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-cancel-refused")).toContainText("Dash Platform's rules have changed");
+    await moveFromDetails(page);
+    await expect(page.getByTestId("platform-move-exit-send")).toHaveAttribute("data-exit", "cancel");
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Moved to Dash wallet. The cancel and the earlier move didn't go through.");
+  });
+
+  test("a held payment too small to cancel offers the move, which names Bob", async ({ page }) => {
+    await details(page, "platform-payout-too-small-may-land", "platform:contactPayment:cp-small:mayland");
+    await page.getByTestId("source-detail-cancel").click();
+    await expect(page.getByTestId("platform-cancel-quote-error")).toContainText("This payment of 0.00015000 tDASH to Bob Builder is too small to cancel.");
+    await moveFromDetails(page);
+    await expect(page.getByTestId("platform-move-exit-send")).toContainText("This payment of 0.00015000 tDASH to Bob Builder may still go through.");
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Moved to Dash wallet. The payment to Bob Builder didn't go through, so Bob Builder wasn't paid.");
+  });
+});

@@ -10,7 +10,7 @@ import { platformRow, sourceRowTitle } from "../history/sourceRows";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { cancelFor, cancelResult, CANCEL_COPY, PlatformCancelFlow, recipientOf, resetPlatformCancels } from "./cancel";
-import { cancelOf, isHeldSend, MOVE_COPY, moveErrorText, moveOutcomeCopy } from "./move";
+import { cancelOf, isHeldCancel, isHeldSend, MOVE_COPY, moveErrorText, moveExit, moveExitLine, moveOutcomeCopy } from "./move";
 
 const PAYEE = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 const OWN = "tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0";
@@ -30,6 +30,14 @@ describe("which way out a held item offers", () => {
     expect(isHeldSend({ ...send, state: "pending" })).toBe(false);
     expect(isHeldSend({ ...send, mayLand: false })).toBe(false);
     expect(isHeldSend({ ...send, cancels: "pm-1", to: OWN })).toBe(false);
+  });
+
+  it("a held cancel: Move to Dash wallet, beside its re-send from the item it cancels", () => {
+    const cancel = held("pc-1", "send", { to: OWN, cancels: "pm-1" });
+    expect([isHeldCancel(cancel), isHeldSend(cancel), cancelOf(cancel, [cancel])]).toEqual([true, false, null]);
+    expect(isHeldCancel({ ...cancel, state: "pending" })).toBe(false);
+    expect(isHeldCancel({ ...cancel, mayLand: false })).toBe(false);
+    expect(isHeldCancel(held("ps-1", "send", { to: PAYEE }))).toBe(false);
   });
 
   it("a held move or contact payment: its cancel, unless a send, top-up, pending item or another cancel holds beside it", () => {
@@ -62,22 +70,89 @@ describe("which way out a held item offers", () => {
   });
 });
 
+const ALICE = { identity: "x", username: "alice", displayName: "Alice", avatarUrl: null };
+const outcome = { id: "pm-3", credits: "30000000000", expectedDuffs: 29_998_000, to: "y", state: "done", feeCredits: "2000000" } as const;
+
 describe("the move out of a held send", () => {
-  const outcome = { id: "pm-3", credits: "30000000000", expectedDuffs: 29_998_000, to: "y", state: "done", feeCredits: "2000000" } as const;
+  const send = held("ps-1", "send", { to: PAYEE });
+  const paid = held("ps-1", "send", { contact: ALICE, to: PAYEE });
 
   it("says the recipient wasn't paid once it went through, and was paid once the payment did", () => {
-    expect(moveOutcomeCopy(outcome, false, credits, amount, "tdash1kq…6f8h")).toEqual({ title: MOVE_COPY.done.title, text: "Moved to Dash wallet. The payment to tdash1kq…6f8h didn't go through, so tdash1kq…6f8h wasn't paid." });
-    expect(moveOutcomeCopy({ ...outcome, state: "failed" }, true, credits, amount, "Alice")).toEqual({ title: MOVE_COPY.failed.title, text: "The payment went through before the move, so Alice was paid. The move wasn't charged." });
+    expect(moveOutcomeCopy(outcome, false, credits, amount, moveExit([send], "ps-1"))).toEqual({ title: MOVE_COPY.done.title, text: "Moved to Dash wallet. The payment to tdash1kq7r3m…8p0s2a4d6f8h didn't go through, so tdash1kq7r3m…8p0s2a4d6f8h wasn't paid." });
+    expect(moveOutcomeCopy({ ...outcome, state: "failed" }, true, credits, amount, moveExit([paid], "ps-1"))).toEqual({ title: MOVE_COPY.failed.title, text: "The payment went through before the move, so Alice was paid. The move wasn't charged." });
   });
 
   it("says nothing of the payment while neither is known", () => {
-    expect(moveOutcomeCopy({ ...outcome, state: "pending" }, false, credits, amount, "Alice").title).toBe(MOVE_COPY.pending.title);
+    expect(moveOutcomeCopy({ ...outcome, state: "pending" }, false, credits, amount, moveExit([paid], "ps-1")).title).toBe(MOVE_COPY.pending.title);
   });
 
   it("names the payment, its amount and recipient, on Confirm", () => {
     expect(MOVE_COPY.exitSend.line("0.01 tDASH", "Alice")).toBe(
       "This payment of 0.01 tDASH to Alice may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the two can go through. If the move goes through, Alice isn't paid, and the amount, less fees, goes to your Dash wallet.",
     );
+  });
+});
+
+describe("the move out of a held cancel, or of an item too small to cancel", () => {
+  const move = held("pm-1", "moveToCore", { credits: "15000000" });
+  const payout = held("cp-1", "contactPayment", { contact: ALICE, credits: "15000000" });
+  const cancelOfMove = held("pc-2", "send", { to: OWN, cancels: "pm-1" });
+  const cancelOfPayout = held("pc-2", "send", { to: OWN, cancels: "cp-1" });
+
+  it("names what it is the exit of from Activity; a top-up's exit or an unknown row is none", () => {
+    expect(moveExit([cancelOfMove, move], "pc-2")).toEqual({ kind: "cancel", of: "move", row: cancelOfMove, held: move });
+    expect(moveExit([cancelOfPayout, payout], "pc-2")).toMatchObject({ kind: "cancel", of: "payment", held: payout });
+    expect(moveExit([move], "pm-1")).toEqual({ kind: "move", row: move });
+    expect(moveExit([payout], "cp-1")).toEqual({ kind: "payment", row: payout });
+    expect([moveExit([held("ti-1", "toIdentity")], "ti-1"), moveExit([move], "pm-9"), moveExit([move], null)]).toEqual([null, null, null]);
+  });
+
+  it("says on Confirm that only one of the three, or of the two, can go through", () => {
+    expect(moveExitLine(moveExit([cancelOfMove, move], "pc-2")!, credits)).toBe(
+      "This cancel of 0.4 tDASH, and the move it cancels, may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the three can go through. If this move goes through, neither of the others does, and the amount, less fees, goes to your Dash wallet.",
+    );
+    expect(moveExitLine(moveExit([cancelOfPayout, payout], "pc-2")!, credits)).toContain("and the payment to Alice it cancels, may still go through");
+    expect(moveExitLine(moveExit([move], "pm-1")!, credits)).toBe(
+      "This move of 0.00015 tDASH may still go through. Moving again uses the same Platform funds, so only one of the two can go through, and either way the amount, less fees, reaches your Dash wallet.",
+    );
+    expect(moveExitLine(moveExit([payout], "cp-1")!, credits)).toContain("This payment of 0.00015 tDASH to Alice may still go through.");
+  });
+
+  it("says which of them went through once Activity shows it", () => {
+    const copy = (failed: boolean, rows: PlatformActivity[], id = "pc-2") => moveOutcomeCopy(failed ? { ...outcome, state: "failed" } : outcome, failed, credits, amount, moveExit(rows, id)).text;
+    expect(copy(false, [cancelOfMove, move])).toBe("Moved to Dash wallet. The cancel and the earlier move didn't go through.");
+    expect(copy(false, [cancelOfPayout, payout])).toBe("Moved to Dash wallet. The cancel and the payment to Alice didn't go through, so Alice wasn't paid.");
+    const done = { state: "done" as const, mayLand: false };
+    const lost = { state: "failed" as const, mayLand: false };
+    expect(copy(true, [{ ...cancelOfMove, ...done }, { ...move, ...lost }])).toBe("The cancel went through before the move, so the amount is in your Platform balance, minus the cancel's fee. The move wasn't charged.");
+    expect(copy(true, [{ ...cancelOfPayout, ...done }, { ...payout, ...lost }])).toBe("The cancel went through before the move, so Alice wasn't paid, and the amount is in your Platform balance, minus the cancel's fee. The move wasn't charged.");
+    expect(copy(true, [{ ...cancelOfMove, ...lost }, { ...move, ...done }])).toBe("The earlier move went through first, so the amount is in your Dash wallet. This move wasn't charged.");
+    expect(copy(true, [{ ...cancelOfPayout, ...lost }, { ...payout, ...done }])).toBe("The payment went through before the move, so Alice was paid. The move wasn't charged.");
+    // An item too small to cancel: a move's exit is done as any move; lost, the earlier one went through.
+    expect(copy(false, [move], "pm-1")).toBe(moveOutcomeCopy(outcome, false, credits, amount).text);
+    expect(copy(true, [{ ...move, ...done }], "pm-1")).toBe("The earlier move went through first, so the amount is in your Dash wallet. This move wasn't charged.");
+    expect(copy(false, [payout], "cp-1")).toBe("Moved to Dash wallet. The payment to Alice didn't go through, so Alice wasn't paid.");
+    expect(copy(true, [{ ...payout, ...done }], "cp-1")).toBe("The payment went through before the move, so Alice was paid. The move wasn't charged.");
+    // None of them went through: something else spent the funds, as any failed move says.
+    for (const [rows, id] of [[[{ ...cancelOfMove, ...lost }, { ...move, ...lost }], "pc-2"], [[{ ...cancelOfPayout, ...lost }, { ...payout, ...lost }], "pc-2"], [[{ ...move, ...lost }], "pm-1"], [[{ ...payout, ...lost }], "cp-1"]] as const) {
+      expect(copy(true, [...rows], id)).toBe(MOVE_COPY.failed.text);
+    }
+  });
+
+  it("a pre-check refusal of the move says the earlier item may still go through", () => {
+    const refused = appError("credits.preflight_refused");
+    const rules = appError("credits.rules_unsupported");
+    for (const [rows, id] of [[[cancelOfMove, move], "pc-2"], [[move], "pm-1"], [[payout], "cp-1"]] as const) {
+      expect(moveErrorText(refused, credits, rows, id)).toContain("Your earlier payment, move or cancel may still go through, so check Activity");
+      expect(moveErrorText(rules, credits, rows, id)).toContain("Your earlier payment, move or cancel may still go through. Update Dash Wallet");
+    }
+  });
+
+  it("a cancel too small to make says so, and offers the move", () => {
+    expect(CANCEL_COPY.tooSmall("move", "0.00015 tDASH", "")).toBe(
+      "This move of 0.00015 tDASH is too small to cancel. You can move the same funds to your Dash wallet instead. Only one of the two can go through, and either way the amount, less fees, reaches your Dash wallet.",
+    );
+    expect(CANCEL_COPY.tooSmall("payment", "0.00015 tDASH", "Alice")).toContain("if the move does, Alice isn't paid");
   });
 });
 

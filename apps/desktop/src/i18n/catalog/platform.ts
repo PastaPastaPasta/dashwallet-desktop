@@ -21,6 +21,11 @@ export const platform = {
       "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.",
     rulesUnsupportedHeldTopUp:
       "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update Dash Wallet, and check Activity before you try again.",
+    /** The same refusals of the move out of a held cancel, move or contact payment: the earlier one may land. */
+    refusedHeld:
+      "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier payment, move or cancel may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.",
+    rulesUnsupportedHeld:
+      "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier payment, move or cancel may still go through. Update Dash Wallet, and check Activity before you try again.",
   },
   /** The cancel of a move to the Dash wallet or a contact payment from Platform that may still go through:
    * the same Platform funds go to the wallet's own Platform address instead, and only one of the two goes through. */
@@ -32,6 +37,9 @@ export const platform = {
       confirm: "Cancel move",
       done: "Move cancelled. The amount is in your Platform balance, minus the fee.",
       lost: "The move went through before the cancel, so the amount is in your Dash wallet. The cancel wasn't charged.",
+      /** The move is too small to cancel (`credits.send_out_of_range`): Move to Dash wallet is offered instead. */
+      tooSmall:
+        "This move of {amount} is too small to cancel. You can move the same funds to your Dash wallet instead. Only one of the two can go through, and either way the amount, less fees, reaches your Dash wallet.",
     },
     payment: {
       action: "Cancel payment",
@@ -40,6 +48,8 @@ export const platform = {
       confirm: "Cancel payment",
       done: "Payment cancelled. {recipient} wasn't paid, and the amount is in your Platform balance, minus the fee.",
       lost: "The payment went through before the cancel, so {recipient} was paid. The cancel wasn't charged.",
+      tooSmall:
+        "This payment of {amount} to {recipient} is too small to cancel. You can move the same funds to your Dash wallet instead. Only one of the two can go through: if the move does, {recipient} isn't paid, and the amount, less fees, goes to your Dash wallet.",
     },
     dismiss: "Keep waiting",
     pending: "Cancelling. Dash Wallet is waiting for Dash Platform to confirm which one went through.",

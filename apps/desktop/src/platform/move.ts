@@ -13,6 +13,7 @@ import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { platformOp } from "../dashpay/topup";
+import { contactName, shortAddress } from "../format/tx";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
@@ -108,6 +109,37 @@ export const MOVE_COPY = {
     done: (recipient: string) => t("transfer.move.exitSend.done", { recipient }),
     lost: (recipient: string) => t("transfer.move.exitSend.lost", { recipient }),
   },
+  /** The move is the exit of a cancel that may still go through, beside the move or payment it cancels:
+   * only one of the three goes through. `recipient`: the cancelled payment's. */
+  exitCancel: {
+    line: {
+      move: (amount: string) => t("transfer.move.exitCancel.line.move", { amount }),
+      payment: (amount: string, recipient: string) => t("transfer.move.exitCancel.line.payment", { amount, recipient }),
+    },
+    done: {
+      get move() {
+        return t("transfer.move.exitCancel.done.move");
+      },
+      payment: (recipient: string) => t("transfer.move.exitCancel.done.payment", { recipient }),
+    },
+    lostToCancel: {
+      get move() {
+        return t("transfer.move.exitCancel.lostToCancel.move");
+      },
+      payment: (recipient: string) => t("transfer.move.exitCancel.lostToCancel.payment", { recipient }),
+    },
+    get lostToMove() {
+      return t("transfer.move.exitCancel.lostToMove");
+    },
+    lostToPayment: (recipient: string) => t("transfer.move.exitCancel.lostToPayment", { recipient }),
+  },
+  /** The move is the exit of a move too small to cancel: only one of the two goes through. */
+  exitMove: {
+    line: (amount: string) => t("transfer.move.exitMove.line", { amount }),
+    get lost() {
+      return t("transfer.move.exitMove.lost");
+    },
+  },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
   replaced: {
     get title() {
@@ -159,15 +191,63 @@ export const MOVE_COPY = {
   },
 };
 
+/** Who a held payment from Platform pays, as its row shows it: the contact, else the shortened address. */
+export const recipientOf = (a: PlatformActivity): string => contactName(a.contact) ?? (a.to ? shortAddress(a.to) : "");
+
+/** What a move is the exit of (`MoveToCoreQuote.exitOf`), from Activity's rows: a held send, a held cancel
+ * beside the move or contact payment it cancels (`held`), or a held move or contact payment too small to
+ * cancel. `null` for a top-up's exit or a row Activity does not show. */
+export type MoveExit = { kind: "send" | "move" | "payment"; row: PlatformActivity } | { kind: "cancel"; of: "move" | "payment"; row: PlatformActivity; held: PlatformActivity | null };
+
+export function moveExit(activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): MoveExit | null {
+  const row = id ? activity?.find((a) => a.id === id) : undefined;
+  if (!row) return null;
+  if (row.kind === "send") {
+    if (!row.cancels) return { kind: "send", row };
+    const held = activity?.find((a) => a.id === row.cancels) ?? null;
+    return { kind: "cancel", of: held?.kind === "contactPayment" ? "payment" : "move", row, held };
+  }
+  if (row.kind === "moveToCore") return { kind: "move", row };
+  if (row.kind === "contactPayment") return { kind: "payment", row };
+  return null;
+}
+
+/** Confirm's line for the move out of `exit`: what may still go through, and that only one does. */
+export function moveExitLine(exit: MoveExit, credits: (c: string) => string): string {
+  const C = MOVE_COPY;
+  const amount = credits(exit.row.credits);
+  if (exit.kind === "cancel") return exit.of === "payment" ? C.exitCancel.line.payment(amount, exit.held ? recipientOf(exit.held) : "") : C.exitCancel.line.move(amount);
+  return exit.kind === "move" ? C.exitMove.line(amount) : C.exitSend.line(amount, recipientOf(exit.row));
+}
+
+/** The outcome of the move out of `exit`: `lost` to the one that went through first, else done (`null`:
+ * the plain move's text). */
+function exitOutcomeText(exit: MoveExit, lost: boolean): string | null {
+  const C = MOVE_COPY;
+  const won = (row: PlatformActivity | null) => row?.state === "done";
+  if (exit.kind !== "cancel") {
+    if (exit.kind === "move") return lost && won(exit.row) ? C.exitMove.lost : null;
+    if (!lost) return C.exitSend.done(recipientOf(exit.row));
+    return exit.kind === "send" || won(exit.row) ? C.exitSend.lost(recipientOf(exit.row)) : null;
+  }
+  const recipient = exit.held ? recipientOf(exit.held) : "";
+  const payment = exit.of === "payment";
+  if (!lost) return payment ? C.exitCancel.done.payment(recipient) : C.exitCancel.done.move;
+  if (won(exit.held)) return payment ? C.exitCancel.lostToPayment(recipient) : C.exitCancel.lostToMove;
+  if (won(exit.row)) return payment ? C.exitCancel.lostToCancel.payment(recipient) : C.exitCancel.lostToCancel.move;
+  return null;
+}
+
 /** What the result sheet says of a move's outcome. `failed`: it failed and can no longer land.
- * `credits` and `amount` format credits and duffs. `exitOf`: the recipient of the held payment the move
- * was the exit of; its document says which of the two went through. */
-export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string, exitOf: string | null = null): { title: string; text: string } {
+ * `credits` and `amount` format credits and duffs. `exit`: what the move was the exit of; the documents
+ * say which went through. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string, exit: MoveExit | null = null): { title: string; text: string } {
   const C = MOVE_COPY;
   if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
   if (outcome.state === "replaced") return C.replaced;
-  if (failed) return exitOf === null ? C.failed : { title: C.failed.title, text: C.exitSend.lost(exitOf) };
-  if (outcome.state === "done" && exitOf !== null) return { title: C.done.title, text: C.exitSend.done(exitOf) };
+  if (failed) return exit === null ? C.failed : { title: C.failed.title, text: exitOutcomeText(exit, true) ?? C.failed.text };
+  const exited = outcome.state === "done" && exit !== null ? exitOutcomeText(exit, false) : null;
+  if (exited !== null) return { title: C.done.title, text: exited };
   if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
   return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
 }
@@ -195,8 +275,9 @@ export function invalidArgumentText(e: { message: string; data: { kind: string; 
 
 /** Platform's structure pre-check refused a move, a send or a top-up before signing. Its consensus
  * error stays in the log. */
-export function preflightText(code: "credits.rules_unsupported" | "credits.preflight_refused", earlier: "send" | "topUp" | null = null): string {
+export function preflightText(code: "credits.rules_unsupported" | "credits.preflight_refused", earlier: "send" | "topUp" | "held" | null = null): string {
   const rules = code === "credits.rules_unsupported";
+  if (earlier === "held") return rules ? t("platform.preflight.rulesUnsupportedHeld") : t("platform.preflight.refusedHeld");
   if (earlier === "send") return rules ? t("platform.preflight.rulesUnsupportedRetry") : t("platform.preflight.refusedRetry");
   if (earlier === "topUp") return rules ? t("platform.preflight.rulesUnsupportedHeldTopUp") : t("platform.preflight.refusedHeldTopUp");
   return rules ? t("platform.preflight.rulesUnsupported") : t("platform.preflight.refused");
@@ -243,13 +324,17 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "credits.rules_unsupported":
     case "credits.preflight_refused":
-      return preflightText(e.code, !stillHeld(activity, exitOf) ? null : activity?.find((a) => a.id === exitOf)?.kind === "send" ? "send" : "topUp");
+      return preflightText(e.code, stillHeld(activity, exitOf) ? earlierKind(moveExit(activity, exitOf)) : null);
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
       return t("transfer.move.error.stopped", { code: e.code });
   }
 }
+
+/** Which pre-check text names the held item a refused exit leaves standing: a send's, a cancel's, a move's
+ * or a contact payment's, else a top-up's. */
+const earlierKind = (exit: MoveExit | null): "send" | "topUp" | "held" => (exit === null ? "topUp" : exit.kind === "send" ? "send" : "held");
 
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits") || hasCode(e, "credits.quote_changed");
@@ -278,6 +363,9 @@ export const heldExitOps = (activity: readonly PlatformActivity[] | null | undef
 
 /** The held send `a` is, which "Move to Dash wallet" is the way out of; `null` for any other row. */
 export const isHeldSend = (a: PlatformActivity): boolean => a.kind === "send" && !a.cancels && a.state === "failed" && a.mayLand && a.to !== null;
+
+/** A held cancel: "Move to Dash wallet" is its way out beside its own exact re-send. */
+export const isHeldCancel = (a: PlatformActivity): boolean => a.kind === "send" && !!a.cancels && a.state === "failed" && a.mayLand;
 
 /** What the cancel of `a` would be: of a held move to the Dash wallet or contact payment, and only
  * while no send, top-up or other cancel holds beside it (its document could not tell those apart). Its
