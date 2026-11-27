@@ -168,6 +168,13 @@ const DROPPED_PREFIX: &str = "dropped:";
 /// one, each with why ([`DROPPED_PREFIX`]).
 pub(crate) type Dead = BTreeMap<Txid, DropCause>;
 
+#[derive(Clone, Copy)]
+pub(crate) enum DeadSource {
+    Load,
+    Restore,
+    Event,
+}
+
 /// A [`DROPPED_PREFIX`] mark's value: why its transaction was dropped. A
 /// mark only its key names matters to the load's walk; the value is read
 /// for what the history shows alone.
@@ -1290,6 +1297,7 @@ fn pending_for_dead_drop(t: &Txid, e: &TxEntry, core: &ManagedWalletInfo) -> boo
 pub(crate) struct DeadDrop {
     dead: BTreeSet<Txid>,
     known_dead: Arc<Dead>,
+    event_marks: Dead,
     /// Of what it drops and `dead`, the never-valid claims themselves;
     /// the rest is built on one.
     claims: BTreeSet<Txid>,
@@ -2504,8 +2512,12 @@ impl NetworkSession {
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
             if let Some(d) = dead_drop
-                && !(self.hub.history)
-                    .read(&wallet, |txs| (d.holds)(txs, &info.core_wallet, &settled))
+                && !(self.hub.history).read_wallet(&wallet, |h| {
+                    d.event_marks
+                        .iter()
+                        .all(|(t, cause)| h.invalid_mark(t) == Some(*cause))
+                        && (d.holds)(&h.txs, &info.core_wallet, &settled)
+                })
             {
                 return Err(EngineError::Internal(
                     "the drop's check no longer holds under the lock".into(),
@@ -2853,6 +2865,7 @@ impl NetworkSession {
             if let Some(d) = dead_drop {
                 for t in &abandoned {
                     h.drops.insert(*t, DropInfo::new(d.cause_of(t)));
+                    h.checking_claims.remove(t);
                 }
             }
         });
@@ -4820,7 +4833,7 @@ impl NetworkSession {
         manager: &Manager,
         wallet: WalletId,
         dead: &Dead,
-        at_load: bool,
+        source: DeadSource,
     ) {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
@@ -4829,7 +4842,13 @@ impl NetworkSession {
         };
         let core = &info.core_wallet;
         let mut dead = dead.clone();
-        if at_load {
+        let from_event = matches!(source, DeadSource::Event);
+        if from_event {
+            self.hub.history.read_wallet(&wallet, |h| {
+                dead.retain(|t, cause| h.invalid_mark(t) == Some(*cause));
+            });
+        }
+        if matches!(source, DeadSource::Load) {
             let infos = wm.get_all_wallet_infos().iter();
             let settled = self.settled_all(
                 infos.map(|(id, i)| (id, &i.core_wallet)),
@@ -4840,6 +4859,16 @@ impl NetworkSession {
             }
         }
         let dead = Arc::new(dead);
+        let known_dead = Arc::new(self.hub.history.read_wallet(&wallet, |h| {
+            dead.iter()
+                .map(|(t, cause)| (*t, *cause))
+                .chain(
+                    h.drops
+                        .keys()
+                        .filter_map(|t| Some((*t, h.invalid_mark(t)?))),
+                )
+                .collect()
+        }));
         // Include a dropped payment key-wallet recorded again after a relay.
         let children: Vec<(Txid, BTreeSet<Txid>)> = (self.hub.history).read(&wallet, |txs| {
             (txs.iter())
@@ -4864,6 +4893,10 @@ impl NetworkSession {
                     .filter(|t| dead.get(*t) == Some(&DropCause::InvalidClaim))
                     .copied()
                     .collect();
+                let event_marks = (tree.iter())
+                    .filter(|_| from_event)
+                    .map(|t| (*t, dead[t]))
+                    .collect();
                 let spent = parents.clone();
                 let holds = move |txs: &HashMap<Txid, TxEntry>,
                                   core: &ManagedWalletInfo,
@@ -4881,7 +4914,8 @@ impl NetworkSession {
                 };
                 let drop = DeadDrop {
                     dead: parents,
-                    known_dead: Arc::clone(&dead),
+                    known_dead: Arc::clone(&known_dead),
+                    event_marks,
                     claims,
                     holds: Box::new(holds),
                 };
@@ -4967,6 +5001,7 @@ impl NetworkSession {
                 self.hub.history.with_wallet(wallet, |h| {
                     h.drops.retain(|t, _| !expired.contains(t));
                 });
+                self.hub.reread_loaded_balances();
                 expired
             }
             Err(e) => {
@@ -5039,6 +5074,7 @@ impl NetworkSession {
                 let drop = DeadDrop {
                     dead: BTreeSet::new(),
                     known_dead: Arc::new(Dead::new()),
+                    event_marks: Dead::new(),
                     claims: BTreeSet::from([claim]),
                     holds: Box::new(holds),
                 };
@@ -5126,24 +5162,36 @@ impl NetworkSession {
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
         self.attach_restore_gate();
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
-        self.hub.attach_swept_dead(Box::new(move |id, dead| {
-            let weak = weak.clone();
-            rt.spawn(async move {
-                let Some(session) = weak.upgrade() else {
-                    return;
-                };
-                let Ok(_op) = session.enter().await else {
-                    return;
-                };
-                let Ok(manager) = session.manager() else {
-                    return;
-                };
-                let _lifecycle = session.wallet_lifecycle.hold().await;
-                (session.abandon_on_dead(&manager, id, &dead, false)).await;
-                #[cfg(test)]
-                (session.hub.dead_hooks_done).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            });
-        }));
+        self.hub
+            .attach_swept_dead(Box::new(move |id, registration, dead| {
+                let weak = weak.clone();
+                rt.spawn(async move {
+                    let Some(session) = weak.upgrade() else {
+                        return;
+                    };
+                    let Ok(_op) = session.enter().await else {
+                        return;
+                    };
+                    let Ok(manager) = session.manager() else {
+                        return;
+                    };
+                    #[cfg(test)]
+                    let pause = session.hub.pause_swept_dead.lock().unwrap().take();
+                    #[cfg(test)]
+                    if let Some(pause) = pause {
+                        pause.mark_reached();
+                        pause.release.notified().await;
+                    }
+                    let _lifecycle = session.wallet_lifecycle.hold().await;
+                    if session.hub.drop_registration(id) == Some(registration) {
+                        session
+                            .abandon_on_dead(&manager, id, &dead, DeadSource::Event)
+                            .await;
+                    }
+                    #[cfg(test)]
+                    (session.hub.dead_hooks_done).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                });
+            }));
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_funded(Box::new(move |id, funded| {
             let weak = weak.clone();
@@ -5164,11 +5212,8 @@ impl NetworkSession {
                 if claims.is_empty() {
                     return;
                 }
+                session.hub.reread_loaded_balances();
                 (session.abandon_unsigned_claims(&manager, id, claims, &funded)).await;
-                session
-                    .hub
-                    .history
-                    .with_wallet(id, |h| h.checking_claims.clear());
                 session.refresh_wallet_state(&manager, id).await;
             });
         }));

@@ -178,9 +178,9 @@ impl SessionHub {
         let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let skip = false;
-        let withheld = (self.history).read_wallet(&wallet, |h| {
-            let mut withheld = pending_invalid_outputs(core, h);
-            if !skip {
+        let withheld = self.history.read_wallets(|histories| {
+            let mut withheld = pending_invalid_outputs(core, histories);
+            if !skip && let Some(h) = histories.get(&wallet) {
                 withheld.extend(pending_unproven(core, h));
             }
             withheld
@@ -209,24 +209,33 @@ impl SessionHub {
     pub(crate) fn may_withhold(&self, id: &WalletId) -> bool {
         let excluded = (self.wallet_state(id)).is_some_and(|s| s.excluded.total() > 0);
         excluded
-            || (self.history).read_wallet(id, |h| {
-                !h.rescan_holds.is_empty()
-                    || !h.checking_claims.is_empty()
-                    || h.drops.keys().any(|t| h.dead_claim(t).is_some())
-                    || (h.txs.iter())
-                        .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
+            || self.history.read_wallets(|histories| {
+                histories
+                    .values()
+                    .any(|h| invalid_txids(h).next().is_some())
+                    || histories.get(id).is_some_and(|h| {
+                        !h.rescan_holds.is_empty()
+                            || (h.txs.iter()).any(|(t, e)| {
+                                withholding_candidate(e) && spends_known_coin(h, t, e)
+                            })
+                    })
             })
     }
 }
 
-fn pending_invalid_outputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
-    let mut invalid: HashSet<Txid> = h
-        .drops
+fn invalid_txids(h: &WalletHistory) -> impl Iterator<Item = Txid> + '_ {
+    h.drops
         .keys()
         .filter(|t| h.dead_claim(t).is_some())
         .copied()
         .chain(h.checking_claims.iter().copied())
-        .collect();
+}
+
+fn pending_invalid_outputs(
+    core: &ManagedWalletInfo,
+    histories: &HashMap<WalletId, WalletHistory>,
+) -> BTreeSet<OutPoint> {
+    let mut invalid: HashSet<Txid> = histories.values().flat_map(invalid_txids).collect();
     if invalid.is_empty() {
         return BTreeSet::new();
     }
@@ -244,20 +253,31 @@ fn pending_invalid_outputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTree
         .map(|(t, _)| *t)
         .chain(locks.iter().copied())
         .chain(
-            h.txs
-                .iter()
+            histories
+                .values()
+                .flat_map(|h| h.txs.iter())
                 .filter(|(_, e)| e.context.block_info().is_some() || instant_locked(e))
                 .map(|(t, _)| *t),
         )
+        .chain(
+            histories
+                .values()
+                .flat_map(|h| h.lock_parents.keys().copied()),
+        )
         .collect();
-    invalid.retain(|t| !settled.contains(t));
-    let transactions = h.txs.iter().map(|(t, e)| (t, &e.tx)).chain(
-        accounts
-            .iter()
-            .flat_map(|a| a.transactions().iter().map(|(t, r)| (t, &r.transaction))),
-    );
+    let settled =
+        |t: &Txid| settled.contains(t) || accounts.iter().any(|a| a.transaction_is_finalized(t));
+    invalid.retain(|t| !settled(t));
+    let transactions = histories
+        .values()
+        .flat_map(|h| h.txs.iter().map(|(t, e)| (t, &e.tx)))
+        .chain(
+            accounts
+                .iter()
+                .flat_map(|a| a.transactions().iter().map(|(t, r)| (t, &r.transaction))),
+        );
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
-    for (t, tx) in transactions.filter(|(t, _)| !settled.contains(*t)) {
+    for (t, tx) in transactions.filter(|(t, _)| !settled(t)) {
         for i in &tx.input {
             children.entry(i.previous_output.txid).or_default().push(*t);
         }

@@ -1382,7 +1382,7 @@ pub(crate) struct WalletHistory {
     /// The transactions this app dropped as ones that can never confirm,
     /// from their `dropped:` marks and as each drop runs.
     pub drops: HashMap<Txid, DropInfo>,
-    /// Claims being checked under the wallet lifecycle lock before their drop.
+    /// Claims proved invalid whose drop has yet to commit.
     pub(crate) checking_claims: BTreeSet<Txid>,
     /// The own inputs of dropped transactions listed from their abandoned
     /// marks alone, as their `dropped:` marks keep them: what their rows
@@ -1777,6 +1777,14 @@ impl HistoryStore {
     pub fn read_all<R>(&self, f: impl FnOnce(&[&HashMap<Txid, TxEntry>]) -> R) -> R {
         let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
         f(&map.values().map(|h| &h.txs).collect::<Vec<_>>())
+    }
+
+    pub(crate) fn read_wallets<R>(
+        &self,
+        f: impl FnOnce(&HashMap<WalletId, WalletHistory>) -> R,
+    ) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        f(&map)
     }
 
     /// A copy of one wallet's entries (empty when unknown).

@@ -524,7 +524,7 @@ pub(crate) type HeaderSource = Arc<
 
 /// What drops the history's transactions built on a sweep's: the wallet
 /// and what the sweep dropped that can never confirm (`tx_actions`, #739).
-pub(crate) type SweptDead = dyn Fn(WalletId, crate::tx_actions::Dead) + Send + Sync;
+pub(crate) type SweptDead = dyn Fn(WalletId, u64, crate::tx_actions::Dead) + Send + Sync;
 
 /// What checks the history's pending spends of new transactions' outputs
 /// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
@@ -746,6 +746,8 @@ pub(crate) struct SessionHub {
     /// Tests: how many sweep events' drops of what is built on them ran.
     #[cfg(test)]
     pub(crate) dead_hooks_done: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) pause_swept_dead: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: new transactions don't start the check for unsigned claims.
     #[cfg(test)]
     pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
@@ -1100,6 +1102,8 @@ impl SessionHub {
             #[cfg(test)]
             dead_hooks_done: Default::default(),
             #[cfg(test)]
+            pause_swept_dead: Mutex::new(None),
+            #[cfg(test)]
             skip_unsigned_check: Default::default(),
             #[cfg(test)]
             skip_withhold: Default::default(),
@@ -1180,6 +1184,21 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    pub(crate) fn reread_loaded_balances(&self) {
+        if let Some(reread) = self.balance_reread.get() {
+            let ids: Vec<_> = self
+                .wallets
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .keys()
+                .copied()
+                .collect();
+            for id in ids {
+                reread(id);
+            }
+        }
     }
 
     /// Sets what refreshes the held reports of the wallets with holds
@@ -2472,23 +2491,22 @@ impl SessionHub {
                 self.check_funded(id, BTreeSet::from([record.txid]));
                 if matches!(record.context, TransactionContext::Mempool)
                     && let Some(start) = self.swept_dead.get()
+                    && let Some(registration) = self.drop_registration_locked(id, &unloaded)
                 {
                     let dead = self.history.read_wallet(&id, |h| {
-                        let related = h.dead_claim(&record.txid).is_some()
-                            || record
-                                .transaction
-                                .input
-                                .iter()
-                                .any(|i| h.dead_claim(&i.previous_output.txid).is_some());
-                        related.then(|| {
-                            h.drops
-                                .keys()
-                                .filter_map(|t| Some((*t, h.dead_claim(t)?)))
-                                .collect()
-                        })
+                        std::iter::once(record.txid)
+                            .chain(
+                                record
+                                    .transaction
+                                    .input
+                                    .iter()
+                                    .map(|i| i.previous_output.txid),
+                            )
+                            .filter_map(|t| Some((t, h.dead_claim(&t)?)))
+                            .collect::<crate::tx_actions::Dead>()
                     });
-                    if let Some(dead) = dead {
-                        start(id, dead);
+                    if !dead.is_empty() {
+                        start(id, registration, dead);
                     }
                 }
                 // An event queued before an Abandon this session took its
@@ -2727,6 +2745,9 @@ impl SessionHub {
                 if queued {
                     self.schedule_reconcile(id);
                 }
+                if !dead.is_empty() {
+                    self.reread_loaded_balances();
+                }
                 // A swept transaction can never confirm, nor can what the
                 // history alone holds built on its outputs (a payment
                 // key-wallet has no record of after a restart, #739).
@@ -2739,8 +2760,9 @@ impl SessionHub {
                 if !dead.is_empty()
                     && !skip
                     && let Some(start) = self.swept_dead.get()
+                    && let Some(registration) = self.drop_registration_locked(id, &unloaded)
                 {
-                    start(id, dead);
+                    start(id, registration, dead);
                 }
             }
             WalletEvent::ChainTruncated {
