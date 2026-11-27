@@ -47,6 +47,7 @@ pub(super) struct Card {
     pub name: String,
     pub claim_code: Option<String>,
     pub claim_pin: Option<String>,
+    pub claim_link: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -48,7 +48,8 @@ export const giftCards = {
   loadingOrder: "Checking your order…",
   claimCode: "Card code",
   pin: "PIN",
-  noCodes: "PiggyCards has not returned a code or PIN. Check your order email.",
+  redeem: "Redeem at {host}",
+  noCodes: "Check your order email for redemption details.",
   status: {
     awaitingPayment: "Awaiting payment",
     processing: "Processing",

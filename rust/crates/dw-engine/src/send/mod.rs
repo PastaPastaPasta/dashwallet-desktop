@@ -808,6 +808,12 @@ impl Resolved {
 
 const INVOICE_SCOPE: &str = "payment-invoices";
 
+#[derive(Clone, Copy)]
+struct InvoiceDispatch {
+    key: [u8; 32],
+    deadline: tokio::time::Instant,
+}
+
 impl NetworkSession {
     /// A new draft for `wallet_id`: no recipients, source `Any`, fee
     /// `Recommended{6}`, change `Auto`.
@@ -1607,15 +1613,17 @@ impl TxDraft {
     pub async fn broadcast_invoice(
         self: &Arc<Self>,
         prepared: Arc<PreparedTx>,
-        invoice: [u8; 32],
+        key: [u8; 32],
+        deadline: tokio::time::Instant,
     ) -> Result<BroadcastOutcome, EngineError> {
-        self.broadcast_candidate(prepared, Some(invoice)).await
+        self.broadcast_candidate(prepared, Some(InvoiceDispatch { key, deadline }))
+            .await
     }
 
     async fn broadcast_candidate(
         self: &Arc<Self>,
         prepared: Arc<PreparedTx>,
-        invoice: Option<[u8; 32]>,
+        invoice: Option<InvoiceDispatch>,
     ) -> Result<BroadcastOutcome, EngineError> {
         self.check_mine(&prepared)?;
         let this = Arc::clone(self);
@@ -1645,7 +1653,7 @@ impl TxDraft {
     async fn broadcast_inner_with_invoice(
         &self,
         prepared: Arc<PreparedTx>,
-        invoice: Option<[u8; 32]>,
+        invoice: Option<InvoiceDispatch>,
     ) -> Result<BroadcastOutcome, EngineError> {
         // A contact payment's repeat waits for the attempt before it to
         // settle the contact; any other overlap is refused below.
@@ -1691,8 +1699,10 @@ impl TxDraft {
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send
         // recovered with its outcome unknown, which may be its first.
-        if let Err(e) = self.mark_sent(&prepared, true, invoice).await {
-            let next = match first && self.drop_mark(&prepared, invoice).await {
+        let invoice_key = invoice.map(|i| i.key);
+        let deadline = invoice.map(|i| i.deadline);
+        if let Err(e) = self.mark_sent(&prepared, true, invoice_key).await {
+            let next = match first && self.drop_mark(&prepared, invoice_key).await {
                 true => Phase::Pending,
                 false => Phase::Unknown,
             };
@@ -1709,9 +1719,12 @@ impl TxDraft {
             return Err(e);
         }
         let (mut outcome, mut next) = match &prepared.lease {
-            Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
+            Some((lease, artifact)) => {
+                self.fenced(&prepared, lease, *artifact, first, deadline)
+                    .await
+            }
             None => {
-                let outcome = self.dispatch(&prepared, first, None).await;
+                let outcome = self.dispatch(&prepared, first, deadline).await;
                 let next = settle(first, &outcome);
                 (outcome, next)
             }
@@ -1720,7 +1733,7 @@ impl TxDraft {
         // be dropped keeps the payment held as maybe sent.
         let unsent = next == Phase::Released
             || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
-        if unsent && !self.drop_mark(&prepared, invoice).await {
+        if unsent && !self.drop_mark(&prepared, invoice_key).await {
             next = Phase::Unknown;
             *prepared.held.lock().unwrap() = Some(Held::UntilRestart);
             self.note_held(&prepared);
@@ -1777,6 +1790,7 @@ impl TxDraft {
         lease: &Lease,
         artifact: ArtifactId,
         first: bool,
+        deadline: Option<tokio::time::Instant>,
     ) -> (Result<BroadcastOutcome, EngineError>, Phase) {
         let table = std::sync::Arc::clone(&lease.table);
         let wallet = self.wallet_id;
@@ -1804,13 +1818,17 @@ impl TxDraft {
                 // L5: the transport only before the permit's deadline, and
                 // under it (`dispatch`).
                 let result = self
-                    .dispatch(prepared, first, Some(permit.deadline()))
+                    .dispatch(
+                        prepared,
+                        first,
+                        Some(deadline.map_or(permit.deadline(), |end| end.min(permit.deadline()))),
+                    )
                     .await;
                 let s = permit.finish(attempt_outcome(&result));
                 (result, s)
             }
             Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let result = self.dispatch(prepared, false, None).await;
+                let result = self.dispatch(prepared, false, deadline).await;
                 let s = guard.finish(attempt_outcome(&result));
                 (result, s)
             }
@@ -2548,7 +2566,9 @@ impl TxDraft {
                     .iter()
                     .map(|(key, value)| (scope.as_str(), *key, *value))
                     .collect();
+                let reverse = crate::tx_actions::invoice_tx_key(&txid);
                 scoped.push((INVOICE_SCOPE, key.as_str(), sent.then_some(txid.as_str())));
+                scoped.push((&scope, &reverse, sent.then_some(key.as_str())));
                 if !db.set_scoped_settings_if_durable(
                     Some((INVOICE_SCOPE, &key, existing.as_deref())),
                     &scoped,

@@ -74,8 +74,13 @@ export function giftCardsHandlers(send: Handlers): Handlers {
       return {
         order,
         status: order.paid ? "complete" : "awaitingPayment",
-        cards: order.paid ? [{ name: order.name, code: "FIXTURE-GIFT-CODE", pin: "0000" }] : [],
+        cards: order.paid ? [{ name: order.name, code: "FIXTURE-GIFT-CODE", pin: "0000", claimHost: "redeem.fixture.invalid" }] : [],
       };
+    },
+    gift_card_open_claim: ({ walletId, orderId, card, host }, { world }) => {
+      const order = signedIn(world).orders.find((o) => o.id === orderId && o.walletId === walletId);
+      if (!order?.paid || card !== 0 || host !== "redeem.fixture.invalid") throw fail("The redemption link is unavailable.");
+      return null;
     },
     gift_card_draft: ({ walletId, orderId }, ctx) => {
       const state = signedIn(ctx.world);

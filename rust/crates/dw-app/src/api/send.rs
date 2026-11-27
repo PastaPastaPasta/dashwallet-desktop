@@ -81,12 +81,12 @@ pub(super) async fn broadcast(
     draft: Arc<TxDraft>,
     tx: Arc<PreparedTx>,
     prepared: u64,
-    invoice: Option<[u8; 32]>,
+    invoice: Option<([u8; 32], tokio::time::Instant)>,
 ) -> Result<dw_engine::BroadcastOutcome, EngineError> {
     let _in_flight = state.broadcasting();
     let first = state.sends.start_broadcast(prepared);
     let result = match invoice {
-        Some(invoice) => draft.broadcast_invoice(tx, invoice).await,
+        Some((key, deadline)) => draft.broadcast_invoice(tx, key, deadline).await,
         None => draft.broadcast(tx).await,
     };
     if result.is_ok() || (first && result.as_ref().is_err_and(released)) {

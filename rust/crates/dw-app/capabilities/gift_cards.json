@@ -15,6 +15,7 @@
     "allow-gift-card-orders",
     "allow-gift-card-create-order",
     "allow-gift-card-details",
+    "allow-gift-card-open-claim",
     "allow-gift-card-draft",
     "allow-gift-card-broadcast"
   ]

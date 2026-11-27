@@ -3725,6 +3725,13 @@ export function giftCardDetails(walletId: string, orderId: string): Promise<Gift
 }
 
 /**
+ * Opens a completed card's provider-issued HTTPS redemption link.
+ */
+export function giftCardOpenClaim(walletId: string, orderId: string, card: number, host: string): Promise<null> {
+  return invoke<null>("gift_card_open_claim", { walletId, orderId, card, host });
+}
+
+/**
  * Opens a normal Pay draft bound to a known PiggyCards order.
  */
 export function giftCardDraft(walletId: string, orderId: string): Promise<number> {
@@ -4267,6 +4274,7 @@ export type CommandArgs = {
   gift_card_orders: { walletId: string };
   gift_card_create_order: { walletId: string; brand: string; productId: number; cents: number };
   gift_card_details: { walletId: string; orderId: string };
+  gift_card_open_claim: { walletId: string; orderId: string; card: number; host: string };
   gift_card_draft: { walletId: string; orderId: string };
   gift_card_broadcast: { orderId: string; draft: number; prepared: number };
   update_status: {  };
@@ -4696,6 +4704,7 @@ export type CommandResults = {
   gift_card_orders: Array<GiftOrder>;
   gift_card_create_order: GiftOrder;
   gift_card_details: GiftOrderDetails;
+  gift_card_open_claim: null;
   gift_card_draft: number;
   gift_card_broadcast: BroadcastOutcome;
   update_status: UpdateStatus;
@@ -5127,6 +5136,7 @@ export const COMMANDS: Record<CommandName, string> = {
   gift_card_orders: "gift_cards",
   gift_card_create_order: "gift_cards",
   gift_card_details: "gift_cards",
+  gift_card_open_claim: "gift_cards",
   gift_card_draft: "gift_cards",
   gift_card_broadcast: "gift_cards",
   update_status: "updates",

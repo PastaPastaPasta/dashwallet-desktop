@@ -540,6 +540,11 @@ pub(crate) mod finish_fault {
 /// the mark; one an earlier build wrote has none.
 pub(crate) const SENT_TX_PREFIX: &str = "senttx:";
 
+/// The wallet-local guard persists with the transaction across wallet backups.
+pub(crate) fn invoice_tx_key(txid: &str) -> String {
+    format!("invoice-tx:{txid}")
+}
+
 /// Settings key prefix of a sent mark's inputs: each signed coin's
 /// outpoint, value and address, so it is listed when its funding is not.
 pub(crate) const SENT_IN_PREFIX: &str = "sentin:";
@@ -2249,6 +2254,12 @@ impl NetworkSession {
         .unwrap_or(true)
     }
 
+    async fn is_invoice_payment(&self, wallet: WalletId, txid: Txid) -> Result<bool, EngineError> {
+        let (scope, key) = (wallet.to_string(), invoice_tx_key(&txid.to_string()));
+        self.appdb_op(move |db| Ok(db.setting(&scope, &key)?.is_some()))
+            .await
+    }
+
     /// dash-qt detail fields and action enablement for one transaction.
     pub async fn tx_detail_extras(
         self: &Arc<Self>,
@@ -2308,7 +2319,8 @@ impl NetworkSession {
                 in_mempool: None,
                 abandoned: f.abandoned,
                 can_abandon: f.abandon_refusal().is_none(),
-                can_resend: f.resend_refusal().is_none(),
+                can_resend: f.resend_refusal().is_none()
+                    && !this.is_invoice_payment(wallet, txid).await?,
                 dust_locked_outputs,
                 withheld_outputs,
                 checking_spent_coins: f.abandoned && {
@@ -4474,6 +4486,11 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.refuse_tx_action_while_restored()?;
+            if this.is_invoice_payment(wallet, txid).await? {
+                return Err(EngineError::InvalidArgument(
+                    "Check the gift card order in Explore before paying it again.".into(),
+                ));
+            }
             let manager = this.manager()?;
             let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
             let peers = this.hub.tracker().snapshot().connected_peers;

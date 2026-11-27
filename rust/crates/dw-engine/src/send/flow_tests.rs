@@ -7662,6 +7662,14 @@ fn invoice_payment_and_send_record_commit_together() {
         .unwrap();
     assert_eq!(read().as_deref(), Some(txid.as_str()));
     assert!(db.setting(&wallet, &sent_key).unwrap().is_some());
+    let activity = f.engine.block_on(
+        f.session
+            .resend_transaction(f.wallet, txid.parse().unwrap()),
+    );
+    assert!(
+        matches!(activity, Err(EngineError::InvalidArgument(_))),
+        "{activity:?}"
+    );
 
     f.credit(2, COIN);
     let other = f.draft(vec![pay(FOREIGN, 10_000_000)]);
@@ -7679,10 +7687,11 @@ fn invoice_payment_and_send_record_commit_together() {
 
     // A first attempt with no peers is definitely unsent and drops both marks.
     assert_eq!(
-        send_failure(
-            f.engine
-                .block_on(draft.broadcast_invoice(prepared, invoice))
-        ),
+        send_failure(f.engine.block_on(draft.broadcast_invoice(
+            prepared,
+            invoice,
+            tokio::time::Instant::now() + Duration::from_secs(30)
+        ))),
         SendFailure::NoPeers
     );
     assert_eq!(read(), None);
@@ -7702,10 +7711,11 @@ fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
     let invoice = [2; 32];
     *prepared.phase() = Phase::Unknown;
     assert!(matches!(
-        send_failure(
-            f.engine
-                .block_on(draft.broadcast_invoice(prepared, invoice))
-        ),
+        send_failure(f.engine.block_on(draft.broadcast_invoice(
+            prepared,
+            invoice,
+            tokio::time::Instant::now() + Duration::from_secs(30)
+        ))),
         SendFailure::BroadcastUnknown { .. }
     ));
     assert_eq!(
@@ -7714,5 +7724,65 @@ fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
             .unwrap()
             .as_deref(),
         Some(txid.as_str())
+    );
+}
+
+#[test]
+fn invoice_payment_expiring_before_handoff_clears_the_unsent_marks() {
+    struct StalledEntry;
+
+    impl super::TestBroadcaster for StalledEntry {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(std::future::pending())
+        }
+
+        fn broadcast(
+            &self,
+            _tx: &Transaction,
+            _first: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
+                    + Send,
+            >,
+        > {
+            panic!("an expired invoice must never reach the wire")
+        }
+    }
+
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let invoice = [3; 32];
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(StalledEntry));
+    let expires = tokio::time::Instant::now() + Duration::from_millis(100);
+    assert_eq!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice, expires))
+        ),
+        SendFailure::Cancelled
+    );
+    assert_eq!(
+        f.engine
+            .block_on(f.session.invoice_payment(invoice))
+            .unwrap(),
+        None
+    );
+    let reverse = crate::tx_actions::invoice_tx_key(&txid);
+    let wallet = f.wallet.to_string();
+    assert_eq!(
+        f.session
+            .live()
+            .unwrap()
+            .appdb
+            .setting(&wallet, &reverse)
+            .unwrap(),
+        None
     );
 }

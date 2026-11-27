@@ -116,7 +116,7 @@ async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
         ),
         get(
             "GET /dash/v1/orders/fixture-order HTTP/1.1",
-            r#"{"code":200,"message":"OK","data":{"orderId":"fixture-order","status":"Complete","cards":[{"name":"Fixture Groceries","claimCode":"FIXTURE-CODE","claimPin":"0000"}]}}"#,
+            r#"{"code":200,"message":"OK","data":{"orderId":"fixture-order","status":"Complete","cards":[{"name":"Fixture Groceries","claimCode":"FIXTURE-CODE","claimPin":"0000"},{"name":"Fixture link-only card","claimLink":"https://redeem.fixture.invalid/claim"}]}}"#,
         ),
         login(),
     ]);
@@ -166,6 +166,8 @@ async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
         Some("FIXTURE-CODE")
     );
     assert_eq!(fulfilled.cards[0].claim_pin.as_deref(), Some("0000"));
+    let link = fulfilled.cards[1].claim_link.as_deref().unwrap();
+    assert_eq!(crate::api::gift_cards::claim_url(link).unwrap().domain(), Some("redeem.fixture.invalid"));
     assert!(matches!(
         secrets.sign_out().await.unwrap(),
         GiftAccount::CanSignIn { .. }
@@ -241,4 +243,19 @@ fn a_signing_draft_must_match_the_invoice_and_keep_change_in_the_wallet() {
             .is_err()
     );
     assert!(invoice.verify(&[recipient.clone(), recipient]).is_err());
+}
+
+
+#[test]
+fn redemption_links_require_credentialless_public_https_urls() {
+    use crate::api::gift_cards::claim_url;
+
+    for bad in [
+        "http://merchant.invalid/claim", "https://name:secret@merchant.invalid/claim",
+        "https://localhost/claim", "https://127.0.0.1/claim", "https://[::1]/claim",
+        "https://merchant.local/claim", "https://merchant.invalid:8443/claim",
+        "javascript:alert(1)", "https://merchant/claim",
+    ] {
+        assert!(claim_url(bad).is_none(), "{bad}");
+    }
 }

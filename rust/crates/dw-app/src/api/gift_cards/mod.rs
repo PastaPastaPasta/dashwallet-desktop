@@ -3,7 +3,7 @@ mod piggy;
 mod store;
 
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashcore::{Network, hashes::sha256};
 use dw_engine::{DashNetwork, NetworkSession, PreparedOutput};
@@ -218,6 +218,8 @@ pub struct GiftCardSecret {
     name: String,
     code: Option<String>,
     pin: Option<String>,
+    #[serde(rename = "claimHost")]
+    claim_host: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -317,6 +319,18 @@ fn checked_id(id: &str) -> Result<(), AppError> {
         return Err(fail("PiggyCards returned an invalid identifier."));
     }
     Ok(())
+}
+
+fn claim_url(text: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(text).ok()?;
+    let domain = url.domain()?;
+    let suffix = domain.rsplit_once('.')?.1;
+    if url.scheme() != "https" || url.port().is_some() || !url.username().is_empty()
+        || url.password().is_some() || matches!(suffix, "" | "local" | "localhost" | "internal" | "test")
+    {
+        return None;
+    }
+    Some(url)
 }
 
 fn invoice_key(account: &str, order: &str) -> [u8; 32] {
@@ -446,11 +460,36 @@ commands! {
             orders.save()?;
         }
         let cards = if matches!(status, GiftOrderStatus::Complete) {
-            data.cards.into_iter().map(|c| GiftCardSecret { name: c.name, code: c.claim_code, pin: c.claim_pin }).collect()
+            data.cards.into_iter().map(|c| GiftCardSecret {
+                name: c.name,
+                code: c.claim_code,
+                pin: c.claim_pin,
+                claim_host: c.claim_link.as_deref().and_then(claim_url)
+                    .and_then(|url| url.domain().map(str::to_owned)),
+            }).collect()
         } else {
             Vec::new()
         };
         Ok(GiftOrderDetails { order: view, status, cards })
+    }
+
+    /// Opens a completed card's provider-issued HTTPS redemption link.
+    #[facade("NetworkSession::vault", "Vault::status")]
+    fn gift_card_open_claim(state, wallet_id: String, order_id: String, card: u32, host: String) -> () {
+        let ctx = Context::open(&state).await?;
+        let (account, token) = ctx.credentials().await?;
+        ctx.orders()?.find(&order_id, &account.key(), &wallet_id)?;
+        let data = ctx.piggy.order(&order_id, &token.access).await?;
+        if !matches!(GiftOrderStatus::from(data.status.as_str()), GiftOrderStatus::Complete) {
+            return Err(fail("PiggyCards has not completed this gift card."));
+        }
+        let url = data.cards.get(card as usize).and_then(|card| card.claim_link.as_deref())
+            .and_then(claim_url).filter(|url| url.domain() == Some(host.as_str()))
+            .ok_or_else(|| fail("The redemption link changed or is unavailable. Refresh the order."));
+        check_active(&state, &ctx.session)?;
+        let open_failed = || fail("Could not open the gift card redemption link.");
+        tauri::async_runtime::spawn_blocking(move || open::that_detached(url.as_str()))
+            .await.map_err(|_| open_failed())?.map_err(|_| open_failed())
     }
 
     /// Opens a normal Pay draft bound to a known PiggyCards order.
@@ -501,13 +540,17 @@ commands! {
                 return Err(fail("The gift card invoice changed. Get a new quote before paying."));
             }
         }
-        if now() >= order.view.expires_at {
-            return Err(fail("The gift card quote expired. Get a new quote before paying."));
-        }
+        let wall_now = SystemTime::now();
+        let expired = || fail("The gift card quote expired. Get a new quote before paying.");
+        let remaining = UNIX_EPOCH.checked_add(Duration::from_secs(order.view.expires_at))
+            .and_then(|limit| limit.duration_since(wall_now).ok())
+            .filter(|remaining| *remaining <= Duration::from_secs(INVOICE_WINDOW_SECS))
+            .ok_or_else(expired)?;
+        let deadline = tokio::time::Instant::now() + remaining;
         check_active(&state, &ctx.session)?;
         let d = state.sends.for_payment(draft, Some(key))?;
         let tx = send::prepared_of(&state, draft, prepared)?;
         invoice.verify(&tx.summary().outputs)?;
-        Ok(send::broadcast(&state, d, tx, prepared, Some(key)).await?.into())
+        Ok(send::broadcast(&state, d, tx, prepared, Some((key, deadline))).await?.into())
     }
 }

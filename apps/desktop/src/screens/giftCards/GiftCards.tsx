@@ -301,6 +301,12 @@ function OrderDetails({ walletId, orderId, network }: { walletId: string; orderI
     },
   });
   const details = info.data;
+  const [claimError, setClaimError] = useState<string | null>(null);
+  const openClaim = (card: number, host: string) => {
+    setClaimError(null);
+    void b.giftCardOpenClaim(walletId, orderId, card, host)
+      .catch((e: unknown) => setClaimError(problem(e, t("giftCards.providerError"))));
+  };
 
   return (
     <section className="card-l1 gift-panel" aria-label={t("giftCards.order")}>
@@ -315,13 +321,21 @@ function OrderDetails({ walletId, orderId, network }: { walletId: string; orderI
             <p className="field-hint">{t(Date.now() >= details.order.expiresAt * 1000 ? "giftCards.expired" : "giftCards.invoicePending")}</p>
           )}
           {details.status === "complete" && (
-            details.cards.some((c) => c.code || c.pin) ? details.cards.map((card, i) => (
-              <dl key={i} className="detail-list">
-                {card.code && <DetailRow label={t("giftCards.claimCode")}><CopyValue value={card.code} label={t("giftCards.claimCode")} /></DetailRow>}
-                {card.pin && <DetailRow label={t("giftCards.pin")}><CopyValue value={card.pin} label={t("giftCards.pin")} /></DetailRow>}
-              </dl>
+            details.cards.some((c) => c.code || c.pin || c.claimHost) ? details.cards.map((card, i) => (
+              <div className="gift-redemption" key={i}>
+                {(card.code || card.pin) && (
+                  <dl className="detail-list">
+                    {card.code && <DetailRow label={t("giftCards.claimCode")}><CopyValue value={card.code} label={t("giftCards.claimCode")} /></DetailRow>}
+                    {card.pin && <DetailRow label={t("giftCards.pin")}><CopyValue value={card.pin} label={t("giftCards.pin")} /></DetailRow>}
+                  </dl>
+                )}
+                {card.claimHost && <DashButton variant="tintedBlue" onClick={() => openClaim(i, card.claimHost!)}>
+                  {t("giftCards.redeem", { host: card.claimHost })}
+                </DashButton>}
+              </div>
             )) : <p className="field-hint">{t("giftCards.noCodes")}</p>
           )}
+          {claimError && <p className="form-problem" role="alert">{claimError}</p>}
         </>
       )}
       <DashButton variant="tintedGray" disabled={info.isFetching} onClick={() => void info.refetch()}>{t("giftCards.refresh")}</DashButton>
