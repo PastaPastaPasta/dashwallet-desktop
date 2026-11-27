@@ -778,7 +778,9 @@ impl From<dw_engine::platform::lease::StuckFundingRefusal> for StuckFundingRefus
             R::NoMarker => Self::NoMarker,
             R::CallRunning => Self::CallRunning,
             R::JournalUnavailable => Self::JournalUnavailable,
-            R::SpendUnsettled(t) => Self::SpendUnsettled { txid: txid(t) },
+            R::SpendUnsettled(t) | R::OwnLockUnfinalized(t) => {
+                Self::SpendUnsettled { txid: txid(t) }
+            }
             R::LockInputsSpent(t) => Self::LockInputsSpent { txid: txid(t) },
             R::LockAbandoned(t) => Self::LockAbandoned { txid: txid(t) },
             R::MissesSignedLock(t) => Self::MissesSignedLock { txid: txid(t) },

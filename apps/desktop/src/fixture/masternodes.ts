@@ -980,7 +980,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       const l = listedOf(m, proTxHash);
       if (!l) throw fail("masternodes.not_found", "masternode not found");
       if (l.facts.kind !== "evonode") throw fail("masternodes.not_evonode", "not an evonode");
-      if (m.platformDown) throw fail("masternodes.platform_unavailable", "Platform is unavailable");
+      if (m.platformDown) throw fail("masternodes.platform_unavailable", "fixture evonode Platform read failed");
       const credits = m.credits[proTxHash];
       if (credits === undefined) throw fail("masternodes.no_identity", "the evonode has no identity");
       return { proTxHash, credits, duffs: Number(BigInt(credits) / 1000n), fetchedAt: NOW };

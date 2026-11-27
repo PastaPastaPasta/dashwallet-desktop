@@ -461,6 +461,7 @@ pub enum ShieldRepairBlockedReason {
     NotReady,
     /// A spend of the wallet's coins is not ChainLocked yet.
     SpendUnsettled,
+    OwnLockUnfinalized,
     /// The coins the move's payment spends are already spent.
     LockInputsSpent,
     /// A payment of the wallet may be the move's and is not matched yet.
@@ -488,6 +489,7 @@ impl From<&dw_engine::EngineError> for ShieldRepairBlocked {
                     B::NotReady
                 }
                 R::SpendUnsettled(_) => B::SpendUnsettled,
+                R::OwnLockUnfinalized(_) => B::OwnLockUnfinalized,
                 R::LockInputsSpent(_) | R::MissesSignedLock(_) => B::LockInputsSpent,
                 R::UnattributedLock(_) => B::UnattributedLock,
                 R::NoKnownLock | R::NoMarker => B::NoKnownLock,
@@ -945,6 +947,11 @@ mod tests {
             (
                 EngineError::StuckFunding(R::SpendUnsettled(txid)),
                 "spendUnsettled",
+                true,
+            ),
+            (
+                EngineError::StuckFunding(R::OwnLockUnfinalized(txid)),
+                "ownLockUnfinalized",
                 true,
             ),
             (

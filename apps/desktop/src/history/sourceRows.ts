@@ -146,7 +146,8 @@ export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): Tx
   const received = a.direction === "in";
   // The engine's refusal reads the library's holds with the journal, and a release is final: it
   // outranks the status's `heldSpends`, which may be from an earlier read.
-  const mayLand = a.status !== "confirmed" && (a.refusal ? a.refusal === "held" : !!held?.has(a.id));
+  const failedSpend = a.status === "failed" && a.direction !== "in" && a.kind !== "shield" && a.kind !== "shieldFromCore";
+  const mayLand = a.status !== "confirmed" && (a.refusal ? a.refusal === "held" : (held?.has(a.id) ?? failedSpend));
   const kind = a.status === "confirmed" ? "confirmed" : a.status === "failed" && !mayLand ? "notAccepted" : "unconfirmed";
   return {
     ...base(`shielded:${a.kind}:${a.id}${mayLand ? MAY_LAND : ""}`, statusOf(kind), a.createdAt, a.direction === "out" ? -amount : amount),
@@ -158,8 +159,9 @@ export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): Tx
   };
 }
 
-/** The history ids of the Shielded spends whose notes are held. */
-export const heldActivities = (status: ShieldedStatus | null | undefined): ReadonlySet<string> => new Set(status?.heldSpends.map((h) => h.activityId));
+/** The held history ids, or `undefined` while Shielded status is unread. */
+export const heldActivities = (status: ShieldedStatus | null | undefined): ReadonlySet<string> | undefined =>
+  status ? new Set(status.heldSpends.map((h) => h.activityId)) : undefined;
 
 export type SourceRecord =
   | { source: "platform"; row: TxRow; record: PlatformActivity }

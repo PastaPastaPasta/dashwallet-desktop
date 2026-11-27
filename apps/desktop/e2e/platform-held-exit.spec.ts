@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
-import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { artifactPath, authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // The way out of a held Platform item, on the fixture backend: a payment that may still go through
 // is moved to the Dash wallet instead (only one of the two goes through), and a held move or contact
@@ -10,9 +10,9 @@ import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./he
 
 const PAYEE = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 
-async function details(page: Page, scenario: string, txid: string, theme: Theme = "light") {
+async function details(page: Page, scenario: string, txid: string, theme: Theme = "light", extra = "") {
   const errors = trackPageErrors(page);
-  await page.goto(fixtureUrl(scenario, theme));
+  await page.goto(fixtureUrl(scenario, theme, extra));
   await page.getByTestId("hero").waitFor();
   await page.getByTestId("sidebar-activity").click();
   await page.getByTestId("tx-list").waitFor();
@@ -42,6 +42,64 @@ test.describe("A held payment from Platform: Move to Dash wallet", () => {
       await expect(page.getByText("Everything on your Platform addresses moves to your Dash wallet.", { exact: false })).toHaveCount(0);
       expect(await seriousAxeViolations(page)).toEqual([]);
       expect(errors).toEqual([]);
+    });
+
+    test(`an exit waits for Activity to explain what it replaces (${theme})`, async ({ page }, info) => {
+      await details(page, "platform-send-failed-may-land", "platform:send:ps-held:mayland", theme);
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await expect(page.getByTestId("platform-move-go")).toBeEnabled();
+      const reads = await calls(page, "platform_activity");
+      const activity = await page.evaluate(() => {
+        const f = window.__dwFixture!;
+        const p = f.world.pending.platform!;
+        const rows = p.activity;
+        p.activity = rows.filter((a) => a.id !== "ps-held");
+        f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
+        return rows;
+      });
+      await expect.poll(() => calls(page, "platform_activity")).toBeGreaterThan(reads + 1);
+      await expect(page.getByTestId("platform-move-quote")).toBeVisible();
+      await expect(page.getByTestId("platform-move-go")).toBeDisabled();
+      await fontsReady(page);
+      await page.screenshot({ path: artifactPath(info, `exit-confirm-checking-${theme}.png`) });
+      await expect.soft(page.getByTestId("platform-move-exit-checking")).toHaveText("Checking for an unfinished move…", { timeout: 1500 });
+      await expect.soft(page.getByText("Everything on your Platform addresses moves", { exact: false })).toHaveCount(0, { timeout: 1500 });
+      await page.evaluate((rows) => {
+        const f = window.__dwFixture!;
+        f.world.pending.platform!.activity = rows;
+        f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
+      }, activity);
+      await expect(page.getByTestId("platform-move-exit-send")).toContainText("only one of the two can go through");
+      await expect(page.getByTestId("platform-move-go")).toBeEnabled();
+    });
+
+    test(`a failed exit waits for its Activity row before naming a winner (${theme})`, async ({ page }, info) => {
+      await details(page, "platform-send-failed-may-land", "platform:send:ps-held:mayland", theme, "&hold=platform_move_to_core");
+      await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.nextMove = "lost"));
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-go").click();
+      await authorize(page);
+      await expect.poll(() => calls(page, "platform_move_to_core")).toBe(1);
+      const activity = await page.evaluate(() => {
+        const p = window.__dwFixture!.world.pending.platform!;
+        const rows = p.activity;
+        p.activity = rows.filter((a) => a.kind !== "moveToCore");
+        window.__dwFixture!.release("platform_move_to_core");
+        return rows;
+      });
+      await expect(page.getByTestId("platform-move-outcome-title")).toBeVisible();
+      await fontsReady(page);
+      await page.screenshot({ path: artifactPath(info, `exit-result-checking-${theme}.png`) });
+      await expect.soft(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet", { timeout: 1500 });
+      await expect.soft(page.getByTestId("platform-move-outcome-text")).not.toContainText("was paid", { timeout: 1500 });
+      await page.evaluate((rows) => {
+        const f = window.__dwFixture!;
+        f.world.pending.platform!.activity = rows;
+        f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
+      }, activity);
+      await expect(page.getByTestId("platform-move-outcome-text")).toContainText("was paid");
     });
   }
 

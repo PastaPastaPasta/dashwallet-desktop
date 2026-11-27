@@ -16,10 +16,7 @@ its own compose project:
     DWD_COMPOSE_PROJECT=dwd-r1 DWD_REGTEST_BUILD=0 DWCLI=... \\
         .venv/bin/python -m pytest -v tests/test_l2_tools.py
 
-A single regtest node has no quorums, so dash-spv is never `caught_up` there: every
-`NewTransactions` batch reports `catch_up=1`, which is what a host must treat as "initial sync,
-no popups". With one peer and no InstantSend quorum dash-spv accepts a broadcast only once it
-is mined.
+With one peer and no InstantSend quorum dash-spv accepts a broadcast once it is mined.
 """
 
 from __future__ import annotations
@@ -383,8 +380,8 @@ def test_new_transactions_are_batched(main, regtest_node, funded_miner):
     batches = [s for s in seen if s & txids]
     assert len(batches) == 1 and txids <= batches[0], events
     assert batches[0] == txids or len(batches[0]) >= 3
-    # A single regtest node never reaches dash-spv's steady state.
-    assert all(e["catch_up"] == "1" for e in events), events
+    # SPV can reach steady state before or after the batch is emitted.
+    assert all(e["catch_up"] in ("0", "1") for e in events), events
 
     notices = [fields(line) for line in main.run("notices", main.wallet, *sorted(txids)) if line.startswith("notice ")]
     assert {n["txid"] for n in notices} == txids

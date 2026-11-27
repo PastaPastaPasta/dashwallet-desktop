@@ -729,7 +729,9 @@ fn a_reloaded_wallet_restores_coinjoin_coins_past_99_and_a_replay_counts_them_on
 #[test]
 fn a_stored_lookahead_restores_a_coin_only_its_gap_reaches() {
     let (_dir, engine, session, id) = engine_wallet();
+    assert!(!session.wallet_info(&id).unwrap().raised_lookahead);
     engine.block_on(session.store_lookahead(id, crate::keys::MAX_LOOKAHEAD));
+    assert!(session.wallet_info(&id).unwrap().raised_lookahead);
     let to = coinjoin_addresses(&engine, &session, id, &[500]).remove(0);
     let tx = pays(1, &to);
     store_coins(&session, id, vec![confirmed_coin(&tx, &to)], Vec::new());

@@ -110,7 +110,7 @@ pub(crate) async fn choose_save(
     choose(state, purpose, true, Some(suggested_name)).await
 }
 
-/// Writes `data` whole to a path the save dialog returned (0600 on Unix).
+/// Writes `data` whole to a private file at the path the save dialog returned.
 pub(crate) async fn write_chosen(
     path: PathBuf,
     data: impl AsRef<[u8]> + Send + 'static,
@@ -241,14 +241,7 @@ fn write_owner_only(path: &Path, data: &[u8]) -> io::Result<()> {
             part_name.push(name);
             part_name.push(format!(".{}-{n}.part", std::process::id()));
             let part = dir.join(part_name);
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&part) {
+            match dw_fs::create_new_owner_only(&part) {
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
                 opened => Some(opened.map(|f| (part, f))),
             }
@@ -259,10 +252,9 @@ fn write_owner_only(path: &Path, data: &[u8]) -> io::Result<()> {
                 "no free temporary name",
             ))
         })?;
-    let written = file
-        .write_all(data)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| std::fs::rename(&part, path));
+    let written = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    let written = written.and_then(|()| std::fs::rename(&part, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&part);
     }

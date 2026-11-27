@@ -137,6 +137,17 @@ test.describe("the foreign lineage", () => {
 });
 
 test.describe("Restore earlier data", () => {
+  test("does not request a restore while the wallet is open or from a refusal without the restore action", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light"));
+    await page.getByTestId("hero").waitFor();
+    expect(await calls(page)).not.toContain("request_restore");
+
+    await page.goto(fixtureUrl("funded", "light", "&openRefused=damaged&restoreAvailable=yes"));
+    await page.getByTestId("store-refused").waitFor();
+    await expect(page.getByTestId("store-refused-button-storeUpgrade.refused.restore")).toHaveCount(0);
+    expect(await calls(page)).not.toContain("request_restore");
+  });
+
   test("shows only while a verified snapshot is there", async ({ page }) => {
     await page.goto(fixtureUrl("funded", "light", "&openRefused=refusedRestore&restoreAvailable=no"));
     await page.getByTestId("store-refused").waitFor();
