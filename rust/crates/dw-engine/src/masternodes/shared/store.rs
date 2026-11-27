@@ -24,7 +24,7 @@ use key_wallet::transaction_checking::TransactionContext;
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
-use super::super::protx::ops::conflict_height;
+use super::super::protx::ops::{Beats, beaten_height};
 use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
     SharedSession, SharedStage, SharedWarning, UnreadableSession,
@@ -469,11 +469,21 @@ fn overlay_own_signatures(session: &mut Session, rec: &Recorded, signed: &[u8]) 
 pub(crate) struct ChainView {
     pub history: HashMap<Txid, TxEntry>,
     pub unspent: HashSet<OutPoint>,
+    /// What may beat the session's transactions.
+    pub beats: Beats,
+    /// What a block beats while it may still become final: recovery's
+    /// progress only.
+    pub(super) seen: Beats,
     /// The coins this wallet's pending spends hold, an abandon's among them.
     pub pending: HashSet<OutPoint>,
 }
 
 impl ChainView {
+    /// [`beaten_height`] of the transaction `txid` spending `inputs`.
+    pub(crate) fn beaten(&self, inputs: &[OutPoint], txid: Option<&Txid>) -> Option<u32> {
+        beaten_height(&self.history, &self.beats, inputs, txid)
+    }
+
     /// Whether one of `coins` is unspent and free of every pending spend:
     /// a coin `abandon_session` may spend.
     pub(crate) fn holds_any(&self, coins: &[OutPoint]) -> bool {
@@ -560,7 +570,7 @@ pub(crate) fn releasable(
         },
         Err(_) => return releasable_by_columns(row, chain, buried),
     };
-    conflict_height(&chain.history, &inputs, txid.as_ref()).is_some_and(buried)
+    chain.beaten(&inputs, txid.as_ref()).is_some_and(buried)
 }
 
 /// A row whose envelope no longer parses, judged by its stored columns
@@ -585,18 +595,22 @@ pub(crate) fn releasable_by_columns(
     if row.out_at.is_none() {
         return reserved_of(row).iter().any(|o| !chain.unspent.contains(o));
     }
-    conflict_height(&chain.history, &conflict_coins(row), stored.as_ref()).is_some_and(buried)
+    chain
+        .beaten(&conflict_coins(row), stored.as_ref())
+        .is_some_and(buried)
 }
 
 /// A row whose envelope no longer parses, settled by its stored columns:
-/// its stored transaction in a block (`confirmed`), or a
-/// [`conflict_coins`] coin spent in a block by another (`conflicted`).
+/// its stored transaction in a block (`confirmed`), or its transaction
+/// beaten by [`ChainView::beaten`]'s rule: a [`conflict_coins`] coin spent
+/// in a final block by another, or a beaten parent (`conflicted`).
 pub(crate) fn settled_by_columns(row: &SharedSessionRow, chain: &ChainView) -> Option<SharedStage> {
     let stored = stored_txid(row);
     if let Some(height) = stored.and_then(|t| chain.confirmed_height(&t)) {
         return Some(SharedStage::Confirmed { height });
     }
-    conflict_height(&chain.history, &conflict_coins(row), stored.as_ref())
+    chain
+        .beaten(&conflict_coins(row), stored.as_ref())
         .map(|_| SharedStage::Conflicted)
 }
 
@@ -640,7 +654,7 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
         return SharedStage::Confirmed { height };
     }
     if l.out() {
-        if conflict_height(&chain.history, &l.conflict_inputs(), txid.as_ref()).is_some() {
+        if chain.beaten(&l.conflict_inputs(), txid.as_ref()).is_some() {
             return SharedStage::Conflicted;
         }
         return out_stage(l.role);
@@ -659,6 +673,32 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
         Stage::FundingSigned => SharedStage::FundingSigned,
         Stage::Broadcast => SharedStage::Sent,
     }
+}
+
+/// Whether an out session at `stage` that a final block hasn't settled is
+/// beaten ([`beaten_height`]) by a block that may still become final
+/// ([`ChainView::seen`]): it can't confirm on this branch, so nothing hands
+/// it off again until that block is final (`conflicted`) or a reorg drops
+/// it (#954). With its signed bytes saved, a spend this wallet records of
+/// any of their inputs beats it, a participant's too (one paying this
+/// wallet). Recovery shows a block spending this wallet's own coins as
+/// `confirming`; for a participant's, the row waits without it. It releases
+/// nothing: the stage and every release read final blocks only.
+pub(crate) fn contested(l: &Loaded, chain: &ChainView, stage: &SharedStage) -> bool {
+    let txid = session_hash(l, chain)
+        .or_else(|| l.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()));
+    l.out()
+        && !matches!(
+            stage,
+            SharedStage::Confirmed { .. } | SharedStage::Conflicted
+        )
+        && beaten_height(
+            &chain.history,
+            &chain.seen,
+            &signed_inputs(&l.row).unwrap_or_else(|| l.conflict_inputs()),
+            txid.as_ref(),
+        )
+        .is_some()
 }
 
 /// [`ShareTermsView::service_read`]: Core's reading of each entry of
@@ -849,7 +889,13 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .iter()
             .map(super::super::outpoint_string)
             .collect(),
-        next: after_abandon(&l.row, next_of(l, stage)),
+        next: after_abandon(
+            &l.row,
+            match contested(l, chain, &stage) {
+                true => SharedNext::Nothing,
+                false => next_of(l, stage),
+            },
+        ),
         discardable: may_discard(&l.row),
         abandonable: l.out()
             && !matches!(
