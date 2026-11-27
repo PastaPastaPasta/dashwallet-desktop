@@ -2262,9 +2262,7 @@ impl SessionHub {
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         self.note_held_fork(id, height);
-        let changed = self
-            .history
-            .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
+        let changed = self.history.truncate(id, found.removed, found.unconfirmed);
         self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
@@ -2414,7 +2412,10 @@ impl SessionHub {
             } => {
                 // A contact's record shows nowhere; a ProRegTx among them is
                 // kept out of sight for its collateral, as at a load.
-                if self.history.with_wallet(id, |h| h.upsert(record, now)) {
+                if self
+                    .history
+                    .with_wallet_records(id, |h, locks| h.upsert_with_locks(record, now, locks))
+                {
                     let live = learned_live(&record.context, self.tracker().network_tip());
                     self.pump.mark_new_txs(id, &[(record.txid, live)]);
                 }
@@ -2706,13 +2707,13 @@ impl SessionHub {
             } => {
                 let mut new = Vec::new();
                 let tip = self.tracker().network_tip();
-                let changed: Vec<Txid> = self.history.with_wallet(id, |h| {
+                let changed: Vec<Txid> = self.history.with_wallet_records(id, |h, locks| {
                     inserted
                         .iter()
                         .chain(updated)
                         .chain(matured)
                         .filter_map(|r| {
-                            if h.upsert(r, now) {
+                            if h.upsert_with_locks(r, now, locks) {
                                 new.push((r.txid, learned_live(&r.context, tip)));
                             }
                             crate::history::is_wallets(r).then_some(r.txid)

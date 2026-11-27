@@ -11,12 +11,11 @@ use std::sync::Arc;
 
 use dashcore::{InstantLock, OutPoint, Transaction, Txid};
 
-use super::own_spend_balance_tests::funded_wallet_and_funding;
 use super::own_spend_disk_tests::{
-    Accept, COIN, TIP, coins, fresh_address, prepare, send, sent_marks, spendable, spendable_for,
-    start_offline_spv, wait_stored,
+    Accept, COIN, COINS, FUNDED_AT, TIP, coins, foreign, fresh_address, funding, prepare,
+    second_wallet, send, sent_marks, spendable, spendable_for, start_offline_spv, wait_stored,
 };
-use super::{balances, deliver, mined, reopen, rows};
+use super::{balances, deliver, engine_wallet, mined, reopen, rows};
 use crate::history::TxStatusKind;
 use crate::send::CoinSource;
 use crate::session::NetworkSession;
@@ -40,21 +39,43 @@ struct Scenario {
 }
 
 fn scenario() -> Scenario {
-    let (dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (s, paid) = before_funding();
+    s.fund(paid);
+    s
+}
+
+fn before_funding() -> (Scenario, Transaction) {
+    let (dir, engine, session, id) = engine_wallet();
+    let addresses: Vec<_> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let paid = funding(7, &addresses, COIN);
     let a = OutPoint::new(paid.txid(), 0);
     let change = fresh_address(&engine, &session, id).script_pubkey();
     let p = super::spend_of(a, vec![(super::elsewhere(), PAID_OUT), (change, CHANGE)]);
-    Scenario {
+    let s = Scenario {
         _dir: dir,
         engine,
         session,
         id,
         a,
         p,
-    }
+    };
+    (s, paid)
 }
 
 impl Scenario {
+    fn fund(&self, funding: Transaction) {
+        mined(
+            &self.engine,
+            &self.session,
+            self.id,
+            FUNDED_AT,
+            vec![funding],
+        );
+        mined(&self.engine, &self.session, self.id, TIP, vec![foreign()]);
+    }
+
     fn lock(&self) -> InstantLock {
         InstantLock {
             txid: self.p.txid(),
@@ -112,7 +133,7 @@ impl Scenario {
             .map(|r| (r.1, r.2, r.3))
     }
 
-    fn assert_abandon_refused(&self) {
+    fn assert_abandon_refused(&self, refusal: TxActionRefusal) {
         start_offline_spv(&self.engine, &self.session);
         let result = self
             .engine
@@ -120,7 +141,7 @@ impl Scenario {
         assert!(
             matches!(
                 result,
-                Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked))
+                Err(EngineError::TxActionRefused(reason)) if reason == refusal
             ),
             "Abandon refuses P: {result:?}"
         );
@@ -168,7 +189,7 @@ impl Scenario {
     /// After the fork: P shows pending and locked, Abandon refuses it, and
     /// `a`, which key-wallet gave back, is neither offered, listed,
     /// counted nor taken by Max.
-    fn assert_kept(&self) {
+    fn assert_kept(&self, locked: bool, refusal: TxActionRefusal) {
         assert!(self.a_held(), "key-wallet gave a back: {:?}", self.p.txid());
         let b = balances(&self.session, self.id);
         let (available, inputs) = self.max();
@@ -182,14 +203,18 @@ impl Scenario {
                 (available, inputs.len(), inputs.contains(&self.a)),
             ),
             (
-                Some((TxStatusKind::Unconfirmed, true, CHANGE as i64 - COIN as i64)),
+                Some((
+                    TxStatusKind::Unconfirmed,
+                    locked,
+                    CHANGE as i64 - COIN as i64
+                )),
                 (11 * COIN, 11 * COIN, 0),
                 (false, false),
                 (11 * COIN, 11, false),
             ),
             "Activity, balance, coin control and Max after the fork"
         );
-        self.assert_abandon_refused();
+        self.assert_abandon_refused(refusal);
     }
 
     fn assert_restarted_from_old_block(&self) {
@@ -210,7 +235,7 @@ fn a_locked_payment_a_fork_removed_stays_pending_and_keeps_its_coin_spent() {
     s.mined();
     assert!(!s.a_held(), "P spends a");
     s.fork();
-    s.assert_kept();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
 
     s.mined();
     assert!(!s.a_held(), "mined again, P spends a");
@@ -236,7 +261,76 @@ fn a_lock_heard_after_the_block_keeps_the_payment_across_a_fork() {
     s.mined();
     s.hear_lock();
     s.fork();
-    s.assert_kept();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
+fn a_lock_heard_before_scanning_its_funding_parent_keeps_the_payment_across_a_fork() {
+    let (s, funding) = before_funding();
+    s.hear_lock();
+    s.fund(funding);
+    s.mined();
+    s.fork();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
+fn an_evicted_lock_still_holds_its_input_when_the_wallet_later_forks() {
+    use dash_spv::EventHandler;
+    let (s, funding) = before_funding();
+    s.hear_lock();
+    for n in 0..crate::history::EARLY_LOCK_LIMIT {
+        let mut id = [0xa5; 32];
+        id[..4].copy_from_slice(&(n as u32).to_le_bytes());
+        s.session
+            .hub
+            .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+                instant_lock: InstantLock {
+                    txid: Txid::from_byte_array(id),
+                    ..InstantLock::default()
+                },
+                validated: true,
+            });
+    }
+    s.fund(funding);
+    s.mined();
+    s.fork();
+    s.assert_kept(false, TxActionRefusal::RescanFirst);
+}
+
+#[test]
+fn a_buffered_lock_is_matched_only_to_the_wallet_that_owns_its_input() {
+    let (s, funding) = before_funding();
+    let other = second_wallet(&s.engine, &s.session);
+    s.hear_lock();
+    let holds_lock = |id| {
+        s.session
+            .hub
+            .history
+            .read_wallet(&id, |h| h.session_locks.contains(&s.p.txid()))
+    };
+    assert!(!holds_lock(s.id));
+    assert!(!holds_lock(other));
+    s.fund(funding);
+    assert!(holds_lock(s.id));
+    assert!(!holds_lock(other));
+}
+
+#[test]
+fn loading_a_wallet_matches_buffered_locks_to_its_stored_outputs() {
+    let (s, funding) = before_funding();
+    let parent = funding.txid();
+    s.fund(funding);
+    wait_stored(&s.session, s.id, &[parent]);
+    s.engine.block_on(s.session.unload_wallet(s.id)).unwrap();
+    s.hear_lock();
+    s.engine.block_on(s.session.load_wallet(s.id)).unwrap();
+    assert!(
+        s.session
+            .hub
+            .history
+            .read_wallet(&s.id, |h| h.session_locks.contains(&s.p.txid()))
+    );
 }
 
 #[test]
@@ -252,7 +346,7 @@ fn a_truncation_without_a_wallet_event_keeps_the_locked_payment() {
         s.session.refresh_wallet_state(&manager, s.id).await;
     });
     s.session.hub.settle_rereads();
-    s.assert_kept();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
 }
 
 /// A fork's removal of a payment no verified lock named this session is

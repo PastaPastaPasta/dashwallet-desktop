@@ -142,8 +142,10 @@ where noted. **R2 (§2.6–2.8) works**: see the status notes under those tables
 When a fork removes a payment whose verified InstantSend lock this wallet learned during the session, Desktop
 keeps its Activity record pending and locked. It excludes any inputs returned to the wallet from balances and
 coin selection, and `abandon_transaction` applies the InstantSend refusal and its ChainLock exception. This
-fallback lasts until the session ends. A lock heard before the payment is tracked only if it spends an output
-the wallet already knows it owns.
+fallback lasts until the session ends. Desktop buffers up to 4,096 verified locks and 65,536 input references
+per session, matching each lock when the wallet learns its transaction or an output it spends. After any
+eviction or a lock too large for the buffer, a forked-out payment spending the wallet's own coins whose lock
+status is unknown stays pending. Its inputs stay excluded for the session, and Abandon and Resend refuse it.
 
 ### 2.3 Fees and coin control (`fees.rs`) — owner R1
 

@@ -12,9 +12,9 @@
 //! at the next read; a reorg that takes it out of its block withholds them
 //! again. Nothing is dropped, freed or abandoned here.
 //!
-//! [`ExclusionReason::ForkKeptLock`]: the coins a fork gave back that a
-//! payment with a verified InstantSend lock still spends
-//! ([`fork_kept_inputs`]).
+//! [`ExclusionReason::ForkKeptLock`]: inputs a fork gave back while a verified
+//! InstantSend lock still holds them, or while a lock may have been evicted
+//! from the session's buffer ([`fork_kept_inputs`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -39,10 +39,8 @@ pub enum ExclusionReason {
     /// unspent, waiting for that rewind's rescan (`crate::rescan_hold`):
     /// not listed at all.
     RescanHold,
-    /// A coin a fork gave back that a payment with a verified InstantSend
-    /// lock of this session spends, which the history keeps unconfirmed
-    /// (`WalletHistory::fork_kept_locks`): the network mines it again. Not
-    /// listed at all.
+    /// A coin a fork gave back that may still be spent by an InstantSend
+    /// payment. Left out of the coin list.
     ForkKeptLock,
 }
 
@@ -231,6 +229,7 @@ impl SessionHub {
             || (self.history).read_wallet(id, |h| {
                 !h.rescan_holds.is_empty()
                     || !h.fork_kept_locks.is_empty()
+                    || !h.uncertain_fork_spends.is_empty()
                     || (h.txs.iter())
                         .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
             })
@@ -268,7 +267,7 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// winner's block that spends them (key-wallet no longer holds them), an
 /// abandon the ChainLock exception lets through, and the end of the session.
 fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
-    if h.fork_kept_locks.is_empty() {
+    if h.fork_kept_locks.is_empty() && h.uncertain_fork_spends.is_empty() {
         return BTreeSet::new();
     }
     let accounts = core.accounts.all_accounts();
@@ -287,6 +286,7 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
         .filter_map(|t| h.txs.get(t))
         .filter(|e| e.context.block_info().is_none() && !e.is_abandoned())
         .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .chain(h.uncertain_fork_spends.values().flatten().copied())
         .filter(unspent)
         .collect()
 }

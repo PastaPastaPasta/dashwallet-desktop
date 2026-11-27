@@ -1166,6 +1166,7 @@ struct Facts {
     depth: u32,
     chain_locked: bool,
     instant_locked: bool,
+    uncertain_fork: bool,
     /// [`chainlock_beaten`]: a block under the wallet's ChainLock spends
     /// one of its inputs.
     chainlock_beaten: bool,
@@ -1951,6 +1952,7 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>, proof: &ChainProof) -> Facts {
         depth,
         chain_locked: status.chain_locked,
         instant_locked: status.instant_locked,
+        uncertain_fork: false,
         chainlock_beaten: status.instant_locked
             && depth == 0
             && !proof.blocked.contains(&entry.tx.txid())
@@ -1991,6 +1993,8 @@ impl Facts {
             Some(TxActionRefusal::Confirmed)
         } else if self.instant_locked && !self.chainlock_beaten {
             Some(TxActionRefusal::InstantLocked)
+        } else if self.uncertain_fork {
+            Some(TxActionRefusal::RescanFirst)
         } else if self.settled_descendant {
             Some(TxActionRefusal::SettledDescendant)
         } else if self.coinbase {
@@ -2012,6 +2016,8 @@ impl Facts {
             Some(TxActionRefusal::Coinbase)
         } else if self.instant_locked {
             Some(TxActionRefusal::InstantLocked)
+        } else if self.uncertain_fork {
+            Some(TxActionRefusal::RescanFirst)
         } else if self.from_me == 0 {
             Some(TxActionRefusal::NotSentByWallet)
         } else {
@@ -2108,6 +2114,10 @@ impl NetworkSession {
             })
             .await?
             .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))?;
+        f.uncertain_fork = self
+            .hub
+            .history
+            .read_wallet(&wallet, |h| h.uncertain_fork_spends.contains_key(&txid));
         if offer {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -4049,6 +4059,14 @@ impl NetworkSession {
     ) -> Result<(BTreeSet<Txid>, Option<Vec<OutPoint>>), EngineError> {
         let mut trial = core.clone();
         let planned = abandon_with(&mut trial, root, descendants);
+        let uncertain = self.hub.history.read_wallet(&wallet, |h| {
+            planned
+                .iter()
+                .any(|t| h.uncertain_fork_spends.contains_key(t))
+        });
+        if uncertain {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::RescanFirst));
+        }
         // key-wallet holds no record of a payment restored at load, so
         // it cannot see the InstantSend lock rehydrated for it.
         let locks = core.instant_send_locks();
@@ -5163,6 +5181,7 @@ mod tests {
             depth: 0,
             chain_locked: false,
             instant_locked: false,
+            uncertain_fork: false,
             chainlock_beaten: false,
             settled_descendant: false,
             coinbase: false,
