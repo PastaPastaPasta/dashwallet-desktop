@@ -50,13 +50,14 @@ const FORMAT: u32 = 1;
 
 /// The journal's record that the caller's [`HoldCheck`] passed before
 /// the attempt's first replace.
-const HOLDS_CHECKED: &str = "holds checked";
+const HOLDS_CHECKED: &str = "holds checked core v1";
+const LEGACY_HOLDS_CHECKED: &str = "holds checked";
 
 /// The caller's check of the live stores, before a requested restore
 /// replaces or removes any of them: `Err` (why) when one keeps a hold the
 /// before set would not, or can't be read. It runs once per attempt,
-/// before anything is written; a resume never runs it, and refuses a
-/// journal without [`HOLDS_CHECKED`].
+/// before anything is written. A resume without a current check evaluates
+/// the verified after-upgrade stores against the same snapshot.
 pub type HoldCheck<'a> = &'a dyn Fn(&Path, &SnapshotInfo) -> std::result::Result<(), String>;
 
 /// D2: the replace order; wallet.sqlite is always last.
@@ -130,9 +131,8 @@ pub enum IncompleteCause {
     /// live stores keep that the restore would replace, or could not read
     /// them: the request stays, nothing moves.
     HoldsOpen,
-    /// A journal with no record that the caller's [`HoldCheck`] passed
-    /// before its first replace (a journal an earlier build wrote): the
-    /// resume is refused, nothing moves.
+    /// An older journal could not pass the current hold check on its
+    /// verified after-upgrade stores: the resume is refused.
     HoldsUnchecked,
     Other,
 }
@@ -358,6 +358,9 @@ fn parse_journal(text: &str) -> Option<Journal> {
     let after = field("after")?;
     let mut lines = lines.peekable();
     let holds_checked = lines.next_if_eq(&HOLDS_CHECKED).is_some();
+    if !holds_checked {
+        lines.next_if_eq(&LEGACY_HOLDS_CHECKED);
+    }
     let mut stores = Vec::new();
     for line in lines {
         let parts: Vec<&str> = line.split(' ').collect();
@@ -402,7 +405,7 @@ pub fn run_pending_restore(
     let _locks = gates(network_dir)?;
     sweep_keep_scratch(&root(network_dir));
     match pending {
-        PendingRestore::InProgress => resume(network_dir, now).map(Some),
+        PendingRestore::InProgress => resume(network_dir, now, holds).map(Some),
         PendingRestore::Requested => {
             let snapshot = verify_request(network_dir).map_err(|c| refuse(network_dir, c))?;
             fresh(network_dir, &snapshot, now, holds).map(Some)
@@ -1919,23 +1922,39 @@ fn keep_live(
 
 /// Read and check the journal, its after-upgrade set and its snapshot, and
 /// make sure the mark is set.
-fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, SnapshotInfo)> {
+fn load_journal(
+    network_dir: &Path,
+    now: SystemTime,
+    holds: Option<HoldCheck<'_>>,
+) -> Result<(Journal, SnapshotInfo)> {
     let root = root(network_dir);
-    let text = fs::read_to_string(root.join(RESTORE_JOURNAL))
-        .map_err(|e| incomplete(&e, "read the restore journal"))?;
-    let journal = parse_journal(&text)
+    let path = root.join(RESTORE_JOURNAL);
+    let text = fs::read_to_string(&path).map_err(|e| incomplete(&e, "read the restore journal"))?;
+    let mut journal = parse_journal(&text)
         .ok_or_else(|| incomplete_other("the restore journal is unreadable".into()))?;
     let after_dir = root.join(&journal.after);
+    fsx::check_private_dir(&after_dir).map_err(|e| incomplete(&e, "check after-upgrade"))?;
+    if !after_dir.is_dir() {
+        return Err(incomplete_other("the after-upgrade copy is missing".into()));
+    }
     for e in &journal.stores {
-        if let Some(sha) = &e.after {
-            let found = hash_opt(&after_dir.join(&e.name))
-                .map_err(|err| incomplete(&err, "read after-upgrade"))?;
-            if found.as_ref() != Some(sha) {
-                return Err(incomplete_other(format!(
-                    "after-upgrade {} does not match the journal",
-                    e.name
-                )));
+        let file = after_dir.join(&e.name);
+        let mismatch = || {
+            incomplete_other(format!(
+                "after-upgrade {} does not match the journal",
+                e.name
+            ))
+        };
+        let found = match fs::symlink_metadata(&file) {
+            Ok(m) if m.is_file() => {
+                Some(sha256_file(&file).map_err(|e| incomplete(&e, "read after-upgrade"))?)
             }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(incomplete(&err, "read after-upgrade")),
+            Ok(_) => return Err(mismatch()),
+        };
+        if found != e.after || !sides_of(&after_dir, &e.name).is_empty() {
+            return Err(mismatch());
         }
     }
     let snapshot = snapshot::read_snapshot(&root.join(&journal.snapshot), true)
@@ -1945,7 +1964,22 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
             "the before-upgrade backup changed since the restore began".into(),
         ));
     }
-    if !exists(&root.join(RESTORED_MARK)) {
+    if !journal.holds_checked {
+        let unchecked = |detail: String| StoreUpgradeError::RestoreIncomplete {
+            cause: IncompleteCause::HoldsUnchecked,
+            journal_written: true,
+            detail,
+        };
+        let check = holds.ok_or_else(|| {
+            unchecked("restart to check the verified after-upgrade stores".into())
+        })?;
+        check(&after_dir, &snapshot).map_err(unchecked)?;
+        write_mark_for(network_dir, &snapshot, &after_dir, now, None)
+            .map_err(|e| incomplete(&e, "write the restored mark"))?;
+        journal.holds_checked = true;
+        fsx::write_durable(&path, render_journal(&journal).as_bytes())
+            .map_err(|e| incomplete(&e, "record the restore hold check"))?;
+    } else if !exists(&root.join(RESTORED_MARK)) {
         write_mark_for(network_dir, &snapshot, &after_dir, now, None)
             .map_err(|e| incomplete(&e, "write the restored mark"))?;
     }
@@ -1953,21 +1987,11 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
 }
 
 /// Resume from the journal, before any store opens (design §5).
-fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
+fn resume(network_dir: &Path, now: SystemTime, holds: HoldCheck<'_>) -> Result<RestoreInfo> {
     let root = root(network_dir);
-    let unchecked = (fs::read_to_string(root.join(RESTORE_JOURNAL)).ok())
-        .and_then(|text| parse_journal(&text))
-        .is_some_and(|journal| !journal.holds_checked);
-    if unchecked {
-        return Err(StoreUpgradeError::RestoreIncomplete {
-            cause: IncompleteCause::HoldsUnchecked,
-            journal_written: true,
-            detail: "the restore journal has no record of the hold check".into(),
-        });
-    }
+    let (journal, snapshot) = load_journal(network_dir, now, Some(holds))?;
     remove_record(&root).map_err(|e| incomplete(&e, "remove a stale attempt record"))?;
     sweep_keep_scratch(&root);
-    let (journal, snapshot) = load_journal(network_dir, now)?;
     match s4_state(network_dir, &journal, &snapshot)
         .map_err(|e| incomplete(&e, "read the wallet"))?
     {
@@ -2043,7 +2067,7 @@ pub fn keep_current_files(network_dir: &Path, now: SystemTime) -> Result<Option<
         return Ok(None);
     }
     sweep_keep_scratch(&root(network_dir));
-    let (journal, snapshot) = load_journal(network_dir, now)?;
+    let (journal, snapshot) = load_journal(network_dir, now, None)?;
     match s4_state(network_dir, &journal, &snapshot)
         .map_err(|e| incomplete(&e, "read the wallet"))?
     {

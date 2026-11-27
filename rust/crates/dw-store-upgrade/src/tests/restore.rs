@@ -1661,7 +1661,7 @@ fn a_resume_never_runs_the_hold_check() {
         disarm_fault();
         assert_eq!(calls.get(), 1, "{point}: {err:?}");
         let journal = fs::read_to_string(u.root().join(RESTORE_JOURNAL)).unwrap();
-        assert!(journal.contains("\nholds checked\n"), "{journal}");
+        assert!(journal.contains("\nholds checked core v1\n"), "{journal}");
         let refuse = |_: &Path, _: &SnapshotInfo| -> std::result::Result<(), String> {
             panic!("a resume ran the hold check")
         };
@@ -1671,6 +1671,56 @@ fn a_resume_never_runs_the_hold_check() {
         assert_restored(&u, &was_live, &info);
         assert!(info.resumed, "{point}");
     }
+}
+
+#[test]
+fn a_legacy_journal_rechecks_verified_after_data_before_resuming() {
+    let u = upgraded();
+    let (txid, input) = pay(&Connection::open(u.wallet()).unwrap());
+    let was_live = u.live();
+    u.request();
+    arm_fault("restore.after_journal", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    let path = u.root().join(RESTORE_JOURNAL);
+    let current = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        current.replace("holds checked core v1\n", "holds checked\n"),
+    )
+    .unwrap();
+    let mark = u.root().join(RESTORED_MARK);
+    fs::write(&mark, "dw-store-upgrade restored\nformat 1\n").unwrap();
+    let before = tree(&u.net);
+
+    let check_source = |after: &Path, snapshot: &SnapshotInfo| {
+        assert!(file_name(after).starts_with("after-upgrade-"));
+        assert_eq!(hashes_in(after), was_live);
+        assert_eq!(snapshot.dir(), u.snapshot.dir());
+    };
+    let err = run_pending_restore(&u.net, later(60), &|after, snapshot| {
+        check_source(after, snapshot);
+        Err("a possibly sent asset lock".into())
+    })
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        StoreUpgradeError::RestoreIncomplete {
+            cause: IncompleteCause::HoldsUnchecked,
+            journal_written: true,
+            ..
+        }
+    ));
+    assert_eq!(tree(&u.net), before);
+
+    let info = run_pending_restore(&u.net, later(120), &|after, snapshot| {
+        check_source(after, snapshot);
+        Ok(())
+    })
+    .unwrap()
+    .unwrap();
+    assert_restored(&u, &was_live, &info);
+    assert!(mark_lists(&u, &txid, &input));
 }
 
 /// A journal with no record of the check (an earlier build's) is not
@@ -1685,7 +1735,7 @@ fn a_journal_without_the_hold_record_is_not_resumed() {
     disarm_fault();
     let path = u.root().join(RESTORE_JOURNAL);
     let text = fs::read_to_string(&path).unwrap();
-    fs::write(&path, text.replace("holds checked\n", "")).unwrap();
+    fs::write(&path, text.replace("holds checked core v1\n", "")).unwrap();
     let mid = u.live();
     assert_eq!(mid, was_live, "stopped before the first replace");
     let mark = u.root().join(RESTORED_MARK);
@@ -1693,7 +1743,8 @@ fn a_journal_without_the_hold_record_is_not_resumed() {
         fs::remove_file(&mark).unwrap();
     }
     let before = tree(&u.net);
-    let err = u.run(later(60)).unwrap_err();
+    let err = run_pending_restore(&u.net, later(60), &|_, _| Err("no hold check ran".into()))
+        .unwrap_err();
     assert!(
         matches!(
             err,
