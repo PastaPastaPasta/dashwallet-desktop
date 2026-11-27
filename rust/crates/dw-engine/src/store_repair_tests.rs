@@ -423,7 +423,7 @@ fn an_output_of_the_claim_spent_by_an_unknown_transaction_keeps_it() {
         ],
     );
     let outcome = repair_closed(&dir);
-    assert_eq!(outcome.schema, Some(26));
+    assert_eq!(outcome.schema, Some(27));
     assert!(outcome.dropped.is_empty(), "{outcome:?}");
     assert!(stored(&dir, id, claim.txid()));
 }
@@ -650,10 +650,10 @@ fn a_store_of_an_unknown_schema_is_not_repaired() {
     let dir = close(&engine, session);
     for (later, sql) in [
         (
-            27,
+            28,
             "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) \
-             SELECT 27, 'later', applied_on, checksum FROM refinery_schema_history \
-             WHERE version = 26",
+             SELECT 28, 'later', applied_on, checksum FROM refinery_schema_history \
+             WHERE version = 27",
         ),
         (25, "DELETE FROM refinery_schema_history WHERE version > 25"),
     ] {
@@ -850,7 +850,7 @@ fn a_claim_whose_output_a_block_spent_is_kept() {
     block_spend(&dir, id, &change, [9u8; 32]);
     assert_eq!(mark(), (1, true), "the block's mark finds it spent");
     let outcome = repair_closed(&dir);
-    assert_eq!(outcome.schema, Some(26));
+    assert_eq!(outcome.schema, Some(27));
     assert!(outcome.dropped.is_empty(), "{outcome:?}");
     assert!(stored(&dir, id, claim.txid()));
 }
@@ -888,7 +888,7 @@ fn a_block_spend_that_doesnt_read_keeps_the_claim() {
         rusqlite::params![id.0.as_slice(), BIRTH - 10, [7u8; 32], [9u8; 32]],
     );
     let outcome = repair_closed(&dir);
-    assert_eq!(outcome.schema, Some(26));
+    assert_eq!(outcome.schema, Some(27));
     assert!(outcome.dropped.is_empty(), "{outcome:?}");
     assert!(stored(&dir, id, claim.txid()));
 }
@@ -900,6 +900,8 @@ pub(super) fn as_v24(dir: &std::path::Path) {
     conn.execute_batch(
         "DROP TABLE core_block_spends; DROP TABLE core_block_spends_migrated; \
          DROP TABLE core_dismissed_txids; \
+         ALTER TABLE identities DROP COLUMN entry_format; \
+         ALTER TABLE dashpay_profiles DROP COLUMN profile_format; \
          DELETE FROM refinery_schema_history WHERE version > 24;",
     )
     .unwrap();
@@ -917,7 +919,7 @@ fn schema(dir: &std::path::Path) -> i64 {
 }
 
 /// W2 on the store a build at V024 left: the first open of this build
-/// repairs it before the persister upgrades it, and the next at V026 finds
+/// repairs it before the persister upgrades it, and the next at V027 finds
 /// nothing more.
 #[test]
 fn a_claim_in_a_store_a_v24_build_left_is_dropped_at_the_first_open() {
@@ -929,13 +931,13 @@ fn a_claim_in_a_store_a_v24_build_left_is_dropped_at_the_first_open() {
     assert_eq!(outcome.schema, Some(24));
     assert_eq!(outcome.dropped.get(&id), Some(&vec![claim.txid()]));
     let session = open(&engine);
-    assert_eq!(schema(session.data_dir()), 26, "upgraded after the repair");
+    assert_eq!(schema(session.data_dir()), 27, "upgraded after the repair");
     let a = OutPoint::new(funding.txid(), 0);
     assert!(spendable(&engine, &session, id, a), "A is offered");
     assert_eq!(balances(&session, id).total, PAID, "A counts once");
     let dir = close(&engine, session);
     let outcome = repair_closed(&dir);
-    assert_eq!(outcome.schema, Some(26));
+    assert_eq!(outcome.schema, Some(27));
     assert!(outcome.dropped.is_empty() && outcome.restored.is_empty());
 }
 
@@ -1067,4 +1069,17 @@ fn a_repair_record_reaches_the_listing_of_stored_transactions() {
     assert!(persisted.dropped.contains(&claim.txid()));
     assert!(persisted.dropped_doubtful.is_empty());
     assert!(!persisted.keeps_mark(&claim.txid(), &Default::default()));
+}
+
+/// A store this build creates is at a schema the repair was checked
+/// against: at any other the repair runs and repairs nothing.
+#[test]
+fn the_pinned_store_schema_is_known() {
+    let (_dir, engine, session, _id) = engine_wallet();
+    let dir = close(&engine, session);
+    let pinned = schema(&dir);
+    assert!(
+        crate::store_repair::KNOWN_SCHEMA.contains(&pinned),
+        "store schema V{pinned:03} at the platform pin is not in KNOWN_SCHEMA"
+    );
 }

@@ -53,11 +53,12 @@ use crate::{EngineError, WalletId};
 /// The `wallet.sqlite` schema versions (refinery's highest applied
 /// migration) whose tables this repair was checked against:
 /// platform-wallet-storage V024, the stores of the builds before key-wallet
-/// refused unsigned spends, and V026 at the platform pin. V025 adds
+/// refused unsigned spends, V026, and V027 at the platform pin. V025 adds
 /// [`BLOCK_SPENDS`] and `core_block_spends_migrated` (the wallets whose
 /// block spends from before the table were recovered by a rescan), V026
-/// `core_dismissed_txids`; the repair reads only the first.
-pub(crate) const KNOWN_SCHEMA: &[i64] = &[24, 26];
+/// `core_dismissed_txids`, V027 the identity and DashPay profile encoding
+/// stamps; the repair reads only the first.
+pub(crate) const KNOWN_SCHEMA: &[i64] = &[24, 26, 27];
 
 /// The refinery version of the published fork builds' stores. Before the
 /// persister upgrades one, only the re-check runs, and only when the

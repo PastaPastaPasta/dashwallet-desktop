@@ -4003,7 +4003,7 @@ renames or reshapes them takes the next version bump:
       estimator (`drive::drive::document::cost`, the one wasm-sdk exposes), every field present at its maximum size;
       the key upgrade as the IdentityUpdate fee plus 2 × 1,792 bytes of key
       storage; the top-up fee as dpp's `IdentityTopUpTransition` minimum. The estimator follows protocol version 14's
-      insert methods and refuses older ones, so a network below 14 (testnet reports 13 today) is priced at the first
+      insert methods and refuses older ones, so a network below 14 (testnet reported 13 until 2026-11-25) is priced at the first
       version it accepts, with the network's own fee version.
     - **A document's price is an upper bound, not the estimate** (review Sol r1). The estimator's storage and its
       exact processing (the fixed operations) are what Drive charges; the rest of the processing depends on the
@@ -4011,9 +4011,10 @@ renames or reshapes them takes the next version bump:
       which it estimates within a factor of two (Drive's own test). The price therefore assumes every tree the
       document writes holds 2^48 entries (an AVL tree that deep holds more than 2^33, beyond any DashPay contract's
       size) and doubles the estimated part. A test asserts the price is at least the estimate at 1,000, 1,000,000,
-      2^32 and 2^48 entries for each document and every known protocol version. At protocol version 9 and later the
-      prices are 139,638,280 (`contact_request`), 222,187,240 (`profile_update`) and 230,453,000 (`contact_info`),
-      against estimates at 1,000 entries of 99,314,660, 118,437,540 and 129,768,820. Measured on Drive at protocol
+      2^32 and 2^48 entries for each document and every known protocol version. At protocol versions 9 to 13 the
+      prices are 139,638,280 (`contact_request`), 222,187,240 (`profile_update`) and 230,453,000 (`contact_info`);
+      from 14 (DashPay v2's profile payment-address fields, DIP-33) `profile_update` is 228,255,720, and from 15
+      (DashPay v3) `contact_request` is 145,293,000. At 13 these stood against estimates at 1,000 entries of 99,314,660, 118,437,540 and 129,768,820. Measured on Drive at protocol
       version 13 (each document at its largest, 64,000 inserts of fresh owners and index values into one contract),
       the dearest single insert was 103,078,900, 133,172,080 and 146,105,500 (a tree rebalance; the trend at 64,000
       was 100,279,600, 121,522,880 and 135,218,840): above the default estimate for `profile_update` and
