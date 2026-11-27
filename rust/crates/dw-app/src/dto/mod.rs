@@ -221,6 +221,24 @@ pub struct NetworkInfo {
     pub dir_name: String,
     /// dash-qt's unit name on this network: `DASH` on mainnet, `tDASH` elsewhere (QT-003).
     pub unit_name: String,
+    /// The open network's wallet data is the one from before the upgrade,
+    /// put back by a restore the engine has not yet cleared (its RESTORED
+    /// mark; one that can't be checked reads as true). Read at each
+    /// `openNetwork` and `activeNetwork`; absent where no open network is
+    /// meant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub restored: Option<bool>,
+}
+
+impl NetworkInfo {
+    /// `session`'s network, with whether its wallet data was restored.
+    pub fn opened(session: &dw_engine::NetworkSession) -> Self {
+        Self {
+            restored: Some(dw_engine::store_upgrade::restored(session.data_dir())),
+            ..Self::from(session.network())
+        }
+    }
 }
 
 impl From<&DashNetwork> for NetworkInfo {
@@ -233,6 +251,7 @@ impl From<&DashNetwork> for NetworkInfo {
         };
         NetworkInfo {
             kind,
+            restored: None,
             dir_name: n.dir_name(),
             unit_name: if kind == NetworkKind::Mainnet {
                 "DASH"

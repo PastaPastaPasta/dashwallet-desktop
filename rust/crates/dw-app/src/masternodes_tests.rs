@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, Once};
+use std::sync::{Arc, Mutex, Once};
 
 use serde_json::{Value, json};
 
@@ -503,7 +503,7 @@ fn an_attached_key_is_in_no_read_and_no_event() {
     let wif_secret = dashcore::PrivateKey::from_wif(wif)
         .unwrap()
         .inner
-        .to_secret_bytes();
+        .to_bytes();
     let hex_secret = hex::decode(&owner_hex).unwrap();
     let mut forms = vec![wif.to_owned(), owner_hex.clone(), owner_hex.to_uppercase()];
     for bytes in [&wif_secret[..], &hex_secret[..]] {
@@ -613,10 +613,28 @@ fn abandon_reaches_the_engine_on_every_network() {
     }
 }
 
-/// `mn_shared_sign` and `mn_shared_send` with their arguments.
-fn registration_sends(wallet: &str, grant: &str) -> [(&'static str, Value); 2] {
-    let args = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
-    [("mn_shared_sign", args.clone()), ("mn_shared_send", args)]
+/// Each shared-masternode send command with its arguments: signing and
+/// sending a registration, a dissolution alone, a standby, and a
+/// dissolution together.
+fn shared_sends(wallet: &str, grant: &str) -> [(&'static str, Value); 5] {
+    let session = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
+    let request = json!({ "proTxHash": hash("ab"), "shareIndex": 0, "fee": 1_000 });
+    [
+        ("mn_shared_sign", session.clone()),
+        ("mn_shared_send", session.clone()),
+        (
+            "mn_shared_dissolve",
+            json!({ "walletId": wallet, "request": request, "grant": grant }),
+        ),
+        (
+            "mn_shared_send_standby",
+            json!({
+                "walletId": wallet, "proTxHash": hash("ab"), "share": 0, "fee": 1_000,
+                "variant": "full", "grant": grant,
+            }),
+        ),
+        ("mn_shared_send_maintenance", session),
+    ]
 }
 
 /// Redeems `grant` in the vault directly, as the engine would.
@@ -629,15 +647,15 @@ fn redeem(demo: &Demo, wallet: &str, grant: &str) -> Result<(), dw_vault::VaultE
         .map(drop)
 }
 
-/// MG's ruling: on mainnet the binding refuses signing and sending a shared
-/// registration before the engine, with the network named, and before
-/// anything redeems the grant: the same grant still redeems afterwards.
+/// MG's ruling: on mainnet the binding refuses every shared send before the
+/// engine, with the network named, and before anything redeems the grant:
+/// the same grant still redeems afterwards.
 #[test]
-fn registration_sends_are_refused_on_mainnet_before_the_grant() {
+fn shared_sends_are_refused_on_mainnet_before_the_grant() {
     let (demo, wallet) = demo_on(dw_engine::DashNetwork::Mainnet);
-    for cmd in ["mn_shared_sign", "mn_shared_send"] {
+    for i in 0..shared_sends("", "").len() {
         let grant = op_grant(&demo, &wallet, 300 * 100_000_000);
-        let args = json!({ "walletId": wallet, "session": hash("cd"), "grant": grant });
+        let (cmd, args) = shared_sends(&wallet, &grant)[i].clone();
         let e = demo.err(cmd, args, "app.shared_send_off");
         assert_eq!(
             e["data"],
@@ -650,25 +668,109 @@ fn registration_sends_are_refused_on_mainnet_before_the_grant() {
             "a grant redeems once"
         );
     }
+    // Reads and consent aren't sends: they reach the engine on mainnet.
+    let grant = op_grant(&demo, &wallet, 0);
+    let request = json!({ "proTxHash": hash("ab"), "shareIndex": 0, "fee": 1_000 });
+    for (cmd, args) in [
+        (
+            "mn_shared_preview_dissolve",
+            json!({ "walletId": wallet, "request": request }),
+        ),
+        (
+            "mn_shared_create_standby",
+            json!({ "walletId": wallet, "proTxHash": hash("ab"), "fee": 1_000, "grant": grant }),
+        ),
+        (
+            "mn_shared_start_dissolve_together",
+            json!({ "walletId": wallet, "request": request, "grant": grant }),
+        ),
+        (
+            "mn_shared_approve_maintenance",
+            json!({ "walletId": wallet, "session": hash("cd"), "grant": grant, "acceptActorFee": false }),
+        ),
+    ] {
+        let e = demo.call(cmd, args).expect_err(cmd);
+        assert!(
+            !e["code"].as_str().unwrap().starts_with("app."),
+            "{cmd}: {e}"
+        );
+    }
 }
 
-/// Off mainnet the gate lets both calls through to the engine, which
+/// Off mainnet the gate lets every send through to the engine, which
 /// refuses them for its own reasons (no masternode list offline, no such
 /// session).
 #[test]
-fn registration_sends_reach_the_engine_off_mainnet() {
+fn shared_sends_reach_the_engine_off_mainnet() {
     for network in [
         dw_engine::DashNetwork::Testnet,
         dw_engine::DashNetwork::Regtest,
     ] {
         let (demo, wallet) = demo_on(network.clone());
         let grant = op_grant(&demo, &wallet, 0);
-        for (cmd, args) in registration_sends(&wallet, &grant) {
+        for (cmd, args) in shared_sends(&wallet, &grant) {
             let e = demo.call(cmd, args).expect_err(cmd);
             assert!(
                 !e["code"].as_str().unwrap().starts_with("app."),
                 "{cmd} on {network:?}: {e}"
             );
         }
+        // The kind check reads the session from the engine first.
+        demo.err(
+            "mn_shared_send_maintenance",
+            json!({ "walletId": wallet, "session": hash("cd"), "grant": grant }),
+            "masternodes.shared_session_not_found",
+        );
+    }
+}
+
+/// Export standby is the way out with another tool, so mainnet doesn't gate
+/// it: the save dialog opens with Core's file name, a cancel leaves the
+/// grant unused, and a chosen path reaches the engine. Nothing is written
+/// when the engine refuses.
+#[test]
+fn export_standby_runs_on_mainnet() {
+    use crate::shell::files::{FilePurpose, FileRequest};
+    use tauri::Manager;
+    let (demo, wallet) = demo_on(dw_engine::DashNetwork::Mainnet);
+    let shell = Arc::clone(&demo.handle().state::<crate::state::AppState>().shell);
+    let dir = dw_testutil::private_tempdir();
+    let answer = Arc::new(Mutex::new(None::<std::path::PathBuf>));
+    let asked = Arc::new(Mutex::new(Vec::<FileRequest>::new()));
+    let (a, q) = (Arc::clone(&answer), Arc::clone(&asked));
+    shell.on_choose(Box::new(move |request| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        q.lock().unwrap().push(request);
+        let _ = tx.send(a.lock().unwrap().clone());
+        rx
+    }));
+    let grant = op_grant(&demo, &wallet, 0);
+    let args = json!({
+        "walletId": wallet, "proTxHash": hash("AB"), "share": 1, "fee": 1_000, "grant": grant,
+    });
+    assert_eq!(
+        demo.ok("mn_shared_export_standby", args.clone()),
+        Value::Null
+    );
+    let out = dir.path().join("standby.txt");
+    *answer.lock().unwrap() = Some(out.clone());
+    let e = demo
+        .call("mn_shared_export_standby", args)
+        .expect_err("no standby is stored");
+    assert!(!e["code"].as_str().unwrap().starts_with("app."), "{e}");
+    assert_ne!(
+        e["code"], "platform.grant_invalid",
+        "the cancel left the grant unused: {e}"
+    );
+    assert!(!out.exists());
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 2);
+    for r in asked.iter() {
+        assert_eq!(r.purpose, FilePurpose::StandbyDissolution);
+        assert!(r.save);
+        assert_eq!(
+            r.suggested_name.as_deref(),
+            Some("standby-dissolution-abababab-share2.txt")
+        );
     }
 }

@@ -888,6 +888,29 @@ fn a_failed_write_is_read_back() {
     assert_eq!(shown.display_name.as_deref(), Some("Al"));
 }
 
+/// A write whose wait ends unconfirmed (the SDK's
+/// `StateTransitionResultUnconfirmed`) and that the read-back does not
+/// find is `platform.broadcast_unknown`, not `internal`: it may still
+/// land. The quote is spent and nothing is cached.
+#[test]
+fn an_unconfirmed_write_is_unknown() {
+    let f = fixture();
+    f.publish(full(), 3);
+    *f.net.fails.lock().unwrap() = Some(PlatformError::from(
+        platform_wallet::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+                dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "wait".into()),
+            )),
+        ),
+    ));
+    let lease = f.profile_lease();
+    let failed = f.update(edit(Some("Al"), None), &lease);
+    assert_eq!(failed.unwrap_err().code(), "platform.broadcast_unknown");
+    assert_eq!(f.credits_spent(&lease), DOCUMENT_10K_CREDITS);
+    assert_eq!(f.document().unwrap().revision, 3);
+    assert_eq!(f.profile(ME), Ok(None), "nothing cached");
+}
+
 /// Another user's profile is the contacts model's (the library's cache of
 /// it); one the wallet knows nothing of is `None`; an id that is not one
 /// is `invalid_argument`.
@@ -1117,8 +1140,8 @@ fn every_shipped_dashpay_contract_passes_the_guard() {
     }
     assert_eq!(
         dashpay.into_iter().collect::<Vec<_>>(),
-        [1, 2],
-        "both versions seen"
+        [1, 2, 3],
+        "every version seen"
     );
 }
 

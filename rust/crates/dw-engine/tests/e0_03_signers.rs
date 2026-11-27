@@ -16,10 +16,10 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dw_engine::platform::{VaultContactCrypto, VaultIdentitySigner, VaultScanKey};
 use dw_vault::{
     Credential, GrantPurpose, GrantToken, KdfPolicy, MemoryOsStore, SeedDerivation, SignerScope,
@@ -169,14 +169,14 @@ async fn contact_crypto_matches_the_library_vectors() {
             );
             assert_eq!(x.chain_code.to_bytes().to_vec(), bytes(&want["chain_code"]));
             assert_eq!(
-                x.public_key.serialize().to_vec(),
+                x.public_key.to_compressed().to_vec(),
                 bytes(&want["public_key"])
             );
             // DIP-15 compact xpub: fingerprint ‖ chain code ‖ public key.
             let compact = [
                 &x.parent_fingerprint.to_bytes()[..],
                 &x.chain_code.to_bytes()[..],
-                &x.public_key.serialize()[..],
+                &x.public_key.to_compressed()[..],
             ]
             .concat();
             assert_eq!(compact, bytes(&want["compact"]), "{name}");
@@ -208,7 +208,10 @@ async fn contact_crypto_matches_the_library_vectors() {
             .unwrap();
         assert_eq!(aa_path, path(&aa["path"]));
         let x = crypto.receiving_xpub(&aa_path).await.unwrap();
-        assert_eq!(x.public_key.serialize().to_vec(), bytes(&aa["public_key"]));
+        assert_eq!(
+            x.public_key.to_compressed().to_vec(),
+            bytes(&aa["public_key"])
+        );
         let exported = crypto
             .export_auto_accept_private_key(&aa_path)
             .await
@@ -350,8 +353,8 @@ async fn scan_key_resolves_the_master_the_identity_keys_derive_from() {
         let master = resolve().unwrap();
         for key in case["identity_keys"].as_array().unwrap() {
             let derived = master.derive_priv(&path(&key["path"])).unwrap();
-            let public = PublicKey::from_secret_key(&derived.private_key);
-            assert_eq!(public.serialize().to_vec(), bytes(&key["public_key"]));
+            let public = derived.private_key.public_key().to_compressed();
+            assert_eq!(public.to_vec(), bytes(&key["public_key"]));
         }
         // Locked: retryable, not terminal.
         v.lock();

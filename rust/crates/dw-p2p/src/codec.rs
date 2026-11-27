@@ -7,7 +7,7 @@
 //! in dashcore, and decoding unrelated traffic (headers, inv, addr) would
 //! only add ways for a session to fail.
 
-use dashcore::hashes::{Hash, sha256d};
+use dashcore::hashes::sha256d;
 
 /// Header size in bytes.
 pub const HEADER_LEN: usize = 24;

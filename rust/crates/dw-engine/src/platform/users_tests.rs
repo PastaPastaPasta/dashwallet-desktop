@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::util::strings::convert_to_homograph_safe_chars;
 use platform_wallet::AutoAcceptProofSource;
 use platform_wallet::wallet::identity::DpnsNameInfo;

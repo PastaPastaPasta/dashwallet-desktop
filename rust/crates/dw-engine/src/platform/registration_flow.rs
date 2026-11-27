@@ -596,8 +596,9 @@ where
     consumed_verdict(found, keys)
 }
 
-/// `identity` holds exactly `keys`: the same ids, types and data, as the
-/// library's adoption compares.
+/// `identity` holds exactly `keys`: the same ids, types and data. Only our
+/// signer can prove those keys, so the identity is our claim's. The
+/// library's adoption also compares each key's other creation fields.
 fn carries_keys(identity: &Identity, keys: &BTreeMap<KeyID, IdentityPublicKey>) -> bool {
     let actual = identity.public_keys();
     actual.len() == keys.len()
@@ -3561,6 +3562,8 @@ pub(crate) fn lock_status(
         S::ChainLocked => LockStatus::ChainLocked,
         S::Consumed => LockStatus::Consumed,
         S::RecoveredFromChain => LockStatus::RecoveredFromChain,
+        // Only the library's own wallet drain writes it: the lock is out and spent.
+        S::DrainCompleted => LockStatus::Consumed,
     }
 }
 
@@ -3592,11 +3595,15 @@ pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
 /// The fields of `profile` the library publishes. Avatar bytes are DP4-02's;
 /// a registration's profile names its avatar by URL only.
 fn profile_update(profile: &ProfileRecord) -> platform_wallet::wallet::identity::ProfileUpdate {
+    use platform_wallet::wallet::identity::PaymentAddressUpdate;
     platform_wallet::wallet::identity::ProfileUpdate {
         display_name: profile.display_name.clone(),
         public_message: profile.public_message.clone(),
         avatar_url: profile.avatar_url.clone(),
         avatar_bytes: None,
+        core_payment_address: PaymentAddressUpdate::Keep,
+        platform_payment_address: PaymentAddressUpdate::Keep,
+        shielded_address: PaymentAddressUpdate::Keep,
     }
 }
 
@@ -3811,6 +3818,7 @@ impl RegistrationLib for PwLib {
         match self.session.replay_guard(self.wallet_id, 0).await {
             Err(crate::EngineError::RescanInProgress) => Some(PlatformError::ContextUnavailable),
             Err(crate::EngineError::RescanInterrupted) => Some(PlatformError::RescanInterrupted),
+            Err(crate::EngineError::Restored) => Some(PlatformError::Restored),
             _ => None,
         }
     }
@@ -4163,9 +4171,7 @@ impl RegistrationLib for PwLib {
         let locks = identity_locks(self.wallet_id, id);
         let _write = locks.write.lock().await;
         self.wallet
-            .identity()
-            .dashpay()
-            .create_profile_with_external_signer(&id, profile_update(profile), &signer)
+            .write_dashpay_profile(&id, profile_update(profile), &signer, true)
             .await?;
         Ok(())
     }
@@ -4185,9 +4191,7 @@ impl RegistrationLib for PwLib {
         let locks = identity_locks(self.wallet_id, id);
         let _write = locks.write.lock().await;
         self.wallet
-            .identity()
-            .dashpay()
-            .update_profile_with_external_signer(&id, profile_update(profile), &signer)
+            .write_dashpay_profile(&id, profile_update(profile), &signer, false)
             .await?;
         Ok(())
     }

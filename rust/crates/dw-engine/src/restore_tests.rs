@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid};
 use key_wallet::Utxo;
 use key_wallet::Wallet;
@@ -131,9 +130,9 @@ fn coinjoin_pool_address(
         .managed_account_type()
         .address_pools()[pool_index]
         .clone();
-    let have = pool.highest_generated.unwrap_or(0);
+    let have = pool.highest_generated().unwrap_or(0);
     if index > have {
-        pool.generate_addresses(index - have, &wallet.key_source_for_account(cj()), true)
+        pool.generate_addresses(index - have, &wallet.key_source_for_account(cj()))
             .unwrap();
     }
     pool.address_at_index(index).unwrap()
@@ -490,13 +489,11 @@ fn narrow_coinjoin(engine: &Engine, session: &NetworkSession, id: WalletId) {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
-        let mut fresh = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+        let fresh = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
             wallet.accounts.account_of_type(cj()).unwrap(),
-        );
+        )
+        .unwrap();
         let accounts = &mut info.core_wallet.accounts.coinjoin_accounts;
-        for _ in 0..=accounts[&0].monitor_revision() {
-            fresh.bump_monitor_revision();
-        }
         *accounts.get_mut(&0).unwrap() = fresh;
     });
     assert_eq!(gap(engine, session, id, cj()), 100);
@@ -957,7 +954,8 @@ fn insert_unraisable_account(engine: &Engine, session: &NetworkSession, id: Wall
             network: dashcore::Network::Regtest,
             account_xpub: ExtendedPubKey::from_priv(&master),
             is_watch_only: true,
-        });
+        })
+        .unwrap();
     engine.block_on(async {
         let manager = session.manager().unwrap();
         let wm = manager.wallet_manager_arc();
@@ -1004,7 +1002,7 @@ fn gap(engine: &Engine, session: &NetworkSession, id: WalletId, account: Account
         let wm = wm.read().await;
         let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
         let funds = info.accounts.funds_account(&account).unwrap();
-        funds.managed_account_type().address_pools()[0].gap_limit
+        funds.managed_account_type().address_pools()[0].gap_limit()
     })
 }
 
@@ -1250,8 +1248,8 @@ fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        let index = pool.highest_generated.unwrap() + 50;
-        pool.generate_addresses(50, &wallet.key_source_for_account(bip44()), true)
+        let index = pool.highest_generated().unwrap() + 50;
+        pool.generate_addresses(50, &wallet.key_source_for_account(bip44()))
             .unwrap();
         (pool.address_at_index(index).unwrap(), index)
     });
@@ -1274,9 +1272,9 @@ fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
             .managed_account_type()
             .address_pools()[0];
         let at = pool.address_info(&to).expect("the load derives it");
-        assert!(at.is_used(), "highest_used={:?}", pool.highest_used);
+        assert!(at.is_used(), "highest_used={:?}", pool.highest_used());
         assert!(
-            pool.highest_generated.unwrap() >= index + pool.gap_limit,
+            pool.highest_generated().unwrap() >= index + pool.gap_limit(),
             "the gap is kept past it"
         );
     });
@@ -1347,7 +1345,7 @@ fn a_watch_only_lookahead_is_stored_and_raised_on_its_account_at_load() {
             .unwrap()
             .managed_account_type();
         assert_eq!(
-            pools.address_pools()[0].gap_limit,
+            pools.address_pools()[0].gap_limit(),
             200,
             "the stored lookahead"
         );
@@ -1374,9 +1372,10 @@ fn deliver(
     use key_wallet::wallet::balance::WalletCoreBalance;
     use std::collections::BTreeMap;
     let mirrors = Arc::new(Default::default());
-    let handler = platform_wallet::wallet::core::BalanceUpdateHandler::new(Arc::clone(&mirrors));
+    let handler = platform_wallet::wallet::core::BalanceUpdateHandler::new(&mirrors);
     mirrors.store(Arc::new(BTreeMap::from([(id.0, Arc::clone(pw))])));
     let event = platform_wallet::events::WalletEvent::BlockProcessed {
+        locked_outpoints: Vec::new(),
         wallet_id: id.0,
         height: HEIGHT,
         chain_lock: None,
@@ -1854,9 +1853,9 @@ fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_i
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        assert!(pool.highest_generated.unwrap_or(0) < 500);
-        let have = pool.highest_generated.unwrap_or(0);
-        pool.generate_addresses(500 - have, &wallet.key_source_for_account(bip44()), true)
+        assert!(pool.highest_generated().unwrap_or(0) < 500);
+        let have = pool.highest_generated().unwrap_or(0);
+        pool.generate_addresses(500 - have, &wallet.key_source_for_account(bip44()))
             .unwrap();
         pool.address_at_index(500).unwrap()
     });
@@ -2311,7 +2310,8 @@ fn a_session_open_that_cannot_widen_a_done_wallet_marks_it_pending() {
 
 /// Review r2 finding 1: a session open that can neither widen a wallet nor
 /// store the replay it then owes does not open, so SPV never scans that
-/// wallet with narrow pools unmarked. A healthy open after it opens.
+/// wallet with narrow pools unmarked. The failed open unloads no wallet,
+/// and a healthy open after it opens, with the wallet's marker as it was.
 #[test]
 fn a_session_open_that_cannot_store_an_owed_replay_does_not_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -2320,12 +2320,15 @@ fn a_session_open_that_cannot_store_an_owed_replay_does_not_open() {
     let id = created(&engine, &session);
     store_checkpoint(&engine, &session, id, HEIGHT);
     set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    let data_dir = session.data_dir().to_path_buf();
+    let before = crate::failed_open_tests::shown(&engine, &session, id);
     drop(session);
     assert!(
         engine
             .block_on(engine.close_network(DashNetwork::Regtest))
             .unwrap()
     );
+    let rows = crate::failed_open_tests::stored_rows(&data_dir, id);
 
     let opened = failing(&crate::keys::FAIL_WIDEN, id, || {
         failing(&crate::keys::FAIL_WIDE_SCAN_IO, id, || {
@@ -2334,12 +2337,24 @@ fn a_session_open_that_cannot_store_an_owed_replay_does_not_open() {
     });
 
     assert!(opened.is_err());
-    let session = engine
-        .block_on(engine.open_network(DashNetwork::Regtest, offline()))
-        .unwrap();
+    // The failed open owes the wallet a replay from its birth height, which
+    // the retry resumes: it shows the wallet catching up, its stored
+    // checkpoint as it was.
+    let session = crate::failed_open_tests::assert_kept_and_reopened(
+        &engine,
+        &data_dir,
+        id,
+        &rows,
+        &before.catching_up(),
+    );
     assert_eq!(
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::Done)
+    );
+    let db = data_dir.join(crate::session::WALLET_DB_FILE);
+    assert_eq!(
+        crate::store::stored_heights(&db, &id.0).unwrap().0,
+        Some(HEIGHT)
     );
 }
 
@@ -2566,7 +2581,7 @@ fn keys_attached_with_a_smaller_lookahead_keep_the_wallets_larger_one() {
         let wm = wm.read().await;
         let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
         let funds = info.accounts.funds_account(&bip44()).unwrap();
-        funds.managed_account_type().address_pools()[0].highest_generated
+        funds.managed_account_type().address_pools()[0].highest_generated()
     });
     assert!(highest.is_some_and(|h| h >= 500), "{highest:?}");
 }
@@ -3312,9 +3327,9 @@ fn bip44_address(engine: &Engine, session: &NetworkSession, id: WalletId, index:
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        let have = pool.highest_generated.unwrap_or(0);
+        let have = pool.highest_generated().unwrap_or(0);
         if index > have {
-            pool.generate_addresses(index - have, &wallet.key_source_for_account(bip44()), true)
+            pool.generate_addresses(index - have, &wallet.key_source_for_account(bip44()))
                 .unwrap();
         }
         pool.address_at_index(index).unwrap()
@@ -4169,7 +4184,7 @@ fn keys_attached_with_a_lookahead_apply_a_stored_range_start_up_left() {
         let wm = wm.read().await;
         let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
         let funds = info.accounts.funds_account(&bip44()).unwrap();
-        funds.managed_account_type().address_pools()[0].highest_generated
+        funds.managed_account_type().address_pools()[0].highest_generated()
     });
     assert!(highest.is_some_and(|h| h >= 1001), "{highest:?}");
 }

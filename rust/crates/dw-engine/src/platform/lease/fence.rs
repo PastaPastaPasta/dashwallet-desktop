@@ -21,7 +21,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use tokio::time::Instant;
 
@@ -35,13 +34,17 @@ use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin}
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
-    ArtifactSettled, ArtifactStatus, CallRows, NewShieldedArtifact, Resolution, SelfSpendConflict,
-    SelfSpendProvenance, ShieldedArtifact, StoredFundingKey, StoredOutPoint, TopUpSettled,
-    UnrecordedSpend,
+    ArtifactSettled, ArtifactStatus, CallRows, ForkHold, NewShieldedArtifact, Resolution,
+    SelfSpendConflict, SelfSpendProvenance, ShieldedArtifact, StoredFundingKey, StoredOutPoint,
+    TopUpSettled, UnrecordedSpend,
 };
 
 /// A shielded spend on record: `(activity, transition)`, the library's
 /// activity id and the SHA-256 of the transition it holds to re-send.
+#[allow(
+    dead_code,
+    reason = "admit gates every re-send, so the engine no longer re-records pre-hook spends"
+)]
 pub(crate) type ShieldedRedrive = ([u8; 32], [u8; 32]);
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
@@ -155,6 +158,10 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     /// Records the shielded spend `activity` the library holds to re-send
     /// as transition `transition` (schema 9, 0.1 E1); the first record
     /// stands.
+    #[allow(
+        dead_code,
+        reason = "admit gates every re-send, so the engine no longer re-records pre-hook spends"
+    )]
     fn record_shielded_redrive(
         &self,
         _wallet: &[u8; 32],
@@ -178,6 +185,10 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         _anchor: &[u8; 32],
         _nullifiers: &[[u8; 32]],
     ) -> Result<(), String> {
+        Err("this journal keeps no shielded spend markers".into())
+    }
+    /// Marks each of `holds` once; the number marked now.
+    fn import_fork_holds(&self, _holds: &[ForkHold]) -> Result<usize, String> {
         Err("this journal keeps no shielded spend markers".into())
     }
     /// The marked shielded spends of `wallet`; none in a journal that keeps
@@ -204,6 +215,50 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     ) -> Result<bool, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
+    /// The notes `wallet`'s drained fork dispositions hold (schema 12), by
+    /// account: those not read spent yet. An error in a journal that keeps
+    /// none, so no reader takes "none" from a journal that can't tell.
+    fn shielded_drained_holds(&self, _wallet: &[u8; 32]) -> Result<Vec<(u32, [u8; 32])>, String> {
+        Err("this journal keeps no drained holds".into())
+    }
+    /// Whether a drained hold or an unreadable drained disposition names
+    /// `wallet`'s transition `st_hash` (schema 12): never re-sent. An error
+    /// in a journal that keeps none.
+    fn shielded_drain_names(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+    ) -> Result<bool, String> {
+        Err("this journal keeps no drained holds".into())
+    }
+    /// The drained spends a completed pass may release once `store`'s
+    /// drain is done (Q110 110-3). An error in a journal that keeps none.
+    fn shielded_drained_release_candidates(
+        &self,
+        _store: &str,
+    ) -> Result<Vec<dw_appdb::dispatch::DrainedReleaseCandidate>, String> {
+        Err("this journal keeps no drained holds".into())
+    }
+    /// Keeps the height a completed pass recorded a drained spend's anchor
+    /// at; the first one kept stands.
+    fn record_drained_anchor_height(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+        _height: u64,
+    ) -> Result<(), String> {
+        Err("this journal keeps no drained holds".into())
+    }
+    /// Releases a drained spend `pass` proved can never execute, durably;
+    /// `false` when the journal flags it.
+    fn release_drained_spend(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+        _pass: u64,
+    ) -> Result<bool, String> {
+        Err("this journal keeps no drained holds".into())
+    }
     /// Every shielded artifact of `wallet` (schema 11), archived ones
     /// included.
     fn shielded_artifacts(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
@@ -219,6 +274,24 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         _disposition: Option<(&str, Option<&str>)>,
         _acked: bool,
     ) -> Result<ArtifactSettled, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    /// Marks `wallet`'s Shielded create `st_hash` consumed, durably;
+    /// `false` when no unresolved create of the wallet has that transition.
+    fn mark_create_consumed(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+    ) -> Result<bool, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    /// Which of `wallet`'s creates `st_hashes` are marked consumed. An
+    /// error in a journal that keeps none.
+    fn consumed_creates(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hashes: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
     /// The journal connection's `synchronous` pragma (2 = FULL).
@@ -419,6 +492,10 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
             .map_err(|e| e.to_string())
     }
 
+    fn import_fork_holds(&self, holds: &[ForkHold]) -> Result<usize, String> {
+        (self.import_fork_holds(holds, crate::events::unix_now())).map_err(|e| e.to_string())
+    }
+
     fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>, String> {
         self.unrecorded_spends(wallet).map_err(|e| e.to_string())
     }
@@ -429,6 +506,41 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         nullifiers: &[[u8; 32]],
     ) -> Result<Vec<[u8; 32]>, String> {
         (self.note_spent_nullifiers(wallet, nullifiers)).map_err(|e| e.to_string())
+    }
+
+    fn shielded_drained_holds(&self, wallet: &[u8; 32]) -> Result<Vec<(u32, [u8; 32])>, String> {
+        self.shielded_drained_holds(wallet)
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_drain_names(&self, wallet: &[u8; 32], st_hash: &[u8; 32]) -> Result<bool, String> {
+        (self.shielded_drain_names(wallet, st_hash)).map_err(|e| e.to_string())
+    }
+
+    fn shielded_drained_release_candidates(
+        &self,
+        store: &str,
+    ) -> Result<Vec<dw_appdb::dispatch::DrainedReleaseCandidate>, String> {
+        (self.shielded_drained_release_candidates(store)).map_err(|e| e.to_string())
+    }
+
+    fn record_drained_anchor_height(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        height: u64,
+    ) -> Result<(), String> {
+        (self.record_drained_anchor_height(wallet, st_hash, height)).map_err(|e| e.to_string())
+    }
+
+    fn release_drained_spend(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        pass: u64,
+    ) -> Result<bool, String> {
+        (self.release_drained_spend(wallet, st_hash, pass, crate::events::unix_now()))
+            .map_err(|e| e.to_string())
     }
 
     fn record_shielded_artifact(
@@ -454,6 +566,19 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
     ) -> Result<ArtifactSettled, String> {
         (self.settle_shielded_artifact(wallet, st_hash, status, disposition, acked))
             .map_err(|e| e.to_string())
+    }
+
+    fn mark_create_consumed(&self, wallet: &[u8; 32], st_hash: &[u8; 32]) -> Result<bool, String> {
+        (self.mark_create_consumed(wallet, st_hash, crate::events::unix_now()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn consumed_creates(
+        &self,
+        wallet: &[u8; 32],
+        st_hashes: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        (self.consumed_creates(wallet, st_hashes)).map_err(|e| e.to_string())
     }
 
     #[cfg(test)]
@@ -4261,6 +4386,8 @@ impl LeaseTable {
         }
         #[cfg(test)]
         let all = self.inspect(|i| i.mutation) == Some(Mutation::EraseAll);
+        #[cfg(test)]
+        let fail = (self.fail_next_erase).swap(false, std::sync::atomic::Ordering::SeqCst);
         // The delete applies its own outcome, so a removal dropped meanwhile
         // does not skip it; closing the journal waits for it.
         self.with_j(|i, _| {
@@ -4274,6 +4401,10 @@ impl LeaseTable {
         let table = Arc::clone(self);
         let erase = self.rt.spawn_blocking(move || {
             let erased = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                if fail {
+                    return Err("test: the erase failed".into());
+                }
                 #[cfg(test)]
                 if all {
                     // The mutation: the unconditional delete.

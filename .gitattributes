@@ -8,3 +8,4 @@ docs/design/E0-13-facade-coverage.md text eol=lf
 apps/desktop/src/fixture/vectors/** text eol=lf
 # Upgrade-path fixtures (dw-app upgrade_path_tests): the bytes a release wrote, never converted.
 testdata/upgrade/*/data/** -text
+rust/crates/dw-engine/tests/fixtures/c3-legacy/** -text

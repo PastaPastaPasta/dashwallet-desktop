@@ -50,4 +50,9 @@ checkingSpentCoins: boolean,
 /**
  * UNIX seconds the engine last announced it (send or resend).
  */
-lastAnnouncedAt: number | null, };
+lastAnnouncedAt: number | null,
+/**
+ * A restore holds it: it was pending in the wallet data from before
+ * the restore and hasn't confirmed since (`activity.abandon.restoredHint`).
+ */
+restoreHeld: boolean, };

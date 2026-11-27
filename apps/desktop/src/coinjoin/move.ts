@@ -30,6 +30,7 @@ import { SHIELDED_SYNC_COPY, shieldedWait, type ShieldedWait } from "../shielded
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { CoinJoinText } from "./model";
+import { platformHoldText } from "../api/platformHold";
 
 export type MoveMixedApi = Pick<
   Backend,
@@ -221,6 +222,10 @@ export function moveShieldWait(status: ShieldedStatus | null | undefined): { why
   return { why: SHIELDED_SYNC_COPY.wait(wait), unlock: wait === "locked" ? "unlock" : wait === "mixingOnly" ? "unlockFully" : null };
 }
 
+/** The sheet's refusal line: Dash Platform off said as at a send only where the move was sent. */
+export const refusalText = (flow: Pick<MoveMixedFlow, "error" | "planFailed">, amount: (duffs: number) => string = String, wait: ShieldedWait | null = null): string =>
+  platformHoldText(flow.error, !flow.planFailed) ?? moveErrorText(flow.error, amount, wait);
+
 /** A plan or move refusal, by code; `amount` shows a duff figure a shielded refusal names, and `wait`
  * names why Shielded waits (`shieldedWait`). */
 export function moveErrorText(e: unknown, amount: (duffs: number) => string = String, wait: ShieldedWait | null = null): string {
@@ -293,6 +298,8 @@ export class MoveMixedFlow extends Model {
   /** A move to Shielded's. */
   shielded: ShieldOutcome | null = null;
   error: unknown = null;
+  /** `error` refused the plan or quote, where nothing was being sent. */
+  planFailed = false;
   /** A plan, stop, move or resend call runs. */
   running = false;
   /** What the last Try again on a chunk of unknown outcome came to. */
@@ -328,8 +335,9 @@ export class MoveMixedFlow extends Model {
   }
 
   /** A refusal: Stop Mixing while the wallet mixes, else its text. */
-  #fail(e: unknown) {
+  #fail(e: unknown, planning = false) {
     this.error = e;
+    this.planFailed = planning;
     this.step = mixingRefusal(e) ? "mixing" : "refused";
   }
 
@@ -380,7 +388,7 @@ export class MoveMixedFlow extends Model {
           if (epoch !== this.#epoch) return;
           continue;
         }
-        this.#fail(e);
+        this.#fail(e, true);
       }
       break;
     }

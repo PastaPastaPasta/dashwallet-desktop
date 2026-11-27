@@ -41,6 +41,8 @@ describe("masternode wrappers", () => {
     await b.mnDetachKey(H, "owner");
     await b.mnKeys(W, "operator", 20, 20);
     await b.mnRevealKey(W, "platform_node", 0, "g1");
+    await b.mnSharedShares(W, H);
+    await b.mnSharedStandby(W, H);
     expect(sent).toEqual([
       ["mn_list_state", {}],
       ["mn_list", { walletId: W }],
@@ -55,12 +57,14 @@ describe("masternode wrappers", () => {
       ["mn_detach_key", { proTxHash: H, role: "owner" }],
       ["mn_keys", { walletId: W, role: "operator", start: 20, count: 20 }],
       ["mn_reveal_key", { walletId: W, role: "platform_node", index: 0, grant: "g1" }],
+      ["mn_shared_shares", { walletId: W, proTxHash: H }],
+      ["mn_shared_standby", { walletId: W, proTxHash: H }],
     ]);
   });
 
   it("keep engine reads under the masternodes prefix and credits outside it", async () => {
     const client = new QueryClient();
-    const engine = [mnKeys.listState, mnKeys.list(W), mnKeys.detail(W, H), mnKeys.payouts(W, H, null), mnKeys.find(H), mnKeys.keychain(W, "owner", 0, 20)];
+    const engine = [mnKeys.listState, mnKeys.list(W), mnKeys.detail(W, H), mnKeys.payouts(W, H, null), mnKeys.find(H), mnKeys.keychain(W, "owner", 0, 20), mnKeys.sharedShares(W, H), mnKeys.sharedStandby(W, H)];
     for (const k of [...engine, mnKeys.credits(H)]) client.setQueryData(k, 1);
     const stale = invalidationsFor({ kind: "masternodes", network: "testnet" });
     expect(stale).toEqual([keys.masternodesAll]);

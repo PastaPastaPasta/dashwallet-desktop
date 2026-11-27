@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
@@ -796,6 +795,8 @@ impl TopUpLib for Fake {
             // unsigned `Built` lock while a funding call signs (fail
             // closed). It is stored from its next status on.
             let lock = TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: outpoint,
                 transaction,
                 account_index: 0,
@@ -1164,6 +1165,39 @@ fn a_failed_apply_keeps_the_lock_for_resume() {
         f.top_up(&lib, DUFFS),
         Err(CreditsError::TopUpPending { .. })
     ));
+    let resumed = f.resume(&lib, &out.txid).unwrap();
+    let balance = START_BALANCE + credited(DUFFS);
+    assert_eq!(resumed.state, applied(Some(credited(DUFFS)), balance));
+    assert_eq!(lib.counts(), (1, 2));
+}
+
+/// An apply whose wait ends unconfirmed (the SDK's
+/// `StateTransitionResultUnconfirmed`, as the library hands it back) may
+/// have executed: it reads `platform.broadcast_unknown`, not `internal`,
+/// the lock stays tracked and blocks a new top-up, and nothing applies it
+/// again on its own. Finishing it applies the same lock, which Platform
+/// takes at most once.
+#[test]
+fn an_unconfirmed_apply_is_unknown_and_keeps_the_lock() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+        dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+    ));
+    lib.w().apply_error = Some(PlatformWalletError::Sdk(unconfirmed).into());
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(
+        out.state,
+        TopUpState::NotApplied {
+            error: "platform.broadcast_unknown".into()
+        }
+    );
+    assert!(f.pending(&lib)[0].proved);
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { .. })
+    ));
+    assert_eq!(lib.w().applies, 1, "not applied again on its own");
     let resumed = f.resume(&lib, &out.txid).unwrap();
     let balance = START_BALANCE + credited(DUFFS);
     assert_eq!(resumed.state, applied(Some(credited(DUFFS)), balance));
@@ -2131,7 +2165,7 @@ fn the_degraded_mode_tops_up_an_unverified_identity() {
 /// caught up; masternode sync releases it.
 #[test]
 fn the_funding_hold_waits_for_platform_writes() {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
 
     let f = fixture(false);
     let session = Arc::clone(&f.session);
@@ -2163,7 +2197,7 @@ fn the_funding_hold_waits_for_platform_writes() {
 /// it with the replay's first batch. Both release at the target.
 #[test]
 fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
     use platform_wallet::events::WalletEvent;
 
     let f = fixture(false);

@@ -1500,7 +1500,6 @@ fn stored_spent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) -> O
 
 /// [`stored_spent`] read from the wallet store at `db`, with no session.
 fn stored_spent_at(db: &std::path::Path, id: WalletId, outpoint: OutPoint) -> Option<bool> {
-    use dashcore::hashes::Hash;
     use rusqlite::OptionalExtension;
     assert!(outpoint.vout < 251);
     let key: Vec<u8> = (std::iter::once(32))
@@ -2196,7 +2195,7 @@ pub(super) fn record_stored(session: &NetworkSession, id: WalletId, txid: Txid) 
 fn the_load_sweep_keeps_a_coin_a_stored_mined_payment_spends() {
     use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
     let mined =
-        TransactionContext::InBlock(BlockInfo::new(TIP, dashcore::hashes::Hash::all_zeros(), 0));
+        TransactionContext::InBlock(BlockInfo::new(TIP, dashcore::BlockHash::all_zeros(), 0));
     let (_dir, _engine, session, id, d, _e, a, b) = half_done_beside_a_spender_of_b(mined);
     finish_now(&session, id).unwrap();
     assert!(!record_stored(&session, id, d.txid()), "D is not swept");
@@ -2422,7 +2421,6 @@ fn a_failed_read_of_the_sent_marks_fails_the_start_until_it_reads() {
 /// from the intact mark.
 #[test]
 fn a_bad_sent_row_does_not_fail_the_start() {
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id, a) = half_done_named_by_its_sent_mark();
     let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
     conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -2886,9 +2884,7 @@ fn abandoning_a_resent_payment_known_by_its_funding_stops_it() {
     start_offline_spv(&engine, &session);
     dash_spv::EventHandler::on_network_event(
         &*session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected {
-            address: "127.0.0.1:9".parse().unwrap(),
-        },
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
     );
     let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
     *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
@@ -2951,9 +2947,7 @@ fn an_abandon_during_an_activity_resend_stops_its_hand_off() {
     start_offline_spv(&engine, &session);
     dash_spv::EventHandler::on_network_event(
         &*session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected {
-            address: "127.0.0.1:9".parse().unwrap(),
-        },
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
     );
     let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
     *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
@@ -3581,7 +3575,6 @@ fn fork_above_tip(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) 
 
 /// A transaction of no wallet's, `n` apart from the others.
 fn unrelated(n: u8) -> Transaction {
-    use dashcore::hashes::Hash;
     super::spend_of(
         OutPoint::new(Txid::from_byte_array([n; 32]), 0),
         vec![(super::elsewhere(), 1_000)],
@@ -4222,13 +4215,24 @@ fn a_child_relayed_between_the_sweep_and_the_reconcile_goes() {
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
 }
 
+/// What [`a_beaten_payments_child_after_the_funding_scan`] returns.
+type BeatenChildAfterScan = (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    BTreeSet<OutPoint>,
+    OutPoint,
+    Vec<(u32, Vec<Transaction>)>,
+);
+
 /// #170 case 4 with no relay: P and C stored, a winner of A that pays the
 /// wallet mined after a restart, after the funding. P and C go, and D,
-/// which only C spent, counts once its funding block is scanned again, and
-/// after another restart.
-#[test]
-fn a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan() {
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+/// which only C spent, counts once its funding block is scanned again.
+/// Returns the session then, what the wallet holds, D, and the blocks of
+/// the funding and the winner.
+fn a_beaten_payments_child_after_the_funding_scan() -> BeatenChildAfterScan {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let p = send(
         &engine,
@@ -4264,9 +4268,168 @@ fn a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan() {
     want.insert(OutPoint::new(winner.txid(), 1));
     assert_holds(&engine, &session, id, &want, "funding scanned");
     assert!(spendable(&engine, &session, id, d), "D is free");
+    let chain = vec![(TIP, vec![paid]), (TIP + 1, vec![winner])];
+    (dir, engine, session, id, want, d, chain)
+}
 
+#[test]
+fn a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan() {
+    a_beaten_payments_child_after_the_funding_scan();
+}
+
+/// The same, after another restart: D still counts.
+#[test]
+#[ignore = "upstream platform 3ab0f0f rescan_utxos is fill-only: a coin spent on disk by a dropped child stays spent after a restart (fail-closed); see #957"]
+fn a_child_of_a_beaten_payment_frees_its_other_coin_through_a_restart() {
+    let (_dir, engine, session, id, want, ..) = a_beaten_payments_child_after_the_funding_scan();
     let session = reopen(&engine, session);
     assert_holds(&engine, &session, id, &want, "after a restart");
+}
+
+/// Tools ▸ Repair ▸ Rescan from birth, with SPV's client installed
+/// without its run loop: the scan is [`filter_scan`].
+fn rescan_from_birth(engine: &Engine, session: &Arc<NetworkSession>) {
+    let s = Arc::clone(session);
+    engine
+        .block_on(session.on_runtime(async move {
+            let config = s.spv_config()?;
+            let dir = std::path::Path::new(crate::session::SPV_DIR);
+            crate::fsutil::create_owned_dir(s.data_dir(), dir)?;
+            s.manager()?.spv().start(config).await?;
+            Ok(())
+        }))
+        .unwrap();
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+}
+
+/// dash-spv's filter scan over `chain`, the blocks that pay or spend the
+/// wallet's coins: a block at or below key-wallet's checkpoint is skipped,
+/// one above it is processed and the checkpoint moves to its height.
+/// Returns the heights it fetched, once the rescan is back.
+fn filter_scan(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    chain: &[(u32, Vec<Transaction>)],
+) -> Vec<u32> {
+    let mut fetched = Vec::new();
+    for (height, txs) in chain {
+        if *height > synced(engine, session, id) {
+            mined(engine, session, id, *height, txs.clone());
+            fetched.push(*height);
+        }
+    }
+    eventually("the rescan is back", || {
+        session.rescan_progress().unwrap().is_none()
+    });
+    fetched
+}
+
+/// #957: after a restart the store holds D, which only the dropped child C
+/// spent, spent, and key-wallet does not hold it. Rescan from birth gives
+/// D back: key-wallet holds no record after a restart, so the funding
+/// block the rescan fetches again records the funding anew and stores its
+/// coins unspent. D counts and can be spent, also after another restart.
+#[test]
+fn a_rescan_after_a_restart_gives_back_the_coin_a_beaten_payments_child_spent() {
+    let (_dir, engine, session, id, want, d, chain) =
+        a_beaten_payments_child_after_the_funding_scan();
+    let session = reopen(&engine, session);
+    assert!(!held(&engine, &session, id).contains(&d), "restarted: D");
+    assert_eq!(stored_spent(&session, id, d), Some(true), "restarted");
+
+    rescan_from_birth(&engine, &session);
+    let fetched = filter_scan(&engine, &session, id, &chain);
+    let back = |session: &Arc<NetworkSession>, state: &str| {
+        assert_holds(&engine, session, id, &want, state);
+        assert!(spendable(&engine, session, id, d), "{state}: D is not free");
+        assert_eq!(stored_spent(session, id, d), Some(false), "{state}");
+    };
+    back(&session, "rescanned");
+    assert_eq!(fetched, [TIP, TIP + 1], "the rescan fetched");
+    let session = reopen(&engine, session);
+    back(&session, "rescanned, a restart");
+}
+
+/// #957, never while D has a spender: the wallet holds `want` with D spent
+/// by `q`, then restarts and rescans from birth over `chain`. D stays out,
+/// also after another restart.
+fn a_rescan_after_a_restart_keeps_d_spent(
+    (engine, session, id): (&Engine, Arc<NetworkSession>, WalletId),
+    want: &BTreeSet<OutPoint>,
+    d: OutPoint,
+    chain: &[(u32, Vec<Transaction>)],
+    fetched: &[u32],
+) {
+    let kept = |session: &Arc<NetworkSession>, state: &str| {
+        assert_holds(engine, session, id, want, state);
+        assert!(!spendable(engine, session, id, d), "{state}: D is offered");
+    };
+    kept(&session, "spent");
+    let session = reopen(engine, session);
+    kept(&session, "restarted");
+    rescan_from_birth(engine, &session);
+    assert_eq!(filter_scan(engine, &session, id, chain), fetched);
+    kept(&session, "rescanned");
+    let session = reopen(engine, session);
+    kept(&session, "rescanned, a restart");
+}
+
+/// A payment Q of D, the coin a beaten payment's child spent, mined after
+/// the funding scan: the rescan fetches Q's block after the funding block.
+#[test]
+fn a_rescan_after_a_restart_keeps_out_the_coin_a_mined_payment_spent() {
+    let (_dir, engine, session, id, mut want, d, mut chain) =
+        a_beaten_payments_child_after_the_funding_scan();
+    let q = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![d]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &q);
+    mined(&engine, &session, id, TIP + 2, vec![q.clone()]);
+    want.remove(&d);
+    want.insert(change_of(&q, &own_scripts(&engine, &session, id)));
+    chain.push((TIP + 2, vec![q]));
+    a_rescan_after_a_restart_keeps_d_spent(
+        (&engine, session, id),
+        &want,
+        d,
+        &chain,
+        &[TIP, TIP + 1, TIP + 2],
+    );
+}
+
+/// A payment Q of D, the coin a beaten payment's child spent, sent after
+/// the funding scan and not mined: nothing beats it, so it keeps D.
+#[test]
+fn a_rescan_after_a_restart_keeps_out_the_coin_a_pending_payment_spends() {
+    let (_dir, engine, session, id, mut want, d, chain) =
+        a_beaten_payments_child_after_the_funding_scan();
+    let q = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![d]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &q);
+    wait_stored(&session, id, &[q.txid()]);
+    want.remove(&d);
+    want.insert(change_of(&q, &own_scripts(&engine, &session, id)));
+    a_rescan_after_a_restart_keeps_d_spent(
+        (&engine, session, id),
+        &want,
+        d,
+        &chain,
+        &[TIP, TIP + 1],
+    );
 }
 
 /// A payment without change mined after a restart: key-wallet may hold no
@@ -4325,7 +4488,6 @@ fn a_child_dropped_while_the_history_load_is_incomplete_frees_nothing() {
 /// restart and a rescan too.
 #[test]
 fn a_child_dropped_beside_an_unknown_lock_frees_nothing() {
-    use dashcore::hashes::Hash;
     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
@@ -4820,6 +4982,7 @@ fn payment_on_a_doubtful_claim(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
+    edit: impl FnOnce(&mut Transaction),
 ) -> (Transaction, Transaction, Transaction, Transaction) {
     let b_to = fresh_address(engine, session, id);
     let b_funding = funding(3, &[b_to], super::PAID);
@@ -4832,6 +4995,7 @@ fn payment_on_a_doubtful_claim(
     );
     let (_, claim_funding, mut claim) = super::funding_and_spend(engine, session, id);
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
+    edit(&mut claim);
     mempool(engine, session, id, &claim);
     let b = OutPoint::new(b_funding.txid(), 0);
     let s = send(
@@ -4868,7 +5032,8 @@ fn assert_kept_with_b(
 #[test]
 fn a_swept_doubtful_claims_payment_is_left_to_the_claim_rule() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
+    let (b_funding, claim_funding, claim, s) =
+        payment_on_a_doubtful_claim(&engine, &session, id, |_| ());
     let b = OutPoint::new(b_funding.txid(), 0);
     let session = reopen(&engine, session);
     echo(&engine, &session, id, &claim);
@@ -4885,12 +5050,45 @@ fn a_swept_doubtful_claims_payment_is_left_to_the_claim_rule() {
     assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
 }
 
-/// The same claim dropped by the store's own check at an open: S, whose
-/// parent then has no row, is left to #739 too, not dropped as orphaned.
+/// The same claim at an open after its coin's block: the store's repair
+/// keeps it, its input not push-only (S1), so S, built on it, is left to
+/// #739 too, not dropped as orphaned. One the repair drops is proven
+/// unsigned, and what is built on it goes with it (`dropped_claim_tests`).
 #[test]
-fn a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned() {
+fn a_payment_on_a_claim_the_store_keeps_is_not_taken_as_orphaned() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
+    let (b_funding, claim_funding, claim, s) =
+        payment_on_a_doubtful_claim(&engine, &session, id, |_| ());
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let session = reopen(&engine, session);
+    mined(
+        &engine,
+        &session,
+        id,
+        super::BIRTH - 20,
+        vec![claim_funding],
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        live_in_history(&session, id, claim.txid()),
+        "the store keeps the claim"
+    );
+    assert_kept_with_b(&engine, &session, id, &s, b, "loaded");
+    let session = reopen(&engine, session);
+    assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
+}
+
+/// The claim spending its coin twice: the store's repair drops it at an
+/// open, as structural and doubtful (S4), so its row is gone. S, whose
+/// parent then has no row, is left to #739, not dropped as orphaned, and
+/// b stays held, through a restart too.
+#[test]
+fn a_payment_on_a_claim_the_store_dropped_as_doubtful_is_not_taken_as_orphaned() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, claim_funding, claim, s) =
+        payment_on_a_doubtful_claim(&engine, &session, id, |claim| {
+            claim.input.push(claim.input[0].clone());
+        });
     let b = OutPoint::new(b_funding.txid(), 0);
     let session = reopen(&engine, session);
     mined(
@@ -5041,11 +5239,10 @@ fn a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held() {
 /// valued nor counted in the held total, also after a restart.
 #[test]
 fn a_replaced_incoming_payment_holds_none_of_the_senders_coins_in_the_total() {
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id) = funded_wallet();
     let sender = {
-        let secret = dashcore::secp256k1::SecretKey::from_secret_bytes([5; 32]).unwrap();
-        dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret))
+        let secret = dashcore::ecdsa::EcdsaSecretKey::from_bytes(&[5; 32]).unwrap();
+        dashcore::PublicKey::new(secret.public_key())
     };
     let s = OutPoint::new(Txid::from_byte_array([11; 32]), 0);
     let from_sender = |to: &Address| {
@@ -5213,7 +5410,6 @@ fn a_drop_key_wallet_refuses_holds_nothing() {
 /// holds: D, held already by its note, stays held and counted.
 #[test]
 fn a_refused_drop_keeps_what_an_earlier_drop_holds() {
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
     let earlier = Txid::from_byte_array([0x51; 32]);
     (session.live().unwrap().appdb)
@@ -5648,7 +5844,6 @@ fn swept_as_before_a_restart(
 /// the note goes and nothing awaits.
 #[test]
 fn a_lock_of_an_unknown_transaction_keeps_a_held_coin_awaiting_after_a_restart() {
-    use dashcore::hashes::Hash;
     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let (_dir, engine, session, id, d, paid, w_block) = settled_holding_d();
     let x = paid.output[d.vout as usize].value;
@@ -5979,7 +6174,6 @@ fn another_wallets_lock_is_noted_at_once_and_goes_once_its_block_is_final() {
 #[test]
 fn a_network_lock_of_an_unknown_payment_spending_a_held_coin_keeps_it_awaiting() {
     use dash_spv::EventHandler;
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id, d, paid, w_block) = settled_holding_d();
     let x = paid.output[d.vout as usize].value;
     let heard = |session: &NetworkSession, txid: Txid, inputs: Vec<OutPoint>, validated| {
@@ -5988,7 +6182,7 @@ fn a_network_lock_of_an_unknown_payment_spending_a_held_coin_keeps_it_awaiting()
             inputs,
             ..dashcore::InstantLock::default()
         };
-        (session.hub).on_sync_event(&dash_spv::sync::SyncEvent::InstantLockReceived {
+        (session.hub).on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
             instant_lock,
             validated,
         });
@@ -6070,7 +6264,6 @@ fn a_failed_read_of_the_drops_notes_keeps_the_wallet_awaiting() {
 /// D's own final spend takes D's note away.
 #[test]
 fn a_lock_note_that_does_not_read_keeps_its_coin_awaiting() {
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id, d, paid, w_block) = settled_holding_d();
     let x = paid.output[d.vout as usize].value;
     let key = format!("drop_locked:{d}");
@@ -6209,7 +6402,6 @@ fn a_sweep_note_goes_once_its_transaction_is_live_again() {
 /// names, stays.
 #[test]
 fn a_later_sweep_fills_the_winners_block_and_a_load_prunes_unneeded_notes() {
-    use dashcore::hashes::Hash;
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     let winner = rival(&engine, &session, id, &paid, a.vout);

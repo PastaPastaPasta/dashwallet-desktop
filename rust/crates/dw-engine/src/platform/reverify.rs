@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dash_sdk::platform::{DocumentQuery, Fetch, FetchMany};
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 use dpp::document::{Document, DocumentV0Getters};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID};

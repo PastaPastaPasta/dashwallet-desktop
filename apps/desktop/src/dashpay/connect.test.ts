@@ -14,7 +14,7 @@ import { installFixture } from "../fixture/index";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { t } from "../i18n";
 import { needsPassphrase } from "../tools/grant";
-import { bindingText, ConnectFlow, connectErrorText, creditsDash, criticalText, expiryDays, FAILURE_KEYS, failureDetail, limitCredits, limitText, quotedLimit, validLimit } from "./connect";
+import { bindingText, ConnectFlow, connectErrorText, creditsDash, criticalText, expiryDays, FAILURE_KEYS, failureDetail, limitCredits, limitText, quotedLimit, tokenCostText, validLimit } from "./connect";
 import type { ConnectBinding } from "../api/generated/ConnectBinding";
 
 const err = (code: AppError["code"], data: AppError["data"] = null, message = "a message the engine wrote"): AppError => ({ code, message, data });
@@ -122,7 +122,7 @@ describe("helpers", () => {
 
   it("shows the limit the quote writes, every digit kept", () => {
     expect([0n, 1n, 100_000_000_000n, 5_000_000_000n, 123_456_789_012n].map(creditsDash)).toEqual(["0", "0.00000000001", "1", "0.05", "1.23456789012"]);
-    const quote = { grant: { kind: "appConnect", maxCredits: "1", request: "", plan: "" }, fee: "1", balance: "1", budgets: ["30000000000", "1000000000"] } as const;
+    const quote = { grant: { kind: "appConnect", maxCredits: "1", request: "", plan: "" }, fee: "1", balance: "1", budgets: ["30000000000", "1000000000"], groups: "" } as const;
     expect(quotedLimit({ ...quote, budgets: [...quote.budgets] })).toBe("0.31");
   });
 
@@ -141,6 +141,21 @@ describe("helpers", () => {
     const noTokens = "This key has critical access: within what it covers, it can do anything your identity can.";
     expect(line("critical")).toEqual([tokens, tokens, noTokens, noTokens, noTokens]);
     expect(line("high")).toEqual([null, null, null, null, null]);
+  });
+
+  it("says document writes can spend tokens, except on the profile and where the critical warning names tokens", () => {
+    const group = { group: "g", owner: "o", admins: [], contracts: [], documentTypes: [], tokens: [] };
+    const scopes: ConnectBinding["scope"][] = [
+      { kind: "group", group },
+      { kind: "contract", contract: "c", tokens: true },
+      { kind: "contract", contract: "c", tokens: false },
+      { kind: "documentType", contract: "c", documentType: "post" },
+      { kind: "profile" },
+    ];
+    const line = (level: ConnectBinding["level"]) => scopes.map((scope) => tokenCostText({ index: 0, primary: true, level, scope }));
+    const spends = "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.";
+    expect(line("high")).toEqual([spends, spends, spends, spends, null]);
+    expect(line("critical")).toEqual([null, null, spends, spends, null]);
   });
 
   it("pins the ruled group sentence, {admins, select}, as its two keys", () => {
@@ -210,6 +225,42 @@ describe("the flow over the fixture", () => {
     await flow.returnToApp();
     expect(link()).toMatchObject({ returned: true, dismissed: true });
     expect(closed).toHaveBeenCalledOnce();
+  });
+
+  it("a quote or a read of the request that answers after Deny leaves the decline and its Return", async () => {
+    for (const late of ["quote", "sheet", "typing"] as const) {
+      const { flow, backend, closed, link } = await open("ok");
+      const real = backend.appConnectQuote;
+      const realSheet = backend.appConnectSheet.bind(backend);
+      let answer: (() => void) | undefined;
+      const quote = vi.spyOn(backend, "appConnectQuote").mockImplementation((...args) => {
+        const read = real(...args);
+        return new Promise((resolve) => (answer = () => void read.then((q) => resolve({ ...q, groups: "c".repeat(64) }))));
+      });
+      const sheet = vi.spyOn(backend, "appConnectSheet");
+      if (late === "quote") void flow.requote();
+      if (late === "sheet") {
+        sheet.mockImplementationOnce((...args) => {
+          const read = realSheet(...args);
+          return new Promise((resolve) => (answer = () => void read.then(resolve)));
+        });
+        void flow.load();
+      }
+      if (late === "typing") flow.setLimit("0.02");
+      await flow.deny();
+      expect([late, flow.phase]).toEqual([late, "denied"]);
+      answer?.();
+      await new Promise((r) => setTimeout(r, 450));
+      await settle();
+      expect([late, flow.phase, flow.quoting, flow.closed]).toEqual([late, "denied", false, false]);
+      expect([late, sheet.mock.calls.length]).toEqual([late, late === "sheet" ? 1 : 0]);
+      expect([late, quote.mock.calls.length]).toEqual([late, late === "quote" ? 1 : 0]);
+      expect(link().answer).toBe("declined");
+      await flow.returnToApp();
+      expect(link()).toMatchObject({ returned: true, dismissed: true });
+      expect(closed).toHaveBeenCalledOnce();
+      clearMocks();
+    }
   });
 
   it("Deny on a request with no return link closes straight away when no approval was attempted", async () => {
@@ -310,6 +361,61 @@ describe("the flow over the fixture", () => {
     expect(flow.phase).toBe("done");
   });
 
+  it("a quote that read the group facts the sheet shows is kept, with no second read", async () => {
+    const { flow, backend } = await open("ok");
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    expect([flow.quote?.groups, flow.planChanged, flow.phase]).toEqual([flow.sheet!.groups, false, "sheet"]);
+    expect(sheet).not.toHaveBeenCalled();
+  });
+
+  it("a quote that read other group facts than the sheet shows reads the request again and says so", async () => {
+    const { flow } = await open("groupChanged");
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect(flow.planChanged).toBe(true);
+    const group = flow.sheet!.bindings.find((b) => b.scope.kind === "group")!.scope;
+    expect(group.kind === "group" && group.group.admins).toHaveLength(2);
+    expect(flow.quote!.groups).toBe(flow.sheet!.groups);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("group facts that disagree again after one read fail the quote, and Try again reads the request once more", async () => {
+    const { flow, backend } = await open("ok");
+    const real = backend.appConnectQuote;
+    const quote = vi.spyOn(backend, "appConnectQuote").mockImplementation(async (...args) => ({ ...(await real(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, flow.quote, flow.quoting, flow.phase, flow.planChanged]).toEqual([1, null, false, "sheet", true]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+    flow.retryQuote();
+    await vi.waitFor(() => expect(sheet).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, flow.quote]).toEqual([2, null]);
+    quote.mockRestore();
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.quoteError, flow.quote!.groups]).toEqual([3, null, flow.sheet!.groups]);
+    vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => ({ ...(await real(...args)), groups: "c".repeat(64) }));
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.quoteError]).toEqual([4, null]);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("an approval whose fresh quote read other group facts than the sheet shows reads the request again", async () => {
+    const { flow, backend, link } = await open("ok");
+    const real = backend.appConnectQuote;
+    vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => ({ ...(await real(...args)), groups: "c".repeat(64) }));
+    await flow.approve();
+    await settle();
+    expect([flow.phase, flow.planChanged, flow.grants.pending, link().started]).toEqual(["sheet", true, null, false]);
+  });
+
   it("keys not confirmed in time leave the request open, and approving again finishes it", async () => {
     const { flow } = await open("notConfirmed");
     const approved = flow.choice();
@@ -363,9 +469,25 @@ describe("the flow over the fixture", () => {
     expect([failed.phase, connectErrorText(failed.error, "testnet")]).toEqual(["refused", "Sign-in didn't finish: a key for this app is already on your identity, with different limits."]);
   });
 
+  it("a locked sheet whose quote failed quotes the same choice again on Try again", async () => {
+    const { flow, backend } = await open("quoteOffline");
+    const earlier = flow.sheet!.earlierApproval!;
+    expect([flow.editable, flow.choice(), flow.quote]).toEqual([false, earlier, null]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+    const quote = vi.spyOn(backend, "appConnectQuote");
+    await flow.requote();
+    expect(quote).toHaveBeenCalledWith(FIXTURE_WALLET_ID, flow.linkId, earlier);
+    expect([flow.quoteError, flow.quote?.grant.kind]).toEqual([null, "appConnect"]);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
   it("a credit shortfall keeps the sheet open, Approve off", async () => {
     const { flow } = await open("credits");
     expect([flow.phase, flow.quote]).toEqual(["sheet", null]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toMatch(/^Your identity needs [\d,]+ more in credits/);
+    await flow.requote();
+    expect([flow.phase, flow.quote, flow.quoting]).toEqual(["sheet", null, false]);
     expect(connectErrorText(flow.quoteError, "testnet")).toMatch(/^Your identity needs [\d,]+ more in credits/);
   });
 });

@@ -41,7 +41,7 @@ test("PAY-FROM the form opens on the Dash wallet, every source listed with its b
   const from = page.getByTestId("pay-from");
   await expect(from.getByRole("radio", { name: /Dash wallet/ })).toBeChecked();
   await expect(page.getByTestId("pay-from-platform-balance")).toHaveText("0.40000000 tDASH");
-  await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText("Not available on this network yet.");
+  await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText("Not available in this version");
   await expect(from.getByRole("radio", { name: /Shielded balance/ })).toBeDisabled();
   // The Dash wallet's form is the one it always was.
   await expect(page.getByTestId("pay-max")).toBeVisible();

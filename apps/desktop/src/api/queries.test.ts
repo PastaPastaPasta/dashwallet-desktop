@@ -1,10 +1,12 @@
 // Platform activity is read again while a move or send is held.
 
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
+import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
-import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedHold, shieldedReading } from "./queries";
+import { keys, PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, restoredQuery, seedRestored, settledBalance, shieldedHold, shieldedReading } from "./queries";
 
 const row = (over: Partial<PlatformActivity>): PlatformActivity => ({
   id: "r",
@@ -71,6 +73,50 @@ describe("the wallet balance the screens read", () => {
     expect(settledBalance(null)).toBeNull();
   });
 });
+
+describe("restored: absent is not known yet", () => {
+  const NETWORK = { kind: "testnet", dirName: "testnet", unitName: "tDASH" };
+  const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  async function read(activeNetwork: () => Promise<unknown>): Promise<boolean | undefined> {
+    const observer = new QueryObserver(client(), restoredQuery({ activeNetwork } as unknown as Backend));
+    const stop = observer.subscribe(() => undefined);
+    try {
+      await expect.poll(() => observer.getCurrentResult().isFetching).toBe(false);
+      return observer.getCurrentResult().data;
+    } finally {
+      stop();
+    }
+  }
+
+  it("reads an absent restored as undefined, false as false and true as true", async () => {
+    expect(await read(async () => NETWORK)).toBeUndefined();
+    expect(await read(async () => ({ ...NETWORK, restored: null }))).toBeUndefined();
+    expect(await read(async () => null)).toBeUndefined();
+    expect(await read(async () => "testnet")).toBeUndefined();
+    expect(await read(async () => ({ ...NETWORK, restored: false }))).toBe(false);
+    expect(await read(async () => ({ ...NETWORK, restored: true }))).toBe(true);
+  });
+
+  it("keeps a failed read undefined", async () => {
+    expect(await read(() => Promise.reject(new Error("engine gone")))).toBeUndefined();
+  });
+
+  it("seeds only a known value from the open", () => {
+    for (const [network, seeded] of [
+      [NETWORK, undefined],
+      ["testnet", undefined],
+      [{ ...NETWORK, restored: false }, false],
+      [{ ...NETWORK, restored: true }, true],
+    ] as const) {
+      const c = client();
+      seedRestored(c, network);
+      expect(c.getQueryData(keys.restored), JSON.stringify(network)).toBe(seeded);
+      expect(c.getQueryState(keys.restored) === undefined, JSON.stringify(network)).toBe(seeded === undefined);
+    }
+  });
+});
+
 
 describe("what payments that may still go through hold of Shielded", () => {
   const status = (held: string, credits: string[], active = true) =>

@@ -117,3 +117,5 @@ dw-vault = { workspace = true, features = ["insecure-test-kdf"] }
 dw-engine = { workspace = true, features = ["test-support"] }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }
+# A real between-state store for openNetwork's upgrade notice.
+dw-store-upgrade = { workspace = true, features = ["test-support"] }

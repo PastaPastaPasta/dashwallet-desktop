@@ -35,6 +35,10 @@ pub enum FilePurpose {
     /// A shared-masternode message or standby file to open, or a message to
     /// save (MG-10 D15): at most 2 MiB, what the engine reads.
     SharedMasternodeMessage,
+    /// A shared masternode's standby dissolution to save (MG-10 §2.8): Core's
+    /// text file, written by dw-app so its signed lines never reach the
+    /// renderer.
+    StandbyDissolution,
 }
 
 /// A dialog's words and filter.
@@ -122,6 +126,13 @@ impl FilePurpose {
                 save_title: "Save Shared Masternode Message",
                 filter: "Shared masternode files",
                 extensions: &["json", "txt"],
+                max_bytes: MAX_SHARED_MESSAGE_BYTES + 1,
+            },
+            FilePurpose::StandbyDissolution => PurposeSpec {
+                open_title: "Open Standby Dissolution",
+                save_title: "Save Standby Dissolution",
+                filter: "Standby dissolution",
+                extensions: &["txt"],
                 max_bytes: MAX_SHARED_MESSAGE_BYTES + 1,
             },
         }

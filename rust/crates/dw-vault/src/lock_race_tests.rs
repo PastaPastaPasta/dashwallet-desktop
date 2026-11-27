@@ -27,7 +27,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dpp::secp256k1::{PublicKey, SecretKey};
 use key_wallet::bip32::DerivationPath;
 use key_wallet::{Network, Signer};
 use zeroize::Zeroizing;
@@ -139,7 +139,7 @@ fn peer() -> PublicKey {
 fn identity_public_key(identity: &VaultSigner) -> [u8; 33] {
     identity
         .with_key(&path(IDENTITY_KEY), KeyUse::PublicKey, |x| {
-            PublicKey::from_secret_key(&x.private_key).serialize()
+            x.private_key.public_key().to_compressed()
         })
         .unwrap()
 }
@@ -788,7 +788,10 @@ fn a_result_is_not_released_in_a_later_epoch() {
     v.start_gate_log();
     let r = crypto.run(&[(KeyUse::Agreement, &key)], |op| {
         let secret = op.with_key(&key, KeyUse::Agreement, |x| {
-            crate::dip15::ecdh(&x.private_key, &peer())
+            crate::dip15::ecdh(
+                &SecretKey::from_secret_bytes(*x.private_key.to_bytes()).unwrap(),
+                &peer(),
+            )
         })?;
         v.bump_epoch_ungated();
         Ok(secret)

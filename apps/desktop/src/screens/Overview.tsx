@@ -32,9 +32,13 @@ import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
+import { RestoredBanner } from "./RestoredBanner";
+import { RestoredStatePanel } from "./RestoredStatePanel";
+import { UpgradeNoticeBanner } from "./UpgradeNoticeBanner";
 import { DroppedNoticeBanner } from "./DroppedNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
+import { ShieldedClosedNotice } from "./ShieldedClosedNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -311,7 +315,11 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
+        <RestoredBanner />
+        <RestoredStatePanel />
+        <UpgradeNoticeBanner />
         <HistoryGapNotice />
+        <ShieldedClosedNotice walletId={walletId} />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
         <DroppedNoticeBanner walletId={walletId} network={network} />

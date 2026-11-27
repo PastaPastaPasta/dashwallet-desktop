@@ -9,7 +9,6 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use dashcore::address::{NetworkUnchecked, Payload};
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, TxIn, TxOut, Txid};
 
 use super::super::envelope::{EnvelopeError, decode_base64, decode_tx_hex, is_hex};

@@ -10,14 +10,14 @@ publish.workspace = true
 # Salvaged from m3/r2-governance (MG-01); the facade is MG-02's.
 
 [dependencies]
-# `secp-recovery`: votes carry 65-byte compact signatures; the voting key id
-# is recovered from them (Core `CPubKey::RecoverCompact`). `bls`: operator
-# votes are verified against the list's operator key (MG-02 D89; already in
-# the graph through platform-wallet).
-dashcore = { workspace = true, features = ["secp-recovery", "bls"] }
+# `bls`: operator votes are verified against the list's operator key (MG-02
+# D89; already in the graph through platform-wallet). Recovering the voting key
+# id from a vote's 65-byte compact signature needs no feature.
+dashcore = { workspace = true, features = ["bls"] }
 dw-message = { workspace = true }
 dw-p2p = { workspace = true }
 hex = { workspace = true }
+secp256k1 = { version = "0.33.1", default-features = false }
 serde = "1"
 # `raw_value`: numbers are read from their text as UniValue does;
 # `unbounded_depth`: UniValue nests 512 deep, serde_json stops at 128
@@ -28,4 +28,5 @@ tokio = { workspace = true, features = ["net", "io-util", "rt", "sync", "time", 
 tracing = { workspace = true }
 
 [dev-dependencies]
+secp256k1 = { version = "0.33.1", default-features = false, features = ["recovery"] }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }

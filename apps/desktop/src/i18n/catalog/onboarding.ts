@@ -10,6 +10,10 @@ export const onboarding = {
     title: "Welcome to Dash Wallet",
     addTitle: "Add a wallet",
     text: "Create a new wallet, or restore one with its recovery phrase or a backup file.",
+    restoreOnly:
+      "Your earlier wallet data couldn't be read, so Dash Wallet started with a new data folder. Enter a recovery phrase to set up a wallet again.",
+    restoreOnlyAdd:
+      "Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase. The other ways to add a wallet come back after that.",
     create: "Create a new wallet",
     restore: "Restore from recovery phrase",
     restoreFile: "Restore from a file",
@@ -171,6 +175,7 @@ export const onboarding = {
     wallet_not_found: "This wallet is not open.",
     shielded_spend_unresolved: "Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
     last_startup_wallet: "At least one wallet opens at start.",
+    restore_only: "Nothing was added. Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.",
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
     not_implemented: "Dash Wallet cannot do this yet.",
     io: "The file could not be read or written.",

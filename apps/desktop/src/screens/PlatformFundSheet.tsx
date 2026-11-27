@@ -15,6 +15,7 @@ import { useModel } from "../onboarding/model";
 import { preparingText } from "../transfer/preparing";
 import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
 import { coreMaxNotes } from "../transfer/model";
+import { platformHoldText } from "../api/platformHold";
 
 /** Formats for the sheet: Dash in the display unit with its full decimals, masked in discreet mode. */
 function useFormats(network: NetworkInfo) {
@@ -51,7 +52,7 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-fund-quote-error">
-          {fundErrorText(quote.error, credits, duffs, { request })}
+          {platformHoldText(quote.error, false) ?? fundErrorText(quote.error, credits, duffs, { request })}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">

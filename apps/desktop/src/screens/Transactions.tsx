@@ -98,7 +98,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const shieldedStatus = useShieldedStatus(walletId);
   const extra = useMemo(() => {
     const held = heldActivities(shieldedStatus.data);
-    return [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map((a) => shieldedRow(a, held))];
+    return [...(platform.data ?? []).map((a, _, all) => platformRow(a, all)), ...(shielded.data ?? []).map((a) => shieldedRow(a, held))];
   }, [platform.data, shielded.data, shieldedStatus.data]);
   const withExtra = mode === "list" && category.id === "all" && !text && !routeFilter;
   const extraShown = useMemo(

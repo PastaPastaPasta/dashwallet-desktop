@@ -72,6 +72,37 @@ fn testnet_derives_under_coin_type_1() {
     assert!(address(&t, Network::Testnet).starts_with("tdash1z"));
 }
 
+/// Account 0's key and each identity tip account's, the ZIP-32 account of
+/// the same number, in one read; no other account.
+#[test]
+fn the_viewing_keys_are_account_0s_and_the_identity_tip_accounts() {
+    use platform_wallet::wallet::shielded::OrchardKeySet;
+    let fx = Fixture::new();
+    let v = abandon_vault(&fx, Network::Testnet, "testnet");
+    let tip = platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE + 2;
+    let keys = v.shielded_viewing_keys(&wallet(1), &[0, tip]).unwrap();
+    let seed = dw_vault::mnemonic::derive_secret(ABANDON.as_bytes(), b"", false).unwrap();
+    let derived = |account| {
+        OrchardKeySet::from_seed(&*seed.seed, Network::Testnet, account)
+            .unwrap()
+            .viewing_keys()
+            .to_fvk_bytes()
+    };
+    assert_eq!(keys, [(0, derived(0)), (tip, derived(tip))]);
+    assert_eq!(keys[0].1, v.shielded_viewing_key(&wallet(1)).unwrap());
+    assert_ne!(keys[0].1, keys[1].1);
+    for account in [
+        1,
+        platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE - 1,
+        0x8000_0000,
+    ] {
+        assert!(matches!(
+            v.shielded_viewing_keys(&wallet(1), &[0, account]),
+            Err(VaultError::Internal(_))
+        ));
+    }
+}
+
 fn platform_op(max_duffs: u64, max_credits: u64) -> GrantPurpose {
     GrantPurpose::PlatformOp {
         max_duffs,

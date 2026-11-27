@@ -2172,7 +2172,6 @@ mod tests {
 
     #[test]
     fn a_withdrawal_destination_is_an_address_of_the_network() {
-        use dashcore::hashes::Hash;
         let script =
             dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([7; 20]));
         let at = |network| {

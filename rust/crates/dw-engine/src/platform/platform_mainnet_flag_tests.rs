@@ -47,6 +47,9 @@ fn held(id: &str, kind: MoveKind, input: (&str, u32, u64, u64), to: &str) -> Mov
         unattributed: false,
         version: Some(PlatformVersion::latest().protocol_version),
         rule: HOLD_RULE,
+        cancel_of: None,
+        exit_of: None,
+        link_conflict: false,
     }
 }
 
@@ -96,7 +99,6 @@ impl World {
 
     /// A Core address of this network that is not the wallet's.
     fn foreign_core(&self) -> String {
-        use dpp::dashcore::hashes::Hash;
         dpp::dashcore::Address::new(
             self.network(),
             dpp::dashcore::address::Payload::PubkeyHash(

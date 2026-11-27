@@ -2,10 +2,13 @@
 //! locks persisted in dw-appdb, and dash-qt's dust attack protection
 //! (QT-068…075; docs/contracts/m1-engine.md §2.8).
 //!
-//! Locks are app metadata: key-wallet's own `Utxo::is_locked` flag is not
-//! persisted, so the engine keeps "Lock unspent" and dust locks in
-//! `app.sqlite` and applies them when it lists coins and builds candidate
-//! sets for a payment.
+//! Locks are app metadata: the engine keeps "Lock unspent" and dust locks
+//! in `app.sqlite` and applies them when it lists coins and builds
+//! candidate sets for a payment. Into key-wallet's own lock set
+//! (`ManagedWalletInfo::locked_outpoints`, where the library keeps and
+//! stores masternode collaterals) the engine puts only a funding fence's
+//! denomination holds ([`NetworkSession::exclude_denominations_under_fence`]),
+//! and never hands those to the persister.
 //!
 //! The inputs of the wallet's tracked `Built` and `Broadcast` asset locks
 //! read as reserved (E0-04 §2a.3's F7 mitigation, H6 part 1 in Mode B):
@@ -159,7 +162,8 @@ pub(crate) fn insert_contact_account(info: &mut ManagedWalletInfo, id: [u8; 32])
         network,
         account_xpub: xpub,
         is_watch_only: true,
-    });
+    })
+    .unwrap();
     info.accounts.insert_funds_bearing_account(managed).unwrap();
     let listed = info
         .all_managed_accounts()
@@ -346,8 +350,8 @@ struct TempUtxoLocks {
     rt: tokio::runtime::Handle,
 }
 
-/// Unlocks `outpoints` in wallet `wallet_id`'s funds accounts; returns the
-/// wallet, its balances recomputed, when one was locked.
+/// Takes `outpoints` out of wallet `wallet_id`'s lock set, held or spent
+/// since; returns the wallet, its balances recomputed, when one was in it.
 fn unlock_temp_utxos<'a>(
     wm: &'a mut platform_wallet::key_wallet_manager::WalletManager<
         platform_wallet::PlatformWalletInfo,
@@ -357,15 +361,8 @@ fn unlock_temp_utxos<'a>(
 ) -> Option<&'a ManagedWalletInfo> {
     let info = wm.get_wallet_info_mut(wallet_id)?;
     let mut changed = false;
-    for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
-        for op in outpoints {
-            if let Some(utxo) = account.utxos.get_mut(op)
-                && utxo.is_locked
-            {
-                utxo.unlock();
-                changed = true;
-            }
-        }
+    for op in outpoints {
+        changed |= info.core_wallet.unlock_outpoint(op);
     }
     changed.then(|| {
         info.core_wallet.update_balance();
@@ -420,8 +417,12 @@ impl CoinFence {
         *self.checked.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(free));
     }
 
-    fn set_temp_locks(&self, locks: TempUtxoLocks) {
-        *self.temp_locks.lock().unwrap_or_else(|p| p.into_inner()) = Some(locks);
+    fn add_temp_locks(&self, locks: TempUtxoLocks) {
+        let mut slot = self.temp_locks.lock().unwrap_or_else(|p| p.into_inner());
+        match slot.as_mut() {
+            Some(held) => held.outpoints.extend(locks.outpoints),
+            None => *slot = Some(locks),
+        }
     }
 }
 
@@ -735,6 +736,10 @@ pub struct CoinInfo {
     /// Kept out of spending and every balance, and why
     /// ([`crate::withhold`]).
     pub excluded: Option<crate::ExclusionReason>,
+    /// An output or input of a payment the restore holds while it is
+    /// unproven (`restore_gate`, H1): neither offered nor counted as
+    /// spendable until it is mined, dropped or abandoned.
+    pub pending_unproven: bool,
 }
 
 /// `(txid display hex, vout)`, the dw-appdb key of an outpoint.
@@ -819,16 +824,6 @@ fn funding_accounts(
         .values()
         .chain(accounts.standard_bip32_accounts.values())
         .chain(accounts.dashpay_receival_accounts.values())
-}
-
-fn funding_accounts_mut(
-    accounts: &mut ManagedAccountCollection,
-) -> impl Iterator<Item = &mut ManagedCoreFundsAccount> {
-    accounts
-        .standard_bip44_accounts
-        .values_mut()
-        .chain(accounts.standard_bip32_accounts.values_mut())
-        .chain(accounts.dashpay_receival_accounts.values_mut())
 }
 
 /// Reads every funds account of `info` (key-wallet state only).
@@ -1002,10 +997,17 @@ impl NetworkSession {
         }));
     }
 
-    /// Locks in key-wallet, until `fence` drops, the funding coins the
-    /// library's builder must not select though no hold refuses the
-    /// funding: denominations Dash Core counts, and excluded coins
-    /// ([`crate::withhold`]).
+    /// Keeps the funding coins the library's builder must not select though
+    /// no hold refuses the funding (denominations Dash Core counts, excluded
+    /// coins ([`crate::withhold`]) and coins waiting for their rescan) out of
+    /// its selection and spendable balance until `fence` drops. They go into
+    /// key-wallet's lock set, which every balance refresh and funding reads
+    /// the coins' lock flags from, through
+    /// `ManagedWalletInfo::lock_outpoint`, which stores nothing: the
+    /// persister stores only `PlatformWallet::lock_outpoint`/`unlock_outpoint`
+    /// and the collateral locks the library itself just added, so a crash
+    /// leaves no hold behind. Only the outpoints this call added are
+    /// released, so a lock already in the set stays.
     pub(crate) async fn exclude_denominations_under_fence(
         &self,
         fence: &CoinFence,
@@ -1020,39 +1022,18 @@ impl NetworkSession {
             .chain(self.hub.rescan_held(&fence.wallet))
             .collect();
         let wm = self.manager()?.wallet_manager_arc();
-        let mut locked = Vec::new();
-        {
+        let locked: Vec<OutPoint> = {
             let mut guard = wm.write().await;
             let info = guard
                 .get_wallet_info_mut(&fence.wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(fence.wallet.to_string()))?;
-            // Only a fence's temporary locks set this flag, and a fence
-            // holder meets none of its own: one left is a coin a spend
-            // elsewhere took while it was locked, given back since.
-            let mut stale = false;
-            for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
-                for utxo in account.utxos.values_mut().filter(|u| u.is_locked) {
-                    utxo.unlock();
-                    stale = true;
-                }
-            }
-            if stale {
-                info.core_wallet.update_balance();
-                self.hub.apply_balance_read(fence.wallet, &info.core_wallet);
-            }
-            for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
-                for op in &denoms {
-                    if let Some(utxo) = account.utxos.get_mut(op)
-                        && !utxo.is_locked
-                    {
-                        utxo.lock();
-                        locked.push(*op);
-                    }
-                }
-            }
-        }
+            denoms
+                .into_iter()
+                .filter(|op| info.core_wallet.lock_outpoint(*op))
+                .collect()
+        };
         if !locked.is_empty() {
-            fence.set_temp_locks(TempUtxoLocks {
+            fence.add_temp_locks(TempUtxoLocks {
                 wm,
                 hub: Arc::clone(&self.hub),
                 wallet_id: fence.wallet.0,
@@ -1174,9 +1155,13 @@ impl NetworkSession {
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
             .max(self.hub.best_chainlock().map(|(h, _)| h));
-        let spent = (self.hub.history).read(&wallet_id, |txs| {
-            crate::history::spent_outpoints(txs, chainlock)
-        });
+        let (spent, (restore_outputs, restore_inputs)) =
+            (self.hub.history).read_wallet(&wallet_id, |h| {
+                (
+                    crate::history::spent_outpoints(&h.txs, chainlock),
+                    h.restore_held_coins(),
+                )
+            });
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
@@ -1189,7 +1174,9 @@ impl NetworkSession {
             let spend_reserved = reserved.contains(&o)
                 || swept.contains(&o)
                 || (spent.contains(&o) && !lock_held)
-                || unseen.contains(&o);
+                || unseen.contains(&o)
+                || restore_outputs.contains(&o.txid)
+                || restore_inputs.contains(&o);
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
@@ -1225,6 +1212,8 @@ impl NetworkSession {
                 .appdb_op(move |db| Ok(db.labels(&id, LabelKind::Address)?.into_iter().collect()))
                 .await?;
             let height = view.height;
+            let (restore_outputs, restore_inputs) =
+                (this.hub.history).read_wallet(&wallet_id, |h| h.restore_held_coins());
             let mut rows: Vec<CoinInfo> = view
                 .coins
                 .iter()
@@ -1253,6 +1242,8 @@ impl NetworkSession {
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
                         excluded: c.excluded,
+                        pending_unproven: restore_outputs.contains(&u.outpoint.txid)
+                            || restore_inputs.contains(&u.outpoint),
                     }
                 })
                 .filter(|row| {
@@ -1599,8 +1590,9 @@ mod tests {
 
     /// A denomination another wallet on the seed spent while a funding held
     /// it locked, given back after the fence dropped (a reorg, a dropped
-    /// transaction), comes back locked; the next funding releases it with
-    /// its own locks.
+    /// transaction), comes back unlocked: the release takes it out of the
+    /// wallet's lock set though the coin was gone, and the next funding
+    /// locks and releases it again.
     #[test]
     fn a_denomination_spent_and_given_back_around_a_fence_ends_unlocked() {
         let f = crate::platform::lease::session_tests::fixture(false);
@@ -1608,7 +1600,7 @@ mod tests {
         let denom = f.credit(2, DENOMINATION);
         let (s, w) = (Arc::clone(&f.session), f.wallet);
         let inner = Arc::clone(&s);
-        let (returned_locked, after, balance) = f
+        let (kept_in_lock_set, returned_locked, relocked, after, balance) = f
             .engine
             .block_on(s.on_runtime(async move {
                 wallet_event(&inner, w).await;
@@ -1623,6 +1615,11 @@ mod tests {
                     account.utxos.remove(&denom).unwrap()
                 };
                 drop(fence);
+                let kept_in_lock_set = {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let state = wallet.state().await;
+                    state.core_wallet.is_outpoint_locked(&denom)
+                };
                 {
                     let wallet = inner.wallet(&w).await.unwrap();
                     let mut state = wallet.state_mut().await;
@@ -1633,14 +1630,296 @@ mod tests {
                 }
                 wallet_event(&inner, w).await;
                 let returned_locked = locked(&inner, w, denom).await;
-                drop(funding_fence(&inner, w).await);
+                let second = funding_fence(&inner, w).await;
+                let relocked = locked(&inner, w, denom).await;
+                drop(second);
                 let after = locked(&inner, w, denom).await;
-                Ok((returned_locked, after, (before, confirmed(&inner, w))))
+                Ok((
+                    kept_in_lock_set,
+                    returned_locked,
+                    relocked,
+                    after,
+                    (before, confirmed(&inner, w)),
+                ))
             }))
             .unwrap();
-        assert_eq!(returned_locked, Some(true));
+        assert!(!kept_in_lock_set);
+        assert_eq!(returned_locked, Some(false));
+        assert_eq!(relocked, Some(true));
         assert_eq!(after, Some(false));
         assert_eq!(balance.1, balance.0);
+    }
+
+    /// A denomination the wallet's lock set already held before a funding
+    /// (a lock the library or the user made) stays locked when the
+    /// funding's fence drops: the fence releases only its own locks.
+    #[test]
+    fn a_funding_fence_leaves_a_lock_it_did_not_make() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let kept = f.credit(2, DENOMINATION);
+        let other = f.credit(3, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let (other_held, kept_locked, other_locked) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let mut state = wallet.state_mut().await;
+                    assert!(state.core_wallet.lock_outpoint(kept));
+                }
+                let fence = funding_fence(&inner, w).await;
+                let other_held = locked(&inner, w, other).await;
+                drop(fence);
+                wallet_event(&inner, w).await;
+                let wallet = inner.wallet(&w).await.unwrap();
+                let state = wallet.state().await;
+                Ok((
+                    other_held,
+                    state.core_wallet.is_outpoint_locked(&kept),
+                    state.core_wallet.is_outpoint_locked(&other),
+                ))
+            }))
+            .unwrap();
+        assert_eq!(other_held, Some(true));
+        assert!(kept_locked);
+        assert!(!other_locked);
+    }
+
+    /// A denomination taken out of the wallet and given back while a
+    /// funding's fence still holds it arrives locked, through the library's
+    /// next balance refresh, and is free once the fence drops.
+    #[test]
+    fn a_denomination_given_back_under_the_fence_arrives_locked() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let denom = f.credit(2, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let (before, during, under, after, balance) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let before = confirmed(&inner, w);
+                let fence = funding_fence(&inner, w).await;
+                {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let mut state = wallet.state_mut().await;
+                    let account = (state.core_wallet.accounts.standard_bip44_accounts)
+                        .get_mut(&0)
+                        .unwrap();
+                    let mut back = account.utxos.remove(&denom).unwrap();
+                    back.is_locked = false;
+                    account.utxos.insert(denom, back);
+                }
+                wallet_event(&inner, w).await;
+                let under = locked(&inner, w, denom).await;
+                let during = confirmed(&inner, w);
+                drop(fence);
+                wallet_event(&inner, w).await;
+                let after = locked(&inner, w, denom).await;
+                Ok((before, during, under, after, confirmed(&inner, w)))
+            }))
+            .unwrap();
+        assert_eq!(under, Some(true));
+        assert_eq!(during, before - DENOMINATION);
+        assert_eq!(after, Some(false));
+        assert_eq!(balance, before);
+    }
+
+    /// A build from BIP44 for `duffs` to the wallet's own next address;
+    /// `None` when selection could not fund it.
+    async fn build_from_bip44(
+        s: &NetworkSession,
+        w: WalletId,
+        duffs: u64,
+        strategy: key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy,
+    ) -> Option<HashSet<OutPoint>> {
+        use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
+        let to = (s.wallet(&w).await.unwrap().core())
+            .next_receive_address_for_account(0)
+            .await
+            .unwrap();
+        let wm = s.manager().unwrap().wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm.get_wallet_and_info_mut(&w.0).unwrap();
+        let wallet = wallet.clone();
+        let built = info.core_wallet.build_unsigned_transaction(
+            &wallet,
+            &[AccountTypePreference::BIP44],
+            0,
+            vec![(to.as_unchecked().clone(), duffs)],
+            key_wallet::wallet::managed_wallet_info::fee::FeeRate::new(crate::send::MIN_FEE_PER_KB),
+            strategy,
+        );
+        built
+            .ok()
+            .map(|(tx, _)| tx.input.iter().map(|i| i.previous_output).collect())
+    }
+
+    /// Wallet `w`'s lock set as the library holds it (after a load: what
+    /// its store handed back).
+    async fn lock_set(s: &NetworkSession, w: WalletId) -> Vec<OutPoint> {
+        s.wallet(&w)
+            .await
+            .unwrap()
+            .locked_outpoints()
+            .await
+            .unwrap()
+    }
+
+    /// How many locks wallet.sqlite holds for wallet `w`.
+    fn stored_locks(s: &NetworkSession, w: WalletId) -> i64 {
+        let db = rusqlite::Connection::open_with_flags(
+            s.data_dir().join(crate::session::WALLET_DB_FILE),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM core_locked_outpoints WHERE wallet_id = ?1",
+            [&w.0[..]],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// A denomination under a funding's fence stays locked through the
+    /// library's own balance refresh and funding, both of which set every
+    /// coin's lock flag from the lock set again: it is neither counted
+    /// spendable nor selected, whatever the strategy, until the fence drops.
+    #[test]
+    fn a_fenced_denomination_stays_out_of_a_balance_refresh_and_a_funding() {
+        use key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let denom = f.credit(2, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let needs_both = 100_000_000 + DENOMINATION / 2;
+        let (before, during, flag, large, small, freed) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let before = confirmed(&inner, w);
+                let fence = funding_fence(&inner, w).await;
+                wallet_event(&inner, w).await;
+                let during = confirmed(&inner, w);
+                let flag = locked(&inner, w, denom).await;
+                let large =
+                    build_from_bip44(&inner, w, needs_both, SelectionStrategy::LargestFirst).await;
+                let small =
+                    build_from_bip44(&inner, w, 10_000, SelectionStrategy::SmallestFirst).await;
+                drop(fence);
+                let freed =
+                    build_from_bip44(&inner, w, 10_000, SelectionStrategy::SmallestFirst).await;
+                Ok((before, during, flag, large, small, freed))
+            }))
+            .unwrap();
+        assert_eq!(during, before - DENOMINATION, "counted spendable");
+        assert_eq!(flag, Some(true), "the refresh unlocked it");
+        assert_eq!(large, None, "a build needing it was funded under the fence");
+        let small = small.expect("the other coin funds a small build");
+        assert!(
+            !small.contains(&denom),
+            "selected under the fence: {small:?}"
+        );
+        assert_eq!(
+            freed,
+            Some(HashSet::from([denom])),
+            "not free once the fence dropped"
+        );
+    }
+
+    /// A process that dies while a funding holds its fence leaves no hold:
+    /// the fence's locks never reach wallet.sqlite, so after the restart the
+    /// coin is free and the stored lock set holds only what the library
+    /// itself locked and stored.
+    #[test]
+    fn a_fence_held_at_a_crash_leaves_no_lock_after_the_restart() {
+        let mut f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let denom = f.credit(2, DENOMINATION);
+        let stored = OutPoint::new(Txid::from_byte_array([0x7c; 32]), 0);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let held = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                let wallet = inner.wallet(&w).await.unwrap();
+                assert!(wallet.lock_outpoint(stored).await.unwrap());
+                let fence = funding_fence(&inner, w).await;
+                let held = lock_set(&inner, w).await;
+                std::mem::forget(fence);
+                Ok(held)
+            }))
+            .unwrap();
+        assert!(held.contains(&denom) && held.contains(&stored), "{held:?}");
+        assert_eq!(stored_locks(&s, w), 1);
+        drop(s);
+        f.reopen();
+        let s = Arc::clone(&f.session);
+        assert_eq!(stored_locks(&s, w), 1);
+        assert_eq!(f.credit(2, DENOMINATION), denom);
+        let inner = Arc::clone(&s);
+        let (set, flag, balance) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let set = lock_set(&inner, w).await;
+                Ok((set, locked(&inner, w, denom).await, confirmed(&inner, w)))
+            }))
+            .unwrap();
+        assert_eq!(set, vec![stored]);
+        assert_eq!(flag, Some(false));
+        assert_eq!(balance, DENOMINATION);
+    }
+
+    /// A lock the library or the user set on a denomination before a
+    /// funding's fence is not the fence's: its release leaves it locked,
+    /// and wallet.sqlite still holds it after a restart.
+    #[test]
+    fn a_lock_set_before_the_fence_outlives_its_release() {
+        let mut f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let denom = f.credit(2, DENOMINATION);
+        let other = f.credit(3, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let (during, after, other_after, set) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                let wallet = inner.wallet(&w).await.unwrap();
+                assert!(wallet.lock_outpoint(denom).await.unwrap());
+                let fence = funding_fence(&inner, w).await;
+                let during = locked(&inner, w, other).await;
+                drop(fence);
+                wallet_event(&inner, w).await;
+                let after = locked(&inner, w, denom).await;
+                let other_after = locked(&inner, w, other).await;
+                Ok((during, after, other_after, lock_set(&inner, w).await))
+            }))
+            .unwrap();
+        assert_eq!(during, Some(true), "the fence held the other denomination");
+        assert_eq!(
+            after,
+            Some(true),
+            "the release unlocked a lock it did not make"
+        );
+        assert_eq!(other_after, Some(false));
+        assert_eq!(set, vec![denom]);
+        assert_eq!(stored_locks(&s, w), 1);
+        drop(s);
+        f.reopen();
+        let s = Arc::clone(&f.session);
+        let inner = Arc::clone(&s);
+        let set = f
+            .engine
+            .block_on(s.on_runtime(async move { Ok(lock_set(&inner, w).await) }))
+            .unwrap();
+        assert_eq!(set, vec![denom]);
+        assert_eq!(stored_locks(&s, w), 1);
     }
 
     #[test]
@@ -1652,7 +1931,6 @@ mod tests {
     }
 
     fn coin(seed: u8, send_account: bool) -> WalletCoin {
-        use dashcore::hashes::Hash;
         let address = Address::new(
             dashcore::Network::Regtest,
             dashcore::address::Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(

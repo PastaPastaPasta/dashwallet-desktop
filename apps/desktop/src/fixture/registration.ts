@@ -136,7 +136,7 @@ const fail = (code: AppError["code"], message: string, data: AppError["data"] = 
 /** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94). */
 export const shieldedOff = (): AppError =>
   fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
-/** shielded_pool.rs `registration_facts`: while this build cannot spend from Shielded (m4 item 112). */
+/** shielded_pool.rs `registration_facts`: while this build cannot spend from Shielded (m4 item 114). */
 export const shieldedSpendsOff = (s: ShieldedWorld | null | undefined): AppError | null =>
   s?.spendsAvailable === false ? fail("platform.unavailable", "this build cannot spend from Shielded") : null;
 const platformOff = () => fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
@@ -215,6 +215,8 @@ export function restarted(world: World): World {
   for (const dp of [world.dashpay, ...Object.values(world.dashpayOf ?? {})]) dp.runs = [];
   // Mixing is memory too: nothing resumes it (U-06 D5).
   world.coinjoin.mixers = {};
+  // The store upgrade's notice is one start's: the next start is past the between state.
+  world.upgradeNotice = undefined;
   return world;
 }
 

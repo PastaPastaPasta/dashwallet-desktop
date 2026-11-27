@@ -140,8 +140,7 @@ fn checked_sum(values: impl Iterator<Item = u64>) -> Option<u64> {
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
-    use dashcore::hashes::Hash;
-    use dashcore::secp256k1::SecretKey;
+    use dashcore::ecdsa::EcdsaSecretKey;
     use dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 
     use super::super::{CollateralShare, payload_bytes};
@@ -151,7 +150,7 @@ mod tests {
     const COIN: u64 = 100_000_000;
 
     fn key_id(i: u8) -> [u8; 20] {
-        let sk = SecretKey::from_secret_bytes([i; 32]).unwrap();
+        let sk = EcdsaSecretKey::from_bytes(&[i; 32]).unwrap();
         dashcore::PublicKey::new(sk.public_key())
             .pubkey_hash()
             .to_byte_array()

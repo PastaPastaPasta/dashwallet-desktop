@@ -290,7 +290,7 @@ fn first_receive_key() -> (String, String) {
         .seed;
     let master = ExtendedPrivKey::new_master(Network::Regtest, &seed[..]).unwrap();
     let path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
-    let secret = master.derive_priv(&path).unwrap().private_key;
+    let secret = master.derive_priv(&path).unwrap().private_key.clone();
     let key = PrivateKey::new(secret, Network::Regtest);
     let address = Address::p2pkh(&key.public_key(), Network::Regtest);
     (key.to_wif(), address.to_string())

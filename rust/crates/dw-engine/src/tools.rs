@@ -344,6 +344,17 @@ impl NetworkSession {
         wallet_id: WalletId,
         floor: u32,
     ) -> Result<u32, EngineError> {
+        self.refuse_while_restored()?;
+        self.replay_wait(wallet_id, floor).await
+    }
+
+    /// [`Self::replay_guard`] without the money gate: what waits for a
+    /// replay and moves no funds (the recovery scan).
+    pub(crate) async fn replay_wait(
+        &self,
+        wallet_id: WalletId,
+        floor: u32,
+    ) -> Result<u32, EngineError> {
         let wallet = self.wallet(&wallet_id).await?;
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.
@@ -1256,7 +1267,9 @@ pub(crate) fn stored_header_start(spv_dir: &std::path::Path) -> std::io::Result<
 /// under `spv_dir`, as dash-spv does.
 #[cfg(test)]
 pub(crate) async fn store_test_headers(spv_dir: &std::path::Path, height: u32, count: usize) {
-    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
+    use dash_spv::test_utils::{
+        BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage,
+    };
     let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
     let headers = vec![dash_spv::types::HashedBlockHeader::from(header); count];
     let mut storage = PersistentBlockHeaderStorage::open(spv_dir).await.unwrap();
@@ -1293,7 +1306,7 @@ mod tests {
     /// and across two segments, and none for an empty or missing store.
     #[test]
     fn the_stored_header_start_is_the_one_dash_spv_reads() {
-        use dash_spv::storage::{
+        use dash_spv::test_utils::{
             BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage,
         };
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1372,7 +1385,6 @@ mod tests {
 
     #[test]
     fn chainlock_keeps_the_highest() {
-        use dashcore::hashes::Hash;
         let h = |n| BlockHash::from_byte_array([n; 32]);
         let c = better_chainlock(None, (10, h(1)));
         let c = better_chainlock(c, (9, h(2)));

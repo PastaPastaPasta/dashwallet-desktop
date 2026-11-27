@@ -9,14 +9,15 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use common::*;
-use dashcore::hashes::{Hash, hash160, sha256, sha256d};
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::{hash160, sha256, sha256d};
 use dpp::address_funds::AddressWitness;
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::{BinaryData, Identifier, Value};
+use dpp::secp256k1::Message;
+use dpp::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use dpp::serialization::PlatformSerializable;
 use dpp::state_transition::masternode_vote_transition::MasternodeVoteTransition;
 use dpp::state_transition::masternode_vote_transition::methods::MasternodeVoteTransitionMethodsV0;
@@ -62,25 +63,25 @@ fn vote_signer(v: &Vault) -> VoteSigner {
 }
 
 /// Wallet 1's keychain voting key `index`, derived here.
-fn keychain_secret(v: &Vault, index: u32) -> SecretKey {
+fn keychain_secret(v: &Vault, index: u32) -> EcdsaSecretKey {
     let master = ExtendedPrivKey::new_master(v.network(), &[1; 64]).unwrap();
     let path = DerivationPath::from_str(&format!("m/9'/1'/3'/1'/{index}")).unwrap();
-    master.derive_priv(&path).unwrap().private_key
+    master.derive_priv(&path).unwrap().private_key.clone()
 }
 
-fn hash160_of(secret: &SecretKey) -> [u8; 20] {
-    hash160::Hash::hash(&PublicKey::from_secret_key(secret).serialize()).to_byte_array()
+fn hash160_of(secret: &EcdsaSecretKey) -> [u8; 20] {
+    hash160::Hash::hash(&secret.public_key().to_compressed()).to_byte_array()
 }
 
 /// A single-key `ECDSA_HASH160` signer, as rs-sdk's simple-signer
 /// `SingleKeySigner` signs: `dashcore::signer::sign` of the data.
 #[derive(Debug)]
-struct OneKey(SecretKey);
+struct OneKey(EcdsaSecretKey);
 
 #[async_trait]
 impl Signer<IdentityPublicKey> for OneKey {
     async fn sign(&self, _: &IdentityPublicKey, data: &[u8]) -> Result<BinaryData, ProtocolError> {
-        let sig = dpp::dashcore::signer::sign(data, &self.0.to_secret_bytes())
+        let sig = dpp::dashcore::signer::sign(data, &*self.0.to_bytes())
             .map_err(|e| ProtocolError::Generic(e.to_string()))?;
         Ok(sig.to_vec().into())
     }
@@ -100,7 +101,7 @@ impl Signer<IdentityPublicKey> for OneKey {
 
 /// Platform's construction of `vote`, signed with `secret`: rs-sdk's
 /// `PutVote` with the voting key `voter_identity_voting_key` builds.
-async fn platform(vote: &NameVote, secret: &SecretKey) -> (Vec<u8>, [u8; 32]) {
+async fn platform(vote: &NameVote, secret: &EcdsaSecretKey) -> (Vec<u8>, [u8; 32]) {
     let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
         id: 0,
         purpose: Purpose::VOTING,
@@ -127,7 +128,7 @@ async fn platform(vote: &NameVote, secret: &SecretKey) -> (Vec<u8>, [u8; 32]) {
             vote_poll: VotePoll::ContestedDocumentResourceVotePoll(poll),
             resource_vote_choice,
         })),
-        &OneKey(*secret),
+        &OneKey(secret.clone()),
         Identifier::from(vote.pro_tx_hash),
         &key,
         vote.nonce,
@@ -169,7 +170,7 @@ async fn name_votes_equal_platforms_construction() {
             VotingKey::Attached {
                 pro_tx_hash: PRO_TX,
             },
-            SecretKey::from_secret_bytes(ATTACHED).unwrap(),
+            EcdsaSecretKey::from_bytes(&ATTACHED).unwrap(),
         ),
     ];
     for (key, secret) in keys {

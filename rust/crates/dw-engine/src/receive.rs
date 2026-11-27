@@ -125,7 +125,7 @@ fn current_receiving(view: &PoolView) -> Result<&PoolAddress, EngineError> {
 }
 
 fn pool_addresses(pool: &AddressPool, chain: AddressChain) -> Vec<PoolAddress> {
-    pool.addresses
+    pool.addresses()
         .values()
         .map(|a| PoolAddress {
             address: a.address.clone(),

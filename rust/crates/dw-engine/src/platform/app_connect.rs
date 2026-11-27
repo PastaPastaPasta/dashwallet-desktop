@@ -521,6 +521,8 @@ pub struct ConnectSheet {
     /// Approving it again with this choice reuses them.
     pub earlier_approval: Option<ConnectChoice>,
     pub block_time_ms: u64,
+    /// The digest of the group facts the bindings show.
+    pub groups: [u8; 32],
 }
 
 /// What an approval of `choice` costs and the grant it needs: an
@@ -530,6 +532,9 @@ pub struct ConnectQuote {
     pub request: [u8; 20],
     /// The digest of what this quote read.
     pub plan: [u8; 32],
+    /// The digest of the group facts this quote read: a sheet showing
+    /// others reads the request again.
+    pub groups: [u8; 32],
     /// The grant's credit bound: the update and up to three sends.
     pub max_credits: u64,
     /// What the login costs at most: the update and one send.
@@ -1146,6 +1151,9 @@ pub(crate) async fn sheet(
         parse_identity(&c.identity).is_ok_and(|id| identities.iter().any(|i| i.id == id))
     });
     let facts = request_facts(net, request).await?;
+    let groups = plan::groups_digest(&facts.groups).ok_or(PlatformError::Internal {
+        detail: "app connect groups".into(),
+    })?;
     let (_, block_time_ms, _) = net.identity(first.id).await?;
     check_age(request, block_time_ms)?;
     let bindings = (request.auth_bindings.iter().enumerate())
@@ -1177,6 +1185,7 @@ pub(crate) async fn sheet(
         max_funding_limit: MAX_FUNDING,
         earlier_approval,
         block_time_ms,
+        groups,
     })
 }
 
@@ -1188,6 +1197,7 @@ struct Prepared {
     terms: ConnectTerms,
     budgets: Vec<u64>,
     groups: BTreeMap<Identifier, Option<GroupFacts>>,
+    groups_digest: [u8; 32],
     encryption: Vec<EncPlan>,
     digest: [u8; 32],
 }
@@ -1422,6 +1432,9 @@ async fn prepare(
     .ok_or(PlatformError::Internal {
         detail: "app connect plan".into(),
     })?;
+    let groups_digest = plan::groups_digest(&facts.groups).ok_or(PlatformError::Internal {
+        detail: "app connect groups".into(),
+    })?;
     Ok(Prepared {
         identity,
         index: candidate.index,
@@ -1429,6 +1442,7 @@ async fn prepare(
         terms: choice.terms,
         budgets,
         groups: facts.groups,
+        groups_digest,
         encryption,
         digest,
     })
@@ -1445,6 +1459,7 @@ pub(crate) async fn quote(
     Ok(ConnectQuote {
         request: link.request.request_hash(),
         plan: p.digest,
+        groups: p.groups_digest,
         max_credits: CONNECT_MAX_CREDITS,
         fee: CONNECT_FEE_CREDITS,
         budgets: p.budgets,

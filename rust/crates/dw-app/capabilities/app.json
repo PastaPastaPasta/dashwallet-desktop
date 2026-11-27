@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "app",
-  "description": "The binding's own commands: launch facts, start-up marks, the display settings and event listening. Granted to the main window only; `probe_unlisted` is never granted (U6). The self-test's commands are granted in capabilities-selftest/, only in a build with the `selftest` feature.",
+  "description": "The binding's own commands: launch facts, start-up marks, the display settings, event listening, and quitting or restarting the app. Granted to the main window only; `probe_unlisted` is never granted (U6). The self-test's commands are granted in capabilities-selftest/, only in a build with the `selftest` feature.",
   "windows": [
     "main"
   ],
@@ -15,6 +15,8 @@
     "allow-ui-settings",
     "allow-set-ui-settings",
     "allow-open-releases-page",
-    "allow-open-project-link"
+    "allow-open-project-link",
+    "allow-quit-app",
+    "allow-restart-app"
   ]
 }

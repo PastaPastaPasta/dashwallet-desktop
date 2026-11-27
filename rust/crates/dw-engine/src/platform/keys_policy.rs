@@ -27,7 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dashcore::secp256k1::PublicKey;
+use dashcore::ecdsa::EcdsaPublicKey;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -212,7 +212,7 @@ pub(crate) fn unique_specs(specs: &[KeySpec]) -> Result<(), EngineError> {
 }
 
 /// The identity key `spec` describes, holding `public_key`.
-pub(crate) fn spec_key(spec: &KeySpec, public_key: &PublicKey) -> IdentityPublicKey {
+pub(crate) fn spec_key(spec: &KeySpec, public_key: &EcdsaPublicKey) -> IdentityPublicKey {
     IdentityPublicKey::V0(IdentityPublicKeyV0 {
         id: spec.id,
         purpose: spec.purpose,
@@ -220,7 +220,7 @@ pub(crate) fn spec_key(spec: &KeySpec, public_key: &PublicKey) -> IdentityPublic
         contract_bounds: spec.contract_bounds.clone(),
         key_type: KeyType::ECDSA_SECP256K1,
         read_only: false,
-        data: public_key.serialize().to_vec().into(),
+        data: public_key.to_compressed().to_vec().into(),
         disabled_at: None,
     })
 }

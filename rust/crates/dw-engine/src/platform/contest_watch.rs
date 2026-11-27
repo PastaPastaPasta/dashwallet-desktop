@@ -407,8 +407,9 @@ impl ContestNet for SdkContests {
         let dpns = SystemDataContract::DPNS.id();
         let mut ends = BTreeMap::new();
         for (ms, polls) in groups.0 {
-            for VotePoll::ContestedDocumentResourceVotePoll(poll) in polls {
-                if poll.contract_id == dpns
+            for poll in polls {
+                if let VotePoll::ContestedDocumentResourceVotePoll(poll) = poll
+                    && poll.contract_id == dpns
                     && poll.document_type_name == "domain"
                     && let Some(Value::Text(label)) = poll.index_values.get(1)
                 {

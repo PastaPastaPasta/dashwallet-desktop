@@ -39,6 +39,10 @@ pub struct Utxo {
     /// Kept out of spending and every balance, and why; `null` for any
     /// other coin.
     pub excluded: Option<CoinExclusion>,
+    /// Held back while the payment from before a restore that sent or
+    /// spends it is unproven: not offered or counted as spendable until it
+    /// is mined, dropped or abandoned (`coins.pendingUnproven`).
+    pub pending_unproven: bool,
 }
 
 /// Why a coin is kept out of spending and every balance.
@@ -75,6 +79,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_rounds,
             spendable,
             excluded,
+            pending_unproven,
         } = c;
         Utxo {
             outpoint: outpoint.into(),
@@ -94,6 +99,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_rounds,
             spendable,
             excluded: excluded.map(Into::into),
+            pending_unproven,
         }
     }
 }
