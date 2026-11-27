@@ -7,9 +7,11 @@
 //!   key is bound to the library's network coordinator (configured over
 //!   `shielded.sqlite` in the network directory) the first time a call or
 //!   the Platform start finds the wallet unbound: from the row the library
-//!   persisted, else from the vault ([`dw_vault::Vault::shielded_viewing_key`],
+//!   persisted, else from the vault ([`dw_vault::Vault::shielded_viewing_keys`],
 //!   prompt-free only), which is persisted through the session's store
-//!   first so a restart rebinds without the vault. The spend authority is
+//!   first so a restart rebinds without the vault. The library's bind also
+//!   takes each identity's tip account (`SHIELDED_IDENTITY_ACCOUNT_BASE`
+//!   plus its index), so their viewing keys are persisted beside account 0's. The spend authority is
 //!   derived per spend under a `ShieldedSpend` lease
 //!   ([`CallPermit::shielded_keys`]).
 //! - **The gate.** Every call but the status reads the network's protocol
@@ -2556,6 +2558,112 @@ impl PwShielded {
         SubwalletId::new(self.pw.wallet_id.0, SHIELDED_ACCOUNT)
     }
 
+    /// The tip account of each of the wallet's identities with an index,
+    /// selected as the library's bind selects them (`discovered_tip_accounts`).
+    async fn tip_accounts(&self) -> BTreeSet<u32> {
+        let wallet = self.pw.wallet_id.0;
+        let wm = self.manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let Some(info) = wm.get_wallet_info(&wallet) else {
+            return BTreeSet::new();
+        };
+        (info.identity_manager.managed_identities())
+            .filter(|m| m.wallet_id == Some(wallet))
+            .filter_map(|m| m.identity_index)
+            .filter_map(|index| platform_wallet::shielded_identity_account_index(index).ok())
+            .collect()
+    }
+
+    /// [`Self::tip_accounts`] not registered on the coordinator.
+    async fn unbound_tip_accounts(&self) -> Vec<u32> {
+        let mut tips = self.tip_accounts().await;
+        for registered in self.coordinator.registered_subwallets().await {
+            if registered.wallet_id == self.pw.wallet_id.0 {
+                tips.remove(&registered.account_index);
+            }
+        }
+        tips.into_iter().collect()
+    }
+
+    /// Persists the vault's viewing keys of `accounts` through the session's
+    /// store, before a bind reads them (the library's own seed bind's order),
+    /// so a restart binds them without the vault. `Some` with what the
+    /// vault's refusal says (it gives them prompt-free only).
+    async fn persist_viewing_keys(
+        &self,
+        accounts: Vec<u32>,
+    ) -> Result<Option<ShieldedAccount>, PlatformError> {
+        let (vault, id) = (self.pw.session.vault.clone(), self.pw.wallet_id);
+        let fvks =
+            tokio::task::spawn_blocking(move || vault.shielded_viewing_keys(&id.0, &accounts))
+                .await
+                .map_err(|e| PlatformError::Internal {
+                    detail: e.to_string(),
+                })?;
+        let fvks = match fvks {
+            Ok(fvks) => fvks,
+            Err(e) => return vault_blocked(e).map(Some),
+        };
+        let mut shielded = ShieldedChangeSet::default();
+        for (account, fvk) in fvks {
+            shielded.record_viewing_key(SubwalletId::new(id.0, account), fvk);
+        }
+        let store = Arc::clone(&self.pw.session.live().map_err(PlatformError::from)?.store);
+        tokio::task::spawn_blocking(move || {
+            let changeset = PlatformWalletChangeSet {
+                shielded: Some(shielded),
+                ..Default::default()
+            };
+            store.store(id.0, changeset)?;
+            store.flush(id.0)
+        })
+        .await
+        .map_err(store_error)?
+        .map_err(store_error)?;
+        Ok(None)
+    }
+
+    /// For a bound wallet, binds the tip account of each identity found since
+    /// its bind (registered, restored or discovered later) beside the bound
+    /// ones; the library's re-bind keeps their notes. Account 0 stays bound
+    /// whatever happens; one the vault or a pass holds back is tried again at
+    /// the next bind or pass.
+    pub(crate) async fn bind_new_tip_accounts(&self) -> Result<(), PlatformError> {
+        if !self.pw.wallet.is_shielded_bound().await
+            || !(self.pw.session.vault).has_wallet_secret(&self.pw.wallet_id.0)
+            || self.unbound_tip_accounts().await.is_empty()
+        {
+            return Ok(());
+        }
+        let passes = self.pw.session.platform.shielded_passes.write();
+        let Ok(_passes) = tokio::time::timeout(BIND_PASS_WAIT, passes).await else {
+            return Ok(());
+        };
+        let missing = self.unbound_tip_accounts().await;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        if let Some(held) = self.persist_viewing_keys(missing.clone()).await? {
+            tracing::debug!(
+                ?held,
+                ?missing,
+                "identity tip accounts wait for the vault to bind"
+            );
+            return Ok(());
+        }
+        let accounts = [SHIELDED_ACCOUNT];
+        if !(self.pw.wallet)
+            .bind_shielded_from_persisted(&accounts, &self.coordinator)
+            .await?
+        {
+            tracing::warn!(
+                ?missing,
+                "identity tip accounts did not bind; tried again at the next bind"
+            );
+        }
+        Ok(())
+    }
+
     /// The script the library's next shield lock credits: the next unused
     /// address of the wallet's shielded top-up funding account, as
     /// platform-wallet's `peek_next_funding_address` picks it. Read before
@@ -3630,6 +3738,9 @@ impl ShieldedLib for PwShielded {
         let wallet = &self.pw.wallet;
         let accounts = [SHIELDED_ACCOUNT];
         if wallet.is_shielded_bound().await {
+            if let Err(e) = self.bind_new_tip_accounts().await {
+                tracing::warn!(wallet_id = %self.pw.wallet_id, error = %e, "identity tip accounts did not bind");
+            }
             self.hold_drained().await?;
             return Ok(ShieldedAccount::Bound);
         }
@@ -3657,33 +3768,13 @@ impl ShieldedLib for PwShielded {
             // No seed to derive from, whatever the vault's state.
             return Ok(ShieldedAccount::WatchOnly);
         }
-        // First bind: the vault's viewing key, persisted before it is bound
-        // (the library's own seed bind's order), so a restart rebinds from
-        // the row.
-        let (vault, id) = (self.pw.session.vault.clone(), self.pw.wallet_id);
-        let fvk = tokio::task::spawn_blocking(move || vault.shielded_viewing_key(&id.0))
-            .await
-            .map_err(|e| PlatformError::Internal {
-                detail: e.to_string(),
-            })?;
-        let fvk = match fvk {
-            Ok(fvk) => fvk,
-            Err(e) => return vault_blocked(e),
-        };
-        let mut shielded = ShieldedChangeSet::default();
-        shielded.record_viewing_key(self.subwallet(), fvk);
-        let store = Arc::clone(&self.pw.session.live().map_err(PlatformError::from)?.store);
-        tokio::task::spawn_blocking(move || {
-            let changeset = PlatformWalletChangeSet {
-                shielded: Some(shielded),
-                ..Default::default()
-            };
-            store.store(id.0, changeset)?;
-            store.flush(id.0)
-        })
-        .await
-        .map_err(store_error)?
-        .map_err(store_error)?;
+        // First bind: account 0's viewing key, and each identity's tip
+        // account's, which the library's seedless bind also requires.
+        let mut keys = vec![SHIELDED_ACCOUNT];
+        keys.extend(self.tip_accounts().await);
+        if let Some(held) = self.persist_viewing_keys(keys).await? {
+            return Ok(held);
+        }
         let bound = (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await?;
         if !bound {
             return Ok(ShieldedAccount::Binding);
@@ -5455,8 +5546,23 @@ pub(crate) async fn periodic_pass(
     if !runs(&session) || session.enter().await.is_err() {
         return false;
     }
+    bind_new_tip_accounts(&session, &manager).await;
     let runs = |s: &NetworkSession| runs(s) && s.try_enter().is_ok();
     pass(&session, &manager, false, count, &runs).await
+}
+
+/// Before a periodic pass, outside its locks: each bound wallet's identity
+/// tip accounts found since its bind ([`PwShielded::bind_new_tip_accounts`]).
+pub(crate) async fn bind_new_tip_accounts(session: &Arc<NetworkSession>, manager: &Manager) {
+    for wallet in manager.list_wallet_ids_blocking() {
+        let bound = match PwShielded::open(session, WalletId(wallet)).await {
+            Ok(lib) => lib.bind_new_tip_accounts().await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = bound {
+            tracing::debug!(wallet_id = %WalletId(wallet), error = %e, "identity tip accounts did not bind");
+        }
+    }
 }
 
 /// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks

@@ -146,6 +146,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: the engine binds the Orchard account's viewing key from it, prompt-free, at the Platform start or the first shielded call (m4 §2.13); never a host's",
     ),
     (
+        "Vault::shielded_viewing_keys",
+        "internal: the engine binds account 0's and each identity tip account's viewing key from it, prompt-free, as platform-wallet's seedless bind requires; never a host's",
+    ),
+    (
         "Vault::shielded_spend_key",
         "internal: reached through `DashPay::shielded_send`, `unshield_to_core` and `unshield_to_platform`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
     ),
