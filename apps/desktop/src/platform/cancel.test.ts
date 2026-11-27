@@ -24,6 +24,13 @@ const amount = (d: number) => `${d / 1e8} tDASH`;
 afterEach(() => resetPlatformCancels());
 
 describe("which way out a held item offers", () => {
+  it("tells the user the earlier item can still go through and when to cancel again", () => {
+    for (const kind of ["move", "payment"] as const) {
+      expect(CANCEL_COPY.restoreRefusal(kind)).toContain(`The earlier ${kind} can still go through.`);
+      expect(CANCEL_COPY.restoreRefusal(kind)).toContain("Once it has finished, choose Cancel again.");
+    }
+  });
+
   it("a held send: Move to Dash wallet, never a cancel; a cancel row is no send to move", () => {
     const send = held("ps-1", "send", { to: PAYEE });
     expect([isHeldSend(send), cancelOf(send, [send])]).toEqual([true, null]);

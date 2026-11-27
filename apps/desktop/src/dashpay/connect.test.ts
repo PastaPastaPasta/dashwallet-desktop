@@ -90,7 +90,8 @@ describe("refusals", () => {
     expect(connectErrorText(err("connect.credits", { kind: "credits", needed: "120000000", available: "4000000" }), "testnet")).toBe(
       "Your identity needs 116,000,000 more in credits to add these keys. Top it up, then try again.",
     );
-    expect(connectErrorText(err("platform.unavailable"), "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+    expect(connectErrorText(err("platform.unavailable"), "testnet")).toContain("Make sure Dash Platform is on and connected");
+    expect(connectErrorText(err("platform.restored"), "testnet")).toContain("Finish checking the restored wallet data");
     expect(connectErrorText(new Error("boom"), "testnet")).toBe("Couldn't check this request with Platform. Try again.");
   });
 });
@@ -473,7 +474,7 @@ describe("the flow over the fixture", () => {
     const { flow, backend } = await open("quoteOffline");
     const earlier = flow.sheet!.earlierApproval!;
     expect([flow.editable, flow.choice(), flow.quote]).toEqual([false, earlier, null]);
-    expect(connectErrorText(flow.quoteError, "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+    expect(connectErrorText(flow.quoteError, "testnet")).toContain("Make sure Dash Platform is on and connected");
     const quote = vi.spyOn(backend, "appConnectQuote");
     await flow.requote();
     expect(quote).toHaveBeenCalledWith(FIXTURE_WALLET_ID, flow.linkId, earlier);
