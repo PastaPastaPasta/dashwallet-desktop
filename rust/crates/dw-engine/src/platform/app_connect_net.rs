@@ -104,9 +104,9 @@ pub(crate) trait ConnectNet: Send + Sync {
         owner: Identifier,
     ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
     /// Refreshes the SDK wallet's cached identity from Platform, propagating
-    /// any refresh error. Mandatory before SDK cache-backed writers
-    /// (`update_identity`, `publish`) so they never sign against a stale cached
-    /// revision.
+    /// any refresh error. Mandatory before `update_identity`, which signs at
+    /// the returned identity's next revision, and before `publish`, which is
+    /// SDK cache-backed.
     fn refresh_cache(
         &self,
         wallet: &PlatformWallet,
@@ -119,13 +119,17 @@ pub(crate) trait ConnectNet: Send + Sync {
         wallet: &PlatformWallet,
         id: Identifier,
     ) -> impl Future<Output = Result<(Identity, u64), PlatformError>> + Send;
-    /// The MASTER-signed IdentityUpdate.
+    /// Signs and broadcasts the MASTER-signed IdentityUpdate at
+    /// `identity.revision() + 1` and exactly `nonce`.
+    #[expect(clippy::too_many_arguments, reason = "one IdentityUpdate's fields")]
     fn update_identity(
         &self,
         wallet: &PlatformWallet,
-        id: Identifier,
+        identity: &Identity,
+        master_key_id: KeyID,
         add: Vec<IdentityPublicKey>,
         disable: Vec<KeyID>,
+        nonce: u64,
         signer: &ConnectUpdateSigner,
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// The identity's proved nonce state (low 40 bits: tip; upper 24 bits:
@@ -377,15 +381,47 @@ impl ConnectNet for SdkConnect {
     async fn update_identity(
         &self,
         wallet: &PlatformWallet,
-        id: Identifier,
+        identity: &Identity,
+        master_key_id: KeyID,
         add: Vec<IdentityPublicKey>,
         disable: Vec<KeyID>,
+        nonce: u64,
         signer: &ConnectUpdateSigner,
     ) -> Result<(), PlatformError> {
-        Ok(wallet
-            .identity()
-            .update_identity_with_external_signer(&id, add, disable, signer, None)
-            .await?)
+        let id = identity.id();
+        let mut updated = identity.clone();
+        let revision =
+            identity
+                .revision()
+                .checked_add(1)
+                .ok_or_else(|| PlatformError::Internal {
+                    detail: "identity is at the last revision".into(),
+                })?;
+        updated.set_revision(revision);
+        let transition = IdentityUpdateTransition::try_from_identity_with_signer(
+            &updated,
+            &master_key_id,
+            add,
+            disable,
+            nonce,
+            0,
+            signer,
+            self.0.version(),
+            None,
+        )
+        .await
+        .map_err(|e| PlatformError::Internal {
+            detail: format!("sign identity update: {e}"),
+        })?;
+        let result = transition
+            .broadcast_and_wait::<StateTransitionProofResult>(&self.0, None)
+            .await;
+        self.0.refresh_identity_nonce(&id).await;
+        let _ = self.0.get_identity_nonce(id, false, None).await;
+        if result.is_ok() {
+            let _ = wallet.identity().refresh_identity(&id).await;
+        }
+        result.map(|_| ()).map_err(PlatformError::from)
     }
 
     async fn identity_nonce(&self, id: Identifier) -> Result<(u64, u64), PlatformError> {

@@ -406,8 +406,8 @@ pub enum ConnectFailure {
     PendingFeeTooHigh,
     /// Another unresolved write on this identity (such as a credit withdrawal,
     /// credit transfer, or another app's pending disconnect) currently owns
-    /// the identity's next nonce, so Disconnect refused to sign a colliding
-    /// transition.
+    /// the identity's next nonce, so Approve or Disconnect refused to sign a
+    /// colliding transition.
     PendingWrite,
 }
 
@@ -1984,13 +1984,24 @@ pub(crate) async fn approve(
             failure: ConnectFailure::NotConfirmed,
         });
     }
-    // Never let an SDK-cached `update_identity` for another app take a nonce
-    // held by a live pending Disconnect or an ahead-of-tip conflict reservation
-    // on this identity (r4712173000 / G1). For a retired reservation at
-    // `k <= tip` (a missing-nonce gap), the SDK's nonce cache could hand out
-    // `cached + 1 == k`, in which case whichever lands first consumes `k`, the
-    // other is refused for free (duplicate nonce / no fee), and the cost is
-    // liveness only.
+    // The update signs at `tip + 1` of this one read, so every check below
+    // decides the nonce it signs at. It never takes a nonce an unresolved
+    // transfer or withdrawal holds, a live pending Disconnect holds, or an
+    // ahead-of-tip conflict reservation holds (r4712173000 / G1).
+    let (nonce_state, nonce_height) = net.identity_nonce(id).await?;
+    let tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
+    match session.withdrawal_nonces.ownership(id, nonce_state) {
+        super::withdrawal::NonceOwner::Free => {}
+        super::withdrawal::NonceOwner::Pending => {
+            return Err(ConnectError::Failed {
+                failure: ConnectFailure::PendingWrite,
+            });
+        }
+        super::withdrawal::NonceOwner::Behind => {
+            return Err(PlatformError::Unavailable.into());
+        }
+    }
+    let nonce = tip + 1;
     let mut other_live_pendings: Vec<u64> = Vec::new();
     let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
     for r in all_records
@@ -2009,8 +2020,6 @@ pub(crate) async fn approve(
         }
     }
     if !other_live_pendings.is_empty() || !other_reserved_nonces.is_empty() {
-        let (nonce_state, nonce_height) = net.identity_nonce(id).await?;
-        let tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
         for d_nonce in other_live_pendings {
             if super::withdrawal::takes(nonce_state, d_nonce, id) {
                 return Err(ConnectError::Failed {
@@ -2047,10 +2056,10 @@ pub(crate) async fn approve(
     }
     let p = prepare(net, session, wallet_id, link, choice).await?;
     check_grant(session, wallet_id, &grant, request_hash, p.digest).await?;
-    // Mandatory SDK cache refresh before redeeming the grant or signing an
-    // SDK cache-backed IdentityUpdate (r4712172979): a failed cache refresh
+    // Mandatory refresh before redeeming the grant (r4712172979): the update
+    // signs at the refreshed identity's next revision, and a failed refresh
     // refuses with nothing signed and the grant unused.
-    net.refresh_cache(wallet, id).await?;
+    let current = net.refresh_cache(wallet, id).await?;
     let master = master_key(&p.identity).ok_or(PlatformError::from(
         super::errors::IdentityError::KeysMissing {
             purpose: super::identity::KeyPurpose::Authentication,
@@ -2121,7 +2130,15 @@ pub(crate) async fn approve(
         };
         let written = leased(
             &lease,
-            net.update_identity(wallet, id, plan.add.clone(), disable.clone(), &signer),
+            net.update_identity(
+                wallet,
+                &current,
+                master.id(),
+                plan.add.clone(),
+                disable.clone(),
+                nonce,
+                &signer,
+            ),
         )
         .await;
         drop(signer);

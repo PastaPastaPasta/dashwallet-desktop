@@ -125,6 +125,8 @@ pub(crate) struct FakeConnect {
     reads: Mutex<Vec<&'static str>>,
     /// Each update: the keys added and disabled.
     updates: Mutex<Vec<(Vec<IdentityPublicKey>, Vec<KeyID>)>>,
+    /// The nonce each IdentityUpdate was signed at.
+    update_nonces: Mutex<Vec<u64>>,
     /// Each response published, with the key that signed it.
     published: Mutex<Vec<(Identifier, Response, KeyID)>>,
     /// Signatures released, by key id.
@@ -211,6 +213,7 @@ impl FakeConnect {
             responses: Mutex::default(),
             reads: Mutex::default(),
             updates: Mutex::default(),
+            update_nonces: Mutex::default(),
             published: Mutex::default(),
             signed: Mutex::default(),
             fail_publish: AtomicBool::new(false),
@@ -403,22 +406,16 @@ impl ConnectNet for FakeConnect {
     async fn update_identity(
         &self,
         _: &PlatformWallet,
-        id: Identifier,
+        identity: &Identity,
+        master_key_id: KeyID,
         add: Vec<IdentityPublicKey>,
         disable: Vec<KeyID>,
+        nonce: u64,
         signer: &ConnectUpdateSigner,
     ) -> Result<(), PlatformError> {
-        let master = self
-            .identities
-            .lock()
-            .unwrap()
-            .get(&id)
-            .unwrap()
-            .public_keys()
-            .values()
-            .find(|k| k.security_level() == SecurityLevel::MASTER)
-            .cloned()
-            .unwrap();
+        let id = identity.id();
+        let master = identity.public_keys()[&master_key_id].clone();
+        assert_eq!(master.security_level(), SecurityLevel::MASTER);
         // As dpp: each new unique-type key proves possession, then MASTER.
         for k in add
             .iter()
@@ -435,6 +432,7 @@ impl ConnectNet for FakeConnect {
             .await
             .map_err(|_| PlatformError::SignerUnavailable)?;
         self.signed.lock().unwrap().push(master.id());
+        self.update_nonces.lock().unwrap().push(nonce);
         if !self.refreshed.swap(false, Ordering::SeqCst) {
             return Err(PlatformError::Internal {
                 detail: "Failed to broadcast identity update".into(),
@@ -4808,6 +4806,85 @@ fn e1_transfer_timeout_blocks_disconnect_from_stealing_nonce_and_never_falsely_r
     assert!(!out.transition.is_empty());
 }
 
+/// An unresolved transfer at `tip + 1` keeps approve from signing at that
+/// nonce, so the transfer is never reported as landed on approve's nonce;
+/// approve signs at `tip + 1` of its own read once the transfer resolves,
+/// and refuses on a read behind a nonce this session saw used.
+#[test]
+fn approve_refuses_while_a_transfer_holds_the_next_nonce() {
+    use crate::platform::errors::CreditsError;
+
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let amount = 100_000_000;
+    let tq = f.transfer_quote(&me_b58, amount).unwrap();
+    let w_grant1 = f.withdraw_grant(amount + tq.fee_credits);
+    f.net.transfer_timeout.store(true, Ordering::SeqCst);
+    let t1_hash = match f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant1) {
+        Err(CreditsError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("expected BroadcastUnknown, got {other:?}"),
+    };
+    f.net.transfer_timeout.store(false, Ordering::SeqCst);
+
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    assert_eq!(
+        f.approve(&l, &c, &g),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::PendingWrite,
+        })
+    );
+    assert!(f.net.signed().is_empty());
+    assert!(f.net.update_nonces.lock().unwrap().is_empty());
+    assert!(f.unused(&g));
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+
+    let w_grant2 = f.withdraw_grant(amount + tq.fee_credits);
+    assert_eq!(
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
+        Err(CreditsError::MovePending {
+            id: t1_hash.clone(),
+        })
+    );
+
+    f.net.nonces.lock().unwrap().insert(id(ME), 1);
+    assert_eq!(
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
+        Err(CreditsError::WithdrawalLanded { artifact: t1_hash })
+    );
+    f.net.reads.lock().unwrap().clear();
+    f.approve(&l, &c, &g).unwrap();
+    assert_eq!(*f.net.update_nonces.lock().unwrap(), [2]);
+    let nonce_reads = f
+        .net
+        .reads
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| **r == "identity_nonce")
+        .count();
+    assert_eq!(nonce_reads, 1);
+
+    f.s.withdrawal_nonces.advance_floor(id(ME), 4);
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58,
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g2 = f.quoted_grant(&l2, &c2);
+    assert_eq!(
+        f.approve(&l2, &c2, &g2),
+        Err(ConnectError::Platform(PlatformError::Unavailable))
+    );
+    assert_eq!(f.net.update_nonces.lock().unwrap().len(), 1);
+    assert!(f.unused(&g2));
+}
+
 #[test]
 fn e1_disconnect_timeout_blocks_transfer_from_stranding_pending_disconnect() {
     use crate::platform::errors::CreditsError;
@@ -6369,8 +6446,8 @@ fn disconnect_nothing_to_disable_preserves_unresolved_conflict_nonce_reservation
 }
 
 /// Reviewer F / bot r4712172979 fail-first test:
-/// `approve` relies on the SDK wallet's cached identity revision when calling
-/// `update_identity_with_external_signer`. When the cache refresh fails while
+/// `approve` signs its `update_identity` at the refreshed cached identity's
+/// next revision. When the cache refresh fails while
 /// a direct height-bearing `refresh` fetch still succeeds, `approve` MUST refuse
 /// before `update_identity`, leaving nothing signed and the grant unused.
 #[test]
@@ -7050,6 +7127,7 @@ fn approve_different_app_refuses_while_disconnect_or_ahead_reservation_owns_nonc
     let g2_fresh = f.quoted_grant(&l2, &c2);
     f.approve(&l2, &c2, &g2_fresh).unwrap();
     assert_eq!(f.net.updates.lock().unwrap().len(), updates_before + 1);
+    assert_eq!(f.net.update_nonces.lock().unwrap().last(), Some(&32));
 }
 
 /// Reviewer F / thepastaclaw r4717147458 fail-first test:
