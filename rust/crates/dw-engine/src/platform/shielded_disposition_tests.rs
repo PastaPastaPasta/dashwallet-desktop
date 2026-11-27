@@ -637,7 +637,7 @@ fn a_held_refusal_with_no_live_row_shows_pending_until_release() {
     let first = spends().remove(0);
     let st_hash = Sha256::digest(&first.st_bytes).into();
     let id = first.activity_id;
-    let wallet = {
+    let (wallet, journal) = {
         let engine = engine_at(dir.path());
         let (session, wallet) = first_launch(&engine);
         assert!(
@@ -656,9 +656,26 @@ fn a_held_refusal_with_no_live_row_shows_pending_until_release() {
                 false,
             ))
             .unwrap();
+        let journal = session
+            .data_dir()
+            .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
         engine.block_on(engine.shutdown()).unwrap();
-        wallet
+        (wallet, journal)
     };
+    let archived = [0x44u8; 32];
+    assert_eq!(
+        rusqlite::Connection::open(&journal)
+            .unwrap()
+            .execute(
+                "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, kind, anchor, status, at)
+                 SELECT wallet, ?3, origin, ?3, kind, anchor, 'archived', at
+                 FROM shielded_artifact WHERE wallet = ?1 AND activity = ?2",
+                rusqlite::params![&wallet.0[..], &id[..], &archived[..]],
+            )
+            .unwrap(),
+        1
+    );
+    damage_artifact_read(&journal, wallet, archived, true);
     let engine = engine_at(dir.path());
     let session = open(&engine);
     engine
@@ -682,6 +699,9 @@ fn a_held_refusal_with_no_live_row_shows_pending_until_release() {
         crate::platform::shielded::ShieldedActivityKind::Sent
     );
     assert_eq!(held.refusal, Some(ShieldedRefusal::Held));
+    damage_artifact_read(&journal, wallet, spends().remove(1).activity_id, true);
+    assert_eq!(read().refusal, Some(ShieldedRefusal::Held));
+    damage_artifact_read(&journal, wallet, archived, false);
     assert!(admit(&engine, &session, wallet, id[0]).is_err());
 
     let s = Arc::clone(&session);

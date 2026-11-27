@@ -2227,11 +2227,7 @@ impl DispatchJournal {
     /// The shielded artifacts of `wallet` (schema 11) but the archived ones,
     /// by activity.
     pub fn shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {
-        Ok(self
-            .all_shielded_artifacts(wallet)?
-            .into_iter()
-            .filter(|a| a.status != ArtifactStatus::Archived)
-            .collect())
+        self.read_shielded_artifacts(wallet, false)
     }
 
     /// Whether `wallet` has a shielded artifact that holds it
@@ -2268,6 +2264,33 @@ impl DispatchJournal {
             .collect()
     }
 
+    /// Which displayed activity IDs have an unacknowledged local dispatch
+    /// that can still be shown as held.
+    pub fn shielded_refusal_activity(
+        &self,
+        wallet: &[u8; 32],
+        activities: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT EXISTS (
+                SELECT 1 FROM shielded_artifact
+                WHERE wallet = ?1 AND activity = ?2 AND origin = 'dispatched' AND acked = 0
+                  AND (status = 'registered' OR (
+                    status = 'unresolved' AND status_reason IS NULL AND st_hash IS NOT NULL
+                    AND disposition_kind = 'unresolved' AND disposition_reason = 'cancelled'
+                  ))
+             )",
+        )?;
+        let mut eligible = BTreeSet::new();
+        for activity in activities {
+            if stmt.query_row(params![&wallet[..], &activity[..]], |r| r.get::<_, bool>(0))? {
+                eligible.insert(*activity);
+            }
+        }
+        Ok(eligible)
+    }
+
     /// Selected notes that may have been spent by a local dispatch.
     /// Keep the evidence across scans because the note store is rebuilt
     /// after a restart and a lagging node may omit a known spend.
@@ -2287,6 +2310,14 @@ impl DispatchJournal {
     /// Every shielded artifact of `wallet`, archived ones included, by
     /// activity.
     pub fn all_shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {
+        self.read_shielded_artifacts(wallet, true)
+    }
+
+    fn read_shielded_artifacts(
+        &self,
+        wallet: &[u8; 32],
+        include_archived: bool,
+    ) -> Result<Vec<ShieldedArtifact>> {
         type Row = (
             Vec<u8>,
             String,
@@ -2305,10 +2336,11 @@ impl DispatchJournal {
         let mut stmt = conn.prepare(
             "SELECT activity, origin, st_hash, kind, anchor, identity_id, status, status_reason, \
              disposition_kind, disposition_reason, acked, at \
-             FROM shielded_artifact WHERE wallet = ?1 ORDER BY activity",
+             FROM shielded_artifact WHERE wallet = ?1 AND (?2 OR status <> 'archived')
+             ORDER BY activity",
         )?;
         let rows = stmt
-            .query_map(params![&wallet[..]], |r| {
+            .query_map(params![&wallet[..], include_archived], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,

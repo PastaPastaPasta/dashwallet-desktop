@@ -1628,15 +1628,42 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    pub(crate) async fn shielded_refusal_activity(
+        &self,
+        wallet: WalletId,
+        activities: Vec<[u8; 32]>,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        self.rt
+            .spawn_blocking(move || backend.shielded_refusal_activity(&wallet.0, &activities))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// Every shielded artifact of `wallet` (schema 11), archived ones
     /// included. On the blocking pool.
     pub(crate) async fn shielded_artifacts(
         &self,
         wallet: WalletId,
     ) -> Result<Vec<dw_appdb::dispatch::ShieldedArtifact>, String> {
+        self.read_shielded_artifacts(wallet, true).await
+    }
+
+    pub(crate) async fn unarchived_shielded_artifacts(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<dw_appdb::dispatch::ShieldedArtifact>, String> {
+        self.read_shielded_artifacts(wallet, false).await
+    }
+
+    async fn read_shielded_artifacts(
+        &self,
+        wallet: WalletId,
+        include_archived: bool,
+    ) -> Result<Vec<dw_appdb::dispatch::ShieldedArtifact>, String> {
         let backend = self.journal.get().ok_or("the journal is closed")?;
         (self.rt)
-            .spawn_blocking(move || backend.shielded_artifacts(&wallet.0))
+            .spawn_blocking(move || backend.shielded_artifacts(&wallet.0, include_archived))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -1701,11 +1728,7 @@ impl LeaseTable {
         wallet: WalletId,
         st_hash: [u8; 32],
     ) -> Result<bool, String> {
-        let backend = self.journal.get().ok_or("the journal is closed")?;
-        let artifacts = (self.rt)
-            .spawn_blocking(move || backend.shielded_artifacts(&wallet.0))
-            .await
-            .map_err(|e| e.to_string())??;
+        let artifacts = self.shielded_artifacts(wallet).await?;
         Ok(artifacts.iter().any(|a| a.st_hash == Some(st_hash)))
     }
 

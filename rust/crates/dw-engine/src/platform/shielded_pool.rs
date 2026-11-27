@@ -2701,28 +2701,38 @@ impl PwShielded {
         &self,
         rows: &mut [ShieldedActivity],
     ) -> Result<(), PlatformError> {
-        let outstanding = |r: &ShieldedActivity| {
-            matches!(
-                r.status,
-                ShieldedActivityStatus::Pending | ShieldedActivityStatus::Failed
-            )
-        };
-        if !rows.iter().any(outstanding) {
+        let outstanding: Vec<_> = rows
+            .iter_mut()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    ShieldedActivityStatus::Pending | ShieldedActivityStatus::Failed
+                )
+            })
+            .filter_map(|row| {
+                let mut id = [0; 32];
+                hex::decode_to_slice(&row.id, &mut id).ok()?;
+                Some((row, id))
+            })
+            .collect();
+        if outstanding.is_empty() {
             return Ok(());
         }
-        let artifacts = self
+        let eligible = self
             .pw
             .session
             .leases
-            .shielded_artifacts(self.pw.wallet_id)
+            .shielded_refusal_activity(
+                self.pw.wallet_id,
+                outstanding.iter().map(|(_, id)| *id).collect(),
+            )
             .await
             .map_err(store_error)?;
         let store = self.coordinator.store().read().await;
         let subwallet = self.subwallet();
-        for artifact in artifacts.iter().filter(|a| dispatched_history_candidate(a)) {
-            let id = hex::encode(artifact.activity);
-            if let Some(row) = rows.iter_mut().find(|r| r.id == id && outstanding(r))
-                && holds_activity(&*store, subwallet, &artifact.activity).map_err(store_error)?
+        for (row, id) in outstanding {
+            if eligible.contains(&id)
+                && holds_activity(&*store, subwallet, &id).map_err(store_error)?
             {
                 row.refusal = Some(ShieldedRefusal::Held);
                 row.status = ShieldedActivityStatus::Pending;
@@ -4912,7 +4922,7 @@ pub(crate) async fn keep_spend_rows(
         return true;
     }
     let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
-    let artifacts = match session.leases.shielded_artifacts(wallet).await {
+    let artifacts = match session.leases.unarchived_shielded_artifacts(wallet).await {
         Ok(artifacts) => artifacts,
         Err(e) => {
             tracing::warn!(wallet_id = %wallet, error = %e, "the shielded artifacts could not be read");
