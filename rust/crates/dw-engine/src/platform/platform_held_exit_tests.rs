@@ -1226,10 +1226,12 @@ fn the_exit_and_a_held_cancel_pass_the_mainnet_flag() {
     assert!(w.moves().iter().all(|m| !m.holds()));
 }
 
-/// The restore's Platform hold refuses a cancel unsigned and keeps the
-/// record held; once the restore's check clears the wallet's row the same
-/// cancel is Done, and on mainnet with sends off a new cancel still meets
-/// residual 5's refusal.
+/// The restore's Platform hold refuses a cancel unsigned, its grant
+/// unredeemed and the record held; once the restore's check clears the
+/// wallet's row the exact same call is Done, and on mainnet with sends off
+/// a new cancel still meets residual 5's refusal. `gated_cancel` composes
+/// the facade's gate and the cancel; that the facade calls the gate is
+/// `restore_holds_tests`' row.
 #[test]
 fn a_cancel_the_restore_hold_refused_goes_through_once_the_hold_clears() {
     for mainnet in [false, true] {
@@ -1238,24 +1240,28 @@ fn a_cancel_the_restore_hold_refused_goes_through_once_the_hold_clears() {
             false => World::new(),
         };
         held_withdrawal(&w);
-        let own = bech32m(&w.address(3), w.network());
+        // A new cancel on mainnet has no quote: residual 5 refuses it.
+        let (to, credits) = match mainnet {
+            true => (bech32m(&w.address(3), w.network()), DASH),
+            false => {
+                let q = w.cancel_quote_of("move-1-0").unwrap();
+                (q.to, q.credits)
+            }
+        };
+        let grant = w.f.grant(credits);
         w.restore_row(true);
-        match w.gated_cancel("move-1-0", &own, &w.f.grant(DASH)) {
+        match w.gated_cancel("move-1-0", &to, &grant) {
             Err(CreditsError::Platform(PlatformError::Restored)) => {}
             other => panic!("{other:?}"),
         }
+        (w.f.s.vault)
+            .grant_purpose(&grant, dw_vault::GrantKind::PlatformOp, Some(&w.f.wallet.0))
+            .unwrap();
         assert_eq!(w.sent_count(), 0);
         assert_eq!(w.moves().len(), 1);
         assert!(w.record("move-1-0").holds());
         w.restore_row(false);
-        let out = match mainnet {
-            true => w.gated_cancel("move-1-0", &own, &w.f.grant(DASH)),
-            false => {
-                let q = w.cancel_quote_of("move-1-0").unwrap();
-                w.gated_cancel("move-1-0", &q.to, &w.f.grant(q.credits))
-            }
-        };
-        match (mainnet, out) {
+        match (mainnet, w.gated_cancel("move-1-0", &to, &grant)) {
             (false, Ok(out)) => {
                 assert_eq!(out.state, PlatformActivityState::Done);
                 assert!(w.moves().iter().all(|m| !m.holds()));
@@ -1265,7 +1271,7 @@ fn a_cancel_the_restore_hold_refused_goes_through_once_the_hold_clears() {
                 assert_eq!(w.sent_count(), 0);
                 assert!(w.record("move-1-0").holds());
             }
-            other => panic!("{other:?}"),
+            (_, other) => panic!("{other:?}"),
         }
     }
 }
