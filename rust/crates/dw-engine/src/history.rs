@@ -2164,18 +2164,11 @@ impl HistoryStore {
         verified_inputs: Option<&[OutPoint]>,
         skip: impl Fn(&WalletId) -> bool,
     ) -> Vec<WalletId> {
-        if let Some(inputs) = verified_inputs {
-            let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-            self.early_locks
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-                .remember(*txid, inputs);
-            for history in wallets.values_mut() {
-                if history.txs.contains_key(txid) || inputs.iter().any(|o| history.owns_output(o)) {
-                    history.session_locks.insert(*txid);
-                }
-            }
-        }
+        let owns_lock = |history: &WalletHistory| {
+            verified_inputs.is_some_and(|inputs| {
+                history.txs.contains_key(txid) || inputs.iter().any(|o| history.owns_output(o))
+            })
+        };
         let wants_lock = |id: &WalletId, h: &WalletHistory| {
             !skip(id)
                 && h.loaded
@@ -2183,21 +2176,33 @@ impl HistoryStore {
                     .get(txid)
                     .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
         };
-        let targets: Vec<WalletId> = {
-            let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
-            map.iter()
-                .filter(|(id, h)| wants_lock(id, h))
-                .map(|(id, _)| *id)
-                .collect()
+        let needs_write = {
+            let wallets = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+            match verified_inputs {
+                Some(_) => wallets.values().any(owns_lock),
+                None => wallets.iter().any(|(id, history)| wants_lock(id, history)),
+            }
         };
-        if targets.is_empty() {
-            return targets;
+        let buffer = || self.early_locks.write().unwrap_or_else(|p| p.into_inner());
+        if !needs_write {
+            if let Some(inputs) = verified_inputs {
+                buffer().remember(*txid, inputs);
+            }
+            return Vec::new();
         }
-        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        targets
-            .into_iter()
-            .filter(|id| {
-                (map.get_mut(id)).is_some_and(|h| wants_lock(id, h) && h.set_instant_locked(txid))
+
+        let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(inputs) = verified_inputs {
+            let mut buffer = buffer();
+            buffer.remember(*txid, inputs);
+            for history in wallets.values_mut().filter(|h| owns_lock(h)) {
+                history.session_locks.insert(*txid);
+            }
+        }
+        wallets
+            .iter_mut()
+            .filter_map(|(id, history)| {
+                (wants_lock(id, history) && history.set_instant_locked(txid)).then_some(*id)
             })
             .collect()
     }
@@ -3149,12 +3154,19 @@ mod tests {
         }
 
         let hub = crate::events::SessionHub::new(crate::DashNetwork::Regtest, Arc::new(NoEvents));
+        let txid = Txid::from_byte_array([31; 32]);
+        let inputs = vec![OutPoint::new(Txid::from_byte_array([32; 32]), 0)];
+        let lock = dashcore::InstantLock {
+            txid,
+            inputs: inputs.clone(),
+            ..Default::default()
+        };
         let held_read = hub.history.wallets.read().unwrap();
         let (sent, done) = std::sync::mpsc::channel();
         let completed = std::thread::scope(|scope| {
             scope.spawn(|| {
                 hub.on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
-                    instant_lock: dashcore::InstantLock::default(),
+                    instant_lock: lock,
                     validated: true,
                 });
                 sent.send(()).unwrap();
@@ -3166,6 +3178,11 @@ mod tests {
         assert!(
             completed.is_ok(),
             "an unrelated lock blocked on a history reader"
+        );
+        assert_eq!(
+            hub.history.early_locks.read().unwrap().inputs.get(&txid),
+            Some(&inputs),
+            "the verified lock reached the replay buffer"
         );
     }
 
