@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 110
+Contract-Version: 112
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1063,7 +1063,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f021fd6323682f2db31b98064c2f202e39805da38beaeee7ac025ea2bb6b2fa0 version: 110 -->
+<!-- surface-sha256: d1b7826ec2e9f73f49d4cbbe1f03a32a725ed31f0391f55f8d1c4cec288962cb version: 112 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -2614,6 +2614,7 @@ pub struct RegistrationStatus {
     pub failure: Option<RegistrationFailure>,
     pub name_failure: Option<String>,
     pub profile_failure: Option<String>,
+    pub temporary_name_outcome: Option<String>,
     pub invitation: Option<RegistrationInvitation>,
     pub from_platform: bool,
     pub from_shielded: bool,
@@ -3414,6 +3415,9 @@ The shapes are in §3. What they mean, where the name does not say:
   SPV does not verify the quorum) fails the proof as `platform.context_unavailable`, not `proof_invalid`: the proof
   was not judged.
 - **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state.
+  `temporary_name_outcome` is `registered` when the temporary username was registered, an error
+  code when its attempt failed, and absent before an attempt or on a legacy row.
+  A successful `register_name` for that identity and temporary label records success.
   - `waiting` says what a parked or slow flow waits for, and so which line the UI shows: `Unlock` ("Unlock to finish";
     the flow parked keyless, and `resume_registration` needs a grant), `Authorize` ("Confirm to finish": the vault is
     unlocked but the flow's grant died with an unlock, a scope or passphrase change, or its budget ran short; the
@@ -5442,8 +5446,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `ShieldedReadiness` also gains `change`: what the notes the create selects (as the library selects them) hold
     above the denomination, which the library pays back to the wallet's own default shielded address; `None` while
     the notes cannot pay it.
-    At `KeysPrepared` the step adopts an identity of the seed at the row's index if one exists, else, under the
-    shielded wallet lock and a `Registration` lease, signs one identity create from the pool with the registration
+    At `KeysPrepared` the step adopts a known identity only after its proved registration keys match the row's
+    index. If no candidate exists, under the shielded wallet lock and a `Registration` lease it signs one identity
+    create from the pool with the registration
     keys of the row's index, the row's denomination and its fallback (`PwShielded::identity_create`, the engine's only
     call of the library's create). The dispatch hook accepts that create only: one the engine did not start, a second
     one, or one whose denomination, fallback or identity id differ from the row's is refused, and while it is armed
@@ -5451,9 +5456,13 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     activity's height at that moment) durably before the spend's dispatch artifact, and records the dispatch after
     it; a dispatch it cannot record is settled not sent. A create the library sends again from its store records the
     dispatch first, and is refused if it cannot. The step reads the notes and their rest only once no shielded pass
-    runs. A named row settles by evidence alone: the identity proved present, with the engine's proof of it written,
-    is `IdentityRegistered` (a proof not written leaves it `payment_unknown` until the next check writes it); an artifact not executed, or no artifact with the row named and no dispatch
-    recorded, clears the name and the row tries again (a refused send fails it, retryable, so it never loops; so
+    runs. A named row settles by evidence alone. The decisive Platform reads obey the SPV provenance policy.
+    The identity proved present, with the engine's proof written and its registration keys proved to match the row's
+    index, is `IdentityRegistered`. An unproved index or mismatched keys leave the payment `payment_unknown`.
+    A library `not_executed` result for an unpadded create also checks for the identity before offering a retry.
+    A proved absence older than a fully spent nullifier read leaves the payment pending. A proved-unsent artifact,
+    or no artifact with the row named and no dispatch recorded, clears the name (a refused send fails it,
+    retryable, so it never loops; so
     does a create the hook named and then refused); an artifact executed or unresolved (the library resolves every
     failure after the dispatch, the pool floor's refusal included, `unresolved`) whose published nullifiers, the
     bundle's padding included, are all proved spent at height h with the identity proved absent at or above h
@@ -5466,8 +5475,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     flight, unresolved, or settled `executed` and not acknowledged (a success the library resolves unattributable)
     whose identity reads present is proved `executed`. An unresolved one
     whose anchor is proved pruned from the pool's recorded anchors at height p (they are kept 1,000 blocks), p above
-    the highest proved read that found that create's anchor recorded (stored durably per transition; no such read,
-    no proof), and none of whose published nullifiers is spent by a proved read at or above p never executed and
+    the highest proved read that found that create's anchor recorded (stored durably per transition at dispatch or
+    on a later read), and none of whose published nullifiers is spent by a proved read at or above p never executed and
     never can: its artifact is settled `not_executed`, the name cleared and the row failed, retryable; its notes stay
     reserved in upstream's store until the library releases them on its own proof (the engine acknowledges no outcome
     and frees no note: upstream keeps none to acknowledge). Before either settlement the engine writes its proof durably beside
@@ -5486,8 +5495,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     While a named row has no identity, `funds_committed` is true and `discard_registration` is refused. A fallback
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);
-    it absorbs the rise of the first read after it only when no read of the addresses happened since the create was
-    named, else it claims nothing and the rise reads `Incoming`. `RegistrationStatus` gains `from_shielded`, true
+    it absorbs the rise of the first read that covers the fallback unless the baseline already recorded a funded
+    fallback after the create was named. Activity leaves unused published fallbacks out of its balance queries.
+    A read that misses the fallback keeps its refund attribution pending. `RegistrationStatus` gains `from_shielded`, true
     for a row whose stored funding is `shielded`. After a restart a named row waiting `payment_unknown` runs again
     only on a `resume_registration` with no grant, which checks its evidence and signs nothing. On mainnet the funding is
     off (`platform.feature_off{feature: "shielded_registration"}`) until a payment that stays unknown has a way out:

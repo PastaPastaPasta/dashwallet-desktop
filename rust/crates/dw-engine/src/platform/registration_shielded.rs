@@ -13,6 +13,9 @@ use std::future::Future;
 use std::sync::Arc;
 
 use dpp::address_funds::PlatformAddress;
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dpp::identity::{Identity, IdentityPublicKey, KeyType};
+
 use dpp::prelude::Identifier;
 use dpp::version::PlatformVersion;
 use dw_appdb::dispatch::{ArtifactKind, ArtifactSettled, ArtifactStatus, ShieldedArtifact};
@@ -26,6 +29,7 @@ use super::registration_rows::{Decoded, Funding};
 use super::requests::{leased, write_permit};
 use super::runtime::guard;
 use super::shielded_pool::{self as pool, ShieldedCreate, ShieldedLib, SpendError};
+use super::trust::{self, Rule5, TrustProvider};
 use crate::{DashNetwork, NetworkSession, PlatformChange, WalletId};
 
 /// The flag of a registration paid from the Shielded balance: off on
@@ -99,6 +103,7 @@ pub(crate) enum ShieldedOutcome {
 pub(crate) struct CreateIntent {
     draft: i64,
     owner: u64,
+    index: u32,
     denomination: u64,
     fallback: PlatformAddress,
     /// The row's funding as the step read it: the hook replaces exactly it.
@@ -118,6 +123,7 @@ impl CreateIntent {
         Self {
             draft,
             owner,
+            index: 0,
             denomination,
             fallback,
             funding,
@@ -226,13 +232,33 @@ pub(crate) async fn accept_create(
         intent.funding.clone(),
         dw_appdb::dp_registration_named(&name),
     );
+    let public_keys: Vec<_> = create
+        .public_keys()
+        .iter()
+        .map(IdentityPublicKey::from)
+        .collect();
     let (draft, owner, now) = (intent.draft, intent.owner, crate::events::unix_now());
+    let marker_keys = create_keys_key(draft, &name);
+    let saved_keys = registration_key_data(public_keys.iter())
+        .map(|keys| {
+            serde_json::to_string(&CreateKeys {
+                index: intent.index,
+                keys,
+            })
+        })
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let named_at = named_at.to_string();
     let written = session
         .appdb_op(move |db| {
+            let mut markers = vec![(marker.as_str(), named_at.as_str())];
+            if let Some(keys) = saved_keys.as_deref() {
+                markers.push((&marker_keys, keys));
+            }
             db.set_registration_funding_durable(
                 (&w, draft, owner),
                 (&expected, &funding),
-                (&marker, &named_at.to_string()),
+                &markers,
                 now,
             )
         })
@@ -328,6 +354,143 @@ pub(crate) trait CreateEvidence: Send + Sync {
     ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
 }
 
+struct CheckedEvidence<'a, N> {
+    net: &'a N,
+    trust: &'a TrustProvider,
+}
+
+async fn checked_read<T>(
+    trust: &TrustProvider,
+    read: impl Future<Output = Result<T, PlatformError>>,
+) -> Result<T, PlatformError> {
+    let (result, tally) = trust::scoped(read).await;
+    if trust.strict_rule_5() == Rule5::Enforce && !tally.verified() {
+        return Err(PlatformError::Unavailable);
+    }
+    result
+}
+
+impl<N: CreateEvidence> CreateEvidence for CheckedEvidence<'_, N> {
+    async fn nullifiers(&self, nullifiers: &[[u8; 32]]) -> Result<NullifierRead, PlatformError> {
+        checked_read(self.trust, self.net.nullifiers(nullifiers)).await
+    }
+
+    async fn anchor_recorded(&self, anchor: [u8; 32]) -> Result<(bool, u64), PlatformError> {
+        checked_read(self.trust, self.net.anchor_recorded(anchor)).await
+    }
+
+    async fn identity(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        checked_read(self.trust, self.net.identity(id)).await
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CreateKeys {
+    index: u32,
+    keys: Vec<[u8; 20]>,
+}
+
+fn create_keys_key(draft: i64, identity: &str) -> String {
+    format!("dp_registration_create_keys/{draft}/{identity}")
+}
+
+fn registration_key_data<'a>(
+    keys: impl IntoIterator<Item = &'a IdentityPublicKey>,
+) -> Option<Vec<[u8; 20]>> {
+    let keys: std::collections::BTreeMap<_, _> =
+        keys.into_iter().map(|key| (key.id(), key)).collect();
+    super::keys_policy::registration_specs()
+        .into_iter()
+        .map(|spec| {
+            let key = keys.get(&spec.id)?;
+            (key.key_type() == KeyType::ECDSA_SECP256K1
+                && key.purpose() == spec.purpose
+                && key.security_level() == spec.security_level
+                && key.contract_bounds() == spec.contract_bounds.as_ref())
+            .then(|| dpp::util::hash::ripemd160_sha256(key.data().as_slice()))
+        })
+        .collect()
+}
+
+/// Resolve the proved public keys against the signed create or the keys of
+/// the wallet's discovered slot. The library can cache a winner at a losing
+/// create's slot, so the local identity id alone is insufficient.
+pub(super) async fn identity_matches_index(
+    session: &NetworkSession,
+    wallet: WalletId,
+    sdk: &dash_sdk::Sdk,
+    (draft, identity): (i64, &str),
+    index: u32,
+    lease: Option<&Lease>,
+) -> Result<bool, PlatformError> {
+    use dash_sdk::platform::Fetch;
+    use dpp::identity::accessors::IdentityGettersV0;
+
+    if !sdk.prove() {
+        return Ok(false);
+    }
+    let id = parse_identity(identity)?;
+    let (proved, _) = checked_read(&session.trust, async {
+        Ok(Identity::fetch_with_metadata(sdk, id, None).await?)
+    })
+    .await?;
+    let Some(keys) = proved
+        .as_ref()
+        .and_then(|identity| registration_key_data(identity.public_keys().values()))
+    else {
+        return Ok(false);
+    };
+
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let marker = create_keys_key(draft, identity);
+    let marker = session
+        .appdb_op(move |db| db.setting(&scope, &marker))
+        .await?;
+    if marker
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<CreateKeys>(text).ok())
+        .is_some_and(|create| create.index == index && create.keys == keys)
+    {
+        return Ok(true);
+    }
+
+    if let Some(signer) = lease.and_then(|lease| lease.call_identity_signer(&[index]).ok()) {
+        let specs = super::keys_policy::registration_specs();
+        let owned = signer.derive_public_keys(index, &specs).await?;
+        return Ok(registration_key_data(owned.values()).as_ref() == Some(&keys));
+    }
+    Ok(unattended_index_matches(session, wallet, index, keys).await)
+}
+
+pub(super) async fn unattended_index_matches(
+    session: &NetworkSession,
+    wallet: WalletId,
+    index: u32,
+    keys: Vec<[u8; 20]>,
+) -> bool {
+    use platform_wallet::wallet::identity::network::derive_identity_auth_key_hash_from_master;
+
+    let specs = super::keys_policy::registration_specs();
+    if specs.len() != keys.len() {
+        return false;
+    }
+    session
+        .platform
+        .key_work
+        .run(session.vault.clone(), move |vault| {
+            let scan = super::bringup::unattended_scan_key(vault, wallet)?;
+            let Ok(master) = scan.resolve() else {
+                return Ok(false);
+            };
+            Ok(specs.into_iter().zip(keys).all(|(spec, proved)| {
+                derive_identity_auth_key_hash_from_master(&master, vault.network(), index, spec.id)
+                    .is_ok_and(|derived| derived == proved)
+            }))
+        })
+        .await
+        .unwrap_or(false)
+}
+
 /// [`CreateEvidence`] from Platform through the SDK, proved.
 pub(crate) struct SdkEvidence(pub(crate) Arc<dash_sdk::Sdk>);
 
@@ -399,6 +562,10 @@ pub(crate) async fn fund(
 ) -> Result<ShieldedOutcome, PlatformError> {
     let lock = pool::wallet_lock(session, wallet);
     let _spending = lock.lock().await;
+    let net = &CheckedEvidence {
+        net,
+        trust: &session.trust,
+    };
     if let Some(identity) = &ask.identity {
         return evidence(session, wallet, (lib, net), &ask, identity).await;
     }
@@ -447,6 +614,7 @@ pub(crate) async fn fund(
         CreateIntent {
             draft: ask.draft,
             owner: ask.owner,
+            index: ask.index,
             denomination: ask.denomination,
             fallback,
             funding: expected,
@@ -572,7 +740,8 @@ async fn evidence(
 
 /// Whether `artifact` published only its own notes' nullifiers: no padding.
 fn unpadded(artifact: &ShieldedArtifact) -> bool {
-    (artifact.published.iter()).all(|n| artifact.selected.iter().any(|(s, _)| s == n))
+    artifact.published.len() >= 2
+        && (artifact.published.iter()).all(|n| artifact.selected.iter().any(|(s, _)| s == n))
 }
 
 /// The artifact of the create naming identity `id`. The same notes signed
@@ -630,6 +799,9 @@ async fn by_artifact(
         _ => ShieldedOutcome::Unknown,
     };
     let unresolved = match artifact.status {
+        ArtifactStatus::NotExecuted if unpadded(artifact) => {
+            return Ok(spent_elsewhere(net, identity, id, artifact).await);
+        }
         ArtifactStatus::NotExecuted => return Ok(ShieldedOutcome::Unsent),
         ArtifactStatus::Executed => false,
         ArtifactStatus::Unresolved { unrecorded: false } => true,
@@ -675,6 +847,26 @@ async fn by_artifact(
     }
 }
 
+/// Another install spending the same unpadded bundle can register this identity.
+/// Require the absence proof to be at least as recent as a fully spent read.
+async fn spent_elsewhere(
+    net: &impl CreateEvidence,
+    identity: &str,
+    id: Identifier,
+    artifact: &ShieldedArtifact,
+) -> ShieldedOutcome {
+    let absent_at = match net.identity(id).await {
+        Ok((true, _)) => return ShieldedOutcome::Registered(identity.to_owned()),
+        Ok((false, at)) => at,
+        Err(_) => return ShieldedOutcome::Unknown,
+    };
+    match net.nullifiers(&artifact.published).await {
+        Ok(NullifierRead::Spent(at)) if at > absent_at => ShieldedOutcome::Unknown,
+        Ok(_) => ShieldedOutcome::Unsent,
+        Err(_) => ShieldedOutcome::Unknown,
+    }
+}
+
 /// An unresolved create of two or more notes whose notes read spent at
 /// `spent_at`: its identity present is [`ShieldedOutcome::Registered`];
 /// read absent at or above `spent_at`, the notes are gone whoever spent
@@ -703,6 +895,113 @@ async fn consumed(
         }
         _ => ShieldedOutcome::Unknown,
     }
+}
+
+pub(super) async fn show_released_creates(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &pool::PwShielded,
+    rows: &mut [super::shielded::ShieldedActivity],
+) {
+    use super::shielded::{ShieldedActivityStatus, ShieldedRefusal};
+
+    let failed: std::collections::HashSet<_> = rows
+        .iter()
+        .filter_map(|row| (row.status == ShieldedActivityStatus::Failed).then_some(row.id.as_str()))
+        .collect();
+    if failed.is_empty() {
+        return;
+    }
+    let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await else {
+        return;
+    };
+    let creates: Vec<_> = artifacts
+        .into_iter()
+        .filter(|artifact| {
+            artifact.kind == Some(ArtifactKind::IdentityCreate)
+                && artifact.status == ArtifactStatus::NotExecuted
+        })
+        .filter_map(|artifact| {
+            let activity = hex::encode(artifact.activity);
+            failed.contains(activity.as_str()).then_some((
+                activity,
+                artifact.activity,
+                artifact.st_hash?,
+            ))
+        })
+        .collect();
+    if creates.is_empty() {
+        return;
+    }
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let released = session
+        .appdb_op(move |db| {
+            let mut released = std::collections::HashMap::new();
+            for (id, activity, hash) in creates {
+                let key = dw_appdb::dp_registration_proved(&hex::encode(hash));
+                if db.setting(&scope, &key)?.as_deref() == Some("pruned") {
+                    released.insert(id, activity);
+                }
+            }
+            Ok(released)
+        })
+        .await;
+    if let Ok(released) = released {
+        for row in rows {
+            if let Some(activity) = released.get(&row.id)
+                && lib.activity_is_unheld(activity).await
+            {
+                row.refusal = Some(ShieldedRefusal::Released);
+            }
+        }
+    }
+}
+
+pub(crate) async fn preserve_consumed_proofs(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Result<(), crate::EngineError> {
+    let hashes: Vec<_> = session
+        .leases
+        .shielded_artifacts(wallet)
+        .await
+        .map_err(crate::EngineError::Storage)?
+        .into_iter()
+        .filter(|artifact| {
+            artifact.kind == Some(ArtifactKind::IdentityCreate)
+                && artifact.status == (ArtifactStatus::Unresolved { unrecorded: false })
+        })
+        .filter_map(|artifact| artifact.st_hash)
+        .collect();
+    if hashes.is_empty() {
+        return Ok(());
+    }
+    let marked = session
+        .leases
+        .consumed_creates(wallet, hashes.clone())
+        .await
+        .map_err(crate::EngineError::Storage)?;
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let legacy = session
+        .appdb_op(move |db| {
+            let mut legacy = Vec::new();
+            for hash in hashes.into_iter().filter(|hash| !marked.contains(hash)) {
+                let key = dw_appdb::dp_registration_proved(&hex::encode(hash));
+                if db.setting(&scope, &key)?.as_deref() == Some("consumed") {
+                    legacy.push(hash);
+                }
+            }
+            Ok(legacy)
+        })
+        .await?;
+    for hash in legacy {
+        if session.leases.mark_create_consumed(wallet, hash).await != Ok(true) {
+            return Err(crate::EngineError::Storage(
+                "could not preserve a consumed Shielded registration proof".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The engine's proof of a create the library left unresolved, as the
@@ -783,28 +1082,25 @@ async fn never_executes(
     let (Some(anchor), Some(st_hash)) = (artifact.anchor, artifact.st_hash) else {
         return ShieldedOutcome::Unknown;
     };
-    let Ok((recorded, read_at)) = net.anchor_recorded(anchor).await else {
+    let (read, tally) = trust::scoped(net.anchor_recorded(anchor)).await;
+    let Ok((recorded, read_at)) = read else {
         return ShieldedOutcome::Unknown;
     };
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    let key = dw_appdb::dp_registration_anchor_seen(&hex::encode(st_hash));
-    let seen = session
-        .appdb_op(move |db| {
-            let seen = db
-                .setting(&scope, &key)?
-                .and_then(|v| v.parse::<u64>().ok());
-            if recorded && seen.is_none_or(|s| s < read_at) {
-                db.set_setting_durable(&scope, &key, Some(&read_at.to_string()))?;
-            }
-            Ok(seen)
-        })
-        .await;
-    let pruned_by = match seen {
-        Ok(Some(seen)) if !recorded && read_at > seen => read_at,
-        _ => return ShieldedOutcome::Unknown,
-    };
+    if recorded {
+        if tally.verified()
+            && let Err(error) =
+                super::shielded_release::record_presence(session, wallet, st_hash, read_at).await
+        {
+            tracing::warn!(%error, "the registration's anchor height was not stored");
+        }
+        return ShieldedOutcome::Unknown;
+    }
+    let seen = super::shielded_release::presence(session, wallet, st_hash).await;
+    if !matches!(seen, Some(Some(seen)) if read_at > seen) {
+        return ShieldedOutcome::Unknown;
+    }
     match net.nullifiers(&artifact.published).await {
-        Ok(NullifierRead::Unspent(at)) if at >= pruned_by => {}
+        Ok(NullifierRead::Unspent(at)) if at >= read_at => {}
         _ => return ShieldedOutcome::Unknown,
     }
     released(session, wallet, lib, st_hash).await

@@ -2401,10 +2401,13 @@ fn a_create_whose_dispatch_is_not_recorded_is_refused_unsent() {
 #[derive(Default)]
 struct Evidence {
     spent: std::sync::Mutex<Option<u64>>,
+    nullifiers_fail: std::sync::Mutex<bool>,
     unspent_at: std::sync::Mutex<u64>,
     pruned: std::sync::Mutex<Option<u64>>,
     recorded_at: std::sync::Mutex<u64>,
     identity: std::sync::Mutex<(bool, u64)>,
+    identity_fails: std::sync::Mutex<bool>,
+    unverified: std::sync::Mutex<bool>,
     reads: std::sync::Mutex<Vec<&'static str>>,
 }
 
@@ -2414,6 +2417,10 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
         _: &[[u8; 32]],
     ) -> Result<NullifierRead, crate::platform::PlatformError> {
         self.reads.lock().unwrap().push("spent");
+        super::super::trust::note_lookup(!*self.unverified.lock().unwrap());
+        if *self.nullifiers_fail.lock().unwrap() {
+            return Err(crate::platform::PlatformError::Unavailable);
+        }
         Ok(match *self.spent.lock().unwrap() {
             Some(at) => NullifierRead::Spent(at),
             None => NullifierRead::Unspent(*self.unspent_at.lock().unwrap()),
@@ -2425,6 +2432,7 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
         _: [u8; 32],
     ) -> Result<(bool, u64), crate::platform::PlatformError> {
         self.reads.lock().unwrap().push("anchor");
+        super::super::trust::note_lookup(!*self.unverified.lock().unwrap());
         Ok(match *self.pruned.lock().unwrap() {
             Some(at) => (false, at),
             None => (true, *self.recorded_at.lock().unwrap()),
@@ -2436,6 +2444,10 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
         _: dpp::prelude::Identifier,
     ) -> Result<(bool, u64), crate::platform::PlatformError> {
         self.reads.lock().unwrap().push("identity");
+        super::super::trust::note_lookup(!*self.unverified.lock().unwrap());
+        if *self.identity_fails.lock().unwrap() {
+            return Err(crate::platform::PlatformError::Unavailable);
+        }
         Ok(*self.identity.lock().unwrap())
     }
 }
@@ -2508,9 +2520,14 @@ impl Hooked {
     }
 
     /// Stores the Platform activity's baseline at `height`.
-    fn baseline_at(&self, height: u64) {
+    fn baseline_at(&self, height: u64, covers_refund: bool) {
         let scope = dw_appdb::local_scope(&self.f.wallet.to_string());
-        let value = serde_json::json!({"height": height, "balances": {}}).to_string();
+        let mut balances = std::collections::BTreeMap::new();
+        if covers_refund {
+            let address = own_platform().to_bech32m_string(dashcore::Network::Testnet);
+            balances.insert(address, DENOMINATION);
+        }
+        let value = serde_json::json!({"height": height, "balances": balances}).to_string();
         (self.f.engine)
             .block_on(self.f.session.appdb_op(move |db| {
                 db.set_setting_durable(&scope, "platform_address/baseline", Some(&value))
@@ -2638,23 +2655,26 @@ fn an_executed_create_absent_above_its_spend_is_the_fallback() {
 /// may have shown the refund as `incoming` already: the record claims
 /// nothing, and lists no row. Mutant: absorb whatever the baseline.
 #[test]
-fn a_read_since_the_create_was_named_claims_nothing() {
-    let h = Hooked::new();
-    let (draft, id) = h.dispatched_create(3);
-    h.rewrite(3, "status = 'executed'");
-    h.baseline_at(80);
-    let ev = Evidence::default();
-    *ev.spent.lock().unwrap() = Some(100);
-    *ev.identity.lock().unwrap() = (false, 100);
-    assert_eq!(
-        h.evidence(draft, &id, &ev),
-        ShieldedOutcome::Fallback(id.clone())
-    );
-    let refunds = h.refunds();
-    assert_eq!(
-        (refunds.len(), refunds[0].credits, refunds[0].unseen),
-        (1, 0, 0)
-    );
+fn a_read_after_naming_claims_nothing_only_if_it_saw_the_refund() {
+    for (covers_refund, expected) in [(true, 0), (false, DENOMINATION)] {
+        let h = Hooked::new();
+        let (draft, id) = h.dispatched_create(3);
+        h.rewrite(3, "status = 'executed'");
+        h.baseline_at(80, covers_refund);
+        let ev = Evidence::default();
+        *ev.spent.lock().unwrap() = Some(100);
+        *ev.identity.lock().unwrap() = (false, 100);
+        assert_eq!(
+            h.evidence(draft, &id, &ev),
+            ShieldedOutcome::Fallback(id.clone())
+        );
+        let refunds = h.refunds();
+        assert_eq!(
+            (refunds.len(), refunds[0].credits, refunds[0].unseen),
+            (1, expected, expected),
+            "refund was in the read: {covers_refund}"
+        );
+    }
 }
 
 /// The lock order (C-routes §0): a Shielded-funded create's pass holds the
@@ -3100,6 +3120,89 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
     );
 }
 
+#[test]
+fn a_restored_create_only_accepts_its_proved_seed_index() {
+    use super::super::registration_shielded::unattended_index_matches;
+    use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+
+    let h = Hooked::new();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let signer = lease.identity_signer(&[7]).unwrap();
+    h.f.engine.block_on(async {
+        let specs = super::super::keys_policy::registration_specs();
+        let public = signer.derive_public_keys(7, &specs).await.unwrap();
+        let hashes: Vec<_> = public
+            .values()
+            .map(|key| dpp::util::hash::ripemd160_sha256(key.data().as_slice()))
+            .collect();
+        assert!(unattended_index_matches(&h.f.session, h.f.wallet, 7, hashes.clone()).await);
+        assert!(!unattended_index_matches(&h.f.session, h.f.wallet, 0, hashes).await);
+    });
+}
+
+#[test]
+fn an_unpadded_create_spent_elsewhere_reads_its_identity() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    h.rewrite(12, "status = 'not_executed'");
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.nullifiers_fail.lock().unwrap() = true;
+    *ev.identity.lock().unwrap() = (true, 101);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Registered(id.clone())
+    );
+    assert_eq!(*ev.reads.lock().unwrap(), ["identity"]);
+    assert!(h.refunds().is_empty());
+    assert_eq!(
+        h.artifact(12).unwrap().status,
+        ArtifactStatus::NotExecuted,
+        "the library's settlement stands"
+    );
+    *ev.identity_fails.lock().unwrap() = true;
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unknown,
+        "read failed"
+    );
+    *ev.identity_fails.lock().unwrap() = false;
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unknown,
+        "the spend height could not be checked"
+    );
+    *ev.nullifiers_fail.lock().unwrap() = false;
+    *ev.identity.lock().unwrap() = (false, 99);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unknown,
+        "absence below the spend"
+    );
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unsent);
+    *ev.spent.lock().unwrap() = None;
+    *ev.identity.lock().unwrap() = (false, 0);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unsent,
+        "nothing spent"
+    );
+    assert!(h.refunds().is_empty());
+
+    let (draft, id) = h.dispatched_create(14);
+    h.rewrite(14, "status = 'not_executed'");
+    *ev.identity.lock().unwrap() = (true, 101);
+    ev.reads.lock().unwrap().clear();
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unsent);
+    let reads = ev.reads.lock().unwrap().clone();
+    assert!(
+        !reads.contains(&"identity") && !reads.contains(&"spent"),
+        "padded: {reads:?}"
+    );
+}
+
 /// F12: a create of two or more notes read spent registers when its
 /// identity reads present, whatever it was proved before.
 #[test]
@@ -3122,6 +3225,34 @@ fn an_unpadded_create_spent_with_its_identity_registers() {
     assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Executed);
 }
 
+#[test]
+fn a_create_stays_pending_on_trusted_service_evidence() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(5);
+    let st_hash = h.artifact(5).unwrap().st_hash.unwrap();
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 101);
+    *ev.unverified.lock().unwrap() = true;
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unknown);
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash))),
+        None
+    );
+    assert!(h.refunds().is_empty());
+}
+
+#[test]
+fn a_create_can_use_its_dispatch_anchor_observation() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(5);
+    h.rewrite(5, "status = 'unresolved'");
+    let ev = Evidence::default();
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unsent);
+    assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::NotExecuted);
+}
+
 /// F12: an unresolved create none of whose nullifiers is spent may still
 /// execute while its anchor is recorded, and so does one whose unspent
 /// read is below the height its anchor read pruned at (a node behind).
@@ -3133,6 +3264,10 @@ fn an_unpadded_create_spent_with_its_identity_registers() {
 #[test]
 fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
     let h = Hooked::new();
+    *h.f.session.platform.release_net.lock().unwrap() = Some(Arc::new(Anchors {
+        read: Some((vec![[0xa0; 32]], 1)),
+        verified: false,
+    }));
     let (draft, id) = h.dispatched_create(5);
     h.rewrite(
         5,
@@ -3212,6 +3347,10 @@ fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
 #[test]
 fn a_create_signed_again_over_the_same_notes_answers_for_its_identity() {
     let h = Hooked::new();
+    *h.f.session.platform.release_net.lock().unwrap() = Some(Arc::new(Anchors {
+        read: Some((vec![[0xa0; 32]], 1)),
+        verified: false,
+    }));
     let (draft, id) = h.dispatched_create(5);
     let _ = h.dispatched_create(6);
     let identity = super::super::registration_flow::parse_identity(&id).unwrap();

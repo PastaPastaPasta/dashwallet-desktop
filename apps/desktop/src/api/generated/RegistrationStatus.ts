@@ -41,6 +41,10 @@ nameFailure: string | null,
  */
 profileFailure: string | null,
 /**
+ * `registered` or the error code of the temporary name attempt.
+ */
+temporaryNameOutcome?: string,
+/**
  * Set on an invitation claim's row.
  */
 invitation: RegistrationInvitation | null,

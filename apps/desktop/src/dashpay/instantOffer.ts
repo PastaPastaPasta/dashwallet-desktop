@@ -57,7 +57,7 @@ export function voteDuration(network: NetworkKind, polls: Readonly<Partial<Recor
 }
 
 // ---------------------------------------------------------------------------------------------
-// What became of a registration's temporary name (renderer-derived until the engine records it)
+// What became of a registration's temporary name
 
 /** A names read: when it started (ms) and what it said, or `undefined` while none answered or the
  * last one failed. */
@@ -77,7 +77,10 @@ export interface NamesRead {
 export type TemporaryOutcome = "owned" | "failed" | null;
 
 export function temporaryOutcome(row: RegistrationStatus | undefined, read: NamesRead | undefined): TemporaryOutcome {
+  if (!row?.temporaryLabel || !row.identity || (row.phase !== "contested" && row.phase !== "done")) return null;
   const names = namesOutcome(row, read);
+  if (names === "owned" || row.temporaryNameOutcome === "registered") return "owned";
+  if (row.temporaryNameOutcome !== undefined) return "failed";
   if (names !== "failed") return names;
   // The names lack it: failed only once DPNS says the label is free or another identity's.
   const t = read?.temporary;
@@ -86,7 +89,7 @@ export function temporaryOutcome(row: RegistrationStatus | undefined, read: Name
 
 /** The names read alone: whether it lacks the temporary name, so DPNS should be asked. */
 export function lacksTemporary(row: RegistrationStatus | undefined, read: NamesRead | undefined): boolean {
-  return namesOutcome(row, read) === "failed";
+  return row?.temporaryNameOutcome === undefined && namesOutcome(row, read) === "failed";
 }
 
 function namesOutcome(row: RegistrationStatus | undefined, read: NamesRead | undefined): TemporaryOutcome {
@@ -102,7 +105,7 @@ function namesOutcome(row: RegistrationStatus | undefined, read: NamesRead | und
 /** The row's second, once it reached its contest with a temporary name: a names read started in
  * it says nothing, so the caller reads again once it is over (`rereadAfterSecond`). */
 export function rowSecond(row: RegistrationStatus | undefined): number | null {
-  return row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") ? row.updatedAt : null;
+  return row?.temporaryNameOutcome === undefined && row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") ? row.updatedAt : null;
 }
 
 /** Schedules one more read when the last one (started at `startedAt`, ms) began in or before
@@ -129,6 +132,7 @@ export function registrationOffered(wallet: { watchOnly: boolean } | undefined):
 export interface AskedTemporary {
   label: string;
   outcome: TemporaryOutcome;
+  recorded?: boolean;
 }
 
 /** What the voting card and the request's details offer while the own contest is open. */
@@ -155,7 +159,8 @@ export type InstantOffer =
   | null;
 
 export function instantOffer(main: IdentitySummary | undefined, temporary: string | null, i: InstantInputs | undefined): InstantOffer {
-  if (!i?.offered || !main || main.namesUpdating || main.namesCheck !== null || temporary || i.asked === undefined) return null;
+  if (!i?.offered || !main || temporary || i.asked === undefined) return null;
+  if (!i.asked?.recorded && (main.namesUpdating || main.namesCheck !== null)) return null;
   const short = i.nameCredits !== null && main.balance !== null && BigInt(main.balance) < BigInt(i.nameCredits);
   if (i.asked) return i.asked.outcome === "failed" ? { kind: "failed", label: i.asked.label, short } : null;
   return short ? { kind: "short" } : { kind: "create" };

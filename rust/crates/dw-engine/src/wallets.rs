@@ -331,6 +331,7 @@ impl NetworkSession {
                 this.spawn_ensure_background();
                 return Err(EngineError::ShieldedSpendHeld(hold));
             }
+            crate::platform::preserve_consumed_proofs(&this, id).await?;
             // DEC-134: the vault records first; their failure fails the
             // removal closed, before anything else of the wallet goes.
             let vault = this.vault.clone();

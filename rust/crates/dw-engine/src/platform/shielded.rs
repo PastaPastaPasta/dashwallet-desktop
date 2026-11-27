@@ -864,6 +864,8 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
             let mut rows = pool::history(&lib, offset, limit).await?;
+            super::registration_shielded::show_released_creates(&session, wallet, &lib, &mut rows)
+                .await;
             session.name_shielded_payouts(wallet, &mut rows).await;
             Ok(rows)
         })

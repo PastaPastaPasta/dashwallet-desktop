@@ -781,7 +781,10 @@ function withContest(w: World, state: ContestStatus["state"], temporaryName = "a
  * D4 reversed): registered (`owned`), or refused, so the identity holds no name. */
 function withInstant(w: World, owned: boolean): World {
   const c = contestPending(w, 1_900_000_000);
-  c.dashpay.registrations = [contestedRow("alice2")];
+  c.dashpay.registrations = [{
+    ...contestedRow("alice2"),
+    temporaryNameOutcome: owned ? "registered" : "name.taken",
+  }];
   c.dashpay.identities = c.dashpay.identities.map((i) => (owned ? { ...i, names: ["alice2"], mainName: "alice2" } : { ...i, names: [], mainName: null }));
   return c;
 }

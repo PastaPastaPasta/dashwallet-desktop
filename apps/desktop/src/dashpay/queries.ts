@@ -251,7 +251,11 @@ export function useInstantInputs(walletId: string, status: DashPayStatus | undef
   return {
     offered: registrationOffered(wallet),
     nameCredits: credits.data?.maxCredits ?? null,
-    asked: rows.data === undefined ? undefined : row?.temporaryLabel ? { label: row.temporaryLabel, outcome } : null,
+    asked: rows.data === undefined ? undefined : row?.temporaryLabel ? {
+      label: row.temporaryLabel,
+      outcome,
+      recorded: row.temporaryNameOutcome !== undefined,
+    } : null,
   };
 }
 

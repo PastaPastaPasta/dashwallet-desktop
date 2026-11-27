@@ -261,6 +261,17 @@ impl RegistrationLib for Hooked {
         self.fake.fallback_address().await
     }
 
+    async fn shielded_identity_matches_index(
+        &self,
+        draft_identity: (i64, &str),
+        expected_index: u32,
+        lease: Option<&Lease>,
+    ) -> Result<bool, PlatformError> {
+        self.fake
+            .shielded_identity_matches_index(draft_identity, expected_index, lease)
+            .await
+    }
+
     async fn shielded_fund(
         &self,
         ask: crate::platform::registration_shielded::ShieldedAsk,

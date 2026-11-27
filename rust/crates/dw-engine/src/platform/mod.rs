@@ -92,6 +92,7 @@ pub(crate) mod registration_ledger;
 mod registration_platform;
 mod registration_rows;
 mod registration_shielded;
+pub(crate) use registration_shielded::preserve_consumed_proofs;
 #[cfg(test)]
 mod registration_tests;
 #[cfg(test)]

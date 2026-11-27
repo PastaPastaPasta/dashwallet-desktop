@@ -184,9 +184,10 @@ describe("the fixture's Shielded quote", () => {
   });
 
   it("asks a grant for the temporary name too, as the start does", () => {
-    const maxCredits = String(costs("alice", "alice2").credits + SHIELDED_DENOMINATION);
-    expect(costs("alice", "alice2").credits).toBeGreaterThan(costs("alice").credits);
-    expect(shieldedQuote("alice", world(), "alice2").grant.maxCredits).toBe(maxCredits);
+    const quote = shieldedQuote("alice", world({ balance: String(SHIELDED_DENOMINATION), notes: undefined }), "alice2");
+    expect(quote.readiness?.denomination).toBe("25000000000");
+    expect(quote.readiness?.checks.find((c) => c.check === "balance")?.ready).toBe(false);
+    expect(BigInt(quote.grant.maxCredits)).toBeGreaterThan(25_000_000_000n);
   });
 });
 

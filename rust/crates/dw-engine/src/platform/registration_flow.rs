@@ -445,6 +445,13 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// The wallet's own Platform receive address, bech32m: a Shielded-funded
     /// row's fallback, fixed at Draft (C-funding F13).
     fn fallback_address(&self) -> impl Future<Output = Result<String, PlatformError>> + Send;
+    fn shielded_identity_matches_index(
+        &self,
+        draft_identity: (i64, &str),
+        expected_index: u32,
+        lease: Option<&Lease>,
+    ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
+
     /// One funding pass of a Shielded-funded row (C-funding F11, F12, F16):
     /// the evidence of a create the row named, else a create under `lease`.
     fn shielded_fund(
@@ -2862,6 +2869,34 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         }
     }
 
+    async fn adopt_shielded_identity(
+        &self,
+        row: &RegistrationRow,
+        index: u32,
+        identity: String,
+        lease: Option<&Lease>,
+    ) -> Result<Step, PlatformError> {
+        match self
+            .lib
+            .shielded_identity_matches_index((row.id, &identity), index, lease)
+            .await
+        {
+            Ok(true) => {
+                self.advance(
+                    row,
+                    RegistrationChange {
+                        phase: Some(Phase::IdentityRegistered.as_str().into()),
+                        identity: Some(identity),
+                        ..Default::default()
+                    },
+                )
+                .await
+            }
+            Err(error @ PlatformError::Storage { .. }) => Err(error),
+            Ok(false) | Err(_) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
+        }
+    }
+
     /// KeysPrepared → IdentityRegistered for a row funded from the Shielded
     /// balance (C-funding F11–F13, F16): one pass under the wallet's
     /// shielded lock. A row whose create named its identity is settled by
@@ -2875,22 +2910,23 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let Some(index) = row.identity_index else {
             return Ok(Step::Fail(internal(), false));
         };
+        let lease = self.lease();
         if identity.is_none() {
+            if let Err(error) = super::registration_shielded::refuse_on_mainnet(&self.lib.network())
+            {
+                return Ok(self.failed(&error));
+            }
             if let Some(wait) = self.lib.claim_hold() {
                 return Ok(hold_step(wait));
             }
             // An identity the seed already holds at the row's index is the
             // row's: creating again would pay Platform's penalty.
             if let Some(identity) = self.identity_at(index).await? {
-                let change = RegistrationChange {
-                    phase: Some(Phase::IdentityRegistered.as_str().into()),
-                    identity: Some(identity),
-                    ..Default::default()
-                };
-                return self.advance(row, change).await;
+                return self
+                    .adopt_shielded_identity(row, index, identity, lease.as_ref())
+                    .await;
             }
         }
-        let lease = self.lease();
         if lease.is_none() && identity.is_none() {
             return Ok(Step::Park(self.authority_wait()));
         }
@@ -2920,14 +2956,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             failure: failure.map(|(code, retryable)| Some((code.to_owned(), retryable))),
             ..Default::default()
         };
-        let registered = |identity: String| RegistrationChange {
-            phase: Some(Phase::IdentityRegistered.as_str().into()),
-            identity: Some(identity),
-            ..Default::default()
-        };
         match outcome {
             Ok(ShieldedOutcome::Registered(identity)) => {
-                self.advance(row, registered(identity)).await
+                self.adopt_shielded_identity(row, index, identity, lease.as_ref())
+                    .await
             }
             Ok(ShieldedOutcome::Unknown) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
             // F12, F13: Platform refused the keys and refunded the payment;
@@ -2944,7 +2976,10 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 .into_iter()
                 .find(|(i, id)| *i == index && id != named)
             {
-                Some((_, identity)) => self.advance(row, registered(identity)).await,
+                Some((_, identity)) => {
+                    self.adopt_shielded_identity(row, index, identity, lease.as_ref())
+                        .await
+                }
                 None => {
                     let failure = match spent {
                         ShieldedOutcome::Fallback(_) => RegistrationError::Refunded,
@@ -3161,22 +3196,35 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
         let failed = match self.lib.register_name(identity, &row.label, &lease).await {
             Ok(NameOutcome::Registered) => return self.to_phase(row, Phase::NameRegistered).await,
             Ok(NameOutcome::ContestStarted { .. }) => {
-                if let Some(temp) = row.temp_label.as_deref() {
-                    match self.lib.register_name(identity, temp, &lease).await {
-                        Ok(_) => {}
-                        Err(NameError::Platform(e)) => {
-                            let step = self.after_identity(&e)?;
-                            if !matches!(step, Step::Fail(..)) {
-                                return Ok(step);
+                let temporary_name_outcome = match row.temp_label.as_deref() {
+                    Some(temp) => {
+                        Some(match self.lib.register_name(identity, temp, &lease).await {
+                            Ok(NameOutcome::Registered) => "registered".to_owned(),
+                            Ok(NameOutcome::ContestStarted { .. }) => {
+                                NameError::ContestOpen.code().to_owned()
                             }
-                            tracing::info!(draft = row.id, "no temporary name: {e}");
-                        }
-                        // The temporary name is a courtesy: losing it to
-                        // another owner leaves the contest as it is.
-                        Err(e) => tracing::info!(draft = row.id, "no temporary name: {e}"),
+                            Err(NameError::Platform(e)) => {
+                                let step = self.after_identity(&e)?;
+                                if !matches!(step, Step::Fail(..)) {
+                                    return Ok(step);
+                                }
+                                e.code().to_owned()
+                            }
+                            Err(e) => e.code().to_owned(),
+                        })
                     }
-                }
-                return self.to_phase(row, Phase::Contested).await;
+                    None => None,
+                };
+                return self
+                    .advance(
+                        row,
+                        RegistrationChange {
+                            phase: Some(Phase::Contested.as_str().into()),
+                            temporary_name_outcome,
+                            ..Default::default()
+                        },
+                    )
+                    .await;
             }
             Err(NameError::Platform(e)) => self.after_identity(&e)?,
             // DP1-03's typed refusals: a retry meets them again.
@@ -3982,6 +4030,23 @@ impl RegistrationLib for PwLib {
     async fn fallback_address(&self) -> Result<String, PlatformError> {
         let network = self.session.vault.network();
         super::platform_moves::fallback_address(&self.session, &self.wallet, network).await
+    }
+
+    async fn shielded_identity_matches_index(
+        &self,
+        (draft, identity): (i64, &str),
+        expected_index: u32,
+        lease: Option<&Lease>,
+    ) -> Result<bool, PlatformError> {
+        super::registration_shielded::identity_matches_index(
+            &self.session,
+            self.wallet_id,
+            &self.sdk,
+            (draft, identity),
+            expected_index,
+            lease,
+        )
+        .await
     }
 
     async fn shielded_fund(

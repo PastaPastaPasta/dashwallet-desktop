@@ -14,7 +14,7 @@
 // and writes a row that commits nothing until its create; `DashPayWorld.platformCreates` says what
 // each create comes to.
 // A temporary name beside a contested label (D4 reversed) is priced with it and registered right
-// after its contest starts, unless `DashPayWorld.temporaryRefused` (the engine only logs that).
+// after its contest starts, unless `DashPayWorld.temporaryRefused`.
 // Not modelled: profiles (F2), the funding's coin selection and its debit
 // from the balance, InstantSend timeouts, and proofs (a resumed `fundingSent` row waits for its
 // InstantSend lock again).
@@ -240,6 +240,8 @@ export function fundable(w: FixtureWallet): number {
 export const SHIELDED_DENOMINATION = 3_000_000_000n;
 /** registration_flow.rs `IDENTITY_CREATE_CREDITS`: the create's fee bound the quote takes from it. */
 const CREATE_CREDITS = 300_000_000n;
+const CONTEST_FUND = 20_000_000_000n;
+const SHIELDED_DENOMINATIONS = [SHIELDED_DENOMINATION, 10_000_000_000n, 25_000_000_000n];
 
 /** Platform's floor of pool notes before a payment may leave it (`minimum_pool_notes_for_outgoing`). */
 export const POOL_REQUIRED = 250;
@@ -257,24 +259,27 @@ function changeOf(s: ShieldedWorld, denomination: bigint): bigint | null {
 }
 
 /** registration.rs `shielded_readiness` over the fixture's Shielded world (C-funding F16, F17). */
-export function shieldedReadiness(s: ShieldedWorld | null | undefined): ShieldedReadiness {
+export function shieldedReadiness(
+  s: ShieldedWorld | null | undefined,
+  denomination = SHIELDED_DENOMINATION,
+): ShieldedReadiness {
   const active = s?.active === true;
   const synced = active && s.ready && s.scanning !== true;
   const resting = s?.restingUntil !== undefined && s.restingUntil > secs(FIXTURE_NOW) ? s.restingUntil : null;
   const poolNotes = s?.poolNotes ?? (s?.poolTooSmall ? 120 : null);
-  const change = active ? changeOf(s, SHIELDED_DENOMINATION) : null;
+  const change = active ? changeOf(s, denomination) : null;
   const checks: [ShieldedCheckName, boolean][] = [
     ["poolActive", active],
     ["featureOn", true],
     ["denomination", active],
-    ["balance", active && BigInt(s.balance) >= SHIELDED_DENOMINATION],
+    ["balance", active && BigInt(s.balance) >= denomination],
     ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0 && (s.held ?? []).length === 0],
     ["synced", synced],
     ["rested", synced && resting === null],
     ["poolSize", poolNotes === null || poolNotes >= POOL_REQUIRED],
   ];
   return {
-    denomination: active ? String(SHIELDED_DENOMINATION) : null,
+    denomination: active ? String(denomination) : null,
     checks: checks.map(([check, ready]) => ({ check, ready })),
     readyAt: resting,
     poolNotes,
@@ -283,11 +288,20 @@ export function shieldedReadiness(s: ShieldedWorld | null | undefined): Shielded
   };
 }
 
+function shieldedNameCost(label: string, temporaryLabel: string | null) {
+  const { contested, credits } = costs(label, temporaryLabel);
+  return { contested, credits: contested ? credits + CONTEST_FUND : credits };
+}
+
+function shieldedDenomination(credits: bigint): bigint {
+  return SHIELDED_DENOMINATIONS.find((denomination) => denomination - CREATE_CREDITS >= credits)!;
+}
+
 /** A Shielded-funded quote (registration.rs `shielded_plan`): nothing in duffs; the grant covers
  * the denomination and the names. */
 export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined, temporaryLabel: string | null = null): RegistrationQuote {
-  const { contested, credits } = costs(label, temporaryLabel);
-  const readiness = shieldedReadiness(s);
+  const { contested, credits } = shieldedNameCost(label, temporaryLabel);
+  const readiness = shieldedReadiness(s, shieldedDenomination(credits));
   const denomination = readiness.denomination === null ? 0n : BigInt(readiness.denomination);
   const held = denomination > CREATE_CREDITS ? denomination - CREATE_CREDITS : 0n;
   return {
@@ -582,13 +596,14 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const spendsOff = shieldedSpendsOff(world.pending.shielded);
     if (spendsOff) throw spendsOff;
     const dp = d.dashpay(world, walletId);
-    const readiness = shieldedReadiness(world.pending.shielded);
+    const quote = shieldedQuote(request.label, world.pending.shielded, request.temporaryLabel);
+    const readiness = quote.readiness!;
     const failed = readiness.checks.find((c) => !c.ready);
     if (failed && ["poolActive", "featureOn", "denomination"].includes(failed.check)) throw shieldedOff();
     if (failed)
       throw fail("registration.shielded_not_ready", "shielded readiness failed", { kind: "shieldedNotReady", reason: failed.check, readyAt: failed.check === "rested" ? readiness.readyAt : null });
     if (denomination !== readiness.denomination) throw fail("registration.quote_changed", "the quote changed");
-    const credits = BigInt(denomination) + costs(request.label, request.temporaryLabel).credits;
+    const credits = BigInt(quote.grant.maxCredits);
     const g = d.grant(world, grantId, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0) throw fail("platform.grant_invalid", "grant invalid");
     if (BigInt(g.grant.purpose.maxCredits) < credits)
@@ -830,7 +845,15 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         return { kind: "contestStarted", endsAt };
       }
       dp.identities = dp.identities.map((i) => (i.identity === identity ? { ...i, names: [...i.names, label], mainName: i.mainName ?? label, namesCheck: null } : i));
-      dp.status = { kind: "ready", main: identity };
+      for (const row of dp.registrations) {
+        if (row.identity === identity && row.temporaryLabel !== null
+            && (row.phase === "contested" || row.phase === "done")
+            && checkUsername(row.temporaryLabel).normalized === check.normalized) {
+          row.temporaryNameOutcome = "registered";
+          changed(ctx, walletId, row.draft);
+        }
+      }
+      if (dp.status.kind !== "contestPending") dp.status = { kind: "ready", main: identity };
       ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });
       ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
       return { kind: "registered" };
@@ -903,11 +926,16 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       // registration_shielded.rs: the denomination leaves the pool once the create is named; the
       // change returns to the balance. Unknown waits; executed without the identity is refunded; its
       // notes spent with no identity (two or more notes) is consumed, with no refund claimed.
-      const outcome = dp.shieldedCreates?.shift() ?? "registered";
       const s = world.pending.shielded;
+      if (!row.fundsCommitted && shieldedSpendsOff(s)) {
+        row.waiting = "network";
+        break;
+      }
+      const denomination = shieldedDenomination(shieldedNameCost(row.label, row.temporaryLabel).credits);
+      const outcome = dp.shieldedCreates?.shift() ?? "registered";
       // A named create's check spends nothing again.
       if (s && !row.fundsCommitted) {
-        s.balance = String(BigInt(s.balance) - SHIELDED_DENOMINATION);
+        s.balance = String(BigInt(s.balance) - denomination);
         if (s.notes) s.notes = [s.balance];
         ctx.emit({ kind: "platform", network, walletId, change: { domain: "shielded" } });
       }
@@ -924,7 +952,7 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
         break;
       }
       Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null, fundsCommitted: true });
-      dp.identities = [createdIdentity(String(SHIELDED_DENOMINATION - CREATE_CREDITS))];
+      dp.identities = [createdIdentity(String(denomination - CREATE_CREDITS))];
       ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
       break;
     }
@@ -945,8 +973,8 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
     case "nameRequested":
       if (costs(row.label).contested) {
         Object.assign(row, { phase: "contested", contestEndsAt: now + CONTEST_SECS });
-        // The temporary name right after ContestStarted; a refusal is only logged.
         const temp = row.temporaryLabel;
+        if (temp !== null) row.temporaryNameOutcome = dp.temporaryRefused ? "name.taken" : "registered";
         if (temp !== null && !dp.temporaryRefused) {
           dp.identities = dp.identities.map((i) => (i.identity === row.identity ? { ...i, names: [...i.names, temp], mainName: temp } : i));
           ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });

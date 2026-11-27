@@ -2231,19 +2231,52 @@ fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
     assert_eq!(index_of(&w, next), Some(3));
 }
 
-/// C-funding F13 (bot r4702054059): after a reload that derived only index
-/// 0, the activity read still asks for every recorded fallback, so a
-/// refund there is read as the refund it is. Mutant: activity reads
-/// without deriving them first.
 #[test]
-fn the_activity_read_covers_every_recorded_fallback_after_a_reload() {
+fn activity_queries_a_published_fallback_only_for_a_refund() {
     let w = World::new();
     let fallback = published_fallback(&w);
+    let address = parse(&fallback).unwrap();
+    let named_at = w.activity_height();
+    w.net.fund(address, DASH);
     reload_derived_to(&w, 0);
-    assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
-    w.activity();
-    let read = w.net.read_sets.lock().unwrap().last().cloned();
-    assert!(read.unwrap().contains(&parse(&fallback).unwrap()));
+    assert_eq!(index_of(&w, fallback.clone()), None);
+    assert!(w.activity().is_empty());
+    assert!(
+        !w.net
+            .read_sets
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains(&address)
+    );
+    assert!(index_of(&w, fallback).is_some());
+
+    w.arm_refund(7, address, 2 * DASH, (named_at, w.height()));
+    let rows = w.activity();
+    assert_eq!(incoming_total(&rows), 0);
+    assert_eq!(w.refund_rows()[0].credits, DASH);
+}
+
+#[test]
+fn reusing_a_fallback_requires_a_readable_receive_record() {
+    let w = World::new();
+    new_fallback(&w);
+    let result = w.call(|_, session, wallet, id| async move {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        session
+            .appdb_op(move |db| {
+                db.set_setting(
+                    &scope,
+                    dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
+                    Some("invalid"),
+                )
+            })
+            .await
+            .map_err(PlatformError::from)?;
+        Ok(fallback_address(&session, &wallet, session.vault.network()).await?)
+    });
+    assert!(result.is_err());
 }
 
 /// C-funding F13 (bot r4699213569): a fallback no row names and no create

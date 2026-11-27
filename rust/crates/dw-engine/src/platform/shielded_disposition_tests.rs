@@ -414,6 +414,71 @@ fn a_removal_cut_before_the_archive_leaves_the_rollback_free() {
     }
 }
 
+#[test]
+fn history_marks_a_proved_unsent_shielded_create_released() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    spent_create(&engine, &session, wallet);
+    let st_hash = engine
+        .block_on(session.leases.shielded_artifact(wallet, [2; 32]))
+        .unwrap()
+        .unwrap()
+        .st_hash
+        .unwrap();
+    set_proof(&engine, &session, wallet, st_hash, Some("pruned"));
+
+    let history = engine
+        .block_on(session.dashpay(wallet).shielded_history(0, 10))
+        .unwrap();
+    let released = history
+        .iter()
+        .find(|row| row.id == hex::encode([2; 32]))
+        .unwrap();
+    assert_eq!(
+        released.refusal,
+        Some(crate::platform::ShieldedRefusal::Released)
+    );
+    assert!(
+        history
+            .iter()
+            .find(|row| row.id == hex::encode([1; 32]))
+            .unwrap()
+            .refusal
+            .is_none()
+    );
+
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let [_, still_held]: [PendingRedrive; 2] = spends().try_into().unwrap();
+        reserve_and_record(&mut *store, subwallet(wallet), still_held);
+    });
+    let history = engine
+        .block_on(session.dashpay(wallet).shielded_history(0, 10))
+        .unwrap();
+    let held = history.iter().find(|row| row.id == hex::encode([2; 32]));
+    assert_eq!(
+        held.unwrap().refusal,
+        None,
+        "a stored reservation still holds the notes"
+    );
+}
+
+#[test]
+fn removal_preserves_a_legacy_consumed_create_proof() {
+    for cut in [Cut::Stop, Cut::EraseFails] {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        let st_hash = spent_create(&engine, &session, wallet);
+        set_proof(&engine, &session, wallet, st_hash, Some("consumed"));
+        cut_removal(&engine, &session, wallet, st_hash, cut);
+        assert_eq!(rollback_hold(&engine, session), None, "{cut:?}");
+    }
+}
+
 /// #976 item 2: the same wallet imported again after a removal cut before
 /// the journal's archive, its consumed create left there unresolved with
 /// no proof, is not held: in the session, and after a relaunch, whose

@@ -954,8 +954,10 @@ pub(crate) async fn arm_registration_refund(
     {
         return Ok(());
     }
-    let read = store.baseline().await?.map_or(0, |b| b.height);
-    let unread = read <= named_at;
+    let unread = store
+        .baseline()
+        .await?
+        .is_none_or(|baseline| baseline.height <= named_at || !baseline.balances.contains_key(&to));
     let mut record = FromShieldedRecord::staged(
         FromShieldedSource::Registration { draft },
         (activity, st_hash),
@@ -3281,6 +3283,13 @@ async fn observe(
             .filter(|m| m.state == PlatformActivityState::Pending || deciding(m))
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
             .chain(held_funds)
+            .chain(
+                baseline
+                    .iter()
+                    .flat_map(|before| before.balances.keys())
+                    .filter(|address| !seen.at.contains_key(*address))
+                    .cloned(),
+            )
             .collect();
         let mut unseen: BTreeMap<String, u64> = BTreeMap::new();
         for input in moves.iter().flat_map(|m| &m.inputs) {
@@ -3364,7 +3373,10 @@ async fn observe(
                 record.unseen -= n;
                 row.credits -= n;
             }
-            if seen.height > record.done_height && !held.contains(&record.to) {
+            if seen.height > record.done_height
+                && seen.at.contains_key(&record.to)
+                && !held.contains(&record.to)
+            {
                 record.unclaimed += std::mem::take(&mut record.unseen);
             }
         }
@@ -3483,7 +3495,6 @@ pub(crate) async fn activity(
     let store = Store::of(session, wallet_id)?;
     let mut moves = store.moves().await?;
     let mut funds = store.funds().await?;
-    let addresses = covered(&pool(wallet).await?, &moves);
     let held = fund_holds(session, wallet_id);
     let pending = (funds.iter())
         .filter(|f| f.state == PlatformActivityState::Pending)
@@ -3491,6 +3502,32 @@ pub(crate) async fn activity(
     let ev = super::unfinished_funds::fund_evidence(session, wallet_id, wallet, pending).await;
     let completed = reconcile(&store, &mut funds, &ev, &held).await?;
     let (mut shielded, settled) = from_shielded(session, wallet_id, &store).await?;
+    let pool = pool(wallet).await?;
+    let published = store
+        .blocking(|db, scope| {
+            db.settings_with_prefix(scope, dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX)
+        })
+        .await?;
+    let mut addresses = covered(&pool, &moves);
+    for (key, _) in published {
+        let Some(text) = key.strip_prefix(dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX) else {
+            continue;
+        };
+        let refund_due = shielded
+            .iter()
+            .any(|record| record.to == text && (record.expects() > 0 || record.unseen > 0));
+        let recorded_payment = moves.iter().any(|record| {
+            record.holds() && record.inputs.iter().any(|input| input.address == text)
+        }) || funds
+            .iter()
+            .any(|record| record.address == text && (record.expects() > 0 || record.unseen > 0));
+        if !refund_due
+            && !recorded_payment
+            && let Some(address) = parse(text)
+        {
+            addresses.remove(&address);
+        }
+    }
     let observed = match read(session, net, addresses, false).await {
         Ok(seen) => {
             let exits = exits(session, net, &moves, &seen).await;
@@ -5244,10 +5281,10 @@ pub(crate) async fn fallback_address(
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<String, PlatformError> {
+    retire_handed_out(session, wallet).await?;
     if let Some(address) = unpublished_fallback(session, wallet).await? {
         return Ok(address);
     }
-    retire_handed_out(session, wallet).await?;
     let (fallback, index) = with_payment_pool(wallet, |pool, source| {
         let mut take = || -> Result<_, PlatformError> {
             let internal = |detail: String| PlatformError::Internal { detail };

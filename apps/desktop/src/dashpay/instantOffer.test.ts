@@ -95,6 +95,18 @@ describe("voteDuration: Platform's vote poll per network (dpp_voting_versions v2
   });
 });
 
+it("uses the recorded temporary name result before a names read succeeds", () => {
+  const failed = row({ temporaryNameOutcome: "name.taken" });
+  expect(temporaryOutcome(failed, read(5, { namesCheck: "failed" }))).toBe("failed");
+  expect(lacksTemporary(failed, read(5))).toBe(false);
+  expect(instantOffer(summary({ namesCheck: "failed" }), null, {
+    offered: true,
+    nameCredits: "1000",
+    asked: { label: "alice2", outcome: "failed", recorded: true },
+  })).toEqual({ kind: "failed", label: "alice2", short: false });
+  expect(temporaryOutcome(row({ temporaryNameOutcome: "registered" }), undefined)).toBe("owned");
+});
+
 describe("temporaryOutcome: only a names read started after the row reached Contested", () => {
   it("a read started after the row changed, without the name: failed", () => {
     expect(temporaryOutcome(row(), read(1))).toBe("failed");

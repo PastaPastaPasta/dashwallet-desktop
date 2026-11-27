@@ -1145,7 +1145,10 @@ fn background_contact_crypto(
 /// grant the engine authorizes itself (E0-04 design §3.2); that works only
 /// while the vault is prompt-free (dw-vault `Vault::scan_key`), and its token
 /// carries the vault's key, so it needs no hold.
-fn unattended_scan_key(vault: &dw_vault::Vault, id: WalletId) -> Result<VaultScanKey, EngineError> {
+pub(super) fn unattended_scan_key(
+    vault: &dw_vault::Vault,
+    id: WalletId,
+) -> Result<VaultScanKey, EngineError> {
     let grant = vault.authorize(GrantPurpose::IdentityScan, Some(&id.0), Credential::None)?;
     let token = vault.redeem_grant(&grant.id, GrantKind::IdentityScan, Some(&id.0))?;
     Ok(VaultScanKey::new(vault.scan_key(&id.0, &token)?))

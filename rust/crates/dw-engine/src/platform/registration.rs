@@ -235,6 +235,8 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     /// The same for the initial profile, which `update_profile` publishes.
     pub profile_failure: Option<String>,
+    /// `registered` or the error code of the temporary name attempt.
+    pub temporary_name_outcome: Option<String>,
     /// Set for a row funded by an invitation (DP5-03 D8).
     pub invitation: Option<RegistrationInvitation>,
     /// A row funded from the Platform addresses: its resume takes the grant
@@ -1183,7 +1185,10 @@ async fn authority(
             let keyless = match paid {
                 PaidFrom::Other => false,
                 PaidFrom::Platform => lease.call_platform_address_signer().is_err(),
-                PaidFrom::Shielded => lease.call_shielded_spend_key().is_err(),
+                PaidFrom::Shielded => {
+                    lease.call_shielded_spend_key().is_err()
+                        || lease.call_identity_signer(&[]).is_err()
+                }
             };
             if keyless {
                 return Err(PlatformError::GrantInvalid.into());
@@ -1251,6 +1256,15 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
         .iter()
         .map(|p| past_draft(p).ok_or_else(|| invalid(format!("{p} names no registration"))))
         .collect::<Result<Vec<_>, _>>()?;
+    let shielded_start = if matches!(plan.funding, Funding::Shielded { .. }) {
+        Some(
+            super::platform_moves::wallet_lock(wallet)
+                .lock_owned()
+                .await,
+        )
+    } else {
+        None
+    };
     // Checked here so a refused start keeps its grant, and again with the
     // insert, in the one job of the wallet's actor (DEC-173).
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await?);
@@ -1344,6 +1358,7 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     })
     .await?
     .map_err(|draft| RegistrationError::InProgress { draft })?;
+    drop(shielded_start);
     if passed.is_empty() {
         tracing::info!(draft, "registration started");
     } else {
@@ -1519,6 +1534,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             failure,
             name_failure: row.name_error.clone(),
             profile_failure: row.profile_error.clone(),
+            temporary_name_outcome: row.temporary_name_outcome.clone(),
             invitation: match Funding::decode(&row.funding) {
                 Decoded::Known(Funding::Invitation {
                     link_id,
@@ -1560,6 +1576,7 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             failure: None,
             name_failure: None,
             profile_failure: None,
+            temporary_name_outcome: None,
             invitation: None,
             from_platform: false,
             from_shielded: false,
