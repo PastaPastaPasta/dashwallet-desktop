@@ -2757,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "dw-shielded-drain"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "dw-appdb",
  "dw-store-upgrade",
@@ -2772,7 +2772,7 @@ dependencies = [
 
 [[package]]
 name = "dw-store-upgrade"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "dashcore",
  "dw-fs",
