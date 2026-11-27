@@ -284,7 +284,7 @@ impl From<engine::CoreMax> for CoreMax {
 }
 
 /// What moving duffs of the Core balance into the pool costs and buys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShieldQuote {
     pub duffs: u64,
