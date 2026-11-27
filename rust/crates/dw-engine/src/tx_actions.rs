@@ -2244,12 +2244,19 @@ impl NetworkSession {
     /// Whether an Abandon of `txid` committed its mark, which it writes
     /// before its sweep: a mark that cannot be read counts.
     pub(crate) async fn abandon_marked(&self, wallet: WalletId, txid: Txid) -> bool {
+        self.read_abandon_mark(wallet, txid).await.unwrap_or(true)
+    }
+
+    pub(crate) async fn read_abandon_mark(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<bool, EngineError> {
         let (scope, key) = (wallet.to_string(), format!("{ABANDONED_PREFIX}{txid}"));
-        (self.appdb_op(move |db| {
+        self.appdb_op(move |db| {
             Ok((db.settings_with_prefix_lossy(&scope, &key)?.into_iter()).any(|(k, _)| k == key))
-        }))
+        })
         .await
-        .unwrap_or(true)
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
