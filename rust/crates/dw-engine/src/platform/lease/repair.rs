@@ -495,6 +495,7 @@ mod tests {
             user_locked: false,
             dust_locked: false,
             reserved: false,
+            mixing_held: false,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
