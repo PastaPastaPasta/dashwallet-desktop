@@ -24,6 +24,8 @@ mod crash_send_tests;
 mod dismissed_spend_disk_tests;
 #[path = "dropped_claim_tests.rs"]
 mod dropped_claim_tests;
+#[path = "fork_kept_lock_tests.rs"]
+mod fork_kept_lock_tests;
 #[path = "g1_islock_tests.rs"]
 mod g1_islock_tests;
 #[path = "h03_kill9_core_tests.rs"]

@@ -4057,13 +4057,15 @@ impl NetworkSession {
         // key-wallet walks by its own records: one it holds as pending can
         // be locked or mined in the history, and then what spends it is
         // not the wallet's to abandon.
-        let (mined, held_locked) = (self.hub.history).read(&wallet, |txs| {
-            let settled = |f: &dyn Fn(&TxEntry) -> bool| {
-                (planned.iter()).any(|t| !exempt(t) && txs.get(t).is_some_and(f))
+        // A verified lock heard this session counts though the history
+        // holds none: a fork can take its transaction out of a block.
+        let (mined, held_locked) = (self.hub.history).read_wallet(&wallet, |h| {
+            let settled = |f: &dyn Fn(&Txid, &TxEntry) -> bool| {
+                (planned.iter()).any(|t| !exempt(t) && h.txs.get(t).is_some_and(|e| f(t, e)))
             };
             (
-                settled(&|e| e.context.block_info().is_some()),
-                settled(&|e| locked(e)),
+                settled(&|_, e| e.context.block_info().is_some()),
+                settled(&|t, e| locked(e) || (h.session_locks.contains(t) && !e.abandoned)),
             )
         });
         if mined {
@@ -4177,13 +4179,16 @@ impl NetworkSession {
         under: &HashSet<Txid>,
     ) -> Result<Option<Vec<OutPoint>>, EngineError> {
         let refused = Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
-        let (incomplete, claimed) =
-            (self.hub.history).with_wallet(wallet, |h| (h.load_incomplete, h.claimed.clone()));
+        let (incomplete, claimed, session_locked) = (self.hub.history).with_wallet(wallet, |h| {
+            let session_locked = h.session_locks.contains(root);
+            (h.load_incomplete, h.claimed.clone(), session_locked)
+        });
         self.hub.history.read(&wallet, |txs| {
             let Some(e) = txs.get(root) else {
                 return Ok(None);
             };
-            if !locked(e) && !core.instant_send_locks().contains(root) {
+            let session_locked = session_locked && !e.abandoned;
+            if !locked(e) && !core.instant_send_locks().contains(root) && !session_locked {
                 return Ok(None);
             }
             let synced = core.synced_height();

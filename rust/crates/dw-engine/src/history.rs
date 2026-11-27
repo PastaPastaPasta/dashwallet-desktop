@@ -1412,6 +1412,15 @@ pub(crate) struct WalletHistory {
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
+    /// Transactions a verified InstantSend lock named this session that
+    /// were the wallet's when it was heard: the history held them, or the
+    /// lock spends an output of one it held. In memory only.
+    pub(crate) session_locks: HashSet<Txid>,
+    /// Of [`Self::session_locks`], those a fork took out of their block
+    /// that key-wallet removed: the history keeps them out of a block,
+    /// locked, and the coins key-wallet gave back for them stay out of
+    /// spending (`crate::withhold`) until key-wallet records them again.
+    pub(crate) fork_kept_locks: HashSet<Txid>,
     /// The last load of the history missed a stored record or mark.
     pub load_incomplete: bool,
     /// The claims the store's repair put back pending, as the last load
@@ -1502,6 +1511,7 @@ impl WalletHistory {
         self.own_outputs.remove(txid);
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
+        self.fork_kept_locks.remove(txid);
     }
 
     /// The ProRegTxs kept out of sight that the history has no own entry
@@ -1531,6 +1541,7 @@ impl WalletHistory {
             return false;
         }
         let new = !self.txs.contains_key(&record.txid);
+        self.fork_kept_locks.remove(&record.txid);
         let entry = self.txs.entry(record.txid).or_insert_with(|| TxEntry {
             tx: record.transaction.clone(),
             context: record.context.clone(),
@@ -1673,10 +1684,14 @@ impl WalletHistory {
 
     /// A fork replaced the blocks above the wallet's truncation height:
     /// `removed` are gone, and `unconfirmed` (InstantSend-locked, so the
-    /// network mines them again) are out of a block, locked. Returns the
-    /// transactions that changed.
+    /// network mines them again) are out of a block, locked. A removed one
+    /// a verified lock named this session is kept as unconfirmed too
+    /// ([`Self::fork_kept_locks`]). Returns the transactions that changed.
     pub fn truncate(&mut self, removed: &[Txid], unconfirmed: &[Txid]) -> Vec<Txid> {
-        for txid in removed {
+        let (kept, removed): (Vec<Txid>, Vec<Txid>) = (removed.iter().copied())
+            .partition(|t| self.session_locks.contains(t) && self.txs.contains_key(t));
+        self.fork_kept_locks.extend(&kept);
+        for txid in &removed {
             self.hidden_registrations.remove(txid);
             self.own_outputs.remove(txid);
         }
@@ -1685,7 +1700,7 @@ impl WalletHistory {
             .filter(|t| self.txs.remove(*t).is_some())
             .copied()
             .collect();
-        for txid in unconfirmed {
+        for txid in unconfirmed.iter().chain(&kept) {
             if let Some(e) = self.txs.get_mut(txid) {
                 e.context = TransactionContext::Mempool;
                 e.instant_locked = true;
@@ -1848,9 +1863,21 @@ impl HistoryStore {
     /// Marks `txid` InstantSend-locked in each loaded history but those of
     /// `skip` that holds it out of a block without a known lock: key-wallet
     /// tells only the wallets holding its record or coins (#828). The
-    /// wallets marked.
-    pub(crate) fn note_instant_lock(&self, txid: &Txid, skip: &HashSet<WalletId>) -> Vec<WalletId> {
+    /// wallets marked. Each history but those of `skip` that holds `txid`,
+    /// or a transaction the lock's `inputs` spend, keeps it among its
+    /// [`WalletHistory::session_locks`].
+    pub(crate) fn note_instant_lock(
+        &self,
+        txid: &Txid,
+        inputs: &[OutPoint],
+        skip: &HashSet<WalletId>,
+    ) -> Vec<WalletId> {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        for (_, h) in (map.iter_mut()).filter(|(id, _)| !skip.contains(*id)) {
+            if h.txs.contains_key(txid) || inputs.iter().any(|o| h.txs.contains_key(&o.txid)) {
+                h.session_locks.insert(*txid);
+            }
+        }
         (map.iter_mut())
             .filter(|(id, h)| {
                 !skip.contains(*id)

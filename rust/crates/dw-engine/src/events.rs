@@ -1302,7 +1302,7 @@ impl SessionHub {
     /// record or coins, and no wallet when it pays none of them (#828).
     /// The locks whose store failed before are written again.
     fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
-        let wallets = self.history.note_instant_lock(&txid, unloaded);
+        let wallets = (self.history).note_instant_lock(&txid, &lock.inputs, unloaded);
         if wallets.is_empty() && self.unstored_locks().is_empty() {
             return;
         }
@@ -3376,8 +3376,8 @@ mod tests {
                 accounts: BTreeMap::from([(account, WalletCoreBalance::new(2 * COIN, 0, 0, 0))]),
                 pending: 0,
                 coins: BTreeMap::from([
-                    (held, (account, share, false)),
-                    (free, (account, share, false)),
+                    (held, (account, share, crate::ExclusionReason::RescanHold)),
+                    (free, (account, share, crate::ExclusionReason::RescanHold)),
                 ]),
             };
         });
