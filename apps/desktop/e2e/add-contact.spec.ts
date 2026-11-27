@@ -76,7 +76,13 @@ test("IOS-073 finds a user by username and sends a contact request under a passp
   await expect(page.getByTestId("add-contact-hit").locator(".contact-row-name")).toHaveText(["Mallory", "Marta", "mateo", "Maxine", "Mayumi"]);
   await field(page).fill("a");
   await expect(page.getByTestId("add-contact-search-hint")).toBeVisible();
+  const tabs = page.getByTestId("add-contact-tabs");
+  const controls = [tabs, field(page)];
+  const boxes = () => Promise.all(controls.map((control) => control.boundingBox()));
+  await fontsReady(page);
+  const searchLayout = await boxes();
   await pick(page, "mal", "Mallory");
+  expect(await boxes()).toEqual(searchLayout);
   await expect(page.getByTestId("add-contact-name")).toBeFocused();
   await expect(page.getByTestId("add-contact-username")).toHaveText("@mallory");
   await expect(page.getByTestId("add-contact-verified")).toContainText("Verified on the Dash network");
@@ -84,8 +90,6 @@ test("IOS-073 finds a user by username and sends a contact request under a passp
   await fontsReady(page);
   const send = page.getByTestId("add-contact-send");
   const show = page.getByTestId("add-contact-show");
-  const controls = [page.getByTestId("add-contact-tabs"), field(page)];
-  const boxes = () => Promise.all(controls.map((control) => control.boundingBox()));
   const before = await boxes();
   const actionBox = await send.boundingBox();
   await send.click();
@@ -138,9 +142,14 @@ test("IOS-073 without DashPay keys the card offers Enable, not Send", async ({ p
   await openAdd(page, "dashpay-no-keys");
   await pick(page, "mal", "Mallory");
   await expect(page.getByTestId("add-contact-line")).toHaveText("Enable DashPay to send contact requests.");
-  await page.getByTestId("add-contact-enable").click();
+  const enable = page.getByTestId("add-contact-enable");
+  const send = page.getByTestId("add-contact-send");
+  await fontsReady(page);
+  const box = await enable.boundingBox();
+  await enable.click();
   await authorize(page);
-  await expect(page.getByTestId("add-contact-send")).toBeVisible();
+  await expect(send).toBeFocused();
+  expect(await send.boundingBox()).toEqual(box);
 });
 
 test("D3 a network failure says so with Try again; Close returns focus to Add contact", async ({ page }) => {
@@ -313,8 +322,16 @@ test("IOS-043 D10 on macOS the Scan tab points to the system's shortcut", async 
 
 test("IOS-073 My QR shows the plain link as a QR code with Copy Link; no username says so", async ({ page }) => {
   await openAdd(page);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("dashpay_my_user_link"));
   await tab(page, "myQr").click();
-  await expect(page.getByTestId("add-contact-qr")).toBeVisible();
+  const loading = page.getByTestId("add-contact-qr-loading");
+  const qr = page.getByTestId("add-contact-qr");
+  await expect(loading).toBeVisible();
+  await fontsReady(page);
+  const loadingBox = await loading.boundingBox();
+  await release.evaluate((resume) => resume());
+  await expect(qr).toBeVisible();
+  expect(await qr.boundingBox()).toEqual(loadingBox);
   await expect(page.getByTestId("add-contact-qr-link")).toHaveText(LINK(IDENTITY.alice, "alice"));
   await expect(page.getByTestId("add-contact-copy-link")).toBeVisible();
   // The tabs as WAI-ARIA tabs: arrow keys move.

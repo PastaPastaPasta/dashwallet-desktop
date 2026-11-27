@@ -3,6 +3,7 @@ import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIPS, CHIP_TEXT, payFrom, payFromDashWallet, platformRunFails, privacyTip, setShielded, shieldedRunFails } from "./dashpay";
 import { openConnect, quoted } from "./connect";
+import { contrast } from "./contrast";
 import type { ConnectOutcome } from "../src/fixture/connect";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, openTransfer, SCREENS, show, THEMES, type Theme } from "./helpers";
@@ -22,6 +23,25 @@ for (const theme of THEMES) {
     test(`visual ${screen} ${theme}`, async ({ page }) => {
       await show(page, screen, theme);
       await expect(page).toHaveScreenshot(`${theme}-${screen}.png`, { animations: "disabled", caret: "hide" });
+      if (screen === "txDetail") {
+        const copy = page.getByTestId("tx-detail-facts").getByRole("button", { name: "Copy address", exact: true });
+        const icon = copy.locator(".copy-icon");
+        await expect(icon).not.toHaveCSS("mask-image", "none");
+        await expect(icon).toHaveCSS("background-color", await icon.evaluate((node) => getComputedStyle(node).color));
+        expect(await contrast(icon, "mask")).toBeGreaterThanOrEqual(3);
+
+        const normal = await copy.evaluate((node) => getComputedStyle(node).backgroundColor);
+        await copy.hover();
+        await expect(copy).not.toHaveCSS("background-color", normal);
+        expect(await contrast(icon, "mask")).toBeGreaterThanOrEqual(3);
+
+        await page.mouse.move(0, 0);
+        await page.keyboard.press("Tab");
+        await copy.focus();
+        await expect(copy).toHaveCSS("outline-style", "solid");
+        await expect(copy).toHaveCSS("outline-width", "2px");
+        expect(await contrast(icon, "mask")).toBeGreaterThanOrEqual(3);
+      }
     });
   }
 }

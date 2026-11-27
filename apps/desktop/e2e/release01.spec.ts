@@ -47,15 +47,20 @@ test.describe("copy feedback", () => {
     });
   }
 
-  test("an icon copy button swaps to Copied and back", async ({ page }) => {
+  test("an icon copy button shows the check mark and toast without moving", async ({ page }) => {
     await clipboard(page);
     await open(page, "funded");
     await page.getByTestId("sidebar-receive").click();
     await page.getByTestId("shielded-receive-open").click();
     const button = page.getByRole("button", { name: "Copy Shielded address" });
+    await expect(button).toBeVisible();
+    await fontsReady(page);
+    const before = await button.boundingBox();
     await button.click();
-    await expect(button.locator(".copied-label")).toHaveText("✓ Copied");
-    await expect(button.locator(".copied-label")).toHaveCount(0, { timeout: 8000 });
+    await expect(button.locator(".copy-icon-check")).toHaveText("✓");
+    await expect(page.locator(".toast")).toHaveText("Copied");
+    expect(await button.boundingBox()).toEqual(before);
+    await expect(button.locator(".copy-icon")).toBeVisible({ timeout: 8000 });
   });
 });
 
@@ -644,8 +649,11 @@ test.describe("Export CSV", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     await shot(page, "light-activity-export");
+    const filters = page.getByTestId("tx-filter-bar");
+    const before = await filters.boundingBox();
     await page.getByTestId("tx-export-csv").click();
-    await expect(page.getByTestId("tx-export-result")).toContainText("Exported to ");
+    await expect(page.locator(".toast-host")).toContainText("Exported to ");
+    expect(await filters.boundingBox()).toEqual(before);
     const saved = await world(page, (w) => w.tools.files.saved);
     expect(saved).toHaveLength(1);
     expect(saved[0].purpose).toBe("historyCsv");
@@ -661,7 +669,7 @@ test.describe("Export CSV", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     await page.getByTestId("tx-export-csv").click();
-    await expect(page.getByTestId("tx-export-result")).toBeVisible();
+    await expect(page.locator(".toast-host")).toContainText("Exported to ");
     await page.getByTestId("tx-category-received").click();
     await expect(page.getByTestId("tx-footer")).toBeVisible();
     await page.getByTestId("tx-export-csv").click();
@@ -678,7 +686,7 @@ test.describe("Export CSV", () => {
     await page.evaluate(() => (window.__dwFixture!.world.tools.files.saveDir = null));
     await page.getByTestId("tx-export-csv").click();
     await expect(page.getByTestId("tx-export-csv")).toBeEnabled();
-    await expect(page.getByTestId("tx-export-result")).toHaveCount(0);
+    await expect(page.locator(".toast-host")).toBeEmpty();
     expect(await world(page, (w) => w.tools.files.dialogs.length)).toBe(1);
     expect(await world(page, (w) => w.tools.files.saved.length)).toBe(0);
   });

@@ -15,8 +15,9 @@ import { DashButton } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
 import { addressBookEmpty, type AddressBookStep } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
-import { QrCode } from "../../components/qr";
+import { QrCode, QrPlaceholder } from "../../components/qr";
 import { Sheet } from "../../components/sheet";
+import { showToast } from "../../components/toast";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { AddressBookModel, AddressBookText } from "../../tools/addressBook";
@@ -201,8 +202,10 @@ function QrSheet({ entry, onClose }: { entry: AddressBookEntry; onClose: () => v
   return (
     <Sheet title={entry.label || AddressBookText.noLabel} width="small" testId="address-book-qr" onClose={onClose}>
       <div className="tool-qr">
-        {qr.data ? <QrCode matrix={qr.data} size={240} label={t("tools.addressBook.qrLabel", { address: entry.address })} testId="address-book-qr-code" /> : <LoadingState testId="address-book-qr-loading" text={t("tools.addressBook.qrLoading")} />}
-        <CopyValue value={uri.data ?? entry.address} action={t("tools.addressBook.copyPaymentLink")} mono />
+        {qr.data ? <QrCode matrix={qr.data} size={240} label={t("tools.addressBook.qrLabel", { address: entry.address })} testId="address-book-qr-code" /> : <QrPlaceholder size={240} testId="address-book-qr-loading" label={t("tools.addressBook.qrLoading")} />}
+        <div className="tool-qr-value">
+          <CopyValue value={uri.data ?? entry.address} action={t("tools.addressBook.copyPaymentLink")} mono />
+        </div>
       </div>
     </Sheet>
   );
@@ -215,16 +218,14 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
   useModel(model);
   // `undefined`: closed; `null`: New.
   const [editing, setEditing] = useState<AddressBookEntry | null | undefined>(undefined);
-  const [saved, setSaved] = useState<{ ok: boolean; text: string } | null>(null);
   useEffect(() => void model.load(), [model]);
 
   const exportCsv = async () => {
-    setSaved(null);
     try {
       const path = await saveText(b, "csv", model.exportFileName, model.exportCsv());
-      if (path !== null) setSaved({ ok: true, text: t("tools.addressBook.exported", { path }) });
+      if (path !== null) showToast(t("tools.addressBook.exported", { path }));
     } catch (e) {
-      setSaved({ ok: false, text: t("tools.addressBook.exportFailed", { error: fileErrorText(e) }) });
+      showToast(t("tools.addressBook.exportFailed", { error: fileErrorText(e) }));
     }
   };
 
@@ -249,7 +250,6 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
       <p className="placeholder-note" data-testid="address-book-header">
         {model.header}
       </p>
-      <Outcome ok={saved?.ok ?? true} text={saved?.text ?? null} testId="address-book-exported" polite />
       <Outcome ok={false} text={editing === undefined ? model.error : null} testId="address-book-problem" />
       <AddressList
         model={model}

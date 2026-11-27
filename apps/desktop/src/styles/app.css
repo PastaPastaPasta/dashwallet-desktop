@@ -512,8 +512,12 @@ input[type="radio"]:disabled {
 }
 
 /* Add Contact (DP2-08, screens/contacts/AddContact.tsx). */
+.add-contact-slot {
+  gap: var(--dw-space-m);
+}
+
 .add-contact-slot .tabs {
-  margin-bottom: var(--dw-space-m);
+  margin-bottom: 0;
 }
 
 .add-contact-header {
@@ -526,8 +530,8 @@ input[type="radio"]:disabled {
 .add-contact-candidate {
   display: flex;
   flex-direction: column;
-  gap: var(--dw-space-xs);
-  padding: var(--dw-space-m);
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-l);
   border: 1px solid var(--dw-role-separator);
   border-radius: var(--dw-radius-card);
 }
@@ -619,7 +623,15 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs);
 }
 
+.add-contact-action-row {
+  display: grid;
+  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dw-space-s);
+}
+
 .add-contact-action-slot {
+  grid-area: 1 / 1;
   block-size: calc(2 * var(--dw-type-subhead-medium-line) + var(--dw-space-xs));
 }
 
@@ -638,14 +650,22 @@ input[type="radio"]:disabled {
   background: var(--dw-role-separator);
 }
 
-.add-contact-note-slot,
-.add-contact-claim-slot {
-  block-size: calc(2 * var(--dw-type-footnote-line));
+.add-contact-action-note,
+.add-contact-claim-slot,
+.add-contact-unverified-slot {
   overflow: auto;
   overflow-wrap: anywhere;
 }
 
-.add-contact-note-slot.is-unverified {
+.add-contact-action-note {
+  max-block-size: calc(2 * var(--dw-type-footnote-line));
+}
+
+.add-contact-action-slot:empty + .add-contact-action-note {
+  grid-area: 1 / 1 / 2 / -1;
+}
+
+.add-contact-unverified-slot {
   block-size: calc(4 * var(--dw-type-footnote-line) + 2 * var(--dw-space-sm));
 }
 
@@ -666,9 +686,23 @@ input[type="radio"]:disabled {
   flex: none;
 }
 
+.add-contact-search-results {
+  max-block-size: calc(3 * var(--dw-layout-tx-row-min-height));
+  overflow: auto;
+}
+
 .add-contact-my-qr .qr,
 .add-contact-my-qr .qr-placeholder {
   align-self: center;
+}
+
+.add-contact-qr-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+  block-size: calc(4 * var(--dw-type-footnote-line) + var(--dw-space-s));
+  overflow: auto;
 }
 
 .add-contact-drop {
@@ -705,6 +739,25 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-group);
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
+}
+
+.contacts-feedback {
+  display: flex;
+  gap: var(--dw-space-s);
+  block-size: calc(4 * var(--dw-type-footnote-line));
+  margin-bottom: var(--dw-space-l);
+}
+
+.contacts-feedback .contacts-hint {
+  flex: 1 1 0;
+  min-inline-size: 0;
+  margin-bottom: 0;
+  align-items: safe center;
+  overflow: auto;
+}
+
+.contacts-feedback .contacts-enable {
+  flex-grow: 2;
 }
 
 .contacts-split {
@@ -2025,11 +2078,36 @@ input[type="radio"]:disabled {
 }
 
 .copy-button {
+  display: inline-grid;
+  place-items: center;
   flex: none;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
+  color: var(--dw-role-text-secondary);
+}
+
+.copy-button:hover,
+.copy-button:focus-visible {
+  background: var(--dw-role-accent-tint);
+  color: var(--dw-role-text-primary);
+}
+
+.copy-icon,
+.copy-icon-check {
+  display: inline-block;
+}
+
+.copy-icon {
+  forced-color-adjust: none;
+  background-color: currentColor;
+  -webkit-mask: var(--copy-icon-url) center / contain no-repeat;
+  mask: var(--copy-icon-url) center / contain no-repeat;
+}
+
+.copy-icon-check {
+  line-height: 1;
 }
 
 .disclosure {
@@ -2709,6 +2787,20 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-m);
 }
 
+.tx-filter-notes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 1 1 100%;
+  block-size: var(--dw-type-footnote-line);
+  gap: var(--dw-space-m);
+  overflow: auto;
+}
+
+.tx-filter-notes .field-error {
+  grid-column: 2;
+  justify-self: end;
+}
+
 .filter-select {
   display: flex;
   align-items: center;
@@ -2925,6 +3017,8 @@ input[type="radio"]:disabled {
 }
 
 .toast {
+  max-inline-size: calc(100vw - 2 * var(--dw-space-l));
+  overflow-wrap: anywhere;
   padding: var(--dw-space-sm) var(--dw-space-l);
   border-radius: var(--dw-radius-card);
   background: var(--dw-role-toast-fill);
@@ -3836,6 +3930,13 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-m);
 }
 
+.tool-qr-value {
+  block-size: calc(2 * var(--dw-type-body-line));
+  max-inline-size: 100%;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
 .psbt-lines {
   margin: 0;
   padding: 0;
@@ -3944,6 +4045,8 @@ input[type="radio"]:disabled {
 }
 
 .contacts-enable-text {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
@@ -3953,6 +4056,31 @@ input[type="radio"]:disabled {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xs);
+}
+
+.contact-pane-message {
+  block-size: calc(2 * var(--dw-type-footnote-line));
+  overflow: auto;
+}
+
+.contact-pane-message.is-unverified {
+  block-size: calc(5 * var(--dw-type-footnote-line) + 2 * var(--dw-space-sm));
+}
+
+.contact-pane-message p {
+  margin: 0;
+}
+
+.contact-pane-action-slot {
+  display: flex;
+  gap: var(--dw-space-xs);
+  block-size: calc(2 * var(--dw-type-subhead-medium-line) + var(--dw-space-xs));
+}
+
+.contact-pane-action-slot .dash-button {
+  flex: 1;
+  padding-block: 0;
+  line-height: var(--dw-type-subhead-medium-line);
 }
 
 .contact-pane-section {
@@ -4008,12 +4136,19 @@ input[type="radio"]:disabled {
   flex-direction: column;
   gap: var(--dw-space-s);
   width: 22rem;
-  max-height: 70vh;
-  overflow-y: auto;
+  block-size: min(70vh, 25rem);
   padding: var(--dw-space-m);
   border-radius: var(--dw-radius-standard);
   background: var(--dw-role-card-raised);
   box-shadow: var(--dw-shadow-floating);
+}
+
+.bell-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  flex: 1;
+  overflow: auto;
 }
 
 .bell-title {
@@ -7011,12 +7146,6 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-warning-tint);
   color: var(--dw-role-text-primary);
   font-weight: var(--dw-type-subhead-medium-weight);
-}
-
-/* "✓ Copied" in an icon copy button is a label, not a circle. */
-.copy-button[data-copied] {
-  padding: 0 var(--dw-space-xs);
-  border-radius: var(--dw-radius-small);
 }
 
 /* The tabs switch the whole page's address, above both columns. */

@@ -29,7 +29,7 @@ test("IOS-074 accepts a request from the pane under a passphrase grant; the cont
   await expect(page.getByTestId("contact-accept")).toHaveText("Accepting…");
   await expect(page.getByTestId("grant-sheet")).toContainText("authorize this Dash Platform operation");
   await authorize(page);
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveText("You and heidi are now contacts.");
+  await expect(page.locator(".toast-host")).toHaveText("You and heidi are now contacts.");
   await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);
   await expect(names(page, "contacts")).toContainText(["heidi"]);
   // Now a contact: Pay is offered while the channel finishes its setup (DP3-06 D15), and the
@@ -48,7 +48,7 @@ test("D28 after a keyboard accept in the pane, focus goes to what the pane offer
   await authorize(page);
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
   await expect(page.getByTestId("contact-pane-actions")).toBeFocused();
-  await expect(page.getByTestId("contact-pane-actions")).toContainText("You and heidi are now contacts.");
+  await expect(page.locator(".toast-host")).toHaveText("You and heidi are now contacts.");
   // Ignore and Unignore move it the same way.
   await row(page, "Grace Hopper").click();
   await page.getByTestId("contact-ignore").focus();
@@ -78,7 +78,7 @@ test("D3 a cancelled passphrase sends nothing; the request stays", async ({ page
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
   await expect(page.getByTestId("contact-accept")).toHaveText("Accept");
-  await expect(page.getByTestId("contact-pane-outcome")).toBeEmpty();
+  await expect(page.locator(".toast-host")).toBeEmpty();
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
 });
 
@@ -94,7 +94,7 @@ test("D15 a request row's Ignore works without selecting it, and a toast says so
   await row(page, "Grace Hopper").click();
   await expect(page.getByTestId("contact-pane-note")).toHaveText("You ignored this contact request.");
   await page.getByTestId("contact-unignore").click();
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveText("The request is back in Contact Requests.");
+  await expect(page.locator(".toast-host")).toHaveText("The request is back in Contact Requests.");
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
   await expect(page.getByTestId("contact-accept")).toBeEnabled();
 });
@@ -109,7 +109,7 @@ test("IOS-074 saves an alias and a note under a grant; Hide saves at once and mo
   await expect(save).toBeEnabled();
   await save.click();
   await authorize(page);
-  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Saved");
+  await expect(page.locator(".toast-host")).toHaveText("Saved");
   await expect(names(page, "contacts")).toContainText(["Bobby"]);
   await expect(page.getByTestId("contact-alias")).toHaveValue("Bobby");
   await expect(save).toBeDisabled();
@@ -129,7 +129,7 @@ test("D7 Hide keeps an alias being typed, and a refused Hide shows the saved val
   await page.getByTestId("contact-alias").fill("Bobby");
   await page.getByTestId("contact-hide").check();
   await authorize(page);
-  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Saved");
+  await expect(page.locator(".toast-host")).toHaveText("Saved");
   await expect(page.getByTestId("contact-hide")).toBeChecked();
   // Hide saved the alias as it was; the one typed stays, unsaved.
   await expect(page.getByTestId("contact-alias")).toHaveValue("Bobby");
@@ -139,7 +139,7 @@ test("D7 Hide keeps an alias being typed, and a refused Hide shows the saved val
   await row(page, "Bob Builder").click();
   await page.getByTestId("contact-hide").check();
   await authorize(page);
-  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Not enough credits. Top up your credits and try again.");
+  await expect(page.locator(".toast-host")).toHaveText("Not enough credits. Top up your credits and try again.");
   await expect(page.getByTestId("contact-hide")).not.toBeChecked();
 });
 
@@ -200,6 +200,6 @@ test("D4 a refused accept says why in the pane", async ({ page }) => {
   await row(page, "heidi").click();
   await page.getByTestId("contact-accept").click();
   await authorize(page);
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveText("Not enough credits. Top up your credits and try again.");
+  await expect(page.locator(".toast-host")).toHaveText("Not enough credits. Top up your credits and try again.");
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
 });

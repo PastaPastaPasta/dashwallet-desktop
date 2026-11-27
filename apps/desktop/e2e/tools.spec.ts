@@ -269,7 +269,7 @@ test.describe("Address Book", () => {
     await page.getByTestId("address-book-search").fill("");
 
     await page.getByTestId("address-book-export").click();
-    await expect(page.getByTestId("address-book-exported")).toContainText("Sending addresses.csv");
+    await expect(page.locator(".toast-host")).toContainText("Sending addresses.csv");
     const saved = await world(page, (w) => w.tools.files.saved.at(-1)!);
     expect(saved.purpose).toBe("csv");
     const csv = Buffer.from(saved.data, "base64").toString("utf8");
