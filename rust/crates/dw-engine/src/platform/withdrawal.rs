@@ -321,6 +321,12 @@ impl WithdrawalNonces {
         });
     }
 
+    /// Highest nonce floor recorded for `id` in this session (one past every
+    /// write seen executed or proven spent).
+    pub(crate) fn floor(&self, id: Identifier) -> u64 {
+        self.get(id).floor
+    }
+
     /// The nonce `id`'s next withdrawal signs at, given its proved nonce
     /// `state`: the unconfirmed one's while Drive's rule would still take
     /// it (unused, within 24 of the newest, and past the floor), so at most
@@ -478,13 +484,22 @@ pub(super) async fn nonce_for(
     let (state, height) = net.nonce_state(id).await?;
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
     let mut had_spent_disconnect = false;
-    for (d_nonce, transition_hash) in
+    let mut reserved_floor = 0u64;
+    for (d_nonce, transition_hash, kind) in
         super::app_connect::pending_disconnects_for_identity(session, wallet_id, id).await?
     {
         if takes(state, d_nonce, id) {
-            return Err(CreditsError::MovePending {
-                id: transition_hash,
-            });
+            match kind {
+                super::app_connect::DisconnectNonceKind::Pending => {
+                    return Err(CreditsError::MovePending {
+                        id: transition_hash,
+                    });
+                }
+                super::app_connect::DisconnectNonceKind::Reserved => {
+                    reserved_floor = reserved_floor.max(d_nonce.saturating_add(1));
+                }
+            }
+            continue;
         }
         if d_nonce > tip {
             return Err(PlatformError::Unavailable.into());
@@ -508,7 +523,11 @@ pub(super) async fn nonce_for(
             });
         }
     }
-    Ok((nonces.next(id, state)?, height))
+    let next = nonces.next(id, state)?.max(reserved_floor);
+    if reserved_floor > 0 && !takes(state, next, id) {
+        return Err(PlatformError::Unavailable.into());
+    }
+    Ok((next, height))
 }
 
 /// The newest `limit` documents of pages read oldest first: `page(start)`

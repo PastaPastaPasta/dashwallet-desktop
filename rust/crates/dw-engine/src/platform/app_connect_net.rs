@@ -103,7 +103,17 @@ pub(crate) trait ConnectNet: Send + Sync {
         request_hash: [u8; 20],
         owner: Identifier,
     ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
-    /// Refreshes the identity and returns it with its proved block height.
+    /// Refreshes the SDK wallet's cached identity from Platform, propagating
+    /// any refresh error. Mandatory before SDK cache-backed writers
+    /// (`update_identity`, `publish`) so they never sign against a stale cached
+    /// revision.
+    fn refresh_cache(
+        &self,
+        wallet: &PlatformWallet,
+        id: Identifier,
+    ) -> impl Future<Output = Result<Identity, PlatformError>> + Send;
+    /// Fetches the identity with its proved block height (used by Disconnect,
+    /// which signs directly from the returned identity).
     fn refresh(
         &self,
         wallet: &PlatformWallet,
@@ -342,6 +352,14 @@ impl ConnectNet for SdkConnect {
         query.limit = 1;
         let found = dpp::document::Document::fetch_many(&self.0, query).await?;
         Ok(found.into_values().flatten().next().is_some())
+    }
+
+    async fn refresh_cache(
+        &self,
+        wallet: &PlatformWallet,
+        id: Identifier,
+    ) -> Result<Identity, PlatformError> {
+        Ok(wallet.identity().refresh_identity(&id).await?)
     }
 
     async fn refresh(
