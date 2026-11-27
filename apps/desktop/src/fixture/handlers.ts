@@ -58,7 +58,7 @@ import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { FIXTURE_DATA_DIR, isClosed, restoreOnly, settingsHandlers } from "./settings";
-import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
+import { offersEarlierRestore, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
@@ -816,7 +816,7 @@ export const HANDLERS: Handlers = {
       throw storeRestoreError(restore);
     }
     if (world.openRefusal) {
-      if (world.openRefusal.screen.buttons.some((button) => button.key === "storeUpgrade.refused.restore")) {
+      if (offersEarlierRestore(world.openRefusal)) {
         world.restoreRefusedNetwork = world.launch.network.dirName;
       }
       throw storeRefusedError(world.openRefusal);
