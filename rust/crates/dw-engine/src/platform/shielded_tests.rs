@@ -222,6 +222,48 @@ fn entry(kind: Kind, amount: u64, status: Status) -> ShieldedActivityEntry {
     }
 }
 
+/// The library's spend kinds the wallet does not make show as own spends,
+/// with credits only where the entry's amount is credits: a token amount
+/// (in the token's units) never reads as credits, and a private document's
+/// or contact request's amount, its fee, is shown as the fee, not as
+/// credits moved besides it.
+#[test]
+fn a_spend_shows_credits_only_where_its_amount_is_credits() {
+    let shown = |kind: Kind, amount: u64, fee: u64| {
+        let row = pool::activity(
+            ShieldedActivityEntry {
+                fee: Some(fee),
+                ..entry(kind.clone(), amount, Status::Confirmed)
+            },
+            Network::Testnet,
+        );
+        assert_eq!(row.kind, ShieldedActivityKind::Spend, "{kind:?}");
+        (row.credits, row.fee_credits)
+    };
+    let fee = 20_000_000;
+    assert_eq!(
+        shown(Kind::TokenPurchase, 500_000_000, fee),
+        (500_000_000, Some(fee))
+    );
+    assert_eq!(shown(Kind::ShieldedSpend, 0, fee), (0, Some(fee)));
+    for kind in [
+        Kind::TokenShieldedTransfer,
+        Kind::TokenUnshield { identity_id: None },
+        Kind::TokenUnshield {
+            identity_id: Some([3; 32]),
+        },
+    ] {
+        assert_eq!(
+            shown(kind, 7, fee),
+            (0, Some(fee)),
+            "tokens are not credits"
+        );
+    }
+    for kind in [Kind::PrivateDocumentCreate, Kind::PrivateContactRequest] {
+        assert_eq!(shown(kind, fee, fee), (0, Some(fee)), "the fee once");
+    }
+}
+
 fn lock(n: u8, status: LockStatus) -> LockInfo {
     LockInfo {
         outpoint: OutPoint::new(Txid::from_byte_array([n; 32]), 0),
