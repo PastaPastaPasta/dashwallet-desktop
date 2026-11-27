@@ -303,6 +303,32 @@ fn test_recovery_excludes_a_rescan_held_reservation() {
 }
 
 #[test]
+fn test_recovery_rechecks_a_rescan_hold_before_signing() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    assert!(abandon_action(&f.recovery(1, &id)).is_some());
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_shared_abandon_sign.lock().unwrap() = Some(Arc::clone(&pause));
+    let (mn, grant, session_id) = (f.mn(), f.grant(1, COIN), id.clone());
+    let spending = f
+        .session
+        .rt
+        .spawn(async move { mn.abandon_shared_session(wallet, session_id, grant).await });
+    assert!(pause.wait_reached(std::time::Duration::from_secs(60)));
+    f.session.hub.history.with_wallet(wallet, |h| {
+        h.rescan_holds
+            .insert(coin, crate::rescan_hold::RescanHold::new(0, 100));
+    });
+    pause.release.notify_one();
+    let result = f.run(spending).unwrap();
+    assert_eq!((f.row(1, &id).abandon_tx, f.net.sent().len()), (None, 0));
+    assert_stage(result.unwrap_err(), "funding_signed");
+    assert_eq!(f.locked(1), HashSet::from([coin]));
+}
+
+#[test]
 fn test_recovery_excludes_a_pending_unproven_reservation() {
     let f = fx(3, true);
     let value = 300 * COIN + 50_000;
