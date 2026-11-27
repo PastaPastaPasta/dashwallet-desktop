@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { isAppError } from "../../api/backend";
 import type { GiftAccount } from "../../api/generated/GiftAccount";
 import type { GiftBrand } from "../../api/generated/GiftBrand";
@@ -7,7 +7,7 @@ import type { GiftCardProduct } from "../../api/generated/GiftCardProduct";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
-import { DashButton } from "../../components/basics";
+import { DashButton, Icon } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { LoadingState } from "../../components/history";
 import { useT } from "../../i18n";
@@ -162,14 +162,16 @@ function Catalog({ wallet, network }: { wallet: WalletSummary; network: NetworkI
   const [brand, setBrand] = useState<GiftBrand | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
   const merchants = (brands.data ?? []).filter((m) => m.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
-  const searchId = useId();
 
   return (
     <>
       <section className="card-l1 gift-panel">
         <h2>{t("giftCards.merchants")}</h2>
-        <label className="sr-only" htmlFor={searchId}>{t("giftCards.search")}</label>
-        <input id={searchId} type="search" placeholder={t("giftCards.search")} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <label className="search-field gift-search">
+          <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
+          <input type="search" aria-label={t("giftCards.search")} placeholder={t("giftCards.search")}
+            value={search} onChange={(e) => setSearch(e.target.value)} />
+        </label>
         {brands.isPending && <LoadingState testId="gift-brands-loading" text={t("giftCards.loadingMerchants")} />}
         {brands.isError && <p className="form-problem" role="alert">{problem(brands.error, t("giftCards.providerError"))}</p>}
         {brands.isSuccess && merchants.length === 0 && <p className="field-hint">{t("giftCards.noMatches")}</p>}

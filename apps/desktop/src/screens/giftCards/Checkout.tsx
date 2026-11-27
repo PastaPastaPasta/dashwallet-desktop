@@ -74,7 +74,7 @@ export function Checkout({ details, invoice, network, walletId }: {
               {t(overFaceValue ? "giftCards.overFaceValue" : "giftCards.marketPrice", { market: formatMinor(marketCents, "USD") })}
             </p>}
             {issue && <p className="form-problem" role="alert">{issue}</p>}
-            {!ready && !issue && <p className="field-hint" role="status">{t("giftCards.preparing")}</p>}
+            {!ready && !issue && !sheets.held && <p className="field-hint" role="status">{t("giftCards.preparing")}</p>}
           </div>
           <DashButton ref={review} variant="filledBlue" disabled={!ready} onClick={() => {
             if (spec && estimate.data && ready) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);

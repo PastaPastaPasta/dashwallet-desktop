@@ -1,7 +1,8 @@
 .gift-panel {
   display: grid;
   gap: 14px;
-  padding: 20px;
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
   margin-bottom: 16px;
   justify-items: start;
 }
@@ -29,9 +30,13 @@
   gap: 12px;
 }
 
-.gift-panel input,
+.gift-fields input,
 .gift-panel select {
   min-width: 150px;
+}
+
+.gift-search {
+  width: min(100%, 360px);
 }
 
 .gift-brands {
