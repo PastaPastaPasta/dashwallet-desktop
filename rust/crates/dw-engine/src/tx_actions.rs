@@ -1776,9 +1776,9 @@ fn unknown_block(winner: Winner) -> Option<u32> {
 /// The coins of `root` that the detection saw key-wallet hold as spent by
 /// `winner`'s block, if key-wallet holds none of them so any more and
 /// `root` is still out of a block, not abandoned and not
-/// InstantSend-locked, key-wallet processed that block and none since the
-/// detection, and the detection saw no coin of `root` spent by another
-/// block (#818, Q89a).
+/// InstantSend-locked, key-wallet's processed height stayed the same
+/// since the detection, and the detection saw no coin of `root` spent by
+/// another block (#818, Q89a).
 /// The caller proves the block final under the wallet's own ChainLock with
 /// no truncation since the detection, and that key-wallet holds no record
 /// of `root`.
@@ -2790,6 +2790,9 @@ impl NetworkSession {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let info = wm.get_wallet_info(&wallet.0)?;
+        if self.hub.wallet_replaying_locks(&wallet) {
+            return None;
+        }
         let core = &info.core_wallet;
         let chainlock = self.chainlock_height(core);
         let truncations = self.hub.truncations();
@@ -3822,6 +3825,20 @@ impl NetworkSession {
                 links,
                 facts,
             );
+            // A finalized block may have pruned another input's observed
+            // spend without changing the processed height or emitting a
+            // wallet event. The remaining observations and `forgotten`
+            // prove individual spends. Keep the payment if the drop
+            // would free another input on that evidence.
+            let plan = plan.filter(|p| {
+                p.freed.is_empty()
+                    || (forgotten.is_empty()
+                        && (unknown_block(winner).is_none() || chainlock.is_none())
+                        && !recheck.is_some_and(|r| {
+                            r.truncations == truncations
+                                && p.freed.iter().any(|o| r.spent.contains_key(o))
+                        }))
+            });
             (plan.map(|plan| (plan, origin)), winner, forgotten)
         });
         let Some((plan, origin)) = plan else {

@@ -425,6 +425,7 @@ impl NetworkSession {
             // The wallet joins the shielded passes' set: not while one is in
             // flight (R1-3, `PlatformRuntime::shielded_passes`).
             let passes = this.platform.shielded_passes.write().await;
+            let _lock_replay = this.hub.begin_lock_replay(id);
             // Spends wait from before the wallet is published until its
             // stored replay is resumed (`WalletState::loading`); a store
             // SPV commits for it meanwhile ends no record
@@ -432,6 +433,7 @@ impl NetworkSession {
             // Read first so they are restored as soon as the wallet is
             // registered, not after the history load (#88).
             {
+                let _abandon = this.abandon_gate(id).write_owned().await;
                 let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
                 let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
                 let holds = tokio::task::spawn_blocking(move || {

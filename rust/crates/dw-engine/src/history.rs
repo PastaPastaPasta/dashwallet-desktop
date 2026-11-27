@@ -592,11 +592,11 @@ pub(crate) fn rival_heights(txs: &HashMap<Txid, TxEntry>) -> BTreeSet<u32> {
 /// `RecursiveUpdateTxState` (:1388-1458). A block spending one of its
 /// inputs that is not the wallet's is not seen (BIP158 filters match the
 /// wallet's scripts only): such a spender holds its other inputs until it
-/// is abandoned. An InstantSend-locked one is conflicted only by a block
-/// `chainlock` covers (key-wallet's finality order).
+/// is abandoned. `may_beat` checks the rival's evidence on the active
+/// chain: only a ChainLocked block can beat an InstantSend-locked spend.
 pub(crate) fn spent_outpoints(
     txs: &HashMap<Txid, TxEntry>,
-    chainlock: Option<u32>,
+    may_beat: impl Fn(&Txid, &TxEntry, bool) -> bool,
 ) -> HashSet<OutPoint> {
     let mined = |e: &TxEntry| e.context.block_info().is_some();
     let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
@@ -608,13 +608,12 @@ pub(crate) fn spent_outpoints(
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
     for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+        let locked = instant_locked(e);
         for i in &e.tx.input {
-            if !instant_locked(e) {
+            if !locked {
                 children.entry(i.previous_output.txid).or_default().push(*t);
             }
-            let beats = |(b, be): &(Txid, &TxEntry)| {
-                b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
-            };
+            let beats = |(b, be): &(Txid, &TxEntry)| b != t && may_beat(b, be, locked);
             if in_block
                 .get(&i.previous_output)
                 .is_some_and(|v| v.iter().any(beats))
@@ -1849,16 +1848,34 @@ impl HistoryStore {
     /// `skip` that holds it out of a block without a known lock: key-wallet
     /// tells only the wallets holding its record or coins (#828). The
     /// wallets marked.
-    pub(crate) fn note_instant_lock(&self, txid: &Txid, skip: &HashSet<WalletId>) -> Vec<WalletId> {
+    pub(crate) fn note_instant_lock(
+        &self,
+        txid: &Txid,
+        skip: impl Fn(&WalletId) -> bool,
+    ) -> Vec<WalletId> {
+        let wants_lock = |id: &WalletId, h: &WalletHistory| {
+            !skip(id)
+                && h.loaded
+                && h.txs
+                    .get(txid)
+                    .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
+        };
+        let targets: Vec<WalletId> = {
+            let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+            map.iter()
+                .filter(|(id, h)| wants_lock(id, h))
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        if targets.is_empty() {
+            return targets;
+        }
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        (map.iter_mut())
-            .filter(|(id, h)| {
-                !skip.contains(*id)
-                    && h.loaded
-                    && (h.txs.get(txid))
-                        .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
+        targets
+            .into_iter()
+            .filter(|id| {
+                (map.get_mut(id)).is_some_and(|h| wants_lock(id, h) && h.set_instant_locked(txid))
             })
-            .filter_map(|(id, h)| h.set_instant_locked(txid).then_some(*id))
             .collect()
     }
 
@@ -2799,6 +2816,36 @@ impl HistoryStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unrelated_network_lock_does_not_need_the_history_write_lock() {
+        use dash_spv::EventHandler;
+
+        struct NoEvents;
+        impl crate::EventSink for NoEvents {
+            fn emit(&self, _: crate::EngineEvent) {}
+        }
+
+        let hub = crate::events::SessionHub::new(crate::DashNetwork::Regtest, Arc::new(NoEvents));
+        let held_read = hub.history.wallets.read().unwrap();
+        let (sent, done) = std::sync::mpsc::channel();
+        let completed = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                hub.on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+                    instant_lock: dashcore::InstantLock::default(),
+                    validated: true,
+                });
+                sent.send(()).unwrap();
+            });
+            let completed = done.recv_timeout(std::time::Duration::from_secs(2));
+            drop(held_read);
+            completed
+        });
+        assert!(
+            completed.is_ok(),
+            "an unrelated lock blocked on a history reader"
+        );
+    }
+
     use dashcore::{BlockHash, OutPoint, PubkeyHash, ScriptBuf, TxIn, TxOut, Witness};
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{InputDetail, TransactionDirection};
@@ -5059,7 +5106,7 @@ mod tests {
         );
         let txs: HashMap<Txid, TxEntry> = [q, w, p].into_iter().map(|e| (e.tx.txid(), e)).collect();
         assert!(
-            spent_outpoints(&txs, None).contains(&coin(5)),
+            spent_outpoints(&txs, |_, _, locked| !locked).contains(&coin(5)),
             "A stays held"
         );
     }
@@ -5089,7 +5136,14 @@ mod tests {
                 txs.insert(e.tx.txid(), e);
             }
         }
-        let spent = spent_outpoints(&txs, None);
+        let lock = (12, BlockHash::all_zeros());
+        let active = HashMap::from([lock]);
+        let spent = spent_outpoints(&txs, |_, entry, locked| {
+            !locked
+                || entry.context.block_info().is_some_and(|block| {
+                    proven_final((block.height(), block.block_hash()), Some(lock), &active)
+                })
+        });
         assert!(
             (0..16).all(|n| !spent.contains(&coin(100 + n))),
             "no A held"

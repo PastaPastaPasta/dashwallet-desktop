@@ -2099,7 +2099,7 @@ fn a_beaten_payment_goes_when_a_chainlock_forgets_its_winner_after_the_proof_was
 /// or offered, and the payment's change is withheld, after a restart too.
 #[test]
 fn a_beaten_payment_stays_when_a_chainlock_forgets_its_coins_spends_at_two_heights() {
-    coins_spent_at_two_heights_keep_the_payment(false);
+    coins_spent_at_two_heights_keep_the_payment(TwoSpends::BeforeDetection);
 }
 
 /// #818: as above, but the drop is found after A's block alone, and B's
@@ -2107,10 +2107,33 @@ fn a_beaten_payment_stays_when_a_chainlock_forgets_its_coins_spends_at_two_heigh
 /// of a block processed since the detection either.
 #[test]
 fn a_beaten_payment_stays_when_a_chainlock_forgets_a_spend_of_a_block_after_its_detection() {
-    coins_spent_at_two_heights_keep_the_payment(true);
+    coins_spent_at_two_heights_keep_the_payment(TwoSpends::AfterDetection);
 }
 
-fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
+#[test]
+fn a_beaten_payment_stays_when_a_block_below_the_processed_height_spends_another_input() {
+    coins_spent_at_two_heights_keep_the_payment(TwoSpends::BelowProcessedHeight);
+}
+
+#[test]
+fn a_beaten_payment_stays_when_a_chainlock_forgets_only_the_first_spend() {
+    coins_spent_at_two_heights_keep_the_payment(TwoSpends::FirstSpendFinal);
+}
+
+#[test]
+fn a_carried_recheck_cannot_free_an_input_spent_below_the_processed_height() {
+    coins_spent_at_two_heights_keep_the_payment(TwoSpends::Carried);
+}
+
+enum TwoSpends {
+    BeforeDetection,
+    AfterDetection,
+    BelowProcessedHeight,
+    FirstSpendFinal,
+    Carried,
+}
+
+fn coins_spent_at_two_heights_keep_the_payment(mode: TwoSpends) {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let payment = send(
@@ -2143,12 +2166,28 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
     header_chain(&session, &[(TIP + 1, hashes[0]), (TIP + 2, hashes[1])]);
 
     let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
     *session.hub.pause_drop_recheck.lock().unwrap() = Some(Arc::clone(&pause));
-    let first = match later {
-        true => vec![(TIP + 1, blocks[0].clone())],
-        false => vec![(TIP + 1, blocks[0].clone()), (TIP + 2, blocks[1].clone())],
-    };
-    let tip = first.last().unwrap().0;
+    let mut first = vec![(TIP + 1, blocks[0].clone())];
+    if matches!(mode, TwoSpends::BeforeDetection) {
+        first.push((TIP + 2, blocks[1].clone()));
+    }
+    let revisit = matches!(mode, TwoSpends::BelowProcessedHeight | TwoSpends::Carried);
+    let partial_lock = matches!(mode, TwoSpends::FirstSpendFinal);
+    if revisit {
+        let tip_block = vec![foreign()];
+        header_chain(
+            &session,
+            &[
+                (TIP + 1, hashes[0]),
+                (TIP + 2, hashes[1]),
+                (TIP + 3, block_hash(&tip_block)),
+            ],
+        );
+        first.push((TIP + 3, tip_block));
+    }
+    let tip = if revisit { TIP + 3 } else { TIP + 2 };
+    let first_tip = first.last().unwrap().0;
     super::deliver(&engine, &session, id, move |wm| {
         Box::pin(async move {
             use platform_wallet::key_wallet_manager::WalletInterface;
@@ -2162,17 +2201,38 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
                 ))
                 .await;
             }
-            wm.update_wallet_synced_height(&id.0, tip);
+            wm.update_wallet_synced_height(&id.0, first_tip);
         })
     });
     assert!(
         pause.wait_reached(std::time::Duration::from_secs(20)),
         "the blocks' reconcile rechecks the payment"
     );
-    if later {
+    if matches!(mode, TwoSpends::Carried) {
+        super::deliver(&engine, &session, id, |wm| {
+            Box::pin(async move {
+                use platform_wallet::key_wallet_manager::WalletInterface;
+                wm.note_chain_lock_height(TIP + 1);
+            })
+        });
+        pause.release.notify_one();
+        eventually("the payment is carried to recheck", || {
+            session.hub.carried_drop_roots(id).contains(&payment.txid())
+        });
+    }
+    let carried_pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&carried_pause));
+    if matches!(mode, TwoSpends::Carried) {
+        *session.hub.pause_drop_recheck.lock().unwrap() = Some(Arc::clone(&carried_pause));
+    }
+    if !matches!(mode, TwoSpends::BeforeDetection) {
         mined(&engine, &session, id, TIP + 2, blocks[1].clone());
     }
-    chain_lock(&engine, &session, id, TIP + 2, hashes[1]);
+    if partial_lock {
+        chain_lock(&engine, &session, id, TIP + 1, hashes[0]);
+    } else {
+        chain_lock(&engine, &session, id, TIP + 2, hashes[1]);
+    }
     let observed = {
         let manager = session.manager().unwrap();
         engine.block_on(async move {
@@ -2183,10 +2243,11 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
         })
     };
     assert!(
-        !observed.contains(&a) && !observed.contains(&b),
+        !observed.contains(&a) && observed.contains(&b) == partial_lock,
         "the ChainLock forgot both spends: {observed:?}"
     );
     pause.release.notify_one();
+    carried_pause.release.notify_one();
     let gate = Arc::clone(&session);
     engine.block_on(async move { drop(gate.hub.drop_gate.lock().await) });
 
@@ -2207,7 +2268,7 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
                 .core_wallet
                 .synced_height()
         });
-        assert_eq!(synced, TIP + 2, "{state}: nothing was rewound");
+        assert_eq!(synced, tip, "{state}: nothing was rewound");
         let held = coins(&engine, session, id);
         for coin in [a, b] {
             assert!(
@@ -2219,6 +2280,11 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
                 "{state}: {coin} is not offered"
             );
         }
+        let change_coin = change_of(&payment, &own_scripts(&engine, session, id));
+        assert!(
+            !spendable_for(&engine, session, id, change_coin, COIN / 10),
+            "{state}: the change is not offered"
+        );
         let change: u64 = (held.iter())
             .filter(|(o, _)| o.txid == payment.txid())
             .map(|(_, v)| v)
@@ -6678,6 +6744,132 @@ fn a_lock_arriving_after_the_load_keeps_a_locked_payments_claims_after_a_restart
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+#[test]
+fn an_unloaded_sender_stores_a_verified_lock_and_keeps_its_claims() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let to = startup_recipient(&engine, &session);
+    let (session, payment, winner) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    instant_lock(&engine, &session, id, &payment);
+    lock_reruns_done(&engine, &session);
+    assert!(
+        stored_lock(&session, id, payment.txid()),
+        "the unloaded sender stores the lock"
+    );
+
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(history_shows_locked(&session, id, payment.txid()));
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!held(&engine, &session, id).contains(&a));
+    assert!(!spendable(&engine, &session, id, a));
+
+    let winner_block = block_hash(&[winner]);
+    chain_lock(&engine, &session, id, TIP + 1, winner_block);
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, winner_block)]);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "the ChainLocked spend still wins"
+    );
+}
+
+#[test]
+fn a_recordless_lock_heard_while_loading_survives_a_restart() {
+    use dash_spv::EventHandler;
+
+    for while_reading in [true, false] {
+        let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+        let a = OutPoint::new(paid.txid(), 0);
+        let (session, payment, _) =
+            unlocked_payment_beaten_on_b(&engine, session, id, &paid, FOREIGN);
+        engine.block_on(session.unload_wallet(id)).unwrap();
+        delete_stored_record(&session, id, payment.txid());
+        let copied = Arc::new(crate::coins::TestPause::default());
+        let _copied = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+        *session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+        let opening = {
+            let opening = Arc::clone(&session);
+            session
+                .rt
+                .spawn(async move { opening.load_wallet(id).await })
+        };
+        assert!(copied.wait_reached(std::time::Duration::from_secs(20)));
+        let installing = Arc::new(crate::coins::TestPause::default());
+        let _installing = crate::held_writes::ReleaseOnDrop(Arc::clone(&installing));
+        let pause = if while_reading {
+            &copied
+        } else {
+            *session.hub.pause_spend_claims.lock().unwrap() = Some(Arc::clone(&installing));
+            copied.release.notify_one();
+            assert!(installing.wait_reached(std::time::Duration::from_secs(20)));
+            &installing
+        };
+        assert_eq!(
+            session.hub.history.read_wallet(&id, |h| h.loaded),
+            !while_reading
+        );
+        session
+            .hub
+            .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+                instant_lock: InstantLock {
+                    txid: payment.txid(),
+                    inputs: payment.input.iter().map(|i| i.previous_output).collect(),
+                    ..InstantLock::default()
+                },
+                validated: true,
+            });
+        lock_reruns_done(&engine, &session);
+        pause.release.notify_one();
+        engine.block_on(opening).unwrap().unwrap();
+        assert!(
+            stored_lock(&session, id, payment.txid()),
+            "replayed after the load's claims"
+        );
+
+        let session = reopen(&engine, session);
+        mined(&engine, &session, id, TIP, vec![paid]);
+        assert!(!held(&engine, &session, id).contains(&a));
+        assert!(!spendable(&engine, &session, id, a));
+    }
+}
+
+#[test]
+fn a_stored_rival_in_a_replaced_block_does_not_free_a_locked_payments_other_coin() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        2 * COIN,
+        true,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let replacement = block_hash(&[foreign()]);
+    chain_lock(&engine, &session, id, TIP + 1, replacement);
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, replacement)]);
+    assert!(history_shows_locked(&session, id, payment.txid()));
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "key-wallet recredits A"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "the fork did not finalise the rival"
+    );
+}
+
 /// Whether the wallet's store holds a verified InstantSend lock of `txid`.
 fn stored_lock(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     use platform_wallet::changeset::PlatformWalletPersistence;
@@ -6757,60 +6949,120 @@ fn a_lock_of_a_payment_with_no_record_a_chainlock_beat_is_not_stored() {
     assert!(held(&engine, &session, id).contains(&a), "A is credited");
 }
 
-/// The lock of a payment to an address of no loaded wallet heard after the
-/// load while the sender's store fails, then another transaction's lock
-/// once it works, then a restart: the lock is kept until it is stored, so
-/// the next load keeps A claimed when the funding block is scanned again.
-#[test]
-fn a_lock_whose_store_failed_is_stored_at_the_next_lock_heard() {
-    use dash_spv::EventHandler;
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
-    let a = OutPoint::new(paid.txid(), 0);
-    let (session, payment, _) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, FOREIGN);
-    let txid = payment.txid();
-    let heard = |txid| dash_spv::SyncEvent::InstantLockReceived {
-        instant_lock: InstantLock {
-            txid,
-            ..InstantLock::default()
-        },
-        validated: true,
-    };
-    let fail = |fails: bool| {
-        *session.live().unwrap().store.fail_store.lock().unwrap() = fails.then(|| {
-            Box::new(
-                move |cs: &platform_wallet::changeset::PlatformWalletChangeSet| {
-                    (cs.core.as_ref())
-                        .is_some_and(|c| c.instant_locks_for_non_final_records.contains_key(&txid))
-                },
-            ) as crate::store::StoreFailure
-        });
-    };
+struct FailedLock {
+    _dir: tempfile::TempDir,
+    engine: Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    paid: Transaction,
+    txid: Txid,
+    attempts: Arc<std::sync::atomic::AtomicUsize>,
+}
 
-    fail(true);
-    session.hub.on_sync_event(&heard(txid));
-    lock_reruns_done(&engine, &session);
+impl FailedLock {
+    fn new() -> Self {
+        let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+        let (session, payment, _) =
+            unlocked_payment_beaten_on_b(&engine, session, id, &paid, FOREIGN);
+        let txid = payment.txid();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_store = Arc::clone(&attempts);
+        *session.live().unwrap().store.fail_store.lock().unwrap() = Some(Box::new(move |cs| {
+            let matches = cs
+                .core
+                .as_ref()
+                .is_some_and(|c| c.instant_locks_for_non_final_records.contains_key(&txid));
+            if matches {
+                attempts_for_store.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            matches
+        }));
+        Self {
+            _dir,
+            engine,
+            session,
+            id,
+            paid,
+            txid,
+            attempts,
+        }
+    }
+
+    fn hear(&self, txid: Txid) {
+        use dash_spv::EventHandler;
+        self.session
+            .hub
+            .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+                instant_lock: InstantLock {
+                    txid,
+                    ..InstantLock::default()
+                },
+                validated: true,
+            });
+        lock_reruns_done(&self.engine, &self.session);
+    }
+
+    fn allow_writes(&self) {
+        *self
+            .session
+            .live()
+            .unwrap()
+            .store
+            .fail_store
+            .lock()
+            .unwrap() = None;
+    }
+}
+
+#[test]
+fn a_lock_with_a_record_installs_no_claim_when_its_store_refuses_it() {
+    let f = FailedLock::new();
+    let a = OutPoint::new(f.paid.txid(), 0);
+    mined(&f.engine, &f.session, f.id, TIP, vec![f.paid.clone()]);
+    assert!(held(&f.engine, &f.session, f.id).contains(&a));
+    f.hear(f.txid);
+    assert!(history_shows_locked(&f.session, f.id, f.txid));
+    assert!(!stored_lock(&f.session, f.id, f.txid));
     assert!(
-        history_shows_locked(&session, id, txid),
-        "the history shows the lock"
+        held(&f.engine, &f.session, f.id).contains(&a),
+        "no claim installed before the lock is durable"
     );
-    assert!(!stored_lock(&session, id, txid), "the store failed");
-    fail(false);
-    session
+    assert!(
+        !spendable(&f.engine, &f.session, f.id, a),
+        "a known lock still keeps A out of coin selection"
+    );
+}
+
+#[test]
+fn unrelated_network_locks_do_not_retry_a_failed_lock_write() {
+    let f = FailedLock::new();
+    f.hear(f.txid);
+    for seed in 10..30 {
+        f.hear(Txid::from_byte_array([seed; 32]));
+    }
+    assert_eq!(f.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_failed_lock_write_is_retried_without_another_network_lock() {
+    let f = FailedLock::new();
+    f.session
         .hub
-        .on_sync_event(&heard(Txid::from_byte_array([9; 32])));
-    lock_reruns_done(&engine, &session);
-    assert!(
-        stored_lock(&session, id, txid),
-        "stored once a lock is heard again"
+        .lock_retry_millis
+        .store(100, std::sync::atomic::Ordering::SeqCst);
+    f.hear(f.txid);
+    assert!(!stored_lock(&f.session, f.id, f.txid));
+    f.allow_writes();
+    eventually(
+        "a retry durably saves the lock without a network event",
+        || stored_lock(&f.session, f.id, f.txid),
     );
-    let session = reopen(&engine, session);
-    assert!(
-        history_shows_locked(&session, id, txid),
-        "the load reads the lock"
-    );
-    mined(&engine, &session, id, TIP, vec![paid]);
-    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
-    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    let session = reopen(&f.engine, f.session);
+    assert!(history_shows_locked(&session, f.id, f.txid));
+    let a = OutPoint::new(f.paid.txid(), 0);
+    mined(&f.engine, &session, f.id, TIP, vec![f.paid]);
+    assert!(!held(&f.engine, &session, f.id).contains(&a));
+    assert!(!spendable(&f.engine, &session, f.id, a));
 }
 
 /// The winner's block ChainLocked before the payment's lock arrives after
@@ -7068,6 +7320,11 @@ fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
         held(&engine, &session, id).contains(&a),
         "reopened: A is credited"
     );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "the header proof is missing"
+    );
+    header_chain(&session, &[(TIP + 1, winner_block)]);
     assert!(
         spendable(&engine, &session, id, a),
         "and a payment can spend it"
@@ -7758,13 +8015,24 @@ fn reset_chain_data_deletes_the_spend_notes_of_open_and_closed_wallets() {
 /// reads it, so the payment claims A again and keeps its sent mark.
 #[test]
 fn a_lock_arriving_after_an_abandon_this_session_claims_the_coins_again() {
+    use dash_spv::EventHandler;
+
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
     let to = startup_recipient(&engine, &session);
-    let (session, payment, _) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
+    let (session, payment, winner) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
     abandon(&engine, &session, id, payment.txid());
 
-    instant_lock(&engine, &session, id, &payment);
+    session
+        .hub
+        .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+            instant_lock: InstantLock {
+                txid: payment.txid(),
+                inputs: payment.input.iter().map(|i| i.previous_output).collect(),
+                ..InstantLock::default()
+            },
+            validated: true,
+        });
     lock_reruns_done(&engine, &session);
     assert!(
         !abandoned(&engine, &session, id, payment.txid()),
@@ -7774,12 +8042,37 @@ fn a_lock_arriving_after_an_abandon_this_session_claims_the_coins_again() {
         sent_marks(&session, id).contains(&payment.txid()),
         "its sent mark stays"
     );
-    mined(&engine, &session, id, TIP, vec![paid]);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
     assert!(
         !held(&engine, &session, id).contains(&a),
         "A is claimed again"
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
+
+    assert!(
+        stored_lock(&session, id, payment.txid()),
+        "the abandoned copy has a durable lock"
+    );
+    let session = reopen(&engine, session);
+    assert!(history_shows_locked(&session, id, payment.txid()));
+    assert!(session.hub.history.read_wallet(&id, |h| {
+        h.lock_parents
+            .get(&payment.txid())
+            .is_some_and(|parents| parents.contains(&paid.txid()))
+    }));
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!held(&engine, &session, id).contains(&a));
+    assert!(!spendable(&engine, &session, id, a));
+
+    let winner_block = block_hash(&[winner]);
+    chain_lock(&engine, &session, id, TIP + 1, winner_block);
+    let session = reopen(&engine, session);
+    header_chain(&session, &[(TIP + 1, winner_block)]);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "the ChainLocked spend still wins"
+    );
 }
 
 /// A payment D of C whose saved copy is damaged, retired by Remove

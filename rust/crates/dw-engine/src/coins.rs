@@ -1091,7 +1091,12 @@ impl NetworkSession {
                 snapshot,
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
-                crate::history_ops::applied_chainlock(&state),
+                state
+                    .core_wallet
+                    .metadata
+                    .last_applied_chain_lock
+                    .as_ref()
+                    .map(|c| (c.block_height, c.block_hash)),
                 self.hub.excluded_coins(wallet_id, &state.core_wallet),
             )
         };
@@ -1156,12 +1161,47 @@ impl NetworkSession {
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
-        let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
-            .max(self.hub.best_chainlock().map(|(h, _)| h));
+        let chainlock = applied
+            .into_iter()
+            .chain(self.hub.best_chainlock())
+            .max_by_key(|(height, _)| *height);
+        let heights = self
+            .hub
+            .history
+            .read(&wallet_id, crate::history::rival_heights);
+        let (proven_lock, active) = match chainlock {
+            Some(cl) if !heights.is_empty() => {
+                match self.headers_under(cl, heights.clone()).await {
+                    Some(headers) => (Some(cl), headers),
+                    None => (None, self.hub.header_hashes(heights).await),
+                }
+            }
+            _ => (None, self.hub.header_hashes(heights).await),
+        };
         let (spent, (restore_outputs, restore_inputs)) =
             (self.hub.history).read_wallet(&wallet_id, |h| {
                 (
-                    crate::history::spent_outpoints(&h.txs, chainlock),
+                    crate::history::spent_outpoints(&h.txs, |txid, entry, locked| {
+                        let Some(block) = entry.context.block_info() else {
+                            return false;
+                        };
+                        let (height, hash) = (block.height(), block.block_hash());
+                        let final_by_height = crate::history::chain_locked(
+                            &entry.context,
+                            chainlock.map(|(height, _)| height),
+                        );
+                        if locked || final_by_height {
+                            return crate::history::proven_final(
+                                (height, hash),
+                                proven_lock,
+                                &active,
+                            );
+                        }
+                        match active.get(&height) {
+                            Some(current) => *current == hash,
+                            None => h.session_held.contains(txid),
+                        }
+                    }),
                     h.restore_held_coins(),
                 )
             });
