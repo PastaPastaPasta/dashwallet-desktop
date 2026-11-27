@@ -505,6 +505,11 @@ pub enum ConnectFailureName {
     NoResponseKey,
     NothingToSend,
     ScopeChanged,
+    UnverifiedKey,
+    FeeTooHigh,
+    DisconnectConflict,
+    PendingFeeTooHigh,
+    PendingWrite,
 }
 
 /// The network an App Connect request is for (`connect.network`).
@@ -534,6 +539,11 @@ impl From<ConnectFailure> for ConnectFailureName {
             ConnectFailure::NoResponseKey => Self::NoResponseKey,
             ConnectFailure::NothingToSend => Self::NothingToSend,
             ConnectFailure::ScopeChanged => Self::ScopeChanged,
+            ConnectFailure::UnverifiedKey => Self::UnverifiedKey,
+            ConnectFailure::FeeTooHigh => Self::FeeTooHigh,
+            ConnectFailure::DisconnectConflict => Self::DisconnectConflict,
+            ConnectFailure::PendingFeeTooHigh => Self::PendingFeeTooHigh,
+            ConnectFailure::PendingWrite => Self::PendingWrite,
         }
     }
 }

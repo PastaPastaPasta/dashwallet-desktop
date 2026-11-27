@@ -1973,27 +1973,34 @@ impl Vault {
     }
 
     /// The kind and credit cap of a grant that issues a `PlatformIdentity`
-    /// signer: a `PlatformOp` or an `AppConnect` grant of `wallet`.
+    /// signer: a `PlatformOp`, `AppConnect` or `AppDisconnect` grant of `wallet`.
     fn identity_grant(
         &self,
         grant_id: &str,
         wallet: &WalletId,
     ) -> Result<(GrantKind, u64), VaultError> {
-        let purpose = match self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet)) {
-            Err(VaultError::GrantPurposeMismatch) => {
-                self.grant_purpose(grant_id, GrantKind::AppConnect, Some(wallet))?
+        let mut last = VaultError::GrantPurposeMismatch;
+        for kind in [
+            GrantKind::PlatformOp,
+            GrantKind::AppConnect,
+            GrantKind::AppDisconnect,
+        ] {
+            match self.grant_purpose(grant_id, kind, Some(wallet)) {
+                Ok(GrantPurpose::PlatformOp { max_credits, .. }) => {
+                    return Ok((GrantKind::PlatformOp, max_credits));
+                }
+                Ok(GrantPurpose::AppConnect { max_credits, .. }) => {
+                    return Ok((GrantKind::AppConnect, max_credits));
+                }
+                Ok(GrantPurpose::AppDisconnect { max_credits, .. }) => {
+                    return Ok((GrantKind::AppDisconnect, max_credits));
+                }
+                Ok(_) => return Err(VaultError::GrantPurposeMismatch),
+                Err(VaultError::GrantPurposeMismatch) => last = VaultError::GrantPurposeMismatch,
+                Err(e) => return Err(e),
             }
-            purpose => purpose?,
-        };
-        match purpose {
-            GrantPurpose::PlatformOp { max_credits, .. } => {
-                Ok((GrantKind::PlatformOp, max_credits))
-            }
-            GrantPurpose::AppConnect { max_credits, .. } => {
-                Ok((GrantKind::AppConnect, max_credits))
-            }
-            _ => Err(VaultError::GrantPurposeMismatch),
         }
+        Err(last)
     }
 
     /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` or
@@ -2809,6 +2816,9 @@ impl Vault {
                 GrantPurpose::AppConnect { request, .. },
                 SignerScope::AppConnect { request: wanted },
             ) => request == wanted,
+            (GrantPurpose::AppDisconnect { max_credits, .. }, SignerScope::PlatformIdentity) => {
+                max_credits != 0
+            }
             _ => false,
         };
         if !granted {

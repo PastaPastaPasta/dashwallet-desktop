@@ -236,7 +236,7 @@ pub(crate) async fn transfer(
     let version = net.version();
     let quote = credits + rules.fee;
     let nonces: &WithdrawalNonces = &session.withdrawal_nonces;
-    let (nonce, height) = nonce_for(net, nonces, id, true).await?;
+    let (nonce, height) = nonce_for(net, session, wallet_id, id, true).await?;
     let lease = write_lease(
         session,
         wallet_id,

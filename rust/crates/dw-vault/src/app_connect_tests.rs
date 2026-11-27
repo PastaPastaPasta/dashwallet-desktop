@@ -427,3 +427,42 @@ fn a_sealed_response_shows_no_bytes_in_debug() {
     let shown = format!("{sealed:?}");
     assert!(!shown.contains("abab"), "{shown}");
 }
+
+#[test]
+fn an_app_disconnect_grant_issues_only_identity_signer_and_requires_passphrase() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir);
+    v.unlock(PASS, crate::UnlockScope::Full).unwrap();
+    let request = request_hash(&app_eph_pub(9));
+    let purpose = GrantPurpose::AppDisconnect {
+        max_credits: 100_000_000,
+        identity: [7u8; 32],
+        request,
+    };
+    assert!(purpose.requires_credential());
+    assert_eq!(purpose.quick_unlock_value(), None);
+    assert!(v.authorize(purpose, Some(&W), Credential::None).is_err());
+    assert!(matches!(
+        v.authorize(purpose, Some(&W), Credential::Passphrase(b"wrong")),
+        Err(VaultError::WrongPassphrase { .. })
+    ));
+    assert!(
+        v.authorize(purpose, Some(&W), Credential::Passphrase(PASS))
+            .is_ok()
+    );
+    assert!(signer_for(&v, purpose, SignerScope::PlatformIdentity).is_ok());
+    for scope in [
+        SignerScope::AppConnect { request },
+        SignerScope::DashPayCrypto,
+        SignerScope::PlatformAddress,
+        SignerScope::PlatformFunding { max_duffs: 1 },
+    ] {
+        assert!(
+            matches!(
+                signer_for(&v, purpose, scope),
+                Err(VaultError::GrantPurposeMismatch)
+            ),
+            "{scope:?}"
+        );
+    }
+}
