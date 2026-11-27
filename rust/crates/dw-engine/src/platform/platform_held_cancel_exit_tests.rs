@@ -660,3 +660,114 @@ fn the_exit_of_a_held_cancel_passes_the_mainnet_flag() {
         assert!(w.moves().iter().all(|m| !m.holds()));
     }
 }
+
+/// #1060: beside a held payout P and its held cancel C, the exit X1 held,
+/// credits deposited to the held input, then X2 by a new All quote at X1's
+/// address and another amount. Both resolve to one document, present: it
+/// does not say which paid, so X2, the newest, is done for the group and
+/// unattributed, and X1, C and P failed, unable to land.
+#[test]
+fn two_exits_sharing_one_document_settle_unattributed() {
+    let w = World::new();
+    let (held, cancel) = held_and_cancel(&w, true);
+    let first = w.quote(WithdrawAmount::All).unwrap();
+    w.net.then(Act::Lost);
+    let lost = w.exit_as(&first, &w.f.grant(first.credits)).unwrap();
+    w.net.tick();
+    w.activity();
+    let mut first_record = w.record(&lost.id);
+    assert!(first_record.holds());
+    first_record.at = 0;
+    w.store(&[first_record]);
+    w.net.fund(w.address(0), DASH);
+    let again = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(again.exit_of.as_deref(), Some(cancel.id.as_str()));
+    assert_eq!(again.to, first.to);
+    assert_ne!(again.credits, first.credits, "other terms");
+    let exit = w.exit_as(&again, &w.f.grant(again.credits)).unwrap();
+    assert_eq!(exit.state, PlatformActivityState::Done, "{exit:?}");
+    assert!(exit.unattributed, "{exit:?}");
+    let r = w.record(&exit.id);
+    assert!(r.unattributed && r.group.is_some(), "{r:?}");
+    for id in [&held.id, &cancel.id, &lost.id] {
+        let r = w.record(id);
+        assert_eq!(
+            (r.state, r.can_land),
+            (PlatformActivityState::Failed, false),
+            "{id}"
+        );
+    }
+    let rows = w.activity();
+    let row = rows.iter().find(|r| r.id == exit.id).unwrap();
+    assert!(row.unattributed, "{row:?}");
+    assert!(w.moves().iter().all(|m| !m.holds()));
+    never_replaced(&w);
+}
+
+#[test]
+fn an_unnamed_move_checks_the_held_send_beside_its_exit() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (_, to) = w.theirs(9);
+    let send = w.held_send(one(), &to);
+    w.net.then(Act::Lost);
+    let exit = w.exit_held().unwrap();
+    w.net.tick();
+    w.activity();
+    let mut sent = w.record(&send.id);
+    let mut exited = w.record(&exit.id);
+    assert!(sent.holds() && exited.holds());
+    assert!(exited.id < sent.id);
+    sent.at = 0;
+    exited.at = 0;
+    w.store(&[sent, exited]);
+
+    let grant = w.f.grant(5 * DASH);
+    let error = w.move_to(one(), &w.to, &grant).unwrap_err();
+    assert_eq!(error, CreditsError::MovePending { id: send.id });
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent_count(), 2);
+}
+
+#[test]
+fn a_new_cancel_refuses_a_conflicting_link_at_its_key() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let held = w.held_move(one());
+    let q = w.cancel_quote_of(&held.id).unwrap();
+    let mut conflict = w.record(&held.id);
+    conflict.id = "conflicting-link".into();
+    conflict.link_conflict = true;
+    w.store(&[conflict.clone()]);
+
+    for of in [&held.id, &conflict.id] {
+        let error = CreditsError::MovePending {
+            id: conflict.id.clone(),
+        };
+        assert_eq!(w.cancel_quote_of(of).unwrap_err(), error);
+        let grant = w.f.grant(q.credits);
+        assert_eq!(w.cancel_as(of, &q.to, &grant).unwrap_err(), error);
+        assert!(w.f.unused(&grant));
+    }
+    assert_eq!(w.sent_count(), 1);
+}
+
+#[test]
+fn a_cancel_resend_returns_the_equivalent_attempt_that_settled() {
+    for payout in [false, true] {
+        let w = World::new();
+        let (held, cancel) = held_and_cancel(&w, payout);
+        let mut earlier = w.record(&cancel.id);
+        earlier.at = u64::MAX;
+        earlier.answered = true;
+        w.store(&[earlier]);
+
+        let q = w.cancel_quote_of(&held.id).unwrap();
+        let grant = w.f.grant(q.credits);
+        let outcome = w.cancel_as(&held.id, &q.to, &grant).unwrap();
+        assert_eq!(outcome.state, PlatformActivityState::Done, "{outcome:?}");
+        assert_eq!(outcome.id, cancel.id);
+        assert_eq!(w.sent_count(), 3);
+        assert!(w.moves().iter().all(|m| !m.holds()));
+    }
+}
