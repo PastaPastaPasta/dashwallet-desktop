@@ -18,6 +18,7 @@ import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { FormField, type usePayAmount } from "./form";
 import { contactPayFor, fromErrorText, outcomeText, sourceLabel, totalText, type ContactPayFlow, type FromRow, type PaySource } from "./fromBalance";
+import { contactsUpdatingNotice } from "./model";
 import { platformHoldText } from "../../api/platformHold";
 
 /** The sources, each with its balance and, when it cannot pay, its reason (P16). */
@@ -110,6 +111,7 @@ export function useBalancePay({
   const { credit } = useMaskedAmounts(shown);
   const flow = useModel(contactPayFor(b, walletId, identity, contact));
   const [confirmed, setConfirmed] = useState<ContactPayQuoteInfo | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const active = source !== "core";
   const credits = active && blocked === null && settled && typeof duffs === "number" && duffs > 0 ? String(BigInt(duffs) * CREDITS_PER_DUFF) : null;
   const open = confirmed !== null || flow.step !== "confirm" || flow.running;
@@ -122,6 +124,25 @@ export function useBalancePay({
   const hold = shieldedHold(useShieldedStatus(walletId).data);
   const problem = !active ? null : (blocked ?? (credits !== null && quote.isError ? (platformHoldText(quote.error, false) ?? fromErrorText(quote.error, credits, credit, source === "shielded" ? hold : null)) : null));
   const q = quote.data && quote.data.credits === credits && quote.data.source === source ? quote.data : null;
+  const close = () => {
+    setConfirmed(null);
+    flow.reset();
+    void client.invalidateQueries({ queryKey: ["contactPayQuote", walletId, identity, contact] });
+  };
+  const retry = async () => {
+    if (retrying) return;
+    if (credits === null) return close();
+    setRetrying(true);
+    try {
+      const result = await quote.refetch();
+      if (result.isSuccess) {
+        setConfirmed(result.data);
+        flow.reset();
+      } else if (!contactsUpdatingNotice(result.error, true)) close();
+    } finally {
+      setRetrying(false);
+    }
+  };
   return {
     active,
     flow,
@@ -133,12 +154,9 @@ export function useBalancePay({
     review: () => {
       if (q) setConfirmed(q);
     },
-    close: () => {
-      setConfirmed(null);
-      flow.reset();
-      // After an attempt the form quotes again: a refused grant or a settled hold changes it.
-      void client.invalidateQueries({ queryKey: ["contactPayQuote", walletId, identity, contact] });
-    },
+    close,
+    retry,
+    retrying,
   };
 }
 
@@ -152,6 +170,8 @@ export function BalancePaySheet({
   shown,
   before,
   onClose,
+  retrying,
+  onRetry,
 }: {
   flow: ContactPayFlow;
   quote: ContactPayQuoteInfo | null;
@@ -164,6 +184,8 @@ export function BalancePaySheet({
   shown: Shown;
   /** `paid`: the payment went or may have, so the form clears. */
   onClose: (paid: boolean) => void;
+  retrying: boolean;
+  onRetry: () => void;
 }) {
   const t = useT();
   const { amount, credit } = useMaskedAmounts(shown);
@@ -173,9 +195,10 @@ export function BalancePaySheet({
   const close = () => onClose((step === "done" && outcome !== null && outcome.state !== "notSent") || step === "lost");
   const state = step === "lost" ? "pending" : outcome?.state;
   const text = state ? outcomeText(state, name) : null;
+  const updating = step === "refused" ? contactsUpdatingNotice(flow.error, true) : null;
   return (
     <>
-      <Sheet title={t("pay.contact.pay", { name })} width="small" testId="pay-balance-sheet" closable={!flow.running} onClose={close}>
+      <Sheet title={t("pay.contact.pay", { name })} width="small" testId="pay-balance-sheet" closable={!flow.running && !retrying} onClose={close}>
         <div data-testid="pay-balance-body" data-step={step}>
           {step === "confirm" && quote && (
             <>
@@ -235,7 +258,22 @@ export function BalancePaySheet({
               </div>
             </div>
           )}
-          {step === "refused" && (
+          {updating && (
+            <>
+              <p className="contacts-hint card-l1 pay-banner is-updating" role="status" data-testid="pay-balance-updating">
+                {updating.text}
+              </p>
+              <div className="sheet-actions">
+                <DashButton variant="tintedGray" size="large" data-testid="pay-balance-close" disabled={retrying} onClick={() => onClose(false)}>
+                  {t("pay.result.close")}
+                </DashButton>
+                <DashButton variant="filledBlue" size="large" data-testid="pay-balance-retry" disabled={retrying} onClick={onRetry}>
+                  {t("pay.notice.tryAgain")}
+                </DashButton>
+              </div>
+            </>
+          )}
+          {step === "refused" && !updating && (
             <>
               <p className="form-problem" role="alert" data-testid="pay-balance-refusal">
                 {fromErrorText(flow.error, quote?.credits ?? null, credit)}

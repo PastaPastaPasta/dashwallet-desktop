@@ -433,6 +433,26 @@ impl PendingSpends {
             .unwrap_or_default()
     }
 
+    /// The coins any owner holds, and the subset held only by CoinJoin mixing sessions.
+    pub(crate) fn snapshot_by_kind(
+        &self,
+        wallet: &WalletId,
+    ) -> (HashSet<OutPoint>, HashSet<OutPoint>) {
+        let map = self.map();
+        let Some(claims) = map.get(wallet) else {
+            return (HashSet::new(), HashSet::new());
+        };
+        let mut all = HashSet::with_capacity(claims.len());
+        let mut mixing_only = HashSet::new();
+        for (o, owners) in claims {
+            all.insert(*o);
+            if !owners.is_empty() && owners.iter().all(|w| matches!(w, SpendOwner::Mixing(_))) {
+                mixing_only.insert(*o);
+            }
+        }
+        (all, mixing_only)
+    }
+
     /// The coins an owner other than `owner` holds (a ProTx resend's
     /// check, MG-04 D7).
     pub(crate) fn held_by_others(&self, wallet: &WalletId, owner: SpendOwner) -> HashSet<OutPoint> {

@@ -84,6 +84,8 @@ function connectFailureName(data: unknown): ConnectFailureName | null {
 /** Plain-language error for a Disconnect quote or action refusal. */
 export function disconnectErrorText(e: unknown): string {
   if (!isAppError(e)) return t("dashpay.connect.connected.err.generic");
+  if (e.code === "platform.restored") return t("dashpay.connect.err.platformRestored");
+  if (e.code === "platform.unavailable") return t("dashpay.connect.err.platformUnavailable");
   if (e.code === "connect.mainnet_off") return t("dashpay.connect.err.mainnetOff");
   if (e.code === "platform.grant_exceeded") return t("dashpay.connect.connected.err.grantExceeded");
   if (e.code === "connect.credits" && e.data?.kind === "credits") {

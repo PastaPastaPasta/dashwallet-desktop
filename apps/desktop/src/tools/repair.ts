@@ -104,6 +104,7 @@ export const RepairText = {
 const SHIELD_BLOCKED = messageTable("tools.repair.shieldBlockedReason", [
   "notReady",
   "spendUnsettled",
+  "ownLockUnfinalized",
   "lockInputsSpent",
   "unattributedLock",
   "noKnownLock",

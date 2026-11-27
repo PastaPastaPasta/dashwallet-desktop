@@ -301,6 +301,7 @@ export const tools = {
     shieldBlockedReason: {
       notReady: "The wallet is still reading this move's records.",
       spendUnsettled: "An earlier payment from this wallet is not confirmed yet.",
+      ownLockUnfinalized: "A payment this move depends on isn't final on the network yet.",
       lockInputsSpent: "The coins this move spent are already spent.",
       unattributedLock: "A payment of this wallet may be this move's, and it is not matched to it.",
       noKnownLock: "No payment of this move is known, so nothing shows which coins to send back.",

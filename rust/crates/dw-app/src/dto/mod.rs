@@ -433,6 +433,8 @@ pub struct WalletSummary {
     /// Imported from a Dash Core wallet.dat with legacy issued address
     /// ranges, which a recovery phrase doesn't restore.
     pub legacy_issued: bool,
+    /// The stored address lookahead is above the default or could not be read.
+    pub raised_lookahead: bool,
     pub hd: bool,
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device, when known.
@@ -450,6 +452,7 @@ impl From<WalletInfo> for WalletSummary {
             watch_only,
             has_mnemonic,
             legacy_issued,
+            raised_lookahead,
             hd,
             birth_height,
             created_at,
@@ -461,6 +464,7 @@ impl From<WalletInfo> for WalletSummary {
             watch_only,
             has_mnemonic,
             legacy_issued,
+            raised_lookahead,
             hd,
             birth_height,
             created_at,
