@@ -888,6 +888,7 @@ fn platform_params(e: &PlatformError) -> Value {
         P::Profile(ProfileError::Conflict { current }) => json!({"current": current}),
         P::LeaseRevoked { cause } => json!({"cause": cause}),
         P::FeatureOff { feature } => json!({"feature": feature}),
+        P::SessionOff => json!({"feature": "platform"}),
         P::NotImplemented { call } => json!({"call": call}),
         P::InvalidArgument { detail } | P::Storage { detail } | P::Internal { detail } => {
             json!({"detail": detail})
