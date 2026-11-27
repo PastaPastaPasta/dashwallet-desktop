@@ -29,6 +29,7 @@ import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
 import { chooseName } from "../dashpay/MyProfile";
 import { GrantSheet } from "../tools/common";
+import { ConnectedAppsCard } from "./ConnectedApps";
 import { SettingsCard } from "./parts";
 
 export function AdvancedTab({ network }: { network: NetworkInfo }) {
@@ -36,7 +37,25 @@ export function AdvancedTab({ network }: { network: NetworkInfo }) {
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
   if (!wallet) return null;
-  return <IdentitiesCard key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+  return <AdvancedTabWallet key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+}
+
+function AdvancedTabWallet({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const identities = useIdentityList(walletId);
+  const main = identities.data?.find((i) => i.isMain) ?? identities.data?.[0] ?? null;
+  return (
+    <>
+      <IdentitiesCard walletId={walletId} network={network} />
+      {main !== null && (
+        <ConnectedAppsCard
+          key={`apps:${walletId}:${main.identity}`}
+          walletId={walletId}
+          network={network}
+          identity={main}
+        />
+      )}
+    </>
+  );
 }
 
 function IdentitiesCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {

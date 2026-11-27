@@ -62,5 +62,6 @@ export const lock = {
     shieldDrain: "Moving mixed coins to Shielded",
     contactPayFromBalance: "Contact payment",
     appConnect: "App sign-in",
+    appDisconnect: "Disconnecting an app",
   },
 } as const satisfies Tree;

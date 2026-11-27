@@ -106,7 +106,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install osslsigncode for detached-signature tests
+        # osslsigncode is in the Ubuntu archive; packages.microsoft.com, a source the image adds, can
+        # answer 403 and fail the update (ci/github/linux-host-deps.sh drops it the same way).
         run: |
+          for part in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [ -f "$part" ] && grep -q 'packages[.]microsoft[.]com' "$part"; then sudo rm -f "$part"; fi
+          done
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends osslsigncode
           osslsigncode --version

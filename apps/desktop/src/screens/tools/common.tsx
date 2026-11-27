@@ -14,7 +14,7 @@ import { PAYMENT_PROMPT, type GrantModel, type GrantRequest } from "../../tools/
 import { EmptyState } from "../../components/history";
 import { copyWithToast } from "../../components/toast";
 
-const PURPOSE_TEXT: Readonly<Record<string, string>> = messageTable("tools.grant", ["spend", "signMessage", "platformOp", "platformSend"]);
+const PURPOSE_TEXT: Readonly<Record<string, string>> = messageTable("tools.grant", ["spend", "signMessage", "platformOp", "platformSend", "appDisconnect"]);
 
 /** The passphrase for the grant a tab is waiting on, with U-02's lockout policy. */
 export function GrantSheet({ grants }: { grants: GrantModel }) {

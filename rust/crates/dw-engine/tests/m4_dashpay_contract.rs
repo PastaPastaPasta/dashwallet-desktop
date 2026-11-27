@@ -190,11 +190,14 @@ const IMPLEMENTED: &[&str] = &[
     // #402: recovering a partly used transfer to Shielded.
     "DashPay.recover_transfer_quote",
     "DashPay.recover_transfer",
-    // 1.0 F24: App Connect sign-ins.
+    // 1.0 F24: App Connect sign-ins, connected apps and disconnect.
     "DashPay.app_connect_sheet",
     "DashPay.app_connect_quote",
     "DashPay.app_connect_approve",
     "DashPay.app_connect_retry_send",
+    "DashPay.app_connect_list",
+    "DashPay.app_connect_disconnect_quote",
+    "DashPay.app_connect_disconnect",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -1811,6 +1814,9 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.app_connect_retry_send(link()).await.map(drop),
+            dp.app_connect_list(s()).await.map(drop),
+            dp.app_connect_disconnect_quote(s(), s()).await.map(drop),
+            dp.app_connect_disconnect(s(), s(), s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

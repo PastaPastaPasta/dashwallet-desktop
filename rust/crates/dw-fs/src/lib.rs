@@ -996,9 +996,10 @@ mod tests {
     #[test]
     fn an_ancestor_others_can_write_is_named() {
         let tmp = private_tempdir();
-        let shared = mkdir(&tmp.path().join("shared"), 0o700);
+        let base = tmp.path().canonicalize().unwrap();
+        let shared = mkdir(&base.join("shared"), 0o700);
         let root = mkdir(&shared.join("root"), 0o700);
-        let link = tmp.path().join("link");
+        let link = base.join("link");
         symlink(&root, &link).unwrap();
         let named = |dir: &Path| {
             insecure_ancestor(dir)

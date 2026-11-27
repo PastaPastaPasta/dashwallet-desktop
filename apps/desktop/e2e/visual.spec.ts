@@ -459,6 +459,7 @@ for (const theme of THEMES) {
     test(`visual identities-${view} ${theme}`, async ({ page }) => {
       await openIdentities(page, "dashpay-identities", theme);
       await page.getByTestId("identity-row").first().waitFor();
+      await page.getByTestId("connected-apps-empty").waitFor();
       await go(page);
       await page.mouse.move(0, 0);
       await shoot(page, `identities-${view}`, theme);
@@ -1456,6 +1457,79 @@ for (const theme of THEMES) {
       await reach(page);
       await page.mouse.move(0, 0);
       await shoot(page, `connect-${name}`, theme);
+    });
+  }
+}
+
+// Settings ▸ Advanced ▸ Connected apps & Disconnect: list, empty, confirm with fee,
+// passphrase prompt, error, and after disconnect.
+const CONNECTED_APPS: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  list: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().waitFor();
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+  empty: {
+    scenario: "dashpay-connected-apps-empty",
+    reach: async (page) => {
+      await page.getByTestId("connected-apps-empty").waitFor();
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+  confirm: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+    },
+  },
+  passphrase: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.getByTestId("disconnect-confirm").click();
+      await page.getByTestId("grant-sheet-field").waitFor();
+    },
+  },
+  error: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.evaluate(() => {
+        window.__dwFixture!.world.disconnectOutcome = "notConfirmed";
+      });
+      await page.getByTestId("disconnect-confirm").click();
+      await authorize(page);
+      await page.getByTestId("disconnect-error").waitFor();
+    },
+  },
+  after: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.getByTestId("disconnect-confirm").click();
+      await authorize(page);
+      await page.getByTestId("connected-apps-done").waitFor();
+      await expect(page.getByTestId("connected-app-row")).toHaveCount(1);
+      await expect(page.getByTestId("connected-apps-refresh")).toHaveText("Refresh");
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(CONNECTED_APPS)) {
+    test(`visual connected-apps-${name} ${theme}`, async ({ page }) => {
+      await openIdentities(page, scenario, theme);
+      await page.getByTestId("connected-apps-card").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `connected-apps-${name}`, theme);
     });
   }
 }

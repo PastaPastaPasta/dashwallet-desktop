@@ -17,7 +17,7 @@ const AREAS: Record<string, string[]> = {
 
   lock: ["screens/LockScreen.tsx"],
 
-  settings: ["screens/settings/About.tsx", "screens/settings/CoinJoin.tsx", "screens/settings/General.tsx", "screens/settings/Identities.tsx", "screens/settings/LocalCurrency.tsx", "screens/settings/Privacy.tsx", "screens/settings/Security.tsx", "screens/settings/SettingsPage.tsx", "screens/settings/Updates.tsx", "screens/settings/Wallets.tsx", "screens/settings/parts.tsx"],
+  settings: ["screens/settings/About.tsx", "screens/settings/CoinJoin.tsx", "screens/settings/ConnectedApps.tsx", "screens/settings/General.tsx", "screens/settings/Identities.tsx", "screens/settings/LocalCurrency.tsx", "screens/settings/Privacy.tsx", "screens/settings/Security.tsx", "screens/settings/SettingsPage.tsx", "screens/settings/Updates.tsx", "screens/settings/Wallets.tsx", "screens/settings/parts.tsx"],
 
   components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
 

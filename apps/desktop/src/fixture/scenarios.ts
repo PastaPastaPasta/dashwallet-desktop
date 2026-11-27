@@ -19,7 +19,9 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { NotPrivateData, StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
 import type { StoreLine } from "../api/generated/StoreLine";
 import type { LinkRoute } from "../api/generated/LinkRoute";
-import type { FixtureConnect } from "./connect";
+import type { ConnectedApp } from "../api/generated/ConnectedApp";
+import type { DisconnectFixtureOutcome, FixtureConnect } from "./connect";
+import { sampleConnectedApps } from "./connect";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -158,6 +160,12 @@ export interface World {
   stash: FixtureStashedLink[];
   /** dw-app's App Connect requests by inbox id (fixture/connect.ts). */
   connect?: Record<string, FixtureConnect>;
+  /** Approved App Connect sessions still enabled on Platform, for Connected apps (connect.ts). */
+  connectedApps?: ConnectedApp[];
+  /** When true, `app_connect_list` fails with `platform.unavailable`. */
+  connectedAppsListError?: boolean;
+  /** Scripted outcome for `app_connect_disconnect_quote` and `app_connect_disconnect`. */
+  disconnectOutcome?: DisconnectFixtureOutcome;
   /** DP5-03: `invitation_status` of a stashed invitation by its id; absent: valid, from Bob. */
   invitations?: Record<string, InvitationStatus>;
   /** The last `shell_sync`: what the native menus would show. */
@@ -2047,6 +2055,21 @@ const SCENARIOS = {
   "dashpay-identities": (t) => {
     const w = base(t);
     w.dashpay = identitiesWorld();
+    return w;
+  },
+  /** DashPay Connect: Alice with two connected apps (Yappr with group CRITICAL + profile HIGH,
+   * and Dash Forum with documentType HIGH). */
+  "dashpay-connected-apps": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.connectedApps = sampleConnectedApps(IDENTITY.alice);
+    return w;
+  },
+  /** DashPay Connect: Alice with no connected apps yet. */
+  "dashpay-connected-apps-empty": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    w.connectedApps = [];
     return w;
   },
   /** A sync pass holds Alice's names (S18): no card, the chip says "Updating…". */

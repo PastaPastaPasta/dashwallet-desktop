@@ -117,10 +117,15 @@ pub(crate) fn tree(dir: &Path) -> BTreeMap<String, String> {
                 .strip_prefix(base)
                 .unwrap()
                 .to_string_lossy()
-                .into_owned();
-            if entry.file_type().unwrap().is_dir() {
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            let meta = entry.metadata().unwrap();
+            if meta.is_dir() {
                 out.insert(rel, "dir".into());
                 walk(base, &entry.path(), out);
+            } else if meta.is_file() && meta.len() == 0 {
+                // Windows denies even an EOF read while restore holds a store lock.
+                use sha2::{Digest, Sha256};
+                out.insert(rel, crate::sql::hex(&Sha256::digest([])));
             } else {
                 out.insert(rel, crate::sql::sha256_file(&entry.path()).unwrap());
             }
