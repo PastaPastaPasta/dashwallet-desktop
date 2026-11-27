@@ -298,6 +298,55 @@ fn a_lock_without_a_child_record_keeps_its_forked_parents_coin_unavailable() {
     assert_forked_parent_protected(false);
 }
 
+#[test]
+fn a_child_lock_through_a_pending_parent_protects_its_forked_grandparent() {
+    let s = scenario();
+    s.mined();
+    let owner =
+        dashcore::Address::from_script(&s.p.output[1].script_pubkey, dashcore::Network::Regtest)
+            .unwrap();
+    let change = fresh_address(&s.engine, &s.session, s.id).script_pubkey();
+    let parent = super::spend_of(OutPoint::new(s.p.txid(), 1), vec![(change, CHANGE / 2)]);
+    let parent = super::signed_by_wallet(&s.engine, &s.session, s.id, &owner, parent);
+    mempool(&s.engine, &s.session, s.id, &parent);
+    let change = OutPoint::new(parent.txid(), 0);
+    let child = super::spend_of(change, vec![(super::elsewhere(), CHANGE / 4)]);
+    s.hear_verified_lock(InstantLock {
+        txid: child.txid(),
+        inputs: vec![change],
+        ..InstantLock::default()
+    });
+    let history = &s.session.hub.history;
+    assert!(history.get(&s.id, &child.txid()).is_none());
+    assert!(!s.a_held());
+    let before = balances(&s.session, s.id);
+    let (max_before, inputs_before) = s.max();
+
+    s.fork();
+    assert!(
+        s.a_held(),
+        "key-wallet restored the grandparent's funding coin"
+    );
+    assert!(
+        history
+            .get(&s.id, &parent.txid())
+            .is_some_and(|entry| { entry.context.block_info().is_none() && !entry.is_abandoned() })
+    );
+    let after = balances(&s.session, s.id);
+    let (max, inputs) = s.max();
+    assert_eq!(
+        (
+            after.confirmed,
+            max,
+            inputs,
+            s.a_listed(),
+            spendable(&s.engine, &s.session, s.id, s.a)
+        ),
+        (before.confirmed, max_before, inputs_before, false, false),
+        "balance, Max, Send selection and coin control after the fork"
+    );
+}
+
 fn assert_recordless_child_protects_pending_parent(buffered: bool) {
     let (mut s, funding) = before_funding();
     s.fund(funding.clone());

@@ -1899,12 +1899,18 @@ impl WalletHistory {
             }
             if let Some(inputs) = self.fork_kept_ancestor_inputs.get(&parent) {
                 parents.extend(inputs.iter().map(|o| o.txid));
-            } else if removed.contains(&parent)
-                && let Some(entry) = self.txs.get(&parent)
+                continue;
+            }
+            let forked = removed.contains(&parent);
+            if let Some(entry) = self.txs.get(&parent)
+                && (forked || (entry.context.block_info().is_none() && !entry.is_abandoned()))
             {
-                let inputs: Vec<_> = entry.tx.input.iter().map(|i| i.previous_output).collect();
-                parents.extend(inputs.iter().map(|o| o.txid));
-                self.fork_kept_ancestor_inputs.insert(parent, inputs);
+                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
+                parents.extend(inputs.clone().map(|o| o.txid));
+                if forked {
+                    self.fork_kept_ancestor_inputs
+                        .insert(parent, inputs.collect());
+                }
             }
         }
     }
