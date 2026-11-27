@@ -1,7 +1,7 @@
 // "Move to Dash wallet" (platform/move.ts): the steps Transfer shows for it (the quote, Confirm & move,
 // progress and outcome), and what holds a move back.
 
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { creditsToDuffs } from "../api/pending";
 import { usePlatformActivity, usePlatformMoveQuote } from "../api/queries";
@@ -22,6 +22,8 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
   const exited = moveExit(activity.data, q?.exitOf);
   // Go waits until Activity shows the record the quote names; an answered read without it is read again once.
   const unresolved = exitUnresolved(activity.data, q?.exitOf);
+  const checkingId = useId();
+  const exitCheck = block === "failed" ? C.check.failed : C.check.loading;
   const stale = unresolved && !!activity.data;
   const { refetch } = activity;
   useEffect(() => {
@@ -33,6 +35,10 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
         // A move turned up while this confirmation was open (a late Activity read): it is not offered again.
         <p className="form-problem" role="alert" data-testid="platform-move-blocked">
           {C.waiting.text}
+        </p>
+      ) : unresolved ? (
+        <p className="sheet-text" role="status" id={checkingId} data-testid="platform-move-exit-checking">
+          {exitCheck}
         </p>
       ) : exited ? null : (
         // Beside a held item the move takes only that item's funds: its line below says so.
@@ -97,7 +103,8 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
             variant="filledBlue"
             size="large"
             data-testid="platform-move-go"
-            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? (platformHoldText(quote.error, false) ?? moveErrorText(quote.error, credits, activity.data)) : flow.running ? C.running.title : q && unresolved ? C.check.loading : C.quoting}
+            why={unresolved ? exitCheck : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? (platformHoldText(quote.error, false) ?? moveErrorText(quote.error, credits, activity.data)) : flow.running ? C.running.title : C.quoting}
+            whyId={unresolved ? checkingId : undefined}
             disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running || unresolved}
             onClick={() => block === null && q && void flow.move(q)}
           >
@@ -124,7 +131,7 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   const { step } = flow;
   const outcome = final && flow.outcome ? { ...flow.outcome, state: row.state, credits: row.credits, expectedDuffs: row.expectedDuffs, feeCredits: row.feeCredits, winnerKnown: row.winnerKnown } : flow.outcome;
   // A failed move that may still execute is shown as not confirmed; one that cannot found its credits used.
-  const failed = outcome?.state === "failed" && !row?.mayLand;
+  const failed = outcome?.state === "failed" && !row?.mayLand && (flow.exitOf === null || row?.state === "failed");
   // What the move was the exit of, which the outcome names.
   const copy = outcome ? moveOutcomeCopy(outcome, failed, credits, amount, moveExit(activity.data, flow.exitOf)) : null;
   return (
