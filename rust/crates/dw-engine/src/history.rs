@@ -3490,7 +3490,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 3);
         store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
-        store.truncate(wallet, &[removed.txid()], &[kept.txid()]);
+        store.truncate(wallet, 0, &[removed.txid()], &[kept.txid()]);
         assert_eq!(
             store.registration_collaterals(&wallet),
             vec![kept_collateral],
