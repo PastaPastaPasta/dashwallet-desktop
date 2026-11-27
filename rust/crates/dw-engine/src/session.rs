@@ -412,6 +412,7 @@ async fn released<T>(held: &Weak<T>) -> bool {
 pub(crate) struct Live {
     pub manager: Arc<Manager>,
     pub persister: Arc<SqlitePersister>,
+    rebroadcast_rebuild: watch::Sender<u64>,
     /// The store upgrade's proof the persister opened through it.
     pub _persister_opened: Arc<dw_store_upgrade::PersisterOpened>,
     /// The persister platform-wallet uses; knows which wallets are closed.
@@ -962,6 +963,7 @@ impl NetworkSession {
             governance_enabled,
             collateral_source,
         );
+        let (rebroadcast_rebuild, rebuild_requests) = watch::channel(0);
         let session = Arc::new(Self {
             network,
             data_dir,
@@ -984,6 +986,7 @@ impl NetworkSession {
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
+                rebroadcast_rebuild,
                 _persister_opened: persister_opened,
                 store,
                 appdb: Arc::clone(&appdb),
@@ -1061,6 +1064,7 @@ impl NetworkSession {
         session.attach_drain_drops();
         session.attach_dead_claims();
         session.attach_sweep_resend();
+        session.attach_rebroadcast_rebuild(rebuild_requests);
         session.attach_balance_reread();
         session.attach_held_refresh();
         session.attach_lock_rerun();
@@ -1422,6 +1426,73 @@ impl NetworkSession {
             running: false,
         });
         Ok(stopped?)
+    }
+
+    pub(crate) fn request_rebroadcast_rebuild(&self) {
+        let Ok(live) = self.live() else {
+            return;
+        };
+        let generation = live.manager.spv().run_session();
+        live.rebroadcast_rebuild.send_if_modified(|requested| {
+            if generation <= *requested {
+                return false;
+            }
+            *requested = generation;
+            true
+        });
+    }
+
+    fn attach_rebroadcast_rebuild(self: &Arc<Self>, mut requests: watch::Receiver<u64>) {
+        let weak = Arc::downgrade(self);
+        if let Ok(live) = self.live() {
+            let weak = weak.clone();
+            live.store.notify_sweep(move || {
+                if let Some(session) = weak.upgrade() {
+                    session.request_rebroadcast_rebuild();
+                }
+            });
+        }
+        self.rt.spawn(async move {
+            while requests.changed().await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let Some(session) = weak.upgrade() else {
+                    break;
+                };
+                let Ok(_op) = session.enter().await else {
+                    break;
+                };
+                let _lifecycle = session.platform.lifecycle.lock().await;
+                // Repair holds this across the batch and its rewind. Wait
+                // for it before dropping the old client, which owns the timer.
+                drop(session.wallet_lifecycle.hold().await);
+                let generation = *requests.borrow_and_update();
+                let Ok(manager) = session.manager() else {
+                    break;
+                };
+                if manager.spv().run_session() != generation || !manager.spv().is_started() {
+                    continue;
+                }
+                if let Err(error) = session.rebuild_spv(&manager).await {
+                    session.sink.emit(EngineEvent::Notice {
+                        network: Some(session.network.clone()),
+                        code: NoticeCode::SpvError,
+                        detail: format!(
+                            "SPV could not restart after dropping transactions: {error}"
+                        ),
+                    });
+                }
+            }
+        });
+    }
+
+    async fn rebuild_spv(&self, manager: &Manager) -> Result<(), EngineError> {
+        if let Err(error) = self.stop_spv_inner(manager).await {
+            tracing::debug!(%error, "joining SPV teardown before restarting");
+            manager.spv().stop().await?;
+        }
+        self.start_spv_inner(manager).await?;
+        self.emit_spv_running();
+        Ok(())
     }
 
     /// Ends the resends' acceptance waits ([`Self::resends`]). Nothing is

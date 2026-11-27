@@ -1004,6 +1004,66 @@ fn resent(txid: Txid, state: SweepResendState) -> Vec<SweepResend> {
     vec![SweepResend { txid, state }]
 }
 
+#[test]
+fn an_abandoned_chunk_is_not_sent_again_after_reconnect_or_restart() {
+    let mut f = fixture(false);
+    for seed in [1, 2] {
+        f.credit_coinjoin(seed, COIN);
+    }
+    let wire = hook(&f, 1, &[]);
+    move_to_wallet(&f).unwrap();
+    let chunks = wire.txs();
+    let [abandoned, pending] = chunks.as_slice() else {
+        panic!("expected two sweep chunks");
+    };
+    let session = Arc::clone(&f.session);
+    let wallet = f.wallet;
+    let txid = abandoned.txid();
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = session.manager()?;
+            session.abandon_inner(&manager, wallet, txid).await
+        }))
+        .unwrap();
+
+    for reopen in [false, true] {
+        if reopen {
+            f.reopen();
+            for seed in [1, 2] {
+                f.credit_coinjoin(seed, COIN);
+            }
+        } else {
+            forget_claims(&f, &chunks);
+        }
+        let wire = hook(&f, 1, &[]);
+        dash_spv::EventHandler::on_network_event(
+            &*f.session.hub,
+            &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+        );
+        within(&f, async {
+            while !wire.txs().iter().any(|tx| tx.txid() == pending.txid())
+                || f.session
+                    .coinjoin
+                    .mixers()
+                    .get(&f.wallet)
+                    .is_some_and(|m| m.resending)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(wire.txs(), std::slice::from_ref(pending), "reopen={reopen}");
+        assert!(sweep_out_keys(&f).contains(&txid));
+        assert_held(&f, abandoned);
+    }
+    let spent = abandoned.input[0].previous_output;
+    drop_coins(&f, &HashSet::from([spent]));
+    swept(&f, txid, conflict(spent).txid(), None);
+    resend(&f, None).unwrap();
+    assert!(!sweep_out_keys(&f).contains(&txid));
+}
+
 /// Q1: "Try again" and every reconnect send the chunk's recorded bytes,
 /// never a new signature; a refusal of a send again (a peer may have the
 /// first) keeps the record and its coins. The wallet's own mempool record

@@ -224,7 +224,7 @@ impl NetworkSession {
             }
             // An own lock abandoned before: its coins wait for the rescan.
             if resolve {
-                this.restop_abandoned_locks(wallet_id, &own).await?;
+                this.restop_abandoned_locks(wallet_id, &own).await;
             }
             let held = this.hub.rescan_held(&wallet_id);
             if let Some((txid, _)) = (rows.iter()).find(|(_, i)| i.iter().any(|o| held.contains(o)))
@@ -332,26 +332,15 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Stops again the rebroadcast of the step's own locks the wallet holds
-    /// abandoned: the catch-up resume resends a pending row, which lifts the
-    /// stop phase 1 set, and the stop does not survive SPV's restart.
-    async fn restop_abandoned_locks(
-        &self,
-        wallet_id: WalletId,
-        own: &BTreeSet<Txid>,
-    ) -> Result<(), EngineError> {
+    /// Retires any remaining retries of the step's own abandoned locks,
+    /// including those an earlier attempt may still have queued.
+    async fn restop_abandoned_locks(&self, wallet_id: WalletId, own: &BTreeSet<Txid>) {
         let abandoned: Vec<Txid> = (own.iter())
             .filter(|t| (self.hub.history.get(&wallet_id, t)).is_some_and(|e| e.is_abandoned()))
             .copied()
             .collect();
-        if abandoned.is_empty() {
-            return Ok(());
-        }
-        let manager = self.manager()?;
-        for txid in abandoned {
-            self.stop_rebroadcast(&manager, wallet_id, txid).await;
-        }
-        Ok(())
+        self.stop_rebroadcasts(wallet_id, abandoned.into_iter())
+            .await;
     }
 
     /// Prepares `draft`, records its txid against `step`'s marker, then

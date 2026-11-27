@@ -2201,8 +2201,14 @@ impl NetworkSession {
             .appdb_op(move |db| {
                 #[cfg(all(test, debug_assertions))]
                 db.fault_point(SENT_MARK_READ_FAULT, dw_appdb::fault::Stage::Before)?;
+                let sweep_scope = dw_appdb::local_scope(&wallet.to_string());
                 (rest.into_iter())
-                    .map(|t| Ok((t, has_sent_mark(db, wallet, t)?)))
+                    .map(|t| {
+                        let key = format!("{}{t}", crate::coinjoin::SWEEP_OUT_PREFIX);
+                        let sent = has_sent_mark(db, wallet, t)?
+                            || db.setting(&sweep_scope, &key)?.is_some();
+                        Ok((t, sent))
+                    })
                     .collect::<Result<Vec<_>, dw_appdb::AppDbError>>()
             })
             .await?;
@@ -2210,22 +2216,29 @@ impl NetworkSession {
         Ok(sent)
     }
 
-    /// Where an abandon stops dash-spv's rebroadcast timer from sending
-    /// `txid` again. The pinned dash-spv has no such stop: its timer keeps
-    /// what this run sent until it confirms, is locked or ages out (a day),
-    /// and a restart ends it, as the abandon's confirmation says.
-    pub(crate) async fn stop_rebroadcast(&self, _manager: &Manager, _wallet: WalletId, txid: Txid) {
+    /// The pinned client owns the whole rebroadcast map. Replacing it after
+    /// a durable abandon or drop retires every affected transaction.
+    pub(crate) async fn stop_rebroadcasts(
+        &self,
+        wallet: WalletId,
+        txids: impl Iterator<Item = Txid>,
+    ) {
+        let mut txids = txids.peekable();
+        if txids.peek().is_none() {
+            return;
+        }
         #[cfg(not(test))]
-        let _ = txid;
+        let _ = wallet;
         #[cfg(test)]
-        {
-            let marked = self.abandon_marked(_wallet, txid).await;
+        for txid in txids {
+            let marked = self.abandon_marked(wallet, txid).await;
             self.hub
                 .stopped_rebroadcasts
                 .lock()
                 .unwrap()
                 .push((txid, marked));
         }
+        self.request_rebroadcast_rebuild();
     }
 
     /// Whether an Abandon of `txid` committed its mark, which it writes
@@ -2444,7 +2457,7 @@ impl NetworkSession {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         let held_since = std::time::Instant::now();
-        let (abandoned, released, overridden, txs, links) = {
+        let (abandoned, released, overridden, txs, links, sent) = {
             let settled = {
                 let infos = wm.get_all_wallet_infos().iter();
                 self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
@@ -2577,13 +2590,7 @@ impl NetworkSession {
             let mut marks: Vec<(String, Option<String>)> = (txs.iter())
                 .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))))
                 .collect();
-            // Before the marks, under the gate a resend's hand-off holds:
-            // the stop of each marked transaction this wallet sent is asked
-            // (`Self::stop_rebroadcast`). The pinned dash-spv has none, and
-            // keeps sending what this run sent until a restart.
-            for t in self.sent_by(wallet, &planned, info).await? {
-                self.stop_rebroadcast(manager, wallet, t).await;
-            }
+            let sent = self.sent_by(wallet, &planned, info).await?;
             // A drop of what can never confirm is recorded with the marks,
             // and its sent marks go in the same write: a stop before the
             // sweep leaves it for the open's sweep of marked payments and
@@ -2652,7 +2659,7 @@ impl NetworkSession {
                 tracing::warn!(%wallet, %root, "key-wallet abandoned another set than planned: no coin is released");
                 released.clear();
             }
-            (abandoned, released, overridden.is_some(), txs, links)
+            (abandoned, released, overridden.is_some(), txs, links, sent)
         };
         #[cfg(test)]
         let pause = self.hub.pause_abandon_sweep.lock().unwrap().take();
@@ -2722,6 +2729,8 @@ impl NetworkSession {
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
+        self.stop_rebroadcasts(wallet, sent.intersection(&abandoned).copied())
+            .await;
         #[cfg(test)]
         {
             let mut fail = self.hub.fail_after_sweep_of.lock().unwrap();
@@ -3878,10 +3887,6 @@ impl NetworkSession {
             })
             .chain(hold_marks(&rescan_holds))
             .collect();
-        // Before the marks, as an Abandon stops what it abandons.
-        for t in &plan.dead {
-            self.stop_rebroadcast(manager, wallet, *t).await;
-        }
         let noted: Vec<OutPoint> = (plan.copies.iter())
             .flat_map(|(_, tx)| {
                 let held = holds(tx);
@@ -3998,6 +4003,8 @@ impl NetworkSession {
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("dropping a dead transaction: {e}")))?;
+        self.stop_rebroadcasts(wallet, abandoned.iter().copied())
+            .await;
         self.hub.history.with_wallet(wallet, |h| {
             let unheard: Vec<(Txid, Transaction)> = (plan.copies.iter())
                 .filter(|(t, _)| abandoned.contains(t) && !h.txs.contains_key(t))
@@ -5716,7 +5723,7 @@ mod tests {
 }
 
 /// Tests: whether an abandon asked to stop the rebroadcast of `txid`
-/// ([`NetworkSession::stop_rebroadcast`]).
+/// ([`NetworkSession::stop_rebroadcasts`]).
 #[cfg(test)]
 pub(crate) fn rebroadcast_stop_asked(session: &NetworkSession, txid: Txid) -> bool {
     (session.hub.stopped_rebroadcasts.lock().unwrap().iter()).any(|(t, _)| *t == txid)

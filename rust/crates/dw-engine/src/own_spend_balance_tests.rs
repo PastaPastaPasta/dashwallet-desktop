@@ -2736,13 +2736,13 @@ fn a_payment_marked_abandoned_is_never_resent() {
     refused(&session);
 }
 
-/// An Abandon stops dash-spv's rebroadcast of every transaction it
-/// abandons, before it writes their marks; so does Remove unconfirmed
-/// transactions.
 #[test]
-fn an_abandon_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
+fn an_abandon_rebuilds_the_rebroadcaster_after_its_mark() {
     let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
     let txid = payment.txid();
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
     let abandoned = try_abandon(&engine, &session, id, txid).unwrap();
     assert!(abandoned.contains(&txid), "{abandoned:?}");
     let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
@@ -2752,17 +2752,44 @@ fn an_abandon_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
         "not every abandoned transaction was stopped"
     );
     assert!(
-        stopped.iter().all(|(_, marked)| !marked),
-        "stopped after the mark: {stopped:?}"
+        stopped.iter().all(|(_, marked)| *marked),
+        "stopped before the mark: {stopped:?}"
     );
+    eventually("SPV rebuilt", || manager.spv().run_session() > run);
+    assert_eq!(manager.spv().run_session(), run + 1);
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    assert!(matches!(
+        engine.block_on(session.resend_transaction(id, txid)),
+        Err(crate::EngineError::TxActionRefused(
+            crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+        ))
+    ));
+    assert!(wire.lock().unwrap().is_empty());
 }
 
 #[test]
-fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
-    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_after_its_mark() {
+    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
+    let other = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 1)]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
     start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
     let removed = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
-    assert!(removed >= 1, "nothing removed");
+    assert!(removed >= 2);
     let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
     assert!(
         stopped.iter().any(|(t, _)| *t == payment.txid()),
@@ -2770,9 +2797,14 @@ fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark(
     );
     assert_eq!(stopped.len(), removed as usize, "{stopped:?}");
     assert!(
-        stopped.iter().all(|(_, marked)| !marked),
-        "stopped after the mark: {stopped:?}"
+        stopped.iter().all(|(_, marked)| *marked),
+        "stopped before the mark: {stopped:?}"
     );
+    eventually("SPV rebuilt after Repair", || {
+        manager.spv().run_session() > run
+    });
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(manager.spv().run_session(), run + 1);
 }
 
 /// A payment between two loaded wallets abandoned as received, in Activity
@@ -2821,7 +2853,7 @@ fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
     }
 
     try_abandon(&engine, &session, id, p.txid()).unwrap();
-    assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
+    assert_eq!(stopped(), [(p.txid(), true)], "the sender's abandon");
 }
 
 /// A receipt whose funding the recipient's history also holds: that coin
@@ -3179,10 +3211,8 @@ fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
     a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
 }
 
-/// #170 case 3: the drop of a beaten payment stops dash-spv's rebroadcast
-/// of it before its mark, as an Abandon does.
 #[test]
-fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_before_its_mark() {
+fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_after_its_mark() {
     let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let p = send(
@@ -3203,8 +3233,8 @@ fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_before_its_mark() {
     assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
     let stopped = session.hub.stopped_rebroadcasts.lock().unwrap().clone();
     assert!(
-        stopped.contains(&(p.txid(), false)),
-        "not stopped before its mark: {stopped:?}"
+        stopped.contains(&(p.txid(), true)),
+        "not stopped after its mark: {stopped:?}"
     );
 }
 

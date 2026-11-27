@@ -3190,8 +3190,9 @@ impl NetworkSession {
     /// `Resolved`. Records that resolved are not sent and read `Resolved`,
     /// and are dropped once their resolution is final; any broadcast error
     /// keeps a record (`Unknown`), since an earlier send may have reached
-    /// the network: only network evidence of the chunk or of a transaction
-    /// that beat it releases its inputs ([`sweep_out_state`]). Refused
+    /// the network. A chunk marked abandoned is kept for evidence of the
+    /// chunk or a rival, and is omitted from replay. An explicit retry of
+    /// an abandoned pending chunk returns `AlreadyAbandoned`. Refused
     /// while a move of the wallet runs (`coinjoin.move_running`).
     pub async fn resend_mixed_coins(
         self: &Arc<Self>,
@@ -3213,6 +3214,15 @@ impl NetworkSession {
                 let state = if state != SweepOutState::Pending {
                     SweepResendState::Resolved
                 } else {
+                    let _gate = this.abandon_gate(wallet_id).read_owned().await;
+                    if this.abandon_marked(wallet_id, o.txid()).await {
+                        // The record still accounts for its inputs until
+                        // the chunk or a rival resolves them.
+                        if txid.is_some() {
+                            return Err(EngineError::TxActionRefused(crate::TxActionRefusal::AlreadyAbandoned));
+                        }
+                        continue;
+                    }
                     match broadcast_sweep(&this, &wallet, &o.tx).await {
                         Ok(sent) => {
                             this.hub.note_announced(sent);

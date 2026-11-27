@@ -2,10 +2,10 @@ import type { Tree } from "../core";
 
 export const activity = {
   abandon: {
-    spending: "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+    spending: "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the payment still goes through, it counts again, so sending it again could pay twice.",
     notSpending: "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.",
     unknownInputs:
-      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
     rescanFirst: "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
     /** Beside Abandon on a payment whose coin is pending because it may never confirm
      * (`coins.pendingUnproven`). */

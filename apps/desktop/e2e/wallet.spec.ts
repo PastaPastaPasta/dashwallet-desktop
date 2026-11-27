@@ -819,7 +819,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the payment still goes through, it counts again, so sending it again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
@@ -833,7 +833,7 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the payment still goes through, it counts again, so sending it again could pay twice.",
     );
     expect(errors).toEqual([]);
   });
@@ -953,7 +953,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
