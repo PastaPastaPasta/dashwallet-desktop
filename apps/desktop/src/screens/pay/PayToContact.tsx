@@ -536,6 +536,8 @@ function ContactForm({
           before={activity.data}
           note={note.trim() || null}
           shown={shown}
+          retrying={balance.retrying}
+          onRetry={() => void balance.retry()}
           onClose={(paid) => {
             const unknown = balance.flow.outcome?.state === "pending" ? balance.flow.outcome.reference : null;
             balance.close();

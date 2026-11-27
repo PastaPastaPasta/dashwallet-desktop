@@ -54,6 +54,15 @@ describe("the held coins' way out", () => {
     expect(heldWayOutText(A, [watch], false)).not.toContain(restore);
   });
 
+  it("keeps a phrase wallet whose stored lookahead exceeds the default", () => {
+    const wallet = summary(A, "Wide", { raisedLookahead: true });
+    for (const wallets of [[wallet], [wallet, summary(B, "Savings")]]) {
+      const text = heldWayOutText(A, wallets, false);
+      expect(text).toContain("Keep Wide.");
+      expect(text).not.toContain("remove Wide");
+    }
+  });
+
   it("keeps a signing wallet added from a seed with no recovery phrase", () => {
     expect(heldWayOutText(A, [summary(A, "Seed", { hasMnemonic: false })], false)).toBe(
       "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. Keep Seed: don't remove it to get them back. It was added from a seed without a recovery phrase, so it can't be restored from a phrase, and removing it deletes its keys from this computer. Coins the payment didn't spend stay held in Seed: they're still yours, but this version won't spend them. The rest of Seed works as usual.",

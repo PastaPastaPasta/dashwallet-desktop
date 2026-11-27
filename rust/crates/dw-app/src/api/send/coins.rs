@@ -55,9 +55,13 @@ pub enum CoinExclusion {
     /// An abandon or a drop gave it back and the rescan that checks it is
     /// not back yet. Such a coin is not listed, so no row carries it.
     RescanHold,
+    /// A chain reorganization gave it back while an InstantSend-locked
+    /// payment still spends it, until that payment is mined again. Such a
+    /// coin is not listed, so no row carries it.
+    ForkKeptLock,
 }
 
-mirror_enum!(EngineExclusion => CoinExclusion { PendingUnproven, RescanHold });
+mirror_enum!(EngineExclusion => CoinExclusion { PendingUnproven, RescanHold, ForkKeptLock });
 
 impl From<CoinInfo> for Utxo {
     fn from(c: CoinInfo) -> Self {

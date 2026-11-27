@@ -563,6 +563,10 @@ impl FakeMoves {
         self.fee.store(fee, Ordering::SeqCst);
     }
 
+    pub(crate) fn set_version(&self, version: &'static PlatformVersion) {
+        *self.version.lock().unwrap() = version;
+    }
+
     /// The transitions sent so far.
     pub(crate) fn sent(&self) -> Vec<BTreeMap<PlatformAddress, (u32, u64)>> {
         self.sent.lock().unwrap().clone()

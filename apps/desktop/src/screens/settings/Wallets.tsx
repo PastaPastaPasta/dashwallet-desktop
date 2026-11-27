@@ -245,7 +245,7 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
   return (
     <Sheet title={t("settings.wallets.removeTitle")} width="medium" testId="settings-remove-sheet" focusKey={String(model.encrypted)} closable={!model.busy} onClose={() => onClose()}>
       <p className="sheet-warning" role="note">
-        {WalletsText.removeQuestion(row.name, row.watchOnly)}
+        {WalletsText.removeQuestion(row)}
       </p>
       {model.encrypted ? (
         <PassphrasePrompt
