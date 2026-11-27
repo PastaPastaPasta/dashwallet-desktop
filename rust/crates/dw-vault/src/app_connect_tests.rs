@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use dashcore::secp256k1::ecdh::shared_secret_point;
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dpp::secp256k1::ecdh::shared_secret_point;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use hkdf::Hkdf;
 use key_wallet::Network;
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -95,13 +95,9 @@ fn connect_signer(v: &Vault, app: &[u8; 33]) -> VaultSigner {
     .unwrap()
 }
 
-fn derived_secret(path: &DerivationPath) -> [u8; 32] {
+fn derived_secret(path: &DerivationPath) -> Zeroizing<[u8; 32]> {
     let master = ExtendedPrivKey::new_master(Network::Regtest, &SEED).unwrap();
-    master
-        .derive_priv(path)
-        .unwrap()
-        .private_key
-        .to_secret_bytes()
+    master.derive_priv(path).unwrap().private_key.to_bytes()
 }
 
 fn open_payload(app_secret: &SecretKey, sealed: &AppConnectSealed, owner: &[u8; 32]) -> Vec<u8> {
@@ -191,9 +187,9 @@ fn encryption_paths_match_the_pinned_vectors() {
             rotation,
         };
         let path = key_path(Network::Mainnet, OWNER, &app_eph_pub(1), &key);
-        let master = ExtendedPrivKey::new_master(Network::Mainnet, &seed).unwrap();
+        let master = ExtendedPrivKey::new_master(Network::Mainnet, &seed[..]).unwrap();
         let x = master.derive_priv(&path).unwrap();
-        hex::encode(PublicKey::from_secret_key(&x.private_key).serialize())
+        hex::encode(x.private_key.public_key().to_compressed())
     };
     assert_eq!(
         public(Some(0)),
@@ -266,7 +262,7 @@ fn the_seal_carries_the_keys_the_app_registers() {
     let plaintext = open_payload(&app_eph_secret(9), &sealed, &OWNER);
     for (slot, key) in plaintext.chunks(32).zip(&keys) {
         let path = key_path(Network::Regtest, OWNER, &app, key);
-        assert_eq!(slot, derived_secret(&path));
+        assert_eq!(slot, &derived_secret(&path)[..]);
         let secret = SecretKey::from_secret_bytes(slot.try_into().unwrap()).unwrap();
         assert_eq!(
             signer.app_public_key(OWNER, &app, key).unwrap(),

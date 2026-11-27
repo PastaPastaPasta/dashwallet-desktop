@@ -376,8 +376,9 @@ pub(crate) async fn fund_evidence(
     }
 }
 
-/// The outpoints among `pending` whose persisted lock row is `Consumed`.
-/// A failed read is no evidence: those funds stay as they are.
+/// The outpoints among `pending` whose persisted lock row is `Consumed`, or
+/// `DrainCompleted`, which `lock_status` also reads as consumed. A failed
+/// read is no evidence: those funds stay as they are.
 fn persisted_consumed(
     session: &NetworkSession,
     wallet: WalletId,
@@ -389,7 +390,10 @@ fn persisted_consumed(
     };
     (pending.into_iter())
         .filter(|at| match persister.asset_lock_status(&wallet.0, at) {
-            Ok(status) => status == Some(AssetLockStatus::Consumed),
+            Ok(status) => matches!(
+                status,
+                Some(AssetLockStatus::Consumed | AssetLockStatus::DrainCompleted)
+            ),
             Err(e) => {
                 tracing::warn!(%at, error = %e, "reading a fund lock's stored status");
                 false
@@ -458,8 +462,8 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
         sighash: [u8; 32],
     ) -> Result<
         (
-            dashcore::secp256k1::ecdsa::Signature,
-            dashcore::secp256k1::PublicKey,
+            dashcore::ecdsa::EcdsaSignature,
+            dashcore::ecdsa::EcdsaPublicKey,
         ),
         SignerError,
     > {
@@ -482,7 +486,7 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
     async fn public_key(
         &self,
         path: &DerivationPath,
-    ) -> Result<dashcore::secp256k1::PublicKey, SignerError> {
+    ) -> Result<dashcore::ecdsa::EcdsaPublicKey, SignerError> {
         key_wallet::Signer::public_key(self.inner, path).await
     }
 }

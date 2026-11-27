@@ -107,8 +107,12 @@ pub struct AppState {
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
-    /// Ends the app (`AppHandle::exit`); `selftest_report` calls it.
+    /// Ends the app (`AppHandle::exit`); `selftest_report` and `quit_app`
+    /// call it.
     exit: Box<dyn Fn(i32) + Send + Sync>,
+    /// Ends the app and starts it again (`AppHandle::request_restart`);
+    /// `restart_app` calls it.
+    restart: Box<dyn Fn() + Send + Sync>,
     /// The drafts and prepared transactions of the active session.
     pub sends: SendHandles,
     /// What an overflow cannot lose: the recent notices (`recentNotices`)
@@ -155,10 +159,14 @@ pub struct AppState {
     /// no public DAPI or quorum service).
     #[cfg(test)]
     pub(crate) test_endpoints: StdMutex<Option<crate::api::network::SessionSettings>>,
-    /// Test seam: `switch_network` runs it after a failed open, before it
-    /// reopens the network it left.
+    /// Test seam: `switch_network` and `finish_without_platform` run it
+    /// after a failed open, before they reopen the network they left.
     #[cfg(test)]
     pub(crate) before_rollback: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test seam: `finish_without_platform` runs it after the close, before
+    /// it opens the network without Platform.
+    #[cfg(test)]
+    pub(crate) before_platform_off_open: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Test seam: the networks the window started SPV on, in order.
     #[cfg(test)]
     pub(crate) spv_started: StdMutex<Vec<dw_engine::DashNetwork>>,
@@ -596,6 +604,7 @@ impl AppState {
             Engine::new(config.clone(), sink).map_err(AppError::from)
         });
         let handle = app.clone();
+        let restarting = app.clone();
         let window = app.clone();
         let titled = app.clone();
         let window_network = StdMutex::new(launch.network.clone());
@@ -628,6 +637,7 @@ impl AppState {
             broadcasts_taken: AtomicUsize::new(0),
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
+            restart: Box::new(move || restarting.request_restart()),
             sends: SendHandles::default(),
             memory,
             payment_policy: Arc::default(),
@@ -650,6 +660,8 @@ impl AppState {
             test_endpoints: StdMutex::default(),
             #[cfg(test)]
             before_rollback: StdMutex::default(),
+            #[cfg(test)]
+            before_platform_off_open: StdMutex::default(),
             #[cfg(test)]
             spv_started: StdMutex::default(),
         })
@@ -862,6 +874,11 @@ impl AppState {
 
     pub fn exit(&self, code: i32) {
         (self.exit)(code)
+    }
+
+    /// Ends the app through its normal exit path and starts it again.
+    pub fn restart(&self) {
+        (self.restart)()
     }
 
     /// The network the window shows ([`AppState::window_network`]).

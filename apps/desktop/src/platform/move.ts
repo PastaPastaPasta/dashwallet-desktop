@@ -17,6 +17,7 @@ import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
+import { platformHoldText } from "../api/platformHold";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -100,6 +101,13 @@ export const MOVE_COPY = {
       return t("transfer.move.failed.text");
     },
   },
+  /** The move is the exit of a payment from Platform that may still go through: only one of the two goes
+   * through. `recipient`: the payment's contact, else its shortened address. */
+  exitSend: {
+    line: (amount: string, recipient: string) => t("transfer.move.exitSend.line", { amount, recipient }),
+    done: (recipient: string) => t("transfer.move.exitSend.done", { recipient }),
+    lost: (recipient: string) => t("transfer.move.exitSend.lost", { recipient }),
+  },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
   replaced: {
     get title() {
@@ -152,12 +160,14 @@ export const MOVE_COPY = {
 };
 
 /** What the result sheet says of a move's outcome. `failed`: it failed and can no longer land.
- * `credits` and `amount` format credits and duffs. */
-export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
+ * `credits` and `amount` format credits and duffs. `exitOf`: the recipient of the held payment the move
+ * was the exit of; its document says which of the two went through. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string, exitOf: string | null = null): { title: string; text: string } {
   const C = MOVE_COPY;
   if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
   if (outcome.state === "replaced") return C.replaced;
-  if (failed) return C.failed;
+  if (failed) return exitOf === null ? C.failed : { title: C.failed.title, text: C.exitSend.lost(exitOf) };
+  if (outcome.state === "done" && exitOf !== null) return { title: C.done.title, text: C.exitSend.done(exitOf) };
   if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
   return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
 }
@@ -198,9 +208,11 @@ export function preflightText(code: "credits.rules_unsupported" | "credits.prefl
 export const stillHeld = (activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): boolean =>
   !!id && !activity?.some((a) => a.id === id && a.state === "failed" && !a.mayLand);
 
-/** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up the move
- * was the exit of; while it still holds, a pre-check refusal says it may still land. */
+/** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up or payment
+ * the move was the exit of; while it still holds, a pre-check refusal says it may still land. */
 export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, exitOf?: string | null): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":
@@ -209,7 +221,8 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return e.data?.kind === "creditRange" ? t("transfer.move.error.outOfRange", { min: credits(e.data.min), max: credits(e.data.max) }) : t("transfer.move.error.outOfRangeAmount");
     case "credits.move_pending": {
       const id = e.data?.kind === "artifact" ? e.data.artifact : null;
-      return activity?.find((a) => a.id === id)?.kind === "send" ? MOVE_COPY.waiting.heldSend : MOVE_COPY.waiting.held;
+      const held = activity?.find((a) => a.id === id);
+      return held?.kind === "send" && !held.cancels ? MOVE_COPY.waiting.heldSend : MOVE_COPY.waiting.held;
     }
     case "platform.broadcast_unknown":
       return t("transfer.move.error.broadcastUnknown");
@@ -230,7 +243,7 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "credits.rules_unsupported":
     case "credits.preflight_refused":
-      return preflightText(e.code, stillHeld(activity, exitOf) ? "topUp" : null);
+      return preflightText(e.code, !stillHeld(activity, exitOf) ? null : activity?.find((a) => a.id === exitOf)?.kind === "send" ? "send" : "topUp");
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
@@ -257,17 +270,34 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
   !!activity?.some((a) => holdingKind(a) && a.state === "pending");
 
-/** The moves, contact payments and top-ups from Platform that hold the addresses and Platform has
+/** The moves, sends, contact payments and top-ups from Platform that hold the addresses and Platform has
  * answered, the newest first: on mainnet, where new moves are off, Move stays offered as their exit (an
- * unanswered one holds every move until it settles). A held send's exit is its retry, on Pay. */
-export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => a.kind !== "send" && a.state !== "pending" && isHeldOp(a)) ?? [];
+ * unanswered one holds every move until it settles). A cancel is not one: its move or payment's
+ * document settles it. */
+export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => !a.cancels && a.state !== "pending" && isHeldOp(a)) ?? [];
+
+/** The held send `a` is, which "Move to Dash wallet" is the way out of; `null` for any other row. */
+export const isHeldSend = (a: PlatformActivity): boolean => a.kind === "send" && !a.cancels && a.state === "failed" && a.mayLand && a.to !== null;
+
+/** What the cancel of `a` would be: of a held move to the Dash wallet or contact payment, and only
+ * while no send, top-up or other cancel holds beside it (its document could not tell those apart). Its
+ * own cancel that Platform answered and that still holds is offered again: the engine re-sends it as signed.
+ * While `sendsOff` (mainnet, where this version keeps new moves off) only that re-send is offered: a new
+ * cancel is not, and the move or payment waits for Platform. */
+export function cancelOf(a: PlatformActivity, activity: readonly PlatformActivity[] | null | undefined, sendsOff = false): "move" | "payment" | null {
+  if (a.state !== "failed" || !a.mayLand || (a.kind !== "moveToCore" && a.kind !== "contactPayment")) return null;
+  const blocks = (b: PlatformActivity) => (b.cancels ? b.cancels !== a.id : b.kind !== "moveToCore" && b.kind !== "contactPayment");
+  const beside = activity?.some((b) => b.id !== a.id && isHeldOp(b) && (b.state === "pending" || blocks(b)));
+  if (beside || (sendsOff && !activity?.some((b) => b.cancels === a.id && isHeldOp(b)))) return null;
+  return a.kind === "moveToCore" ? "move" : "payment";
+}
 
 /** The newest of `heldExitOps`, or `null`. */
 export const heldExitOp = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => heldExitOps(activity)[0] ?? null;
 
 /** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
 export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
-  !!activity?.some((a) => a.kind === "send" && isHeldOp(a)) && !activity.some((a) => a.kind === "moveToCore" && isHeldOp(a));
+  !!activity?.some((a) => a.kind === "send" && !a.cancels && isHeldOp(a)) && !activity.some((a) => a.kind === "moveToCore" && isHeldOp(a));
 
 const settledListeners = new Set<() => void>();
 
@@ -289,7 +319,7 @@ export class PlatformMoveFlow extends Model {
   step: MoveStep = "confirm";
   outcome: MoveToCoreOutcome | null = null;
   error: unknown = null;
-  /** The held top-up the last move was the exit of, or `null`. */
+  /** The held top-up or send the last move was the exit of, or `null`. */
   exitOf: string | null = null;
   running = false;
   readonly grants: GrantModel;

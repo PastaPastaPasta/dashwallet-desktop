@@ -1003,6 +1003,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_shares_and_standbys_match_their_generated_types() {
+        let fact = |index: u16, mine: bool| engine::ShareFact {
+            index,
+            amount: 40_000_000_000,
+            refund_address: "yRefundFixtureAddressXXXXXXXXXXXXX".into(),
+            mine,
+            reward: engine::RewardDestination {
+                at_registration: "yRewardFixtureAddressXXXXXXXXXXXXX".into(),
+                latest_confirmed_local: Some(engine::RewardUpdate {
+                    operation: "a7".repeat(32),
+                    address: "yChangedFixtureAddressXXXXXXXXXXXX".into(),
+                    confirmed_height: 1_214_600,
+                }),
+                latest_attempt: Some(engine::RewardAttempt {
+                    operation: "a8".repeat(32),
+                    address: "yAttemptFixtureAddressXXXXXXXXXXXX".into(),
+                    state: engine::RewardAttemptState::NotSent,
+                    sent_at: Some(1_790_000_000),
+                }),
+            },
+        };
+        let shares = SharedShares::from(engine::SharedShares {
+            registered_height: 1_214_280,
+            spend_height: 1_214_881,
+            early_period_blocks: 105_120,
+            early_penalty: 2_000_000_000,
+            full_valid_from: 1_319_400,
+            eligibility: engine::SharedEligibility::ListUnavailable,
+            full_valid_now: false,
+            session: Some("3f".repeat(32)),
+            shares: vec![fact(0, true), fact(1, false)],
+        });
+        let json = serde_json::to_value(&shares).unwrap();
+        assert_ts("shares", &json, "SharedShares");
+        assert_eq!(json["eligibility"], "list_unavailable");
+        assert_eq!(
+            json["shares"][0]["reward"]["latestAttempt"]["state"],
+            "not_sent"
+        );
+        assert_eq!(
+            json["shares"][0]["reward"]["latestConfirmedLocal"]["confirmedHeight"],
+            1_214_600
+        );
+
+        let standby = Standby::from(engine::Standby {
+            pro_tx_hash: "ec".repeat(32),
+            share_index: 0,
+            fee: 1_000,
+            penalty: Some(2_000_000_000),
+            full_valid_from: 1_319_400,
+            full: true,
+            immediate: true,
+            source: engine::StandbySource::Imported,
+            created_at: 1_790_000_000,
+        });
+        let json = serde_json::to_value(&standby).unwrap();
+        assert_ts("standby", &json, "Standby");
+        assert_eq!(json["source"], "imported");
+    }
+
+    #[test]
     fn a_revealed_key_is_text_and_never_printed() {
         let secret = "11".repeat(32);
         let ok = RevealedMasternodeKey::try_from(dw_engine::RevealedMasternodeKey {

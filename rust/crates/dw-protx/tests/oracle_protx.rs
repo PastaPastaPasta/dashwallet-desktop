@@ -10,7 +10,6 @@ use std::str::FromStr;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderRegistrationPayload;
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use dw_protx::bls::{legacy_of, parse_public_hex};
 use dw_protx::params::MASTERNODE_COLLATERAL;

@@ -13,7 +13,7 @@
 //! | `dstx` | `CCoinJoinBroadcastTx` | `tx`, `m_protxHash`, `vchSig` (not in the hash), `sigTime` i64 (coinjoin.h:328-336) |
 
 use dashcore::consensus::{Decodable, Encodable, encode};
-use dashcore::hashes::{Hash, sha256d};
+use dashcore::hashes::sha256d;
 use dashcore::{Transaction, TxIn, TxOut};
 
 use crate::denoms::{DENOMINATIONS, ENTRY_MAX_INPUTS, QUEUE_TIMEOUT_SECS};

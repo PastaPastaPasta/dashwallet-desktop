@@ -111,8 +111,11 @@ export const bannedCount = (o: MasternodeOverview | undefined) => o?.masternodes
 
 export const isEmpty = (o: MasternodeOverview) => o.masternodes.length === 0;
 
-/** "Masternode · 203.0.113.7:19999". */
-export const rowSub = (r: MasternodeRow) => t(`${P}.rowSub`, { kind: kindText(r.kind), service: r.service ?? t(`${P}.notInList`) });
+/** "Masternode · 203.0.113.7:19999", and "· you hold 1 of 3 shares" for a shared one. */
+export function rowSub(r: MasternodeRow): string {
+  const v = { kind: kindText(r.kind), service: r.service ?? t(`${P}.notInList`) };
+  return r.shares ? t(`${P}.rowSubShared`, { ...v, shares: t("masternodes.shared.detail.held", { held: r.shares.held, of: r.shares.of }) }) : t(`${P}.rowSub`, v);
+}
 
 /** A paid date only from an attributed record (§1.2: `payouts_incomplete` covers 30 days only). */
 export function rowMeta(r: MasternodeRow, synced: boolean, locale?: string): string | null {

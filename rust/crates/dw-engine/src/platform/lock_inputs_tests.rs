@@ -23,12 +23,12 @@ impl Signer for Inner {
         &self,
         _: &DerivationPath,
         _: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         self.asked.fetch_add(1, Ordering::SeqCst);
         Err(SignerError::PathNotAllowed("inner".into()))
     }
 
-    async fn public_key(&self, _: &DerivationPath) -> Result<PublicKey, SignerError> {
+    async fn public_key(&self, _: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
         Err(SignerError::PathNotAllowed("inner".into()))
     }
 
@@ -40,7 +40,6 @@ impl Signer for Inner {
 
 /// A build of `n` inputs, as key-wallet's builder shows it to the signer.
 fn build(n: u32) -> (Transaction, Vec<Utxo>) {
-    use dashcore::hashes::Hash;
     use dashcore::{Address, Network, OutPoint, TxIn, TxOut, Txid};
     let address = Address::p2pkh(
         &dashcore::PublicKey::from_slice(&[2; 33]).unwrap(),
@@ -73,7 +72,7 @@ fn build(n: u32) -> (Transaction, Vec<Utxo>) {
     (tx, utxos)
 }
 
-fn reason(r: Result<(ecdsa::Signature, PublicKey), SignerError>) -> String {
+fn reason(r: Result<(EcdsaSignature, EcdsaPublicKey), SignerError>) -> String {
     match r {
         Err(SignerError::PathNotAllowed(m)) => m,
         other => panic!("{other:?}"),

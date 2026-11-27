@@ -1,13 +1,20 @@
-// Shared masternodes' view model (MG-10 §2, MG-10b S5): the session render table keyed by
+// Shared masternodes' view model (MG-10 §2, MG-10b S5, S6): the session render table keyed by
 // `next` (D2), the funding lines and grant caps from one value (§2.3.2), the consent diff, the
-// setup wizard's checks (§2.2), the stage strip, the badge set and the refusals as sentences
-// (§3.8). The engine decides every stage and every exit; nothing here infers one.
+// setup wizard's checks (§2.2), the stage strip, the badge set, the refusals as sentences (§3.8),
+// and a confirmed shared masternode's pane lines (§2.4, §2.8). The engine decides every stage,
+// every exit and every validity; nothing here infers one.
 
 import { isAppError } from "../api/backend";
+import type { DissolvePreview } from "../api/generated/DissolvePreview";
+import type { MasternodeRow } from "../api/generated/MasternodeRow";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { ShareFact } from "../api/generated/ShareFact";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
+import type { SharedEligibilityName } from "../api/generated/SharedEligibilityName";
 import type { SharedSession } from "../api/generated/SharedSession";
+import type { SharedShares } from "../api/generated/SharedShares";
 import type { SharedWarning } from "../api/generated/SharedWarning";
+import type { Standby } from "../api/generated/Standby";
 import type { UnreadableSession } from "../api/generated/UnreadableSession";
 import { t } from "../i18n";
 
@@ -27,11 +34,19 @@ export const PERIOD_PRESETS = [
 ] as const;
 
 /** What this build can act on: start, join, lock and approve, and with S5b signing and sending
- * the registration where sends are on. Recovery comes with EP 4. A slice shows and badges nothing
- * it can't act on (D14). */
+ * the registration where sends are on; with S6 the maintenance sessions. A slice shows and badges
+ * nothing it can't act on (D14). */
 export interface SharedSlice {
+  /** A registration's funding signature. */
   sign: boolean;
+  /** A registration's send. */
   send: boolean;
+  /** Dissolve-together and key-change sessions render, with their approvals. */
+  maintenance?: boolean;
+  /** A complete dissolution together is sent from here (never a key change in S6). */
+  maintenanceSend?: boolean;
+  /** A key change starts and is approved here; the engine refuses both on mainnet. */
+  keyChange?: boolean;
 }
 export const S5_SLICE: SharedSlice = { sign: true, send: true };
 /** The slice before sends: what mainnet renders. */
@@ -52,13 +67,18 @@ export type SetupStep = "join" | "lock" | "approve" | "fee" | "unlock";
 export function setupSteps(s: SharedSession, slice: SharedSlice): SetupStep[] {
   const p = renderSession(s, slice).primary;
   const steps: SetupStep[] = p === "join" || p === "lock" || p === "approve" ? [p] : [];
-  if (s.role === "coordinator" && s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed)) steps.push("fee");
-  if (s.role === "coordinator" && s.stage.kind === "signing") steps.push("unlock");
+  if (!isRegistration(s) || s.role !== "coordinator") return steps;
+  if (s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed)) steps.push("fee");
+  if (s.stage.kind === "signing") steps.push("unlock");
   return steps;
 }
 
-/** The slice the screens render under on `network`. */
-export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => (sharedSendsOn(network) ? S5_SLICE : NO_SENDS);
+/** The slice the screens render under on `network`: S6's maintenance sessions everywhere, their
+ * one send (a dissolution together) only where sends are on. */
+export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => {
+  const sends = sharedSendsOn(network);
+  return { ...(sends ? S5_SLICE : NO_SENDS), maintenance: true, maintenanceSend: sends, keyChange: sends };
+};
 
 /** B7, before Create invitation and Join: its last sentence ("can't sign or send yet") only where
  * sends are off. */
@@ -66,7 +86,7 @@ export const reservationNote = (network: Pick<NetworkInfo, "kind">) =>
   sharedSendsOn(network) ? t("masternodes.shared.reservationNoteSends") : t("masternodes.shared.reservationNote");
 
 /** A session sheet's actions. `copy` is the message to copy or save; the rest are calls. */
-export type SharedAction = "join" | "copy" | "lock" | "approve" | "sign" | "send" | "resend";
+export type SharedAction = "join" | "copy" | "lock" | "approve" | "sign" | "send" | "resend" | "approveMaintenance" | "sendMaintenance";
 
 /** One row of §2.3.1's registration table. */
 export type RowKey =
@@ -88,6 +108,21 @@ export type RowKey =
   | "confirmed"
   | "dead"
   | "conflicted"
+  | "togetherApprove"
+  | "togetherSendApproval"
+  | "togetherSend"
+  | "togetherSendOff"
+  | "dissolved"
+  | "keyApprove"
+  | "keyApproveOff"
+  | "keyWaiting"
+  | "keySendApproval"
+  | "keySendSignatures"
+  | "keySendLater"
+  | "keyStale"
+  | "keyStaleOther"
+  | "keyConfirmed"
+  | "keyDead"
   | "unknown";
 
 export interface SessionRender {
@@ -104,13 +139,17 @@ export interface SessionRender {
 const isRegistration = (s: SharedSession) => s.kind === "registration";
 const coordinator = (s: SharedSession) => s.role === "coordinator";
 
+const row = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row, primary, copy, known });
+
 /** §2.3.1, registration rows: the render key is `next` (D2), read with the stage and role. */
 export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): SessionRender {
-  const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row: row === "signLater" && !s.discardable ? "signedOut" : row, primary, copy, known });
-  if (!isRegistration(s)) return r("unknown", null, false, false);
+  const r = (key: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => row(key === "signLater" && !s.discardable ? "signedOut" : key, primary, copy, known);
   const stage = s.stage.kind;
   // This wallet signed a spend back (D50): nothing hands the session's message or transaction on.
   if (s.abandonSpend && s.next === "nothing" && stage !== "confirmed" && stage !== "conflicted" && stage !== "dead") return r("abandoning", null);
+  if (s.kind === "dissolve_together" && slice.maintenance) return renderTogether(s, slice);
+  if (s.kind === "key_change" && slice.maintenance) return renderKeyChange(s, slice);
+  if (!isRegistration(s)) return r("unknown", null, false, false);
   const c = coordinator(s);
   switch (s.next) {
     case "join":
@@ -145,6 +184,64 @@ export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): 
   }
 }
 
+/** §2.3.1, dissolve-together rows. The send is the one maintenance send S6 makes, and only where the
+ * network allows it. */
+function renderTogether(s: SharedSession, slice: SharedSlice): SessionRender {
+  const stage = s.stage.kind;
+  switch (s.next) {
+    case "approve":
+      return stage === "signing" ? row("togetherApprove", "approveMaintenance") : row("unknown", "approveMaintenance", false, false);
+    case "copy":
+      return stage === "signing" || stage === "combined" ? row("togetherSendApproval", null, true) : row("unknown", null, true, false);
+    case "send":
+      if (stage !== "combined") return row("unknown", null, false, false);
+      return slice.maintenanceSend ? row("togetherSend", "sendMaintenance") : row("togetherSendOff", null, true);
+    case "wait":
+      return stage === "sent" ? row("sent", null) : row("unknown", null, false, false);
+    case "nothing":
+    case "create_standby":
+      if (stage === "confirmed") return row("dissolved", null);
+      if (stage === "conflicted" || stage === "dead") return row("conflicted", null);
+      return row("unknown", null, false, false);
+    default:
+      return row("unknown", null, false, false);
+  }
+}
+
+/** Whether this wallet funds a key change: it alone may send it (D99). */
+export const isFunder = (s: SharedSession) => s.keyChange?.funder ?? s.role === "coordinator";
+
+/** §2.3.1 and §2.6, key-change rows. S6 never sends a key change: the funder's complete change
+ * reads "later", with Discard while the engine says it is discardable. */
+function renderKeyChange(s: SharedSession, slice: SharedSlice): SessionRender {
+  const stage = s.stage.kind;
+  const funder = isFunder(s);
+  switch (s.next) {
+    case "approve":
+      if (stage !== "signing") return row("unknown", "approveMaintenance", false, false);
+      return slice.keyChange ? row("keyApprove", "approveMaintenance") : row("keyApproveOff", null);
+    case "copy":
+      if (stage === "signing") return row(funder ? "keyWaiting" : "keySendApproval", null, true);
+      if (stage === "combined" && !funder) return row("keySendSignatures", null, true);
+      return row("unknown", null, true, false);
+    case "send":
+      return stage === "combined" && funder ? row("keySendLater", null) : row("unknown", null, false, false);
+    case "wait":
+      return stage === "sent" ? row("sent", null) : row("unknown", null, false, false);
+    case "abandon":
+      return stage === "stale" && funder ? row("keyStale", null) : row("unknown", null, false, false);
+    case "nothing":
+    case "create_standby":
+      if (stage === "stale") return row(funder ? "keyStale" : "keyStaleOther", null);
+      if (stage === "confirmed") return row("keyConfirmed", null);
+      if (stage === "dead") return row("keyDead", null);
+      if (stage === "conflicted") return row("conflicted", null);
+      return row("unknown", null, false, false);
+    default:
+      return row("unknown", null, false, false);
+  }
+}
+
 export type SendAction = "sign" | "send" | "resend";
 
 /** The Sign, Send or Send again a session sheet offers on `network`: only where this network sends,
@@ -160,10 +257,9 @@ export function sendOffer(s: SharedSession, network: Pick<NetworkInfo, "kind">, 
 export const mainnetHoldsBack = (s: SharedSession, network: Pick<NetworkInfo, "kind">) =>
   !sharedSendsOn(network) && renderSession(s, S5_SLICE).primary !== renderSession(s, NO_SENDS).primary;
 
-/** §3.6's S5 badge entries: registration sessions whose `next` this slice acts on. Never `copy`,
- * `wait` or `nothing`, and never a step whose screen the slice doesn't build. */
+/** §3.6's badge entries: sessions whose `next` this slice acts on. Never `copy`, `wait` or
+ * `nothing`, and never a step whose screen the slice doesn't build. */
 export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = NO_SENDS): boolean {
-  if (!isRegistration(s)) return false;
   const v = renderSession(s, slice);
   return v.known && v.primary !== null && v.primary !== "resend";
 }
@@ -175,10 +271,19 @@ export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined,
  * reserved coins. Once the follower released its locks nothing of it is left to show. */
 export const unreadableInProgress = (rows: readonly UnreadableSession[] | undefined): UnreadableSession[] => (rows ?? []).filter((s) => s.discardable || s.reserved.length > 0);
 
-/** "Sessions in progress" (§2.1): not settled, newest first. Confirmed and conflicted sessions
- * leave the list; a dead one stays until it is discarded. */
-export function sessionsInProgress(sessions: readonly SharedSession[] | undefined): SharedSession[] {
-  return (sessions ?? []).filter((s) => isRegistration(s) && s.stage.kind !== "confirmed" && s.stage.kind !== "conflicted").sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+/** The final stages (F4): confirmed, conflicted and dead. */
+export const isFinal = (s: Pick<SharedSession, "stage">) => s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
+
+/** Discard is offered exactly while the engine reads the session as discardable: a dead session
+ * still holds its reserved coins until it is discarded. */
+export const canDiscard = (s: Pick<SharedSession, "discardable">) => s.discardable;
+
+/** "Sessions in progress" (§2.1), newest first. A registration leaves the list once confirmed or
+ * conflicted; a dead one stays until it is discarded. With S6 a maintenance session is listed
+ * while not final, or final but still discardable (a dead session whose coins Discard releases). */
+export function sessionsInProgress(sessions: readonly SharedSession[] | undefined, slice: SharedSlice = NO_SENDS): SharedSession[] {
+  const listed = (s: SharedSession) => (isRegistration(s) ? s.stage.kind !== "confirmed" && s.stage.kind !== "conflicted" : !!slice.maintenance && (!isFinal(s) || s.discardable));
+  return (sessions ?? []).filter(listed).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 /** The stage strip's current step, 1–6 (MG-00 D31 over MG-04b §2.3). */
@@ -219,7 +324,7 @@ export function debitParts(s: SharedSession): DebitParts | null {
 /** The grant cap for a session call (§3.4): 0 for lock and approve (they sign consent only), and
  * exactly the session's `debit` for sign, send and resend, the amount their confirm prints (D18,
  * dwcli's `debit_grant`). `null` without a `debit`: the sheet then offers no such call. */
-export function grantCap(action: Exclude<SharedAction, "copy" | "join">, s: SharedSession): number | null {
+export function grantCap(action: Exclude<SharedAction, "copy" | "join" | "approveMaintenance" | "sendMaintenance">, s: SharedSession): number | null {
   if (action === "lock" || action === "approve") return 0;
   return s.debit;
 }
@@ -472,6 +577,10 @@ export function warningText(w: SharedWarning, s: SharedSession | null): string |
       return t("masternodes.shared.warning.skipped_signatures", { count: w.count, labels: shareLabels(s, w.shares) });
     case "no_approvals":
       return t("masternodes.shared.warning.no_approvals");
+    case "operator_reset":
+      return `${t("masternodes.myMasternodes.changeKeys.poseWarning")} ${t("masternodes.myMasternodes.changeKeys.poseExplain")}`;
+    case "usable_by_funder":
+      return t("masternodes.shared.warning.usable_by_funder");
     default:
       return null;
   }
@@ -483,6 +592,7 @@ interface SharedErrorData {
   share?: number | null;
   stage?: string;
   needed?: number | null;
+  fee?: number;
 }
 
 /** A shared call's refusal as one sentence (§3.8), never echoing pasted text. */
@@ -497,7 +607,7 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
         const label = data.share != null ? ctx.session?.rows.find((r) => r.index === data.share)?.label : undefined;
         return label ? t("masternodes.shared.error.bad_signature", { label }) : t("masternodes.shared.error.bad_signature_unknown");
       }
-      const known = ["not_shared", "too_large", "parse", "other_session", "terms_changed", "older", "conflict", "not_participant", "labels"] as const;
+      const known = ["not_shared", "too_large", "parse", "other_session", "terms_changed", "older", "conflict", "not_participant", "labels", "stale", "not_key_change", "inputs_hash", "other_masternode"] as const;
       const k = known.find((x) => x === reason);
       return k ? t(`masternodes.shared.error.${k}`) : t("masternodes.shared.error.fallback", { code: `${e.code}{${reason}}` });
     }
@@ -522,7 +632,189 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
       return t("masternodes.shared.error.mainnet_send_off");
     case "app.shared_send_unsupported":
       return t("masternodes.shared.error.send_unsupported");
+    case "masternodes.shared_actor_fee":
+      return t("masternodes.shared.error.actor_fee", { fee: ctx.dash(data.fee ?? 0) });
+    case "masternodes.update_pending":
+      return t("masternodes.myMasternodes.errors.update_pending");
+    case "masternodes.in_flight":
+      return t("masternodes.myMasternodes.errors.in_flight");
+    case "masternodes.share_not_mine":
+      return t("masternodes.myMasternodes.errors.share_not_mine");
+    case "masternodes.shared_too_early":
+      return t("masternodes.myMasternodes.errors.shared_too_early");
+    case "masternodes.shared_registration_unknown":
+      return t("masternodes.myMasternodes.errors.shared_registration_unknown");
+    case "vault.locked":
+      return t("masternodes.myMasternodes.errors.vault_locked");
     default:
       return t("masternodes.shared.error.fallback", { code: e.code });
   }
+}
+
+// ---------------------------------------------------------------- a shared masternode (§2.4, S6)
+
+/** A row the shared pane reads: it holds shares, or the engine marks it shared and it is the wallet's. */
+export const isSharedRow = (r: Pick<MasternodeRow, "shares" | "sharedUnsupported" | "mine">) => r.shares !== null || (r.sharedUnsupported && r.mine);
+
+/** "you hold 1 of 3 shares": the row's count, else EP 5's. */
+export function heldShares(r: Pick<MasternodeRow, "shares">, shares: SharedShares | undefined): { held: number; of: number } | null {
+  if (r.shares) return r.shares;
+  if (!shares) return null;
+  return { held: shares.shares.filter((s) => s.mine).length, of: shares.shares.length };
+}
+
+/** The registration session of `hash` (§2.4): kind registration, confirmed, same ProTx hash. */
+export function registrationSession(sessions: readonly SharedSession[] | undefined, hash: string, id: string | null = null): SharedSession | null {
+  const all = (sessions ?? []).filter((s) => s.kind === "registration" && s.stage.kind === "confirmed" && s.proTxHash === hash);
+  return all.find((s) => s.id === id) ?? all[0] ?? null;
+}
+
+export interface LegendEntry {
+  index: number;
+  /** The session's label, else "Share 1". */
+  label: string;
+  amount: number;
+  mine: boolean;
+  /** Percent of the collateral, for the bar. */
+  percent: number;
+}
+
+/** A share's label in the legend, "" when it has none. */
+export const labelOf = (legend: readonly LegendEntry[], index: number) => legend.find((l) => l.index === index)?.label ?? "";
+
+/** The share bar and its legend from EP 5's shares, labelled from the session's rows when present. */
+export function shareLegend(shares: SharedShares, session: SharedSession | null): LegendEntry[] {
+  const total = shares.shares.reduce((a, s) => a + s.amount, 0);
+  return shares.shares.map((s) => ({
+    index: s.index,
+    label: session?.rows.find((r) => r.index === s.index)?.label ?? t("masternodes.shared.detail.shareN", { n: s.index + 1 }),
+    amount: s.amount,
+    mine: s.mine,
+    percent: total > 0 ? (s.amount * 100) / total : 0,
+  }));
+}
+
+/** A percent with at most two decimals, "40" or "33.33". */
+export const percentText = (p: number) => String(Math.round(p * 100) / 100);
+
+/** Where this wallet believes a share's payouts go: only a confirmed update moves it (§2.4.1). */
+export const payoutAddress = (f: ShareFact) => f.reward.latestConfirmedLocal?.address ?? f.reward.atRegistration;
+
+/** The line for this wallet's latest unconfirmed reward change, or `null`. */
+export function attemptLine(f: ShareFact, address: (a: string) => string, date: (secs: number) => string): string | null {
+  const a = f.reward.latestAttempt;
+  if (!a) return null;
+  const v = { address: address(a.address) };
+  switch (a.state) {
+    case "signed":
+    case "not_sent":
+      return t("masternodes.shared.detail.attempt.notSent", v);
+    case "sent":
+      return a.sentAt === null ? t("masternodes.shared.detail.attempt.sentUndated", v) : t("masternodes.shared.detail.attempt.sent", { ...v, date: date(a.sentAt) });
+    case "conflicted":
+      return t("masternodes.shared.detail.attempt.conflicted", v);
+  }
+}
+
+/** The block the early period ends at, or `null` without one. */
+export const earlyEnd = (s: SharedShares) => (s.earlyPeriodBlocks > 0 ? s.registeredHeight + s.earlyPeriodBlocks : null);
+
+/** §2.4.2's eligibility line in place of the maintenance actions; `null` for `ok`. */
+export function eligibilityLine(e: SharedEligibilityName): string | null {
+  return e === "ok" ? null : t(`masternodes.shared.detail.eligibility.${e}`);
+}
+
+export interface StandbyLine {
+  variant: "full" | "immediate";
+  text: string;
+}
+
+/** A stored standby's variants (§2.8 Shown), each validity from EP 5's `full_valid_now`, never a height comparison.
+ * Once a held full refund is valid the engine refuses the immediate one, so it isn't listed. */
+export function standbyLines(s: Standby, fullValidNow: boolean, dash: (duffs: number) => string): StandbyLine[] {
+  const out: StandbyLine[] = [];
+  if (s.full) out.push({ variant: "full", text: fullValidNow ? t("masternodes.shared.detail.standby.fullNow") : t("masternodes.shared.detail.standby.full", { height: s.fullValidFrom }) });
+  if (s.immediate && !(s.full && fullValidNow))
+    out.push({ variant: "immediate", text: s.penalty === null ? t("masternodes.shared.detail.standby.immediateUnknown") : t("masternodes.shared.detail.standby.immediate", { penalty: dash(s.penalty) }) });
+  return out;
+}
+
+/** "Saved on this computer on Oct 15", or "Imported". */
+export const standbySource = (s: Standby, date: (secs: number) => string) =>
+  s.source === "imported" ? t("masternodes.shared.detail.standby.imported") : t("masternodes.shared.detail.standby.saved", { date: date(s.createdAt) });
+
+// ---------------------------------------------------------------- maintenance (§2.6–§2.8, S6)
+
+/** The fee a dissolution alone and a standby pay (§2.7, Q7), duffs. */
+export const DISSOLVE_FEE = 1_000;
+export const STANDBY_FEE = 1_000;
+
+/** §2.7's together-fee default for `n` shares, duffs: the relay minimum of the combined size. */
+export const togetherFee = (n: number) => Math.max(1_000, 300 + 110 * n);
+
+/** Create standby's cap (§3.4): the penalty and the fee for each of this wallet's shares. */
+export function standbyCreateCap(shares: SharedShares, fee: number = STANDBY_FEE): number {
+  return shares.shares.filter((f) => f.mine).length * (shares.earlyPenalty + fee);
+}
+
+/** What a dissolution alone takes from the share, as the preview prints it and the grant caps it. */
+export const dissolveCap = (p: DissolvePreview) => p.totalDebit;
+
+/** The approve-maintenance cap (§3.4): a dissolution's actor fee once accepted, else 0. */
+export function approveMaintenanceCap(s: SharedSession, acceptActorFee: boolean): number {
+  return s.kind === "dissolve_together" && acceptActorFee ? (s.actorFee ?? 0) : 0;
+}
+
+/** What this wallet gets back from a dissolution together: its shares, less the fee its actor share pays. */
+export function togetherReturn(s: SharedSession): number {
+  const mine = s.rows.filter((r) => r.mine).reduce((a, r) => a + r.amount, 0);
+  const fee = s.role === "coordinator" ? (s.fee ?? 0) : (s.actorFee ?? 0);
+  return Math.max(0, mine - fee);
+}
+
+export interface StandbySend {
+  variant: "full" | "immediate";
+  /** The button's catalog key under `masternodes.shared.detail.standby`. */
+  label: "sendFull" | "sendImmediate" | "sendIt";
+  /** The grant's cap (§3.4): fee + penalty (immediate, own share), fee (full, own share), 0 (another's). */
+  cap: number;
+  /** What the actor pays the others. */
+  penalty: number;
+  /** Only the immediate variant is held though the full one would be valid (§2.8). */
+  stillPenalty: boolean;
+}
+
+/** §2.8 Validity: the one send a stored standby offers now, from EP 5's `full_valid_now`. Absent where
+ * the engine would refuse it or an amount is unknown (D14): an immediate variant whose penalty is null
+ * gets none. */
+export function standbySend(s: Standby, fullValidNow: boolean, mine: boolean): StandbySend | null {
+  if (s.full && fullValidNow) return { variant: "full", label: "sendFull", cap: mine ? s.fee : 0, penalty: 0, stillPenalty: false };
+  if (!s.immediate || s.penalty === null) return null;
+  const cap = mine ? s.fee + s.penalty : 0;
+  if (fullValidNow) return { variant: "immediate", label: "sendIt", cap, penalty: s.penalty, stillPenalty: true };
+  return { variant: "immediate", label: "sendImmediate", cap, penalty: s.penalty, stillPenalty: false };
+}
+
+/** An owned share with no stored variant the engine would take now: Create is offered. */
+export const standbyMissing = (mine: readonly { index: number }[], standbys: readonly Standby[], fullValidNow: boolean) =>
+  mine.some((f) => !standbys.some((s) => s.shareIndex === f.index && standbySend(s, fullValidNow, true) !== null));
+
+/** The penalty anyone holding a saved standby can make its share pay: its immediate line stays valid after
+ * the early period. 0 without a known one. */
+export const standbyHolderPenalty = (s: Standby) => (s.immediate && s.penalty !== null && s.penalty > 0 ? s.penalty : 0);
+
+export interface KeyLine {
+  field: "operator" | "voting";
+  from: string;
+  to: string;
+  changes: boolean;
+}
+
+/** A key change's keys, current → requested, against the list now (§2.6). */
+export function keyChangeLines(s: SharedSession): KeyLine[] {
+  const k = s.keyChange;
+  if (!k) return [];
+  const before = k.current ?? s.baseKeys;
+  const line = (field: KeyLine["field"], from: string, to: string): KeyLine => ({ field, from, to, changes: from !== to });
+  return [line("operator", before?.operatorPublicKey ?? "", k.requested.operatorPublicKey), line("voting", before?.votingAddress ?? "", k.requested.votingAddress)];
 }

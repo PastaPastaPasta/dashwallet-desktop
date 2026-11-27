@@ -6,7 +6,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
-import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useRestoreStatus, useSyncStatus, useWallets } from "../api/queries";
 import { useSyncItems } from "../api/syncItems";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
@@ -21,6 +21,7 @@ import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
 import { PreReleaseNotice } from "../screens/PreReleaseNotice";
+import { StorageInUseScreen, StoreNotPrivateScreen, StoreRefusalScreen, StoreRestoreScreen, StoreRetryScreen } from "../screens/StoreRefusal";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
@@ -73,9 +74,15 @@ export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
 
 /** Splash (UX-SPEC §4.2) while the engine opens the network, or its error, with a retry unless the file is from a newer
- * build (DP3-04b D35). */
-function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => void }) {
+ * build (DP3-04b D35). A refused store, a restore that stopped the open, an upgrade that stopped on the machine, a
+ * data folder others can change and a store still held have their own screens instead. */
+function Splash({ error, retrying, onRetry }: { error: OpenFailure | null; retrying: boolean; onRetry: () => void }) {
   const tr = useT();
+  if (error?.kind === "notPrivate") return <StoreNotPrivateScreen notPrivate={error.notPrivate} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "refused") return <StoreRefusalScreen refusal={error.refusal} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "restore") return <StoreRestoreScreen restore={error.restore} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "retry") return <StoreRetryScreen retrying={retrying} />;
+  if (error?.kind === "inUse") return <StorageInUseScreen retryable={error.retryable} retrying={retrying} onRetry={onRetry} />;
   return (
     <div className="splash" data-testid="splash">
       <DashLogo className="splash-logo" />
@@ -297,6 +304,8 @@ function Shell() {
   }, [client, locked]);
   // Read once the vault is not locked; the shell holds no wallet until then.
   const wallets = useWallets(!locked);
+  // Platform's refusals read the session's platformOff from it, on whatever page (api/platformHold.ts).
+  useRestoreStatus(!locked);
   const wallet = locked ? undefined : (wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0]);
   // Back from the lock screen, once the page is there again, focus lands on its title, as a link
   // or a menu leaves it.
@@ -464,7 +473,7 @@ export function App() {
         {network.isSuccess ? (
           <Shell />
         ) : (
-          <Splash error={network.isError ? openFailure(network.error) : null} onRetry={() => void network.refetch()} />
+          <Splash error={network.isError ? openFailure(network.error) : null} retrying={network.isFetching} onRetry={() => void network.refetch()} />
         )}
       </div>
       <SwitchingCard />

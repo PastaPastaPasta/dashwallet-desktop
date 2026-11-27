@@ -20,6 +20,7 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { messageTable, t } from "../i18n";
 import { creditCount } from "./profile";
 import { COPY, withTable } from "./status";
+import { platformHoldText } from "../api/platformHold";
 
 export type TopUpApi = Pick<
   Backend,
@@ -102,6 +103,8 @@ export function outcomeText(o: TopUpOutcome, balance: (credits: string) => strin
 
 /** D17: a top-up's refusal, by code. */
 export function topUpErrorText(e: unknown, amount: (duffs: number) => string, discreet = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.funding_insufficient": {

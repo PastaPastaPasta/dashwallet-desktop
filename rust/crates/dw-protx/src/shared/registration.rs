@@ -17,7 +17,7 @@
 //! payload is valid is [`crate::rules`]'s question, not the codec's.
 
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
-use dashcore::hashes::{Hash, HashEngine, sha256d};
+use dashcore::hashes::{HashEngine, sha256d};
 use dashcore::{OutPoint, Txid};
 
 use super::netinfo::ExtNetInfo;

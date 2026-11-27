@@ -7,7 +7,6 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use dashcore::address::Payload;
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint};
 use dw_appdb::MasternodeOpRow;
 

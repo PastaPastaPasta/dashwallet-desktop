@@ -8,14 +8,16 @@ use zeroize::Zeroizing;
 
 use dw_engine::DashNetwork;
 
-use crate::dto::masternodes::{
-    AttachedKeyRoleName, EvonodeCredits, JoinSharedRequest, KeyCheckName, ListedMasternode,
-    MasternodeDetail, MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState,
-    MasternodeOverview, MasternodePayout, ProTxOperation, RevealedMasternodeKey,
-    SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedSession, UnreadableSession,
-    StartSharedRequest, UntrackOutcome, UpdateRegistrarPreview, UpdateRegistrarRequest,
-};
 use crate::dto::governance::MasternodeTypeName;
+use crate::dto::masternodes::{
+    AttachedKeyRoleName, DissolvePreview, DissolveRequest, EvonodeCredits, JoinSharedRequest,
+    KeyChangeRequest, KeyCheckName, ListedMasternode, MaintenanceSent, MasternodeDetail,
+    MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState, MasternodeOverview,
+    MasternodePayout, ProTxOperation, RevealedMasternodeKey, SharedCapability, SharedImport,
+    SharedKindName, SharedMessage, SharedOutcome, SharedSession, SharedShares, Standby,
+    StandbyVariantName, StartSharedRequest, UnreadableSession, UntrackOutcome,
+    UpdateRegistrarPreview, UpdateRegistrarRequest,
+};
 use crate::dto::protx::{MnRegistrationPreview, MnRegistrationRequest, ProTxKeys};
 use crate::error::{AppCode, AppError, ErrorData};
 use crate::ipc::commands;
@@ -27,12 +29,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "NetworkSession::masternodes",
         "internal: every masternodes command obtains it via state.masternodes",
     ),
-    ("Masternodes::approve_maintenance", "deferred (MG-10 S6)"),
-    ("Masternodes::create_standby", "deferred (MG-10 S6)"),
-    ("Masternodes::dissolve", "deferred (MG-10 S6)"),
-    ("Masternodes::export_standby", "deferred (MG-10 S6)"),
     ("Masternodes::mark_withdrawal", "deferred (MG-10 S4)"),
-    ("Masternodes::preview_dissolve", "deferred (MG-10 S6)"),
     ("Masternodes::preview_update_share", "deferred (MG-10 S6)"),
     ("Masternodes::recheck_withdrawal", "deferred (MG-10 S4)"),
     (
@@ -40,15 +37,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "not bound: always refuses collateral_lookup (MG-03 D11)",
     ),
     ("Masternodes::retry_withdrawal", "deferred (MG-10 S4)"),
-    ("Masternodes::send_maintenance", "deferred (MG-10 S6)"),
-    ("Masternodes::send_standby", "deferred (MG-10 S6)"),
-    ("Masternodes::shared_shares", "deferred (MG-10 S6)"),
-    ("Masternodes::standby", "deferred (MG-10 S6)"),
-    (
-        "Masternodes::start_dissolve_together",
-        "deferred (MG-10 S6)",
-    ),
-    ("Masternodes::start_key_change", "deferred (MG-10 S6)"),
     ("Masternodes::update_share", "deferred (MG-10 S6)"),
     ("Masternodes::withdraw_credits", "deferred (MG-10 S4)"),
     ("Masternodes::withdrawal_quote", "deferred (MG-10 S4)"),
@@ -391,6 +379,25 @@ commands! {
         Ok(state.masternodes().await?.shared_session(wallet, session).await?.into())
     }
 
+    /// A shared masternode's shares from the wallet's history: amounts,
+    /// refund and reward addresses, the early period and whether a share
+    /// may dissolve or change keys now. No session is needed.
+    #[facade("Masternodes::shared_shares")]
+    fn mn_shared_shares(state, wallet_id: String, pro_tx_hash: String) -> SharedShares {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let shares = state.masternodes().await?.shared_shares(wallet, pro_tx_hash).await?;
+        Ok(shares.into())
+    }
+
+    /// The wallet's stored standbys of a shared masternode, by share and
+    /// fee; their signed bytes stay in Rust.
+    #[facade("Masternodes::standby")]
+    fn mn_shared_standby(state, wallet_id: String, pro_tx_hash: String) -> Vec<Standby> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let standbys = state.masternodes().await?.standby(wallet, pro_tx_hash).await?;
+        Ok(standbys.into_iter().map(Into::into).collect())
+    }
+
     /// Starts a session as its coordinator: reserves the coordinator's share
     /// and the fee, signs nothing, and returns the Invitation.
     #[facade("Masternodes::start_shared")]
@@ -613,17 +620,207 @@ commands! {
         }
         Ok(Some(out))
     }
+
+    /// Plans a dissolution alone by one of this wallet's shares: what each
+    /// share gets back, the penalty, the fee and `totalDebit`. Signs nothing.
+    #[facade("Masternodes::preview_dissolve")]
+    fn mn_shared_preview_dissolve(
+        state,
+        wallet_id: String,
+        request: DissolveRequest,
+    ) -> DissolvePreview {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let preview = state
+            .masternodes()
+            .await?
+            .preview_dissolve(wallet, request.into())
+            .await?;
+        Ok(preview.into())
+    }
+
+    /// Signs the preview's dissolution with the share's owner key and sends
+    /// it, under a `masternodeOp` grant covering its `totalDebit`. Refused on
+    /// mainnet before the engine is called (`app.shared_send_off`).
+    #[facade("Masternodes::dissolve")]
+    fn mn_shared_dissolve(
+        state,
+        wallet_id: String,
+        request: DissolveRequest,
+        grant: String,
+    ) -> ProTxOperation {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        require_shared_send(&state).await?;
+        let op = state
+            .masternodes()
+            .await?
+            .dissolve(wallet, request.into(), grant)
+            .await?;
+        Ok(op.into())
+    }
+
+    /// Signs and stores the standby dissolutions paying `fee` of each of this
+    /// wallet's shares, under a `masternodeOp` grant covering each share's
+    /// penalty and fee. Sends nothing.
+    #[facade("Masternodes::create_standby")]
+    fn mn_shared_create_standby(
+        state,
+        wallet_id: String,
+        pro_tx_hash: String,
+        fee: u64,
+        grant: String,
+    ) -> Vec<Standby> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let standbys = state
+            .masternodes()
+            .await?
+            .create_standby(wallet, pro_tx_hash, fee, grant)
+            .await?;
+        Ok(standbys.into_iter().map(Into::into).collect())
+    }
+
+    /// Shows the save dialog and writes the stored standby of `share` paying
+    /// `fee` there as Core's file (0600 on Unix), under a `masternodeOp`
+    /// grant of 0. Returns the file's name, `null` when the user cancelled
+    /// (the grant unused). The file's text never reaches the renderer.
+    #[facade("Masternodes::export_standby")]
+    fn mn_shared_export_standby(
+        state,
+        wallet_id: String,
+        pro_tx_hash: String,
+        share: u16,
+        fee: u64,
+        grant: String,
+    ) -> Option<String> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let name = standby_file_name(&pro_tx_hash, share);
+        let Some(path) =
+            crate::api::files::choose_save(&state, FilePurpose::StandbyDissolution, name).await?
+        else {
+            return Ok(None);
+        };
+        let file = state
+            .masternodes()
+            .await?
+            .export_standby(wallet, pro_tx_hash, share, fee, grant)
+            .await?;
+        let text = Zeroizing::new(file.text.into_bytes());
+        crate::api::files::write_chosen(path.clone(), text).await?;
+        Ok(path.file_name().map(|n| n.to_string_lossy().into_owned()))
+    }
+
+    /// Sends a variant of the stored standby of `share` paying `fee`, under a
+    /// `masternodeOp` grant covering the fee and, for the immediate variant,
+    /// the penalty (0 for another share's). Refused on mainnet before the
+    /// engine is called (`app.shared_send_off`).
+    #[facade("Masternodes::send_standby")]
+    fn mn_shared_send_standby(
+        state,
+        wallet_id: String,
+        pro_tx_hash: String,
+        share: u16,
+        fee: u64,
+        variant: StandbyVariantName,
+        grant: String,
+    ) -> ProTxOperation {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        require_shared_send(&state).await?;
+        let op = state
+            .masternodes()
+            .await?
+            .send_standby(wallet, pro_tx_hash, share, fee, variant.into(), grant)
+            .await?;
+        Ok(op.into())
+    }
+
+    /// Prepares a dissolution together with this wallet's share the actor
+    /// paying `fee`, and signs this wallet's shares under a `masternodeOp`
+    /// grant covering the fee. Returns the session and its request.
+    #[facade("Masternodes::start_dissolve_together")]
+    fn mn_shared_start_dissolve_together(
+        state,
+        wallet_id: String,
+        request: DissolveRequest,
+        grant: String,
+    ) -> SharedOutcome {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let outcome = state
+            .masternodes()
+            .await?
+            .start_dissolve_together(wallet, request.into(), grant)
+            .await?;
+        Ok(outcome.into())
+    }
+
+    /// Prepares a change of the registrar keys together, this wallet the
+    /// funder: reserves the fee coins and signs this wallet's shares under a
+    /// `masternodeOp` grant of 0. Returns the session and its request.
+    #[facade("Masternodes::start_key_change")]
+    fn mn_shared_start_key_change(
+        state,
+        wallet_id: String,
+        request: KeyChangeRequest,
+        grant: String,
+    ) -> SharedOutcome {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let outcome = state
+            .masternodes()
+            .await?
+            .start_key_change(wallet, request.into(), grant)
+            .await?;
+        Ok(outcome.into())
+    }
+
+    /// Signs this wallet's unsigned shares of a dissolution together or a
+    /// key change. A dissolution's grant covers `actorFee` when the request
+    /// takes the fee from this wallet's share (`accept_actor_fee`), else 0; a
+    /// key change's is 0.
+    #[facade("Masternodes::approve_maintenance")]
+    fn mn_shared_approve_maintenance(
+        state,
+        wallet_id: String,
+        session: String,
+        grant: String,
+        accept_actor_fee: bool,
+    ) -> SharedOutcome {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let outcome = state
+            .masternodes()
+            .await?
+            .approve_maintenance(wallet, session, grant, accept_actor_fee)
+            .await?;
+        Ok(outcome.into())
+    }
+
+    /// Sends a complete dissolution together, under a `masternodeOp` grant of
+    /// 0. Refused before the engine is called on mainnet
+    /// (`app.shared_send_off`) and for any other kind of session
+    /// (`app.shared_send_unsupported`): this version sends no key change.
+    #[facade("Masternodes::send_maintenance", "Masternodes::shared_session")]
+    fn mn_shared_send_maintenance(
+        state,
+        wallet_id: String,
+        session: String,
+        grant: String,
+    ) -> MaintenanceSent {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        require_shared_send(&state).await?;
+        let masternodes = state.masternodes().await?;
+        let kind = masternodes.shared_session(wallet, session.clone()).await?.kind;
+        maintenance_send_allowed(kind.into())?;
+        Ok(masternodes.send_maintenance(wallet, session, grant).await?.into())
+    }
 }
 
 /// Whether this version sends shared-masternode transactions on `network`:
 /// everywhere but mainnet (MG's ruling for this release). [`SHARED_SEND_GATE`]
 /// lists what it gates: `mn_shared_sign` (a participant's funding signature
-/// lets the coordinator send) and `mn_shared_send` refuse before the engine
-/// is called, and `dissolve`, `send_standby`, `send_maintenance` and
-/// `update_share` must check it once a command binds them. Reads, standby
-/// create and export, approvals, the maintenance starts and the abandon
-/// calls (`abandon_shared_session`, `resend_shared_abandon`, the unreadable
-/// abandon) send nothing of a share and are never gated.
+/// lets the coordinator send), `mn_shared_send`, `mn_shared_dissolve`,
+/// `mn_shared_send_standby` and `mn_shared_send_maintenance` refuse before
+/// the engine is called, and `update_share` must check it once a command
+/// binds it. Reads, standby create and export, approvals, the maintenance
+/// starts and the abandon calls (`abandon_shared_session`,
+/// `resend_shared_abandon`, the unreadable abandon) send nothing of a share
+/// and are never gated.
 pub(crate) fn shared_sends_allowed(network: &DashNetwork) -> bool {
     !matches!(network, DashNetwork::Mainnet)
 }
@@ -644,6 +841,18 @@ async fn require_shared_send(state: &AppState) -> Result<(), AppError> {
     }))
 }
 
+/// `mn_shared_send_maintenance` sends a dissolution together only.
+fn maintenance_send_allowed(kind: SharedKindName) -> Result<(), AppError> {
+    if kind == SharedKindName::DissolveTogether {
+        return Ok(());
+    }
+    Err(AppError::app(
+        AppCode::SharedSendUnsupported,
+        "this version sends no shared-masternode session of this kind",
+    )
+    .with(ErrorData::SharedUnsupported { session_kind: kind }))
+}
+
 /// How a shared-masternode call stands against [`shared_sends_allowed`].
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -661,11 +870,14 @@ pub(crate) enum SendGate {
 /// each command's body against it.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SHARED_SEND_GATE: &[(&str, SendGate)] = &[
-    ("Masternodes::dissolve", SendGate::GatedWhenBound),
-    ("Masternodes::send_standby", SendGate::GatedWhenBound),
-    ("Masternodes::send_maintenance", SendGate::GatedWhenBound),
+    ("Masternodes::dissolve", SendGate::Gated),
+    ("Masternodes::send_standby", SendGate::Gated),
+    ("Masternodes::send_maintenance", SendGate::Gated),
     ("mn_shared_sign", SendGate::Gated),
     ("mn_shared_send", SendGate::Gated),
+    ("mn_shared_dissolve", SendGate::Gated),
+    ("mn_shared_send_standby", SendGate::Gated),
+    ("mn_shared_send_maintenance", SendGate::Gated),
     ("Masternodes::update_share", SendGate::GatedWhenBound),
     ("Masternodes::abandon_shared_session", SendGate::Never),
     ("Masternodes::resend_shared_abandon", SendGate::Never),
@@ -674,7 +886,28 @@ pub(crate) const SHARED_SEND_GATE: &[(&str, SendGate)] = &[
     ("mn_shared_abandon_unreadable", SendGate::Never),
     ("mn_shared_lock", SendGate::Never),
     ("mn_shared_approve", SendGate::Never),
+    ("mn_shared_preview_dissolve", SendGate::Never),
+    ("mn_shared_create_standby", SendGate::Never),
+    ("mn_shared_export_standby", SendGate::Never),
+    ("mn_shared_start_dissolve_together", SendGate::Never),
+    ("mn_shared_start_key_change", SendGate::Never),
+    ("mn_shared_approve_maintenance", SendGate::Never),
+    ("mn_shared_standby", SendGate::Never),
+    ("mn_shared_shares", SendGate::Never),
 ];
+/// Core's standby file name: the ProTx hash's first 8 characters, the share
+/// numbered from 1 (the engine's `StandbyFile.file_name`).
+fn standby_file_name(pro_tx_hash: &str, share: u16) -> String {
+    let short = pro_tx_hash
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_lowercase();
+    format!(
+        "standby-dissolution-{short}-share{}.txt",
+        u32::from(share) + 1
+    )
+}
 
 /// The chosen file's text; `null` on cancel. Invalid UTF-8 is refused as a
 /// message that isn't a shared-masternode one, without its bytes.
@@ -711,6 +944,26 @@ mod tests {
         assert!(shared_sends_allowed(&DashNetwork::Devnet {
             name: "paloma".into()
         }));
+    }
+
+    #[test]
+    fn maintenance_sends_a_dissolution_together_only() {
+        assert!(maintenance_send_allowed(SharedKindName::DissolveTogether).is_ok());
+        for kind in [SharedKindName::KeyChange, SharedKindName::Registration] {
+            let e = maintenance_send_allowed(kind).unwrap_err();
+            assert_eq!(e.code_str(), "app.shared_send_unsupported");
+            assert_eq!(
+                e.data,
+                Some(ErrorData::SharedUnsupported { session_kind: kind })
+            );
+        }
+        let e =
+            serde_json::to_value(maintenance_send_allowed(SharedKindName::KeyChange).unwrap_err())
+                .unwrap();
+        assert_eq!(
+            e["data"],
+            serde_json::json!({ "kind": "sharedUnsupported", "sessionKind": "key_change" })
+        );
     }
 
     /// A command's body in this file, from its `fn` to the next command's
@@ -779,6 +1032,16 @@ mod tests {
         // gated; abandon never.
         assert!(SHARED_SEND_GATE.contains(&("mn_shared_sign", SendGate::Gated)));
         assert!(SHARED_SEND_GATE.contains(&("mn_shared_send", SendGate::Gated)));
+        for send in [
+            "mn_shared_dissolve",
+            "mn_shared_send_standby",
+            "mn_shared_send_maintenance",
+        ] {
+            assert!(
+                SHARED_SEND_GATE.contains(&(send, SendGate::Gated)),
+                "{send}"
+            );
+        }
         for abandon in [
             "Masternodes::abandon_shared_session",
             "Masternodes::resend_shared_abandon",
@@ -788,5 +1051,13 @@ mod tests {
         ] {
             assert!(SHARED_SEND_GATE.contains(&(abandon, SendGate::Never)), "{abandon}");
         }
+    }
+
+    #[test]
+    fn the_standby_file_is_named_as_core_names_it() {
+        assert_eq!(
+            standby_file_name(&"4D1C3A3B".repeat(8), 1),
+            "standby-dissolution-4d1c3a3b-share2.txt"
+        );
     }
 }

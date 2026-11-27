@@ -6,7 +6,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -16,6 +15,7 @@ use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::system_data_contracts::dashpay_contract;
 use dw_uri::connect::{
     AppConnectRequest, AuthBinding, Bounds, Carrier, ConnectUri, EncBinding, EncPurpose, Level,
@@ -169,6 +169,9 @@ pub(crate) struct FakeConnect {
     transfer_timeout: AtomicBool,
     /// Every credit transfer transition broadcast via `WithdrawNet`.
     transfers_sent: Mutex<Vec<dpp::state_transition::StateTransition>>,
+    /// Simulate an SDK cache refresh failure while direct identity fetches
+    /// (`refresh` / `identity`) still succeed (`r4712172979`).
+    fail_cache_refresh: AtomicBool,
 }
 
 impl FakeConnect {
@@ -230,6 +233,7 @@ impl FakeConnect {
             fail_group_info: Mutex::default(),
             transfer_timeout: AtomicBool::new(false),
             transfers_sent: Mutex::default(),
+            fail_cache_refresh: AtomicBool::new(false),
         }
     }
 
@@ -363,6 +367,17 @@ impl ConnectNet for FakeConnect {
             .lock()
             .unwrap()
             .contains(&(request_hash, owner)))
+    }
+
+    async fn refresh_cache(
+        &self,
+        wallet: &PlatformWallet,
+        id: Identifier,
+    ) -> Result<Identity, PlatformError> {
+        if self.fail_cache_refresh.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
+        self.refresh(wallet, id).await.map(|(identity, _)| identity)
     }
 
     async fn refresh(
@@ -731,6 +746,25 @@ impl Fixture {
             net,
             _dir: dir,
         }
+    }
+
+    fn restart(&mut self) {
+        self.engine
+            .block_on(self.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        self.s = self
+            .engine
+            .block_on(self.engine.open_network(
+                DashNetwork::Regtest,
+                crate::SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    no_platform: true,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
     }
 
     fn choice() -> ConnectChoice {
@@ -1244,6 +1278,34 @@ fn a_changed_group_refuses_the_approval_with_the_grant_unused() {
     );
     assert!(f.unused(&grant));
     assert!(f.net.signed().is_empty());
+}
+
+/// The quote names the group facts it read: those the sheet showed when
+/// nothing changed between the two reads, others when the group did.
+#[test]
+fn the_quote_names_the_group_facts_it_read() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    let sheet = f.sheet(&l).unwrap();
+    let quote = f.quote(&l, &Fixture::choice()).unwrap();
+    assert_eq!(quote.groups, sheet.groups);
+    f.net
+        .groups
+        .lock()
+        .unwrap()
+        .get_mut(&group())
+        .unwrap()
+        .admins
+        .push(id(51));
+    let changed = f.quote(&l, &Fixture::choice()).unwrap();
+    assert_ne!(changed.groups, sheet.groups);
+    assert_ne!(changed.plan, quote.plan);
+    let refreshed = f.sheet(&l).unwrap();
+    assert_eq!(refreshed.groups, changed.groups);
+    let ConnectScope::Group(g) = &refreshed.bindings[0].scope else {
+        panic!("expected a group binding, got {:?}", refreshed.bindings[0]);
+    };
+    assert_eq!(g.admins, vec![b58(&id(43)), b58(&id(51))]);
 }
 
 #[test]
@@ -3736,7 +3798,8 @@ fn disconnect_retry_rebroadcasts_same_signed_transition_without_double_charging(
     assert!(f.disconnect_grant_unused(&g2_try2));
 
     // 2b. Consistent height (id_height >= nonce_height): retires dead pending_disconnect
-    //     WITHOUT auto-resigning, leaves grant unused, and returns DisconnectConflict.
+    //     WITHOUT auto-resigning, invalidates the pre-conflict grant so a re-quote is
+    //     required (r4712282286), and returns DisconnectConflict.
     *f.net.identity_height.lock().unwrap() = 101;
     assert_eq!(
         f.disconnect(&me_b58, &req2, &g2_try2),
@@ -3749,7 +3812,18 @@ fn disconnect_retry_rebroadcasts_same_signed_transition_without_double_charging(
         signed_after_try1,
         "spent-nonce conflict must retire pending and NEVER auto-resign"
     );
-    assert!(f.disconnect_grant_unused(&g2_try2));
+    assert!(
+        !f.disconnect_grant_unused(&g2_try2),
+        "conflict retirement must invalidate the pre-conflict grant"
+    );
+    assert_eq!(
+        f.disconnect(&me_b58, &req2, &g2_try2),
+        Err(ConnectError::Platform(PlatformError::GrantInvalid))
+    );
+    assert_eq!(
+        f.net.signed_disables.lock().unwrap().len(),
+        signed_after_try1
+    );
     let rec2 = f
         .engine
         .block_on(records(&f.s, f.wallet))
@@ -4009,9 +4083,19 @@ fn disconnect_paid_revision_conflict_retires_pending_without_auto_resigning_or_d
         initial_balance - PAID_CONFLICT_FEE,
         "balance must reflect only the single conflict debit — never charged twice"
     );
+    let broadcasts_before_reuse = f.net.broadcast_disables.lock().unwrap().len();
     assert!(
-        f.disconnect_grant_unused(&g2),
-        "conflict retirement must leave the retry grant unused"
+        !f.disconnect_grant_unused(&g2),
+        "conflict retirement must invalidate the pre-conflict grant so the next attempt re-quotes"
+    );
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g2),
+        Err(ConnectError::Platform(PlatformError::GrantInvalid))
+    );
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert_eq!(
+        f.net.broadcast_disables.lock().unwrap().len(),
+        broadcasts_before_reuse
     );
     let rec = f
         .engine
@@ -5196,13 +5280,14 @@ fn disconnect_post_fresh_broadcast_stale_nonce_read_keeps_pending_and_returns_no
     }
 }
 
-/// Reviewer F / CodeRabbit 4711025633 test (a):
+/// Reviewer F / CodeRabbit 4711025633 test (a) + r4712282279:
 /// Post-rebroadcast revision conflict with `k` still admissible returns
-/// `DisconnectConflict`, keeps `k` reserved (`last_conflict.nonce == Some(k)`),
-/// blocks transfers (`MovePending` / `Unavailable`) and other apps' Disconnects
-/// (`PendingWrite`) from signing at `k`, never rebroadcasts dead bytes, then
-/// drops the reservation once the dead bytes consume `k` as a paid bump so the
-/// next transfer signs at `>= k + 1` and never falsely reports `WithdrawalLanded`.
+/// `DisconnectConflict`, invalidates the pre-conflict grant, keeps `k` reserved
+/// (`last_conflict.nonce == Some(k)`), refuses `Unavailable` on lagging reads
+/// (`k > tip`), lets other apps' Disconnects and transfers skip past `k`
+/// (`>= k + 1`, never signing at `k`), never rebroadcasts dead bytes, then
+/// drops the reservation once the dead bytes consume `k` as a paid bump so a
+/// timed-out transfer never falsely reports `WithdrawalLanded`.
 #[test]
 fn disconnect_post_rebroadcast_revision_conflict_reserves_nonce_until_spent_and_prevents_false_landed()
  {
@@ -5260,6 +5345,7 @@ fn disconnect_post_rebroadcast_revision_conflict_reserves_nonce_until_spent_and_
             failure: ConnectFailure::DisconnectConflict,
         })
     );
+    assert!(!f.disconnect_grant_unused(&g1_retry));
     f.net.lose_updates.store(false, Ordering::SeqCst);
     let broadcasts_after_retire = f.net.broadcast_disables.lock().unwrap().len();
     assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
@@ -5279,63 +5365,50 @@ fn disconnect_post_rebroadcast_revision_conflict_reserves_nonce_until_spent_and_
         "post-rebroadcast revision retire with admissible k must reserve k"
     );
 
-    // A credit transfer MUST refuse with MovePending while k = 30 is admissible,
-    // and with Unavailable on a lagging read (`tip = 5`, `k > tip`), never signing at k.
+    // On a lagging read (`tip = 5`, `k > tip`), both transfers and other apps'
+    // Disconnects MUST refuse with Unavailable without signing.
     let amount = 100_000_000;
     let tq = f.transfer_quote(&me_b58, amount).unwrap();
     let w_grant = f.withdraw_grant(amount + tq.fee_credits);
-    assert_eq!(
-        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
-        Err(CreditsError::MovePending {
-            id: conflict.transition_hash.clone(),
-        })
-    );
     *f.net.stale_nonce.lock().unwrap() = Some(5);
     assert_eq!(
         f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
         Err(CreditsError::Platform(PlatformError::Unavailable))
     );
-    *f.net.stale_nonce.lock().unwrap() = None;
-    assert!(
-        f.net.transfers_sent.lock().unwrap().is_empty(),
-        "transfer must never sign at reserved nonce k"
-    );
-
-    // Another app's Disconnect on the same identity MUST refuse with PendingWrite.
     let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
     let g2 = f.disconnect_grant(q2.request, q2.max_credits);
     assert_eq!(
         f.disconnect(&me_b58, &req2, &g2),
-        Err(ConnectError::Failed {
-            failure: ConnectFailure::PendingWrite,
-        })
+        Err(ConnectError::Platform(PlatformError::Unavailable))
     );
-    assert_eq!(
-        f.net.broadcast_disables.lock().unwrap().len(),
-        broadcasts_after_retire,
+    *f.net.stale_nonce.lock().unwrap() = None;
+    assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+
+    // On a fresh read (`tip = 29`, `k = 30` reserved), App B's Disconnect skips
+    // `k = 30` and signs at `>= 31` (`31`), disabling App B's keys cleanly while
+    // never rebroadcasting App A's dead bytes!
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done2 = f.disconnect(&me_b58, &req2, &g2).unwrap();
+    assert_eq!(done2.keys_disabled, q2.keys);
+    assert_eq!(f.net.signed_disables.lock().unwrap()[1].1, 31);
+    let broadcasts = f.net.broadcast_disables.lock().unwrap();
+    assert_eq!(broadcasts.len(), broadcasts_after_retire + 1);
+    assert_ne!(
+        broadcasts[broadcasts_after_retire], dead_bytes,
         "dead bytes must never be rebroadcast"
     );
+    drop(broadcasts);
 
-    // Now the dead bytes are included as a paid BumpIdentityNonceAction consuming k = 30.
-    *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
-    let pw = f.wallet();
-    assert!(
-        f.engine
-            .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
-            .is_err()
-    );
-    assert_eq!(*f.net.nonces.lock().unwrap().get(&id(ME)).unwrap(), 30);
-
-    // Next transfer read drops the spent reservation, signs at >= k + 1 (31),
-    // and even if it times out, a subsequent retry reports MovePending — NEVER
-    // falsely reporting WithdrawalLanded!
+    // Transfer while k = 30 is still admissible (missing bit under tip = 31)
+    // skips k = 30 and signs at >= 32 (32), then times out.
     f.net.transfer_timeout.store(true, Ordering::SeqCst);
     let t_err = f
         .transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
         .unwrap_err();
     let t_hash = match t_err {
         CreditsError::Platform(PlatformError::BroadcastUnknown { artifact }) => artifact,
-        other => panic!("expected BroadcastUnknown at nonce >= k+1, got {other:?}"),
+        other => panic!("expected BroadcastUnknown at nonce >= 32, got {other:?}"),
     };
     f.net.transfer_timeout.store(false, Ordering::SeqCst);
 
@@ -5345,14 +5418,35 @@ fn disconnect_post_rebroadcast_revision_conflict_reserves_nonce_until_spent_and_
     else {
         panic!("expected transfer transition");
     };
-    assert!(
-        t.nonce() >= 31,
-        "transfer must sign at >= k+1 after reservation dropped, got {}",
-        t.nonce()
+    assert_eq!(
+        t.nonce(),
+        32,
+        "transfer must skip reserved k=30 and sign at exact nonce 32"
     );
     drop(sent);
 
-    // Persisted reservation is now dropped (`nonce == None`), while disclosure stays.
+    // Now the dead bytes are included as a paid BumpIdentityNonceAction consuming k = 30.
+    *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
+    let pw = f.wallet();
+    assert!(
+        f.engine
+            .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
+            .is_err()
+    );
+    assert!(!crate::platform::withdrawal::takes(
+        *f.net.nonces.lock().unwrap().get(&id(ME)).unwrap(),
+        30,
+        id(ME)
+    ));
+
+    // Next transfer retry drops the spent reservation (`nonce == None`), keeps
+    // conflict disclosure, and reports MovePending for the timed-out transfer —
+    // NEVER falsely reporting WithdrawalLanded!
+    let w_grant2 = f.withdraw_grant(amount + tq.fee_credits);
+    assert_eq!(
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
+        Err(CreditsError::MovePending { id: t_hash })
+    );
     let rec_after = f
         .engine
         .block_on(records(&f.s, f.wallet))
@@ -5366,13 +5460,6 @@ fn disconnect_post_rebroadcast_revision_conflict_reserves_nonce_until_spent_and_
     assert_eq!(
         conflict_after.nonce, None,
         "spent reservation must be dropped after proved read shows k <= tip && !takes"
-    );
-
-    // Next transfer retry sees MovePending for the timed-out transfer — NEVER WithdrawalLanded!
-    let w_grant2 = f.withdraw_grant(amount + tq.fee_credits);
-    assert_eq!(
-        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
-        Err(CreditsError::MovePending { id: t_hash })
     );
 }
 
@@ -5524,7 +5611,10 @@ fn disconnect_step2_and_fresh_post_broadcast_revision_conflict_reserve_nonce_unt
             1,
             "step-2 retire must never rebroadcast dead bytes"
         );
-        assert!(f.disconnect_grant_unused(&g_retire));
+        assert!(
+            !f.disconnect_grant_unused(&g_retire),
+            "step-2 conflict retire must invalidate the pre-conflict grant"
+        );
 
         let rec = f
             .engine
@@ -5540,26 +5630,22 @@ fn disconnect_step2_and_fresh_post_broadcast_revision_conflict_reserve_nonce_unt
             "step-2 revision retire must reserve admissible nonce k"
         );
 
+        // Stale read (`tip = 5`, `k = 30 > tip`) refuses Unavailable without signing.
         let amount = 100_000_000;
         let tq = f.transfer_quote(&me_b58, amount).unwrap();
         let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        *f.net.stale_nonce.lock().unwrap() = Some(5);
         assert_eq!(
             f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
-            Err(CreditsError::MovePending {
-                id: conflict.transition_hash,
-            })
+            Err(CreditsError::Platform(PlatformError::Unavailable))
         );
+        *f.net.stale_nonce.lock().unwrap() = None;
         assert!(f.net.transfers_sent.lock().unwrap().is_empty());
 
-        // Dead bytes consume k = 30 as a paid bump; next transfer drops the
-        // reservation, signs at >= 31, and never falsely reports WithdrawalLanded.
-        *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
-        let pw = f.wallet();
-        assert!(
-            f.engine
-                .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
-                .is_err()
-        );
+        // On a fresh read (`tip = 29`, `k = 30` reserved), transfer skips `k = 30`
+        // and signs at `>= 31` (never colliding with `k = 30`); even if it times out
+        // and dead bytes then consume `k = 30`, the next transfer drops the spent
+        // reservation and reports MovePending — never WithdrawalLanded.
         f.net.transfer_timeout.store(true, Ordering::SeqCst);
         let t_err = f
             .transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
@@ -5574,8 +5660,22 @@ fn disconnect_step2_and_fresh_post_broadcast_revision_conflict_reserve_nonce_unt
         else {
             panic!("expected transfer transition");
         };
-        assert!(t.nonce() >= 31);
+        assert_eq!(
+            t.nonce(),
+            31,
+            "transfer must skip reserved k=30 and sign at exact nonce 31"
+        );
         drop(sent);
+
+        // Dead bytes consume k = 30 as a paid bump; next transfer drops the
+        // reservation and reports MovePending — NEVER WithdrawalLanded.
+        *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
+        let pw = f.wallet();
+        assert!(
+            f.engine
+                .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
+                .is_err()
+        );
         let w_grant2 = f.withdraw_grant(amount + tq.fee_credits);
         assert_eq!(
             f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
@@ -5631,21 +5731,14 @@ fn disconnect_step2_and_fresh_post_broadcast_revision_conflict_reserve_nonce_unt
         let amount = 100_000_000;
         let tq = f.transfer_quote(&me_b58, amount).unwrap();
         let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        *f.net.stale_nonce.lock().unwrap() = Some(5);
         assert_eq!(
             f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
-            Err(CreditsError::MovePending {
-                id: conflict.transition_hash,
-            })
+            Err(CreditsError::Platform(PlatformError::Unavailable))
         );
+        *f.net.stale_nonce.lock().unwrap() = None;
         assert!(f.net.transfers_sent.lock().unwrap().is_empty());
 
-        *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
-        let pw = f.wallet();
-        assert!(
-            f.engine
-                .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
-                .is_err()
-        );
         f.net.transfer_timeout.store(true, Ordering::SeqCst);
         let t_err = f
             .transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
@@ -5660,8 +5753,20 @@ fn disconnect_step2_and_fresh_post_broadcast_revision_conflict_reserve_nonce_unt
         else {
             panic!("expected transfer transition");
         };
-        assert!(t.nonce() >= 31);
+        assert_eq!(
+            t.nonce(),
+            31,
+            "transfer must skip reserved k=30 and sign at exact nonce 31"
+        );
         drop(sent);
+
+        *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
+        let pw = f.wallet();
+        assert!(
+            f.engine
+                .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
+                .is_err()
+        );
         let w_grant2 = f.withdraw_grant(amount + tq.fee_credits);
         assert_eq!(
             f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
@@ -5798,10 +5903,10 @@ fn disconnect_spent_retire_raises_nonce_floor_preventing_false_landed_on_lagging
         else {
             panic!("{arm}: expected transfer transition");
         };
-        assert!(
-            t.nonce() >= 31,
-            "{arm}: lagging read after proven-spent retire must sign transfer at >= 31, got {}",
-            t.nonce()
+        assert_eq!(
+            t.nonce(),
+            31,
+            "{arm}: lagging read after proven-spent retire must sign transfer at exact nonce 31"
         );
         drop(sent);
 
@@ -6003,10 +6108,10 @@ fn disconnect_step3_spent_nonce_retire_raises_nonce_floor_preventing_false_lande
         else {
             panic!("{arm}: expected transfer transition");
         };
-        assert!(
-            t.nonce() >= 31,
-            "{arm}: lagging read after step-3 spent-nonce retire must sign transfer at >= 31, got {}",
-            t.nonce()
+        assert_eq!(
+            t.nonce(),
+            31,
+            "{arm}: lagging read after step-3 spent-nonce retire must sign transfer at exact nonce 31"
         );
         drop(sent);
 
@@ -6247,13 +6352,1439 @@ fn disconnect_nothing_to_disable_preserves_unresolved_conflict_nonce_reservation
         "nothing-to-disable branch must preserve unresolved conflict nonce reservation"
     );
 
-    // 5. A credit transfer MUST still see the reservation and refuse MovePending (never sign at 30).
+    // 5. The preserved reservation STILL refuses Unavailable on a stale read (`tip = 5`,
+    //    `k = 30 > tip`), proving it stayed intact, while on a fresh read (`tip = 31` with
+    //    missing bit 30) a transfer skips k = 30 and signs at >= 32 (never MovePending).
+    let _ = conflict_hash;
     let amount = 100_000_000;
     let tq = f.transfer_quote(&me_b58, amount).unwrap();
     let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+    *f.net.stale_nonce.lock().unwrap() = Some(5);
     assert_eq!(
         f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
-        Err(CreditsError::MovePending { id: conflict_hash })
+        Err(CreditsError::Platform(PlatformError::Unavailable))
     );
+    *f.net.stale_nonce.lock().unwrap() = None;
     assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+}
+
+/// Reviewer F / bot r4712172979 fail-first test:
+/// `approve` relies on the SDK wallet's cached identity revision when calling
+/// `update_identity_with_external_signer`. When the cache refresh fails while
+/// a direct height-bearing `refresh` fetch still succeeds, `approve` MUST refuse
+/// before `update_identity`, leaving nothing signed and the grant unused.
+#[test]
+fn approve_refuses_when_cache_refresh_fails_even_if_direct_fetch_succeeds() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let grant = f.quoted_grant(&l, &c);
+
+    // Cache refresh fails while direct identity fetch (`refresh`) still succeeds.
+    f.net.fail_cache_refresh.store(true, Ordering::SeqCst);
+    let pw = f.wallet();
+    assert!(
+        f.engine.block_on(f.net.refresh(&pw, id(ME))).is_ok(),
+        "direct fetch must still succeed to prove approve requires mandatory cache refresh"
+    );
+
+    assert_eq!(
+        f.approve(&l, &c, &grant),
+        Err(ConnectError::Platform(PlatformError::Unavailable))
+    );
+    assert!(
+        f.net.signed().is_empty(),
+        "approve must sign nothing when cache refresh fails"
+    );
+    assert!(
+        f.net.updates.lock().unwrap().is_empty(),
+        "approve must not call update_identity when cache refresh fails"
+    );
+    assert!(
+        f.unused(&grant),
+        "approve must leave the grant unused when cache refresh fails"
+    );
+}
+
+/// Reviewer F / bot r4712172990 fail-first test:
+/// When two identities (A and B) both have parked sign-in responses for the same
+/// unhinted request and A has a refused-Disconnect hold, `retry_send` without an
+/// exact hint match MUST refuse (`NothingToSend`), publish nothing, and leave
+/// both entries and A's hold untouched. An unmatched hint must also refuse
+/// without touching either entry or hold.
+#[test]
+fn retry_send_refuses_ambiguous_multi_identity_parked_responses_without_touching_holds() {
+    let f = Fixture::new();
+    let id_a = id(ME);
+    let id_b = f.add_second_identity(2);
+    let id_a_b58 = b58(&id_a);
+    let id_b_b58 = b58(&id_b);
+
+    let l = devnet(request());
+    let req_hash = l.request.request_hash();
+    let req_hex = hex::encode(req_hash);
+    let c_a = Fixture::choice();
+    let c_b = ConnectChoice {
+        identity: id_b_b58.clone(),
+        ..Fixture::choice()
+    };
+    let g_a = f.quoted_grant(&l, &c_a);
+    let g_b = f.quoted_grant(&l, &c_b);
+
+    // Both A and B approve the same unhinted request while publish fails -> both park responses.
+    f.net.fail_publish.store(true, Ordering::SeqCst);
+    assert_eq!(f.approve(&l, &c_a, &g_a), Err(ConnectError::SendFailed));
+    assert_eq!(f.approve(&l, &c_b, &g_b), Err(ConnectError::SendFailed));
+    f.net.fail_publish.store(false, Ordering::SeqCst);
+
+    // User attempts to Disconnect A and it is refused before submission -> A's parked response is held.
+    let q_a = f.disconnect_quote(&id_a_b58, &req_hex).unwrap();
+    *f.net.disconnect_fee_override.lock().unwrap() = Some(q_a.fee + 5_000_000);
+    let gd_a = f.disconnect_grant_for(q_a.identity_id, q_a.request, q_a.max_credits);
+    assert!(matches!(
+        f.disconnect(&id_a_b58, &req_hex, &gd_a),
+        Err(ConnectError::Platform(PlatformError::GrantExceeded { .. }))
+    ));
+    *f.net.disconnect_fee_override.lock().unwrap() = None;
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_a, req_hash),
+        Some(true),
+        "A's parked response must be held after refused Disconnect"
+    );
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_b, req_hash),
+        Some(false)
+    );
+
+    // Unhinted retry while both A and B are parked MUST refuse NothingToSend,
+    // publish nothing, and leave A's response + hold and B's response untouched.
+    assert_eq!(
+        f.retry(&l),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NothingToSend,
+        })
+    );
+    assert!(
+        f.net.published.lock().unwrap().is_empty(),
+        "ambiguous retry must publish nothing"
+    );
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_a, req_hash),
+        Some(true),
+        "ambiguous retry must leave A's parked response and Disconnect hold unchanged"
+    );
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_b, req_hash),
+        Some(false),
+        "ambiguous retry must leave B's parked response unchanged"
+    );
+
+    // A hint that matches neither A nor B MUST also refuse without touching either entry or hold.
+    let mut unmatched_req = request();
+    unmatched_req.identity_hint = Some(id(OTHER).to_buffer());
+    assert_eq!(
+        f.retry(&devnet(unmatched_req)),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NothingToSend,
+        })
+    );
+    assert!(f.net.published.lock().unwrap().is_empty());
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_a, req_hash),
+        Some(true)
+    );
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_b, req_hash),
+        Some(false)
+    );
+
+    // An exact hint for B publishes ONLY B's response while A's response and hold stay untouched.
+    let mut hinted_b = request();
+    hinted_b.identity_hint = Some(id_b.to_buffer());
+    let done_b = f.retry(&devnet(hinted_b)).unwrap();
+    assert_eq!(done_b.identity, id_b_b58);
+    let published = f.net.published.lock().unwrap().clone();
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].0, id_b);
+    assert_eq!(
+        f.s.platform.app_connect.is_held(f.wallet, id_a, req_hash),
+        Some(true),
+        "retrying B via exact hint must keep A's response and hold intact"
+    );
+}
+
+/// Reviewer F / CodeRabbit r4712282279 fail-first test:
+/// A retired conflict reservation (`last_conflict.nonce = Some(k)` with no
+/// `pending_disconnect`) forbids signing AT `k` only and must NEVER block
+/// transfers or other apps' Disconnects at other nonces, even after app A is
+/// unlisted via the nothing-to-disable path:
+/// - Arm 1 (nothing-to-disable state: A unlisted, tip = 31 with missing bit 30):
+///   a credit transfer signs at `>= 32` (never `MovePending`), times out, A's
+///   dead bytes then land at `k = 30`, and the next transfer drops the spent
+///   reservation and reports `MovePending` — never `WithdrawalLanded`;
+/// - Arm 2 (same nothing-to-disable state): app B's Disconnect signs at `>= 32`
+///   (never `PendingWrite`) and disables B's keys;
+/// - Arm 3 (active A at tip = 29, k = 30 admissible): another write skips `k`
+///   by computing the max locally without calling `advance_floor(id, k)`, so
+///   app A's own re-quote is NOT wedged by `NonceOwner::Behind` and still signs
+///   at `k = 30`.
+#[test]
+fn disconnect_nothing_to_disable_reservation_never_blocks_transfer_or_other_app_disconnect() {
+    use crate::platform::errors::CreditsError;
+    use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
+
+    let setup_nothing_to_disable = || {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        let l2 = devnet(second_app_request());
+        let c2 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g2_app = f.quoted_grant(&l2, &c2);
+        f.approve(&l2, &c2, &g2_app).unwrap();
+        let req2 = hex::encode(l2.request.request_hash());
+
+        // App A starts Disconnect at k = 30 (from tip = 29), times out, hits
+        // step-2 revision conflict -> reserves k = 30.
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+        let dead_bytes = f.net.broadcast_disables.lock().unwrap()[0].clone();
+
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        let g_retire = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g_retire),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+
+        // Foreign update disables all of A's keys and moves nonce to tip = 31
+        // with missing bit 30 still admissible (`takes(state, 30) == true`).
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            for &kid in &q1.keys {
+                me.public_keys_mut()
+                    .get_mut(&kid)
+                    .unwrap()
+                    .set_disabled_at(NOW);
+            }
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        let state_with_missing_30 = merge_fake_nonce(29, 31);
+        assert!(crate::platform::withdrawal::takes(
+            state_with_missing_30,
+            30,
+            id(ME)
+        ));
+        f.net
+            .nonces
+            .lock()
+            .unwrap()
+            .insert(id(ME), state_with_missing_30);
+
+        // App A hits nothing-to-disable -> A is unlisted (`Disconnected`), with
+        // `last_conflict.nonce == Some(30)` preserved.
+        let g_done = f.disconnect_grant(q1.request, q1.max_credits);
+        let done = f.disconnect(&me_b58, &req1, &g_done).unwrap();
+        assert!(done.keys_disabled.is_empty());
+        let listed = f.list_apps(&me_b58).unwrap();
+        assert_eq!(listed.apps.len(), 1);
+        assert_eq!(listed.apps[0].request, req2);
+
+        (f, me_b58, req1, req2, dead_bytes)
+    };
+
+    // --- Arm 1: Transfer signs at >= 32, times out, dead bytes land at 30, never Landed ---
+    {
+        let (f, me_b58, req1, _req2, dead_bytes) = setup_nothing_to_disable();
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        f.net.transfer_timeout.store(true, Ordering::SeqCst);
+        let t_err = f
+            .transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
+            .unwrap_err();
+        let t_hash = match t_err {
+            CreditsError::Platform(PlatformError::BroadcastUnknown { artifact }) => artifact,
+            other => panic!("transfer must sign at >= 32 (not MovePending), got {other:?}"),
+        };
+        f.net.transfer_timeout.store(false, Ordering::SeqCst);
+
+        let sent = f.net.transfers_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(t) = &sent[0]
+        else {
+            panic!("expected transfer transition");
+        };
+        assert_eq!(
+            t.nonce(),
+            32,
+            "transfer in nothing-to-disable state (tip 31, k=30) must sign at exact nonce 32"
+        );
+        drop(sent);
+
+        // A's dead bytes now land at k = 30 as a paid bump; transfer's outcome is
+        // still decided by its own nonce (>= 32), so retry reports MovePending —
+        // NEVER WithdrawalLanded!
+        *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
+        let pw = f.wallet();
+        assert!(
+            f.engine
+                .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
+                .is_err()
+        );
+        let w_grant2 = f.withdraw_grant(amount + tq.fee_credits);
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant2),
+            Err(CreditsError::MovePending { id: t_hash })
+        );
+        let rec_a = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        assert_eq!(rec_a.last_conflict.and_then(|c| c.nonce), None);
+    }
+
+    // --- Arm 2: App B's Disconnect in the same state signs at >= 32 and lands ---
+    {
+        let (f, me_b58, _req1, req2, _dead_bytes) = setup_nothing_to_disable();
+        let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+        let g2 = f.disconnect_grant(q2.request, q2.max_credits);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        let done2 = f.disconnect(&me_b58, &req2, &g2).unwrap();
+        assert_eq!(done2.keys_disabled, q2.keys);
+        let signed = f.net.signed_disables.lock().unwrap();
+        assert_eq!(signed.len(), 2);
+        assert_eq!(
+            signed[1].1, 32,
+            "app B Disconnect in nothing-to-disable state (tip 31, k=30) must sign at exact nonce 32"
+        );
+        assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+    }
+
+    // --- Arm 3: Skipping k = tip + 1 (29 -> 31) does NOT raise withdrawal_nonces.floor,
+    //            so app A's own re-quote still sees Free and signs AT k = 30 ---
+    {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        let g_retire = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g_retire),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        // Transfer fails before signing (tiny grant) after reading nonce_for -> must NOT
+        // have raised withdrawal_nonces.floor past 30.
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let tiny_w = f.withdraw_grant(amount);
+        assert!(matches!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &tiny_w),
+            Err(CreditsError::Platform(PlatformError::GrantExceeded { .. }))
+        ));
+        assert_eq!(
+            f.s.withdrawal_nonces.floor(id(ME)),
+            0,
+            "skipping reserved k must compute max locally, never calling advance_floor(k)"
+        );
+        // App A's own re-quote still signs AT k = 30.
+        let q_re = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g_re = f.disconnect_grant(q_re.request, q_re.max_credits);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        let done = f.disconnect(&me_b58, &req1, &g_re).unwrap();
+        assert_eq!(done.keys_disabled, q_re.keys);
+        assert_eq!(f.net.signed_disables.lock().unwrap()[1].1, 30);
+    }
+}
+
+/// Reviewer F / CodeRabbit 4716732189 fail-first test:
+/// A session floor raised by another write landing at `k + 1` (e.g. a transfer
+/// skipping reservation `k = 30` and landing at `31`, setting `floor = 32`)
+/// proves only that `31` was used — NOT that `30` was spent. `disconnect()`
+/// must NEVER clear `last_conflict.nonce = Some(30)` just because
+/// `reserved_k < session_floor`:
+/// - Arm 1: if A's retry is refused before signing (`GrantExceeded`), the
+///   persisted record MUST keep `last_conflict.nonce == Some(30)`; after a
+///   restart (fresh session floor = 0, record reloaded from disk) and a lagging
+///   read at tip 29, a transfer MUST return `Unavailable`, NEVER sign at 30,
+///   and NEVER report a false `WithdrawalLanded` even after A's dead bytes
+///   consume 30.
+/// - Arm 2: after the transfer lands at 31 (`floor == 32`), A's own re-quoted
+///   retry MUST sign at exact nonce `30`, not `32`.
+#[test]
+fn disconnect_reservation_survives_higher_floor_write_and_blocks_post_restart_lagging_transfer() {
+    use crate::platform::errors::CreditsError;
+    use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
+
+    let setup_reserved_30_with_floor_32 = || {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        // 1. Reservation at k = 30, tip = 29.
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+        let dead_bytes = f.net.broadcast_disables.lock().unwrap()[0].clone();
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        let g_retire = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g_retire),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+
+        // 2. A transfer skipping reservation 30 signs at exact nonce 31 and
+        //    lands, raising session floor to 32 while 30 remains admissible.
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
+            .unwrap();
+        {
+            let sent = f.net.transfers_sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(t) =
+                &sent[0]
+            else {
+                panic!("expected credit transfer transition");
+            };
+            assert_eq!(
+                t.nonce(),
+                31,
+                "transfer skipping reservation 30 at tip 29 must sign at exact nonce 31"
+            );
+        }
+        assert_eq!(
+            f.s.withdrawal_nonces.floor(id(ME)),
+            32,
+            "landing transfer at 31 must raise session floor to 32"
+        );
+        let live_state = *f.net.nonces.lock().unwrap().get(&id(ME)).unwrap();
+        assert_eq!(live_state, merge_fake_nonce(29, 31));
+        assert!(crate::platform::withdrawal::takes(live_state, 30, id(ME)));
+
+        (f, me_b58, req1, dead_bytes)
+    };
+
+    // --- Arm 1: pre-sign refusal keeps persisted Some(30), and after restart a
+    //            lagging read at tip 29 refuses Unavailable and never signs 30 ---
+    {
+        let (mut f, me_b58, req1, dead_bytes) = setup_reserved_30_with_floor_32();
+
+        // 3. A's retry is refused before signing (cap below fee -> GrantExceeded).
+        let q_re = f.disconnect_quote(&me_b58, &req1).unwrap();
+        assert!(q_re.max_credits > 1);
+        let g_small = f.disconnect_grant(q_re.request, 1);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert!(matches!(
+            f.disconnect(&me_b58, &req1, &g_small),
+            Err(ConnectError::Platform(PlatformError::GrantExceeded { .. }))
+        ));
+        assert_eq!(
+            f.net.signed_disables.lock().unwrap().len(),
+            1,
+            "GrantExceeded refusal must not sign a new disconnect transition"
+        );
+        let stored_before_restart = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        assert_eq!(
+            stored_before_restart.last_conflict.and_then(|c| c.nonce),
+            Some(30),
+            "higher session floor (32) from landing 31 must NOT clear persisted reservation 30"
+        );
+
+        // 4. Restart: fresh session floor (0), record reloaded from disk.
+        f.restart();
+        assert_eq!(
+            f.s.withdrawal_nonces.floor(id(ME)),
+            0,
+            "restarted session must start with a fresh nonce floor"
+        );
+        let stored_after_restart = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        assert_eq!(
+            stored_after_restart.last_conflict.and_then(|c| c.nonce),
+            Some(30),
+            "reloaded record after restart must still hold reservation 30"
+        );
+
+        // 5. Even if A's dead bytes land at 30 on live Platform while a lagging
+        //    node still reads tip 29, the transfer skips reserved 30 -> attempts
+        //    31 (already spent) -> Unavailable, NEVER signs at 30, and NEVER
+        //    reports WithdrawalLanded.
+        *f.net.paid_conflict_fee.lock().unwrap() = 500_000;
+        let pw = f.wallet();
+        assert!(
+            f.engine
+                .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &dead_bytes))
+                .is_err()
+        );
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        let amount = 100_000_000;
+        let tq2 = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant2 = f.withdraw_grant(amount + tq2.fee_credits);
+        let res2 = f.transfer_to_platform(&me_b58, &tq2.to, amount, &w_grant2);
+        assert_eq!(
+            res2,
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "lagging read at tip 29 after restart must refuse Unavailable instead of reusing 30"
+        );
+        assert!(
+            !matches!(res2, Err(CreditsError::WithdrawalLanded { .. })),
+            "lagging read at tip 29 must never report WithdrawalLanded"
+        );
+        for st in f.net.transfers_sent.lock().unwrap().iter() {
+            if let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(t) = st
+            {
+                assert_ne!(
+                    t.nonce(),
+                    30,
+                    "transfer must NEVER sign at reserved nonce 30"
+                );
+            }
+        }
+    }
+
+    // --- Arm 2: after step 2 (floor == 32), A's own retry signs at exact 30, not 32 ---
+    {
+        let (f, me_b58, req1, _dead_bytes) = setup_reserved_30_with_floor_32();
+        let q_re = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g_re = f.disconnect_grant(q_re.request, q_re.max_credits);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        let done = f.disconnect(&me_b58, &req1, &g_re).unwrap();
+        assert_eq!(done.keys_disabled, q_re.keys);
+        let signed = f.net.signed_disables.lock().unwrap();
+        assert_eq!(signed.len(), 2);
+        assert_eq!(
+            signed[1].1, 30,
+            "App A retry with floor=32 must still sign at its own admissible reservation 30, not 32"
+        );
+    }
+}
+
+/// Bot r4712173000 / G1 fail-first test:
+/// Approving a DIFFERENT app on the same identity MUST refuse with
+/// `PendingWrite` (leaving nothing signed and the grant unused) while another
+/// app's live `pending_disconnect` holds an admissible nonce OR a retired
+/// conflict reservation sits ahead of `tip` (`k > tip`, where the SDK's
+/// `tip + 1` writer would collide with `k`), and `Unavailable` on a stale read
+/// (`k > tip && !takes`). Once `k` is spent (or sits below `tip` as a missing
+/// bit under a retired reservation), approving the other app succeeds cleanly.
+#[test]
+fn approve_different_app_refuses_while_disconnect_or_ahead_reservation_owns_nonce() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l1 = devnet(request());
+    let c1 = Fixture::choice();
+    let g1 = f.quoted_grant(&l1, &c1);
+    f.approve(&l1, &c1, &g1).unwrap();
+    let req1 = hex::encode(l1.request.request_hash());
+
+    // 1. Live pending_disconnect for App 1 at k = 30 (from tip = 29).
+    f.net.nonces.lock().unwrap().insert(id(ME), 29);
+    let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+    let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req1, &gd1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+
+    // Approving a DIFFERENT app (App 2) on the same identity MUST refuse
+    // PendingWrite, sign nothing, and leave App 2's grant unused.
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g2 = f.quoted_grant(&l2, &c2);
+    let signed_before = f.net.signed().len();
+    let updates_before = f.net.updates.lock().unwrap().len();
+    assert_eq!(
+        f.approve(&l2, &c2, &g2),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::PendingWrite,
+        })
+    );
+    assert_eq!(f.net.signed().len(), signed_before);
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+    assert!(f.unused(&g2));
+
+    // 2. Retire App 1's pending_disconnect on revision conflict -> reservation
+    //    `last_conflict.nonce = Some(30)` while tip = 29 (k = 30 > tip).
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        let next_rev = me.revision() + 1;
+        me.set_revision(next_rev);
+    }
+    let gd_retire = f.disconnect_grant(q1.request, q1.max_credits);
+    assert_eq!(
+        f.disconnect(&me_b58, &req1, &gd_retire),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::DisconnectConflict,
+        })
+    );
+
+    // While reserved k = 30 is ahead of tip = 29, approving App 2 MUST still
+    // refuse PendingWrite (and Unavailable on a stale read tip = 5).
+    assert_eq!(
+        f.approve(&l2, &c2, &g2),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::PendingWrite,
+        })
+    );
+    *f.net.stale_nonce.lock().unwrap() = Some(5);
+    assert_eq!(
+        f.approve(&l2, &c2, &g2),
+        Err(ConnectError::Platform(PlatformError::Unavailable))
+    );
+    *f.net.stale_nonce.lock().unwrap() = None;
+    assert_eq!(f.net.signed().len(), signed_before);
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+    assert!(f.unused(&g2));
+
+    // 3. Once tip moves to 31 with missing bit 30 (k = 30 <= tip and
+    //    tip >= observed_tip 29), approving App 2 succeeds cleanly.
+    let state_with_missing_30 = merge_fake_nonce(29, 31);
+    f.net
+        .nonces
+        .lock()
+        .unwrap()
+        .insert(id(ME), state_with_missing_30);
+    let g2_fresh = f.quoted_grant(&l2, &c2);
+    f.approve(&l2, &c2, &g2_fresh).unwrap();
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before + 1);
+}
+
+/// Reviewer F / thepastaclaw r4717147458 fail-first test:
+/// Skipping past a retired conflict reservation requires a nonce read at least
+/// as current as the tip observed when the reservation was created
+/// (`tip >= observed_tip`, failing closed when `observed_tip` is `None`).
+/// - Disconnect signs at 30; another device's update lands at 31 leaving 30
+///   unused; retire at consistent tip 31 persists `{nonce: 30, observed_tip: 31}`.
+/// - A transfer, another app's Disconnect, or Approve G1 on a lagging read
+///   below `observed_tip` (tip 29, or tip 31 when `observed_tip == 32`) MUST
+///   refuse `Unavailable` with ZERO signatures, ZERO broadcasts, and never
+///   `WithdrawalLanded`.
+/// - On a current read at tip 31, the transfer signs at exact nonce 32.
+/// - After restart (fresh floor, reloaded record), a lagging read at tip 29
+///   still refuses `Unavailable` with ZERO signatures/broadcasts.
+/// - A legacy reservation with `observed_tip == None` fails closed (`Unavailable`).
+#[test]
+fn disconnect_reservation_observed_tip_blocks_lagging_skip_and_allows_current_read() {
+    use crate::platform::errors::CreditsError;
+    use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
+
+    let setup_retire_at_tip_31 = || {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        let l2 = devnet(second_app_request());
+        let c2 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g2_app = f.quoted_grant(&l2, &c2);
+        f.approve(&l2, &c2, &g2_app).unwrap();
+        let req2 = hex::encode(l2.request.request_hash());
+
+        // Disconnect App 1 at nonce 30 (from tip 29), lost in flight.
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+
+        // Another device's update lands at nonce 31 leaving 30 unused, advancing
+        // identity revision.
+        let state_31_missing_30 = merge_fake_nonce(29, 31);
+        f.net
+            .nonces
+            .lock()
+            .unwrap()
+            .insert(id(ME), state_31_missing_30);
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        // Retire at consistent tip 31: persists `{nonce: Some(30), observed_tip: Some(31)}`.
+        let g_retire = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g_retire),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("last_conflict persisted");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(31));
+
+        (f, me_b58, req1, req2)
+    };
+
+    // --- Arm 1: lagging read at tip 29 (no restart) refuses Unavailable with
+    //            zero signatures/broadcasts across transfer & other Disconnect;
+    //            current read at tip 31 signs transfer at exact nonce 32 ---
+    {
+        let (f, me_b58, _req1, req2) = setup_retire_at_tip_31();
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        let res = f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant);
+        assert_eq!(
+            res,
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "lagging read tip 29 < observed_tip 31 must refuse Unavailable"
+        );
+        assert!(
+            f.net.transfers_sent.lock().unwrap().is_empty(),
+            "lagging skip refusal must sign and broadcast zero transfers"
+        );
+
+        // Other app's Disconnect on lagging tip 29 also refuses Unavailable
+        // with zero new signatures or broadcasts.
+        let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+        let g2 = f.disconnect_grant(q2.request, q2.max_credits);
+        let signed_before = f.net.signed_disables.lock().unwrap().len();
+        let bcast_before = f.net.broadcast_disables.lock().unwrap().len();
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req2, &g2),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "other app Disconnect on lagging tip 29 < observed_tip 31 must refuse Unavailable"
+        );
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+
+        // Current read at tip 31 -> transfer signs at exact nonce 32 and lands.
+        *f.net.stale_nonce.lock().unwrap() = None;
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
+            .unwrap();
+        let sent = f.net.transfers_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(t) = &sent[0]
+        else {
+            panic!("expected credit transfer transition");
+        };
+        assert_eq!(
+            t.nonce(),
+            32,
+            "current read at tip 31 must skip reserved 30 and sign at exact nonce 32"
+        );
+    }
+
+    // --- Arm 2: restart + reload + lagging read at tip 29 refuses Unavailable
+    //            with zero signatures/broadcasts; Approve G1 <= tip also checks
+    //            observed_tip; observed_tip == None fails closed ---
+    {
+        let (mut f, me_b58, req1, _req2) = setup_retire_at_tip_31();
+        f.restart();
+        assert_eq!(f.s.withdrawal_nonces.floor(id(ME)), 0);
+        let reloaded = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        assert_eq!(
+            reloaded.last_conflict.as_ref().and_then(|c| c.nonce),
+            Some(30)
+        );
+        assert_eq!(
+            reloaded.last_conflict.as_ref().and_then(|c| c.observed_tip),
+            Some(31)
+        );
+
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "restarted lagging read tip 29 < observed_tip 31 must refuse Unavailable"
+        );
+        assert!(
+            f.net.transfers_sent.lock().unwrap().is_empty(),
+            "restarted lagging skip refusal must sign and broadcast zero transfers"
+        );
+
+        // Approve G1 <=-tip reservation allowance: when stored observed_tip is
+        // 32 and lagging read shows tip 31 (with missing bit 30), Approve must
+        // refuse Unavailable instead of proceeding.
+        let mut rec_obs32 = reloaded.clone();
+        rec_obs32.last_conflict.as_mut().unwrap().observed_tip = Some(32);
+        f.put_record(rec_obs32);
+        *f.net.stale_nonce.lock().unwrap() = Some(merge_fake_nonce(29, 31));
+        let mut req3 = second_app_request();
+        let sk3 = SecretKey::from_secret_bytes([88u8; 32]).unwrap();
+        req3.app_eph_pub = PublicKey::from_secret_key(&sk3).serialize();
+        req3.connection_id = Some([88; 16]);
+        let l3 = devnet(req3);
+        let c3 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g3 = f.quoted_grant(&l3, &c3);
+        let updates_before = f.net.updates.lock().unwrap().len();
+        assert_eq!(
+            f.approve(&l3, &c3, &g3),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "approve G1 must refuse Unavailable when tip 31 < observed_tip 32"
+        );
+        assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+        assert!(f.unused(&g3));
+
+        // Legacy reservation with observed_tip == None fails closed on transfer.
+        let mut rec_none = reloaded;
+        rec_none.last_conflict.as_mut().unwrap().observed_tip = None;
+        f.put_record(rec_none);
+        *f.net.stale_nonce.lock().unwrap() = None;
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "legacy reservation with observed_tip == None must fail closed"
+        );
+        assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+    }
+}
+
+/// Reviewer F / thepastaclaw r4717147468 fail-first test:
+/// The pending-Disconnect rebroadcast path must enforce the same funds gate as
+/// `begin_issuing` (restore mark, wallet Platform hold, Platform funds off),
+/// sending ZERO `broadcast_disable_keys` calls and preserving `pending_disconnect`
+/// and the grant on refusal, while still allowing read-only confirmation when
+/// the pending transition already landed on Platform.
+#[test]
+fn disconnect_pending_rebroadcast_enforces_funds_gate_while_allowing_confirmation() {
+    let setup_pending = || {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l = devnet(request());
+        let c = Fixture::choice();
+        let g = f.quoted_grant(&l, &c);
+        f.approve(&l, &c, &g).unwrap();
+        let req_hex = hex::encode(l.request.request_hash());
+
+        let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+        let gd = f.disconnect_grant(q.request, q.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &gd),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), 1);
+        (f, me_b58, req_hex, q)
+    };
+
+    // --- Arm 1 & Arm 2: restored mark blocks rebroadcast (0 broadcasts, pending
+    //                    and grant kept), then already-landed pending confirms
+    //                    to DisconnectDone with 0 broadcasts ---
+    {
+        let (mut f, me_b58, req_hex, q) = setup_pending();
+        let dir = f.s.data_dir().join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("RESTORED"), "restored\nformat 1\n").unwrap();
+        f.restart();
+        assert!(f.s.restored(), "restored mark must engage funds gate");
+
+        let gd_retry = f.disconnect_grant(q.request, q.max_credits);
+        let bcast_before = f.net.broadcast_disables.lock().unwrap().len();
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &gd_retry),
+            Err(ConnectError::Platform(PlatformError::Restored)),
+            "pending rebroadcast under restore mark must refuse Restored"
+        );
+        assert_eq!(
+            f.net.broadcast_disables.lock().unwrap().len(),
+            bcast_before,
+            "restored funds gate must emit ZERO broadcast_disable_keys calls"
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        assert!(
+            rec.pending_disconnect.is_some(),
+            "pending_disconnect must be preserved when funds gate refuses rebroadcast"
+        );
+        assert!(
+            f.s.vault
+                .check_grant(&gd_retry, GrantKind::AppDisconnect, Some(&f.wallet.0))
+                .is_ok(),
+            "grant must stay valid (not revoked/redeemed) on funds gate refusal"
+        );
+
+        // Arm 2: once Platform shows the pending keys disabled, confirmation-only
+        // recovery still succeeds under the restored mark with ZERO broadcasts.
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            for &kid in &q.keys {
+                if let Some(k) = me.get_public_key_by_id_mut(kid) {
+                    k.set_disabled_at(NOW);
+                }
+            }
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        let done = f.disconnect(&me_b58, &req_hex, &gd_retry).unwrap();
+        assert_eq!(done.identity, me_b58);
+        assert_eq!(
+            f.net.broadcast_disables.lock().unwrap().len(),
+            bcast_before,
+            "confirmation-only recovery under restored mark must emit ZERO broadcasts"
+        );
+        let rec_done = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        assert!(rec_done.pending_disconnect.is_none());
+        assert_eq!(rec_done.state, RecordState::Disconnected);
+    }
+
+    // --- Arm 3: Platform funds off blocks pending rebroadcast with ZERO
+    //            broadcasts and preserves pending + grant ---
+    {
+        let (f, me_b58, req_hex, q) = setup_pending();
+        f.s.platform
+            .funds_off_in_tests
+            .store(true, Ordering::SeqCst);
+        let gd_retry = f.disconnect_grant(q.request, q.max_credits);
+        let bcast_before = f.net.broadcast_disables.lock().unwrap().len();
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &gd_retry),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "pending rebroadcast with Platform funds off must refuse Unavailable"
+        );
+        assert_eq!(
+            f.net.broadcast_disables.lock().unwrap().len(),
+            bcast_before,
+            "funds-off gate must emit ZERO broadcast_disable_keys calls"
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        assert!(rec.pending_disconnect.is_some());
+        assert!(
+            f.s.vault
+                .check_grant(&gd_retry, GrantKind::AppDisconnect, Some(&f.wallet.0))
+                .is_ok()
+        );
+    }
+}
+
+/// Reviewer F / Opus B1 at 2545d85dc fail-first test:
+/// Because `read_consistent_state` reads the nonce before the identity, a
+/// retire whose nonce read lagged at height `H - 1` (tip 29) while the
+/// identity read at height `H` proved the conflicting revision bump (foreign
+/// write at 31) stores `observed_tip = Some(29)` AND
+/// `observed_height = Some(max(id_height, nonce_height)) = Some(H)`.
+/// Every skip past the reservation MUST compare the current nonce read's
+/// height against `observed_height` (failing closed on `None`):
+/// - (a) Step-2 retire with split read `(nonce_height = 100 / tip 29, id_height = 101)`
+///   persists `{nonce: 30, observed_tip: 29, observed_height: 101}`; a transfer
+///   at `nonce_height = 100` (tip 29) refuses `Unavailable` with zero signatures
+///   and zero broadcasts (never `WithdrawalLanded`), while a read at `>= 101`
+///   (tip 31) signs at exact nonce 32.
+/// - (b) Same split read blocks another app's Disconnect at `nonce_height = 100`
+///   (signs at exact 32 at `nonce_height = 101`) and blocks Approve G1 at
+///   `nonce_height = 100` even when `tip = 31 >= observed_tip = 29` (grant unused).
+/// - (c) Restart + reload of (a) still refuses `Unavailable` at `nonce_height = 100`,
+///   and legacy `observed_height == None` fails closed.
+/// - (d) Post-rebroadcast and post-fresh retire sites with split read persist
+///   `observed_height = Some(max(id_height2, nonce_height2))`.
+#[test]
+fn disconnect_reservation_observed_height_blocks_split_read_lagging_skip() {
+    use crate::platform::errors::CreditsError;
+    use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
+
+    let setup_step2_split_retire = || {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        let l2 = devnet(second_app_request());
+        let c2 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g2_app = f.quoted_grant(&l2, &c2);
+        f.approve(&l2, &c2, &g2_app).unwrap();
+        let req2 = hex::encode(l2.request.request_hash());
+
+        // App 1 Disconnect signs at nonce 30 (from tip 29), lost in flight.
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+
+        // Foreign write lands at nonce 31 in block H = 101 leaving 30 unused,
+        // bumping revision. At step-2 retire, nonce read comes from H - 1 = 100
+        // (tip 29) while identity read comes from H = 101.
+        let state_31_missing_30 = merge_fake_nonce(29, 31);
+        f.net
+            .nonces
+            .lock()
+            .unwrap()
+            .insert(id(ME), state_31_missing_30);
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+        }
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        *f.net.identity_height.lock().unwrap() = 101;
+
+        let g_retire = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g_retire),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("last_conflict persisted");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(29));
+        assert_eq!(
+            conflict.observed_height,
+            Some(101),
+            "step-2 split retire must persist observed_height = max(id_height=101, nonce_height=100)"
+        );
+
+        (f, me_b58, req1, req2)
+    };
+
+    // --- (a) & (b): step-2 split retire blocks lagging H-1 transfer, other-app
+    //                Disconnect, and Approve G1; current H=101 read signs at 32 ---
+    {
+        let (f, me_b58, _req1, req2) = setup_step2_split_retire();
+
+        // (a) Transfer at nonce_height = 100 (tip 29) refuses Unavailable with 0 sent.
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "transfer at nonce_height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert!(
+            f.net.transfers_sent.lock().unwrap().is_empty(),
+            "lagging height refusal must sign and broadcast zero transfers"
+        );
+
+        // (b1) Other app's Disconnect at nonce_height = 100 (even with id_height = 101)
+        //      must compare nonce_height (not id_height) and refuse Unavailable.
+        let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+        let g2 = f.disconnect_grant(q2.request, q2.max_credits);
+        let signed_before = f.net.signed_disables.lock().unwrap().len();
+        let bcast_before = f.net.broadcast_disables.lock().unwrap().len();
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        *f.net.identity_height.lock().unwrap() = 101;
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req2, &g2),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "other app Disconnect at nonce_height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+
+        // (b2) Approve G1 at nonce_height = 100 with tip 31 (>= observed_tip 29,
+        //      missing bit 30 <= tip) MUST refuse Unavailable on observed_height = 101
+        //      and keep the grant unused.
+        *f.net.stale_nonce.lock().unwrap() = Some(merge_fake_nonce(29, 31));
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let mut req3 = second_app_request();
+        let sk3 = SecretKey::from_secret_bytes([91u8; 32]).unwrap();
+        req3.app_eph_pub = PublicKey::from_secret_key(&sk3).serialize();
+        req3.connection_id = Some([91; 16]);
+        let l3 = devnet(req3);
+        let c3 = ConnectChoice {
+            identity: me_b58.clone(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 5_000_000_000,
+                expires_at_ms: NOW + 30 * DAY_MS,
+            },
+        };
+        let g3 = f.quoted_grant(&l3, &c3);
+        let updates_before = f.net.updates.lock().unwrap().len();
+        assert_eq!(
+            f.approve(&l3, &c3, &g3),
+            Err(ConnectError::Platform(PlatformError::Unavailable)),
+            "approve G1 at nonce_height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+        assert!(f.unused(&g3));
+
+        // Current read at height H = 101 (tip 31): transfer signs at exact nonce 32.
+        *f.net.stale_nonce.lock().unwrap() = None;
+        *f.net.nonce_height.lock().unwrap() = 101;
+        *f.net.identity_height.lock().unwrap() = 101;
+        f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
+            .unwrap();
+        {
+            let sent = f.net.transfers_sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(t) =
+                &sent[0]
+            else {
+                panic!("expected credit transfer transition");
+            };
+            assert_eq!(
+                t.nonce(),
+                32,
+                "current read at height 101 (tip 31) must skip reserved 30 and sign at exact nonce 32"
+            );
+        }
+
+        // Other app's Disconnect at height >= 101 now succeeds and signs at >= 33 (past 32).
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        let done2 = f.disconnect(&me_b58, &req2, &g2).unwrap();
+        assert_eq!(done2.keys_disabled, q2.keys);
+        let signed = f.net.signed_disables.lock().unwrap();
+        assert!(
+            signed.last().unwrap().1 >= 32,
+            "other app Disconnect at height >= 101 must sign at >= 32"
+        );
+    }
+
+    // --- (c) Restart + reload of (a): H-1 read is still Unavailable;
+    //         legacy observed_height == None fails closed ---
+    {
+        let (mut f, me_b58, req1, _req2) = setup_step2_split_retire();
+        f.restart();
+        assert_eq!(f.s.withdrawal_nonces.floor(id(ME)), 0);
+        let reloaded = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        assert_eq!(
+            reloaded.last_conflict.as_ref().and_then(|c| c.nonce),
+            Some(30)
+        );
+        assert_eq!(
+            reloaded.last_conflict.as_ref().and_then(|c| c.observed_tip),
+            Some(29)
+        );
+        assert_eq!(
+            reloaded
+                .last_conflict
+                .as_ref()
+                .and_then(|c| c.observed_height),
+            Some(101)
+        );
+
+        *f.net.stale_nonce.lock().unwrap() = Some(29);
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let amount = 100_000_000;
+        let tq = f.transfer_quote(&me_b58, amount).unwrap();
+        let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "restarted lagging read at height 100 < observed_height 101 must refuse Unavailable"
+        );
+        assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+
+        // Legacy reservation with observed_height == None fails closed even at height 101.
+        let mut rec_none_h = reloaded;
+        rec_none_h.last_conflict.as_mut().unwrap().observed_height = None;
+        f.put_record(rec_none_h);
+        *f.net.stale_nonce.lock().unwrap() = None;
+        *f.net.nonce_height.lock().unwrap() = 101;
+        assert_eq!(
+            f.transfer_to_platform(&me_b58, &tq.to, amount, &w_grant),
+            Err(CreditsError::Platform(PlatformError::Unavailable)),
+            "legacy reservation with observed_height == None must fail closed"
+        );
+        assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+    }
+
+    // --- (d) Post-rebroadcast and post-fresh retire sites with split read
+    //         persist observed_height = Some(max(id_height2, nonce_height2)) ---
+    {
+        // Post-rebroadcast retire with split read (nonce_height2 = 100, id_height2 = 105).
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+
+        *f.net.after_update.lock().unwrap() = Some(Box::new(|net| {
+            let mut all = net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+            net.nonces
+                .lock()
+                .unwrap()
+                .insert(id(ME), merge_fake_nonce(29, 31));
+            *net.stale_nonce.lock().unwrap() = Some(29);
+            *net.nonce_height.lock().unwrap() = 100;
+            *net.identity_height.lock().unwrap() = 105;
+        }));
+        let gd_rebroadcast = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd_rebroadcast),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("post-rebroadcast conflict stored");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(29));
+        assert_eq!(
+            conflict.observed_height,
+            Some(105),
+            "post-rebroadcast split retire must persist observed_height = 105"
+        );
+    }
+    {
+        // Post-fresh retire with split read (nonce_height2 = 100, id_height2 = 107).
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l1 = devnet(request());
+        let c1 = Fixture::choice();
+        let g1_app = f.quoted_grant(&l1, &c1);
+        f.approve(&l1, &c1, &g1_app).unwrap();
+        let req1 = hex::encode(l1.request.request_hash());
+
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let gd1 = f.disconnect_grant(q1.request, q1.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        *f.net.after_update.lock().unwrap() = Some(Box::new(|net| {
+            let mut all = net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            let next_rev = me.revision() + 1;
+            me.set_revision(next_rev);
+            net.nonces
+                .lock()
+                .unwrap()
+                .insert(id(ME), merge_fake_nonce(29, 31));
+            *net.stale_nonce.lock().unwrap() = Some(29);
+            *net.nonce_height.lock().unwrap() = 100;
+            *net.identity_height.lock().unwrap() = 107;
+        }));
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &gd1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::DisconnectConflict,
+            })
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req1)
+            .unwrap();
+        let conflict = rec.last_conflict.expect("post-fresh conflict stored");
+        assert_eq!(conflict.nonce, Some(30));
+        assert_eq!(conflict.observed_tip, Some(29));
+        assert_eq!(
+            conflict.observed_height,
+            Some(107),
+            "post-fresh split retire must persist observed_height = 107"
+        );
+    }
 }

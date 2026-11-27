@@ -505,10 +505,11 @@ fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
         EngineError::InvalidArgument(m) | EngineError::InvalidConfig(m) if m.contains("DAPI") => {
             "invalid or missing --dapi value"
         }
-        EngineError::StorageInUse(_) => "--datadir is in use by another process",
-        EngineError::Storage(_) | EngineError::Io(_) | EngineError::Vault(_) => {
-            "--datadir could not be opened"
-        }
+        EngineError::StorageInUse { .. } => "--datadir is in use by another process",
+        EngineError::Storage(_)
+        | EngineError::DataFolderNotPrivate { .. }
+        | EngineError::Io(_)
+        | EngineError::Vault(_) => "--datadir could not be opened",
         _ => "the network could not be opened (check --dapi, --quorum-url and --peer)",
     }
 }
@@ -552,7 +553,7 @@ fn run(cli: Cli) -> Result<(), RunError> {
     )
     .map_err(|e| {
         let fixed = match e {
-            EngineError::StorageInUse(_) => "--datadir is in use by another process",
+            EngineError::StorageInUse { .. } => "--datadir is in use by another process",
             _ => "--datadir could not be opened",
         };
         setup_error(fixed)(e.to_string())
@@ -577,16 +578,15 @@ fn run_command(
 ) -> Result<(), String> {
     let result = match command {
         Command::InitVault { unencrypted } => {
-            let secret = match (unencrypted, passphrase.take()) {
-                (true, None) => None,
-                (false, Some(p)) => Some(p),
-                (true, Some(_)) => {
-                    return Err("--unencrypted and --passphrase-file are exclusive".into());
-                }
-                (false, None) => {
-                    return Err("init-vault needs --passphrase-file or --unencrypted".into());
-                }
+            let error = match (unencrypted, passphrase.is_some()) {
+                (true, true) => Some("--unencrypted and --passphrase-file are exclusive"),
+                (false, false) => Some("init-vault needs --passphrase-file or --unencrypted"),
+                _ => None,
             };
+            if let Some(message) = error {
+                return finish(engine, &session, passphrase, Err(message.into()));
+            }
+            let secret = passphrase.take();
             engine
                 .block_on(session.vault_op(move |v| v.create(secret.as_ref().map(|p| &p[..]))))
                 .map(|status| println!("vault {:?}", status.state))
@@ -1015,7 +1015,11 @@ mod tests {
         // Without a vault there is nowhere to keep the seed.
         let err = run(base(Command::Create { words: 12 }, false)).unwrap_err();
         assert!(err.to_string().contains("no vault"), "{err}");
-        assert!(run(base(Command::InitVault { unencrypted: false }, false)).is_err());
+        let err = run(base(Command::InitVault { unencrypted: false }, false)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "init-vault needs --passphrase-file or --unencrypted"
+        );
         run(base(Command::InitVault { unencrypted: false }, true)).unwrap();
         // A fresh process sees a locked vault; the passphrase file unlocks it.
         let err = run(base(Command::Create { words: 12 }, false)).unwrap_err();

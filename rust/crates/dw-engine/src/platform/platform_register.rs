@@ -441,6 +441,9 @@ async fn sign(
         rule: mine
             .filter(|&at| moves[at].holds())
             .map_or(HOLD_RULE, |at| moves[at].rule),
+        cancel_of: None,
+        exit_of: None,
+        link_conflict: false,
     };
     let paths: BTreeMap<[u8; 20], DerivationPath> = (inputs.keys())
         .map(|a| match (a, pool.get(a)) {

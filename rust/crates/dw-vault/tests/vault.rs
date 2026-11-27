@@ -25,10 +25,10 @@ fn path(s: &str) -> DerivationPath {
 }
 
 /// Public key at `p` derived straight from the seed of `secret(n)`.
-fn expected_pubkey(n: u8, p: &str) -> dashcore::secp256k1::PublicKey {
+fn expected_pubkey(n: u8, p: &str) -> dashcore::ecdsa::EcdsaPublicKey {
     let master = ExtendedPrivKey::new_master(Network::Regtest, &[n; 64]).unwrap();
     let key = master.derive_priv(&path(p)).unwrap();
-    dashcore::secp256k1::PublicKey::from_secret_key(&key.private_key)
+    key.private_key.public_key()
 }
 
 /// Encrypted vault holding wallets 1 and 2, left locked.

@@ -9,7 +9,6 @@
 
 use dashcore::blockdata::transaction::special_transaction::SpecialTransactionBasePayloadEncodable;
 use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
-use dashcore::hashes::Hash;
 
 use crate::SignerError;
 use crate::paths::owner_key_path;

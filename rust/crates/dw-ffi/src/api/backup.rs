@@ -108,14 +108,20 @@ impl From<dw_engine::EngineError> for BackupError {
             },
             E::WalletAlreadyExists(wallet_id) => Self::AlreadyExists { wallet_id },
             E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
-            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) => {
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) | E::RestoreOnly => {
                 Self::InvalidArgument { detail }
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {
-                Self::Storage { detail }
-            }
+            E::StorageInUse { .. }
+            | E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
+            | E::RetryableIo(_)
+            | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(call) => Self::NotImplemented { call },
             _ => Self::Internal { detail },
         }

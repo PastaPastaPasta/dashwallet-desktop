@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use dashcore::hashes::{Hash, HashEngine, sha256};
+use dashcore::hashes::{HashEngine, sha256};
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_appdb::{MasternodeOpRow, SharedSessionRow, SharedSessionUpdate};
 use dw_protx::shared::envelope::{

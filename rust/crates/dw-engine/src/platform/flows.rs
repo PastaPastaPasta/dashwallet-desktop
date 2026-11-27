@@ -100,6 +100,49 @@ pub enum FlowKind {
     AppDisconnect,
 }
 
+impl FlowKind {
+    /// Whether the flow spends Core coins, credits or shielded notes: the
+    /// restore's money gate refuses it while the restored mark is set
+    /// (`restore_gate`). Profile and contact writes, DashPay keys and votes
+    /// move nothing.
+    pub(crate) fn moves_funds(self) -> bool {
+        !matches!(
+            self,
+            Self::ProfileEdit
+                | Self::ContactRequest
+                | Self::Accept
+                | Self::PrivateDetails
+                | Self::EnableDashPayKeys
+                | Self::Voting
+        )
+    }
+
+    /// Whether the flow writes to Platform or spends credits or shielded
+    /// notes: refused up front in a session without Platform. Core payments
+    /// to contacts, masternode and governance transactions, and votes need
+    /// Core alone.
+    pub(crate) fn needs_platform(self) -> bool {
+        !matches!(
+            self,
+            Self::ContactPayment
+                | Self::Voting
+                | Self::MasternodeRegistration
+                | Self::KeyChange
+                | Self::SharedMasternode
+                | Self::Dissolution
+                | Self::Proposal
+        )
+    }
+
+    /// Whether the flow moves funds on Platform's side (credits, shielded
+    /// notes, or Core coins into an asset lock): a restore's Platform
+    /// residue refuses it. "Accept and pay" needs Platform for its accept,
+    /// which moves nothing; its payment is Core's.
+    pub(crate) fn moves_platform_funds(self) -> bool {
+        self.moves_funds() && self.needs_platform() && self != Self::AcceptAndPay
+    }
+}
+
 /// A lease's budgets (E0-04 §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

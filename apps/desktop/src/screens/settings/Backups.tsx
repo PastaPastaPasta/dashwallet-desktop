@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import type { CoreExportFormatName } from "../../api/generated/CoreExportFormatName";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
-import { keys, useAutomaticBackupFailures, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
+import { keys, useAutomaticBackupFailures, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useRestored, useWallets } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { chooseFilePath, fileErrorText } from "../../app/files";
 import { keptAcrossLock, useAcrossLock } from "../../app/acrossLock";
@@ -42,6 +42,7 @@ export function BackupsTab() {
   const [sheet, setSheet] = useState<BackupsSheet>(() => keptAcrossLock<Kept<unknown>>(SLOT)?.sheet ?? null);
   const [walletId, setWalletId] = useState<string | null>(null);
   const id = useId();
+  const restoreOnly = useRestored().data === true;
   const own = (wallets.data ?? []).filter((w) => !w.watchOnly);
   const chosen = own.find((w) => w.walletId === walletId) ?? own[0];
   return (
@@ -75,19 +76,21 @@ export function BackupsTab() {
         )}
       </SettingsCard>
       <AutomaticBackupsCard names={new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]))} own={own} onBackUp={(wallet) => setSheet({ kind: "backup", wallet })} />
-      <SettingsCard title="Import" testId="settings-import-card">
-        <Hint>A Dash Wallet backup, a Dash Core dumpwallet file or wallet.dat, or raw keys.</Hint>
-        <DashButton variant="plainBlue" data-testid="settings-import-file" onClick={() => setSheet({ kind: "importFile" })}>
-          Import a wallet file…
-        </DashButton>
-        <DashButton variant="plainBlue" data-testid="settings-import-keys" onClick={() => setSheet({ kind: "importKeys" })}>
-          Import keys…
-        </DashButton>
-      </SettingsCard>
+      {!restoreOnly && (
+        <SettingsCard title="Import" testId="settings-import-card">
+          <Hint>A Dash Wallet backup, a Dash Core dumpwallet file or wallet.dat, or raw keys.</Hint>
+          <DashButton variant="plainBlue" data-testid="settings-import-file" onClick={() => setSheet({ kind: "importFile" })}>
+            Import a wallet file…
+          </DashButton>
+          <DashButton variant="plainBlue" data-testid="settings-import-keys" onClick={() => setSheet({ kind: "importKeys" })}>
+            Import keys…
+          </DashButton>
+        </SettingsCard>
+      )}
       {sheet?.kind === "backup" && <BackupSheet wallet={sheet.wallet} onClose={() => setSheet(null)} />}
       {sheet?.kind === "export" && <ExportSheet wallet={sheet.wallet} onClose={() => setSheet(null)} />}
-      {sheet?.kind === "importFile" && <ImportFileSheet onClose={() => setSheet(null)} />}
-      {sheet?.kind === "importKeys" && <ImportKeysSheet onClose={() => setSheet(null)} />}
+      {sheet?.kind === "importFile" && !restoreOnly && <ImportFileSheet onClose={() => setSheet(null)} />}
+      {sheet?.kind === "importKeys" && !restoreOnly && <ImportKeysSheet onClose={() => setSheet(null)} />}
     </>
   );
 }

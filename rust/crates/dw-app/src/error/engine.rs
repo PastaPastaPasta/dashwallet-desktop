@@ -17,6 +17,10 @@ codes! {
         StorageInUse = "storage_in_use",
         Storage = "storage",
         StorageTooNew = "storage_too_new",
+        StorageRefused = "storage_refused",
+        StorageNotPrivate = "storage_not_private",
+        StorageRestore = "storage_restore",
+        StorageRetry = "storage_retry",
         WalletNotFound = "wallet_not_found",
         InvalidMnemonic = "invalid_mnemonic",
         WalletAlreadyExists = "wallet_already_exists",
@@ -48,6 +52,8 @@ codes! {
         StuckFunding = "stuck_funding",
         ShieldedSpendUnresolved = "shielded_spend_unresolved",
         LastStartupWallet = "last_startup_wallet",
+        Restored = "restored",
+        RestoreOnly = "restore_only",
     }
 }
 
@@ -141,9 +147,49 @@ impl From<EngineError> for AppError {
             E::InvalidConfig(_) => (EngineCode::InvalidConfig.into(), None),
             E::InvalidArgument(_) => (EngineCode::InvalidArgument.into(), None),
             E::NetworkNotOpen(_) => (EngineCode::NetworkNotOpen.into(), None),
-            E::StorageInUse(_) => (EngineCode::StorageInUse.into(), None),
+            E::StorageInUse { retryable, .. } => (
+                EngineCode::StorageInUse.into(),
+                Some(ErrorData::StorageInUse { retryable }),
+            ),
             E::Storage(_) => (EngineCode::Storage.into(), None),
             E::StorageTooNew(_) => (EngineCode::StorageTooNew.into(), None),
+            E::StoreRefused(r) => {
+                let folder = r.folder.display().to_string();
+                (
+                    EngineCode::StorageRefused.into(),
+                    Some(ErrorData::StoreRefused {
+                        screen: Box::new(super::StoreScreen::new(&r.screen, &folder)),
+                        folder,
+                        cause: r.cause.into(),
+                    }),
+                )
+            }
+            E::DataFolderNotPrivate { folder, reason, .. } => (
+                EngineCode::StorageNotPrivate.into(),
+                Some(ErrorData::NotPrivate {
+                    folder: folder.display().to_string(),
+                    reason: reason.into(),
+                }),
+            ),
+            E::StoreRestore(r) => (
+                EngineCode::StorageRestore.into(),
+                Some(ErrorData::Restore {
+                    state: r.state.into(),
+                    cause: r.cause.into(),
+                    needed_bytes: r.needed_bytes,
+                    folder: r.folder.display().to_string(),
+                }),
+            ),
+            E::StoreRetry(r) => (
+                EngineCode::StorageRetry.into(),
+                Some(ErrorData::Retry {
+                    folder: r.folder.display().to_string(),
+                }),
+            ),
+            E::RetryableIo(_) => (
+                EngineCode::Io.into(),
+                Some(ErrorData::Io { retryable: true }),
+            ),
             E::WalletNotFound(_) => (EngineCode::WalletNotFound.into(), None),
             E::InvalidMnemonic(_) => (EngineCode::InvalidMnemonic.into(), None),
             E::WalletAlreadyExists(_) => (EngineCode::WalletAlreadyExists.into(), None),
@@ -169,7 +215,15 @@ impl From<EngineError> for AppError {
             ),
             E::SpvNotRunning => (EngineCode::SpvNotRunning.into(), None),
             E::ShieldedSpendUnresolved => (EngineCode::ShieldedSpendUnresolved.into(), None),
+            E::ShieldedSpendHeld(hold) => (
+                EngineCode::ShieldedSpendUnresolved.into(),
+                Some(ErrorData::ShieldedHold {
+                    reason: hold.into(),
+                }),
+            ),
             E::LastStartupWallet => (EngineCode::LastStartupWallet.into(), None),
+            E::Restored => (EngineCode::Restored.into(), None),
+            E::RestoreOnly => (EngineCode::RestoreOnly.into(), None),
             E::SpvRunning => (EngineCode::SpvRunning.into(), None),
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
             E::RescanInterrupted => (EngineCode::RescanInterrupted.into(), None),
@@ -245,6 +299,203 @@ mod tests {
 
     use super::*;
 
+    use dw_engine::store_upgrade::copy::{BackupState, ProvedState, RefusedCause, RefusedScreen};
+    use dw_engine::store_upgrade::{
+        RestoreFailure, RestoreState, RetryFailure, StoreRefusal, StoreUpgradeStage,
+    };
+
+    /// A migrated development-build file with a verified backup: the
+    /// refusal that offers Restore earlier data.
+    fn refusal() -> StoreRefusal {
+        let state = ProvedState {
+            migrated: Some(true),
+            backup: Some(BackupState::Verified),
+            unchanged: Some(true),
+        };
+        StoreRefusal {
+            screen: RefusedScreen::new(RefusedCause::DevBuild, state),
+            folder: std::path::PathBuf::from("/data/regtest"),
+            cause: "PreHistoryFork",
+            stage: StoreUpgradeStage::Prepare,
+            detail: "the file records the fork migration in upstream's history".into(),
+        }
+    }
+
+    fn refused_json(r: StoreRefusal) -> serde_json::Value {
+        let e =
+            serde_json::to_value(AppError::from(EngineError::StoreRefused(Box::new(r)))).unwrap();
+        assert_eq!(e["code"], "storage_refused");
+        e["data"].clone()
+    }
+
+    /// A store refusal rides in data as the store upgrade's own screen,
+    /// `{folder}` filled in, with the folder and the cause's name: its text
+    /// the four lines of `RefusedScreen::text`, its text key the way out's.
+    #[test]
+    fn a_store_refusal_rides_in_data_as_its_screen() {
+        let r = refusal();
+        let screen = r.screen.clone();
+        let button = |key: &str, label: &str| serde_json::json!({ "key": key, "label": label, "destructive": false, "defaultFocus": false });
+        let line = |key: &str, text: &str| serde_json::json!({ "key": key, "text": text.replace("{folder}", "/data/regtest") });
+        let data = refused_json(r);
+        assert_eq!(
+            data,
+            serde_json::json!({
+                "kind": "storeRefused",
+                "screen": {
+                    "titleKey": "storeUpgrade.refused.title",
+                    "title": "Dash Wallet can't open this wallet data safely",
+                    "textKey": "storeUpgrade.refused.wayOut.restore",
+                    "text": screen.text("/data/regtest"),
+                    "lines": [
+                        line("storeUpgrade.refused.intro", screen.intro.text),
+                        line("storeUpgrade.refused.detail.devBuild", screen.detail.text),
+                        line("storeUpgrade.refused.unchanged", screen.unchanged.text),
+                        line("storeUpgrade.refused.wayOut.restore", screen.way_out_line.text),
+                    ],
+                    "buttons": [
+                        button("storeUpgrade.refused.restore", "Restore earlier data"),
+                        button("storeUpgrade.refused.report", "Report a problem"),
+                        button("storeUpgrade.refused.quit", "Quit"),
+                    ],
+                    "hint": {
+                        "key": "settings.about.links.issuesHint",
+                        "text": dw_engine::store_upgrade::copy::ISSUES_HINT.text,
+                    },
+                },
+                "folder": "/data/regtest",
+                "cause": "PreHistoryFork",
+            })
+        );
+        let text = data["screen"]["text"].as_str().unwrap();
+        assert!(text.starts_with(
+            "This version of Dash Wallet can't safely open the wallet data in /data/regtest: "
+        ));
+        assert!(!text.contains("{folder}"));
+        let lines: Vec<&str> = (data["screen"]["lines"].as_array().unwrap().iter())
+            .map(|l| l["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            format!("{}: {}", lines[0], lines[1..].join(" ")),
+            text,
+            "the text is its lines joined"
+        );
+    }
+
+    /// A data root others can change rides in data as the folder and why,
+    /// each reason by its camelCase name.
+    #[test]
+    fn a_data_folder_not_private_rides_in_data() {
+        use dw_fs::InsecureReason as R;
+        for (reason, name) in [
+            (R::GroupWritable, "groupWritable"),
+            (R::OtherWritable, "otherWritable"),
+            (R::OtherOwner, "otherOwner"),
+        ] {
+            let e = serde_json::to_value(AppError::from(EngineError::DataFolderNotPrivate {
+                folder: "/home/u/dash".into(),
+                reason,
+                detail: "x".into(),
+            }))
+            .unwrap();
+            assert_eq!(e["code"], "storage_not_private");
+            assert_eq!(
+                e["data"],
+                serde_json::json!({ "kind": "notPrivate", "folder": "/home/u/dash", "reason": name })
+            );
+        }
+    }
+
+    /// An upgrade that stopped on the machine rides as `storage_retry` with
+    /// the folder alone: the renderer's retry screen has no other input.
+    #[test]
+    fn a_stopped_upgrade_rides_as_storage_retry() {
+        let e = serde_json::to_value(AppError::from(EngineError::StoreRetry(Box::new(
+            RetryFailure {
+                folder: "/data/regtest".into(),
+                detail: "disk full".into(),
+            },
+        ))))
+        .unwrap();
+        assert_eq!(e["code"], "storage_retry");
+        assert_eq!(
+            e["data"],
+            serde_json::json!({ "kind": "retry", "folder": "/data/regtest" })
+        );
+    }
+
+    /// A restore that stopped the open rides as `storage_restore` with its
+    /// state, cause, the space it needs and the folder (DTO v3).
+    #[test]
+    fn a_stopped_restore_rides_as_storage_restore() {
+        for (state, name, cause, needed) in [
+            (RestoreState::Refused, "refused", "missingBackup", None),
+            (
+                RestoreState::NoSpace,
+                "noSpace",
+                "diskFull",
+                Some(2_147_483_648u64),
+            ),
+            (
+                RestoreState::NotStarted,
+                "notStarted",
+                "permissionDenied",
+                None,
+            ),
+            (RestoreState::Incomplete, "incomplete", "other", None),
+            (RestoreState::Foreign, "foreign", "otherLineage", None),
+        ] {
+            let e = serde_json::to_value(AppError::from(EngineError::StoreRestore(Box::new(
+                RestoreFailure {
+                    state,
+                    cause,
+                    needed_bytes: needed,
+                    folder: "/data/regtest".into(),
+                    detail: "x".into(),
+                },
+            ))))
+            .unwrap();
+            assert_eq!(e["code"], "storage_restore");
+            assert_eq!(
+                e["data"],
+                serde_json::json!({
+                    "kind": "restore",
+                    "state": name,
+                    "cause": cause,
+                    "neededBytes": needed,
+                    "folder": "/data/regtest",
+                })
+            );
+        }
+    }
+
+    /// `storage_in_use` carries the engine's own `retryable`: true for a
+    /// store a clean close releases, false for one held until a restart;
+    /// the store upgrade's machine failures are `io`, retryable, never a
+    /// refusal.
+    #[test]
+    fn storage_in_use_and_retryable_io_ride_in_data() {
+        for retryable in [true, false] {
+            let e = serde_json::to_value(AppError::from(EngineError::StorageInUse {
+                detail: "x".into(),
+                retryable,
+            }))
+            .unwrap();
+            assert_eq!(e["code"], "storage_in_use");
+            assert_eq!(
+                e["data"],
+                serde_json::json!({ "kind": "storageInUse", "retryable": retryable })
+            );
+        }
+        let e = serde_json::to_value(AppError::from(EngineError::RetryableIo("disk full".into())))
+            .unwrap();
+        assert_eq!(e["code"], "io");
+        assert_eq!(
+            e["data"],
+            serde_json::json!({ "kind": "io", "retryable": true })
+        );
+    }
+
     /// Every `EngineError` variant maps to the code string its `code()`
     /// names; a nested domain (`vault`, `signer`, `send`, …) maps to a code
     /// inside that domain's namespace.
@@ -256,9 +507,30 @@ mod tests {
             E::InvalidConfig(s()),
             E::InvalidArgument(s()),
             E::NetworkNotOpen(s()),
-            E::StorageInUse(s()),
+            E::StorageInUse {
+                detail: s(),
+                retryable: true,
+            },
             E::Storage(s()),
             E::StorageTooNew(s()),
+            E::StoreRefused(Box::new(refusal())),
+            E::DataFolderNotPrivate {
+                folder: "/data".into(),
+                reason: dw_fs::InsecureReason::GroupWritable,
+                detail: s(),
+            },
+            E::StoreRestore(Box::new(RestoreFailure {
+                state: RestoreState::Refused,
+                cause: "missingBackup",
+                needed_bytes: None,
+                folder: "/data".into(),
+                detail: s(),
+            })),
+            E::StoreRetry(Box::new(RetryFailure {
+                folder: "/data".into(),
+                detail: s(),
+            })),
+            E::RetryableIo(s()),
             E::WalletNotFound(s()),
             E::InvalidMnemonic(s()),
             E::WalletAlreadyExists(s()),
@@ -293,7 +565,10 @@ mod tests {
             E::OutpointNotFound(dashcore::OutPoint::null()),
             E::StuckFunding(dw_engine::platform::lease::StuckFundingRefusal::NoMarker),
             E::ShieldedSpendUnresolved,
+            E::ShieldedSpendHeld(dw_engine::ShieldedHold::CarriedOver),
             E::LastStartupWallet,
+            E::Restored,
+            E::RestoreOnly,
         ];
         // Every code of `EngineCode` is one of these (the one-to-one check).
         let mut seen: Vec<&str> = Vec::new();

@@ -146,3 +146,12 @@ and the lock file are left out.
 To regenerate, add a test to `rust/crates/dw-engine/src/parked.rs` at `v0.1.0` that does the above with that file's
 `engine_wallet`, `coinjoin_address`, `pays` and `confirmed_coin`, closes the network, and copies `<data_root>`
 here.
+
+## `c3-legacy/`
+
+Wallet stores whose open at a published fork build dropped unsigned pending claims into
+`core_dropped_unsigned_spends`, one directory per pin (`c5917e6bd`, `v030-373342cb3`), for
+`tests/c3_legacy_recheck.rs`. Each pin's build wrote them from the v0.3.0 release's regtest store through its own drop
+path; `PROVENANCE.md` beside them gives the generator, the commands, the rows and the reads.
+`wallet-corrupt-blob.sqlite` is a labelled hand-made copy with one record blob made unreadable. `SHA256SUMS` lists
+these files, and the tests check each file against it before use.

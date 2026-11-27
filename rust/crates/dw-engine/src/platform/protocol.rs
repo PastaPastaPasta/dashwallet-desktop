@@ -3,7 +3,7 @@
 //! gate) and for `NetworkSession::protocol_compatibility` (`startup.rs`).
 //!
 //! The SDK starts at the network's floor (`dash_sdk::sdk::min_protocol_version`,
-//! 13 for mainnet and testnet at the pin) or the session's
+//! 14 on every network at the pin) or the session's
 //! `initial_protocol_version`, and every proof-verified response's metadata
 //! ratchets it up to at most `PlatformVersion::latest()`. [`NetworkSession::protocol_version`]
 //! reads that clamped value offline; [`NetworkSession::refresh_protocol_version`]

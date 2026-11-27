@@ -24,13 +24,12 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use dashcore::blockdata::script::{Builder, PushBytesBuf, ScriptBuf};
 use dashcore::blockdata::transaction::Transaction;
-use dashcore::crypto::ecdsa;
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::{self, Message};
+use dashcore::crypto::ecdsa::{self, EcdsaPublicKey};
 use dashcore::sighash::{EcdsaSighashType, SighashCache};
 use dashcore::{Address, Network, PubkeyHash, Txid};
 use key_wallet::Signer;
 use key_wallet::bip32::{DerivationPath, Fingerprint};
+use secp256k1::Message;
 
 pub mod psbt;
 pub use psbt::{PartiallySignedTransaction, PsbtSighashType, SigKey, XpubKey};
@@ -116,7 +115,7 @@ pub struct InputData {
     pub prev_tx: Transaction,
     /// The key that signs it, when the wallet knows it: compressed public
     /// key, master fingerprint and full derivation path.
-    pub derivation: Option<(secp256k1::PublicKey, Fingerprint, DerivationPath)>,
+    pub derivation: Option<(EcdsaPublicKey, Fingerprint, DerivationPath)>,
 }
 
 /// Builds dash-qt's "Create Unsigned" PSBT: `tx` with empty scriptSigs, each
@@ -125,7 +124,7 @@ pub struct InputData {
 pub fn create_unsigned(
     mut tx: Transaction,
     inputs: Vec<InputData>,
-    outputs: Vec<Option<(secp256k1::PublicKey, Fingerprint, DerivationPath)>>,
+    outputs: Vec<Option<(EcdsaPublicKey, Fingerprint, DerivationPath)>>,
 ) -> Result<PartiallySignedTransaction, PsbtError> {
     if inputs.len() != tx.input.len() || outputs.len() != tx.output.len() {
         return Err(PsbtError::Invalid(
@@ -140,12 +139,12 @@ pub fn create_unsigned(
     for (input, data) in psbt.inputs.iter_mut().zip(inputs) {
         input.non_witness_utxo = Some(data.prev_tx);
         if let Some((pk, fp, path)) = data.derivation {
-            input.bip32_derivation.insert(pk, (fp, path));
+            input.bip32_derivation.insert(pk.into(), (fp, path));
         }
     }
     for (output, data) in psbt.outputs.iter_mut().zip(outputs) {
         if let Some((pk, fp, path)) = data {
-            output.bip32_derivation.insert(pk, (fp, path));
+            output.bip32_derivation.insert(pk.into(), (fp, path));
         }
     }
     check_utxos(&psbt)?;
@@ -367,15 +366,20 @@ pub async fn sign<S: Signer>(
                 detail: format!("the key at {path} does not pay this input"),
             });
         }
-        secp256k1::ecdsa::verify(&sig, Message::from_digest(digest), &pk.inner).map_err(|e| {
-            PsbtError::Signing {
+        let sig = secp256k1::ecdsa::Signature::from(sig);
+        secp256k1::ecdsa::verify(&sig, Message::from_digest(digest), &pk.inner.into()).map_err(
+            |e| PsbtError::Signing {
                 index,
                 detail: format!("signature does not verify: {e}"),
-            }
-        })?;
-        psbt.inputs[index]
-            .partial_sigs
-            .insert(SigKey(pk), ecdsa::Signature { sig, hash_ty });
+            },
+        )?;
+        psbt.inputs[index].partial_sigs.insert(
+            SigKey(pk),
+            ecdsa::Signature {
+                signature: sig,
+                sighash_type: hash_ty,
+            },
+        );
         signed += 1;
     }
     Ok(signed)

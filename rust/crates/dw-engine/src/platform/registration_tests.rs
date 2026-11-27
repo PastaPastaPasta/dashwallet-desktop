@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::version::PlatformVersion;
 use dpp::version::v13::PROTOCOL_VERSION_13;
@@ -584,6 +583,23 @@ enum IdentityAttempt {
     ReleasedThenUnavailable,
     /// The height caught up at the second attempt: created.
     RetriedThenCreated,
+    /// The transition was released and submitted, and the library's wait
+    /// ended unconfirmed (`StateTransitionResultUnconfirmed`); `retried`:
+    /// under the SDK's retry envelope. Nothing landed.
+    ReleasedThenUnconfirmed { retried: bool },
+}
+
+/// The SDK's unconfirmed outcome, as a wait that gave up returns it,
+/// under its retry envelope when `retried`.
+fn unconfirmed(retried: bool) -> dash_sdk::Error {
+    let e = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+        dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+    ));
+    if retried {
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e))
+    } else {
+        e
+    }
 }
 
 /// The tap's report of the lock `outpoint`, as the journal builds it: its
@@ -1000,6 +1016,10 @@ impl RegistrationLib for Fake {
                 permit.note_released();
                 permit.note_released();
             }
+            Some(IdentityAttempt::ReleasedThenUnconfirmed { retried }) => {
+                permit.note_released();
+                return Err(PlatformError::from(unconfirmed(retried)));
+            }
             None => permit.note_released(),
         }
         let id = self.create_identity(outpoint, index);
@@ -1208,6 +1228,12 @@ impl RegistrationLib for Fake {
             Some(ClaimScript::DuplicateKeys) => {
                 permit.note_released();
                 return Err(ClaimError::DuplicateKeys);
+            }
+            Some(ClaimScript::ReleasedThenUnconfirmed { retried }) => {
+                permit.note_released();
+                return Err(ClaimError::Failed(PlatformError::from(unconfirmed(
+                    retried,
+                ))));
             }
             Some(ClaimScript::OtherAppearsThenUnavailable) => {
                 self.w().identities.push((index, invitation::OTHER.into()));
@@ -3366,6 +3392,8 @@ async fn build_and_track(
     let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
     let lock = OutPoint::new(tx.txid(), 0);
     let tracked = platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: lock,
         transaction: tx,
         account_index: 0,
@@ -3529,6 +3557,8 @@ fn built_lock(lock: OutPoint, coin: OutPoint) -> platform_wallet::TrackedAssetLo
         special_transaction_payload: None,
     };
     platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: lock,
         transaction,
         account_index: 0,
@@ -4348,7 +4378,8 @@ fn an_unknown_outcome_after_the_identity_does_not_settle() {
     let unknown = PlatformError::BroadcastUnknown {
         artifact: "st".into(),
     };
-    for error in [PlatformError::Timeout, unknown.clone()] {
+    let sdk_unconfirmed = PlatformError::from(unconfirmed(false));
+    for error in [PlatformError::Timeout, unknown.clone(), sdk_unconfirmed] {
         let f = fixture(false);
         let lib = f.fake();
         lib.w().name_error = Some(NameError::Platform(error.clone()));
@@ -4530,6 +4561,8 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
         wallet.state_mut().await.tracked_asset_locks.insert(
             lock,
             platform_wallet::TrackedAssetLock {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: lock,
                 transaction,
                 account_index: 0,

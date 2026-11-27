@@ -521,6 +521,8 @@ pub struct ConnectSheet {
     /// Approving it again with this choice reuses them.
     pub earlier_approval: Option<ConnectChoice>,
     pub block_time_ms: u64,
+    /// The digest of the group facts the bindings show.
+    pub groups: [u8; 32],
 }
 
 /// What an approval of `choice` costs and the grant it needs: an
@@ -530,6 +532,9 @@ pub struct ConnectQuote {
     pub request: [u8; 20],
     /// The digest of what this quote read.
     pub plan: [u8; 32],
+    /// The digest of the group facts this quote read: a sheet showing
+    /// others reads the request again.
+    pub groups: [u8; 32],
     /// The grant's credit bound: the update and up to three sends.
     pub max_credits: u64,
     /// What the login costs at most: the update and one send.
@@ -846,6 +851,23 @@ pub(crate) struct DisconnectConflictInfo {
     /// re-quoted Disconnect for this record signs at `k` while admissible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) nonce: Option<u64>,
+    /// Proved identity nonce tip observed when `nonce: Some(k)` was persisted.
+    /// Every skip past `k` (transfers, withdrawals, other apps' Disconnects,
+    /// and Approve G1's `k <= tip` allowance) refuses `Unavailable` when the
+    /// current read's tip is below `observed_tip` or when `observed_tip` is
+    /// `None` (fail closed), so a lagging read cannot allocate a nonce already
+    /// consumed by the conflicting update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observed_tip: Option<u64>,
+    /// Proved Platform block height (`max(id_height, nonce_height)`) of the
+    /// read that proved the conflict when `nonce: Some(k)` was persisted.
+    /// Because `read_consistent_state` reads the nonce before the identity,
+    /// `observed_tip` can come from a nonce read older than the identity read
+    /// that observed the conflicting revision bump. Every skip past `k` must
+    /// also require the current nonce read's height to be `>= observed_height`
+    /// (failing closed when `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observed_height: Option<u64>,
 }
 
 /// Whether the sign-in `loginKeyResponse` document was provably never sent,
@@ -936,15 +958,18 @@ impl PendingSends {
         hint: Option<Identifier>,
     ) -> Option<Identifier> {
         let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(id) = hint
-            && map.contains_key(&(wallet, id, request))
-        {
-            return Some(id);
+        if let Some(id) = hint {
+            return map.contains_key(&(wallet, id, request)).then_some(id);
         }
-        map.keys()
+        let mut matches = map
+            .keys()
             .filter(|(w, _, r)| *w == wallet && *r == request)
-            .map(|(_, id, _)| *id)
-            .min()
+            .map(|(_, id, _)| *id);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first)
     }
 
     fn take_for(
@@ -1143,6 +1168,9 @@ pub(crate) async fn sheet(
         parse_identity(&c.identity).is_ok_and(|id| identities.iter().any(|i| i.id == id))
     });
     let facts = request_facts(net, request).await?;
+    let groups = plan::groups_digest(&facts.groups).ok_or(PlatformError::Internal {
+        detail: "app connect groups".into(),
+    })?;
     let (_, block_time_ms, _) = net.identity(first.id).await?;
     check_age(request, block_time_ms)?;
     let bindings = (request.auth_bindings.iter().enumerate())
@@ -1174,6 +1202,7 @@ pub(crate) async fn sheet(
         max_funding_limit: MAX_FUNDING,
         earlier_approval,
         block_time_ms,
+        groups,
     })
 }
 
@@ -1185,6 +1214,7 @@ struct Prepared {
     terms: ConnectTerms,
     budgets: Vec<u64>,
     groups: BTreeMap<Identifier, Option<GroupFacts>>,
+    groups_digest: [u8; 32],
     encryption: Vec<EncPlan>,
     digest: [u8; 32],
 }
@@ -1419,6 +1449,9 @@ async fn prepare(
     .ok_or(PlatformError::Internal {
         detail: "app connect plan".into(),
     })?;
+    let groups_digest = plan::groups_digest(&facts.groups).ok_or(PlatformError::Internal {
+        detail: "app connect groups".into(),
+    })?;
     Ok(Prepared {
         identity,
         index: candidate.index,
@@ -1426,6 +1459,7 @@ async fn prepare(
         terms: choice.terms,
         budgets,
         groups: facts.groups,
+        groups_digest,
         encryption,
         digest,
     })
@@ -1442,6 +1476,7 @@ pub(crate) async fn quote(
     Ok(ConnectQuote {
         request: link.request.request_hash(),
         plan: p.digest,
+        groups: p.groups_digest,
         max_credits: CONNECT_MAX_CREDITS,
         fee: CONNECT_FEE_CREDITS,
         budgets: p.budgets,
@@ -1673,6 +1708,19 @@ fn reserved_nonce_on_retire(
     if proven_spent { None } else { Some(k) }
 }
 
+/// Whether an unresolved Disconnect nonce on an identity belongs to a live
+/// `pending_disconnect` (still able to modify keys/revision) or a retired
+/// conflict reservation (stale-revision dead bytes that can only consume
+/// their own nonce `k` via a paid bump).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisconnectNonceKind {
+    Pending,
+    Reserved {
+        observed_tip: Option<u64>,
+        observed_height: Option<u64>,
+    },
+}
+
 /// All unresolved Disconnect nonces (both active `pending_disconnect` and
 /// retired-conflict `last_conflict.nonce` reservations) and transition hashes
 /// persisted for `(wallet, identity)`, used by cross-flow nonce ownership
@@ -1682,7 +1730,7 @@ pub(crate) async fn pending_disconnects_for_identity(
     session: &NetworkSession,
     wallet: WalletId,
     identity: Identifier,
-) -> Result<Vec<(u64, String)>, PlatformError> {
+) -> Result<Vec<(u64, String, DisconnectNonceKind)>, PlatformError> {
     let owner = b58(&identity);
     Ok(records(session, wallet)
         .await?
@@ -1690,11 +1738,22 @@ pub(crate) async fn pending_disconnects_for_identity(
         .filter(|r| r.identity == owner)
         .flat_map(|r| {
             let pending_nonce = r.pending_disconnect.as_ref().map(|p| p.nonce);
-            let pending = r.pending_disconnect.map(|p| (p.nonce, p.transition_hash));
+            let pending = r
+                .pending_disconnect
+                .map(|p| (p.nonce, p.transition_hash, DisconnectNonceKind::Pending));
             let reserved = r.last_conflict.and_then(|c| {
-                c.nonce
-                    .filter(|&n| pending_nonce != Some(n))
-                    .map(|n| (n, c.transition_hash))
+                let observed_tip = c.observed_tip;
+                let observed_height = c.observed_height;
+                c.nonce.filter(|&n| pending_nonce != Some(n)).map(|n| {
+                    (
+                        n,
+                        c.transition_hash,
+                        DisconnectNonceKind::Reserved {
+                            observed_tip,
+                            observed_height,
+                        },
+                    )
+                })
             });
             pending.into_iter().chain(reserved)
         })
@@ -1738,6 +1797,8 @@ pub(crate) async fn clear_spent_conflict_nonces(
             && !super::withdrawal::takes(nonce_state, k, identity)
         {
             c.nonce = None;
+            c.observed_tip = None;
+            c.observed_height = None;
             changed = true;
             cleared.push(k);
         }
@@ -1912,7 +1973,8 @@ pub(crate) async fn approve(
     // Never overwrite or drop an unconfirmed Disconnect for this (identity, request).
     let req_hex = hex::encode(request_hash);
     let owner_b58 = b58(&id);
-    if records(session, wallet_id).await?.iter().any(|r| {
+    let all_records = records(session, wallet_id).await?;
+    if all_records.iter().any(|r| {
         r.identity == owner_b58
             && r.request == req_hex
             && (r.pending_disconnect.is_some()
@@ -1922,8 +1984,73 @@ pub(crate) async fn approve(
             failure: ConnectFailure::NotConfirmed,
         });
     }
+    // Never let an SDK-cached `update_identity` for another app take a nonce
+    // held by a live pending Disconnect or an ahead-of-tip conflict reservation
+    // on this identity (r4712173000 / G1). For a retired reservation at
+    // `k <= tip` (a missing-nonce gap), the SDK's nonce cache could hand out
+    // `cached + 1 == k`, in which case whichever lands first consumes `k`, the
+    // other is refused for free (duplicate nonce / no fee), and the cost is
+    // liveness only.
+    let mut other_live_pendings: Vec<u64> = Vec::new();
+    let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
+    for r in all_records
+        .iter()
+        .filter(|r| r.identity == owner_b58 && r.request != req_hex)
+    {
+        let pending_nonce = r.pending_disconnect.as_ref().map(|p| p.nonce);
+        if let Some(n) = pending_nonce {
+            other_live_pendings.push(n);
+        }
+        if let Some(c) = r.last_conflict.as_ref()
+            && let Some(n) = c.nonce
+            && pending_nonce != Some(n)
+        {
+            other_reserved_nonces.push((n, c.observed_tip, c.observed_height));
+        }
+    }
+    if !other_live_pendings.is_empty() || !other_reserved_nonces.is_empty() {
+        let (nonce_state, nonce_height) = net.identity_nonce(id).await?;
+        let tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
+        for d_nonce in other_live_pendings {
+            if super::withdrawal::takes(nonce_state, d_nonce, id) {
+                return Err(ConnectError::Failed {
+                    failure: ConnectFailure::PendingWrite,
+                });
+            }
+            if d_nonce > tip {
+                return Err(PlatformError::Unavailable.into());
+            }
+        }
+        let mut had_spent_reservation = false;
+        for (reserved_k, observed_tip, observed_height) in other_reserved_nonces {
+            if reserved_k > tip {
+                if super::withdrawal::takes(nonce_state, reserved_k, id) {
+                    return Err(ConnectError::Failed {
+                        failure: ConnectFailure::PendingWrite,
+                    });
+                }
+                return Err(PlatformError::Unavailable.into());
+            }
+            if super::withdrawal::takes(nonce_state, reserved_k, id) {
+                if observed_tip.is_none_or(|obs| tip < obs)
+                    || observed_height.is_none_or(|obs_h| nonce_height < obs_h)
+                {
+                    return Err(PlatformError::Unavailable.into());
+                }
+            } else {
+                had_spent_reservation = true;
+            }
+        }
+        if had_spent_reservation {
+            clear_spent_conflict_nonces(session, wallet_id, id, nonce_state).await;
+        }
+    }
     let p = prepare(net, session, wallet_id, link, choice).await?;
     check_grant(session, wallet_id, &grant, request_hash, p.digest).await?;
+    // Mandatory SDK cache refresh before redeeming the grant or signing an
+    // SDK cache-backed IdentityUpdate (r4712172979): a failed cache refresh
+    // refuses with nothing signed and the grant unused.
+    net.refresh_cache(wallet, id).await?;
     let master = master_key(&p.identity).ok_or(PlatformError::from(
         super::errors::IdentityError::KeysMissing {
             purpose: super::identity::KeyPurpose::Authentication,
@@ -1981,10 +2108,6 @@ pub(crate) async fn approve(
             update.finish(false);
             return Err(e);
         }
-        if let Err(e) = net.refresh(wallet, id).await {
-            update.finish(false);
-            return Err(e.into());
-        }
         put_record(session, wallet_id, record.clone()).await?;
         let signer = ConnectUpdateSigner {
             master: update
@@ -2024,7 +2147,7 @@ pub(crate) async fn approve(
         seal.finish(sealed.is_ok());
         sealed?
     };
-    let (fresh, _) = net.refresh(wallet, id).await?;
+    let fresh = net.refresh_cache(wallet, id).await?;
     let doc_key = response_signer_key(&lease, &fresh, p.index)?.ok_or(ConnectError::Failed {
         failure: ConnectFailure::NoResponseKey,
     })?;
@@ -2111,9 +2234,9 @@ async fn confirm(
             tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
         }
         if net
-            .refresh(wallet, id)
+            .refresh_cache(wallet, id)
             .await
-            .is_ok_and(|(i, _)| landed(&i, add, disable))
+            .is_ok_and(|i| landed(&i, add, disable))
         {
             return true;
         }
@@ -2911,17 +3034,23 @@ pub(crate) async fn disconnect(
         .ok_or_else(|| PlatformError::InvalidArgument {
             detail: "unknown app connection".into(),
         })?;
-    let other_pending_nonces: Vec<u64> = all_records
+    let mut other_live_pendings: Vec<u64> = Vec::new();
+    let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
+    for r in all_records
         .iter()
         .filter(|r| r.identity == owner && r.request != request)
-        .flat_map(|r| {
-            r.pending_disconnect
-                .as_ref()
-                .map(|p| p.nonce)
-                .into_iter()
-                .chain(r.last_conflict.as_ref().and_then(|c| c.nonce))
-        })
-        .collect();
+    {
+        let pending_nonce = r.pending_disconnect.as_ref().map(|p| p.nonce);
+        if let Some(n) = pending_nonce {
+            other_live_pendings.push(n);
+        }
+        if let Some(c) = r.last_conflict.as_ref()
+            && let Some(n) = c.nonce
+            && pending_nonce != Some(n)
+        {
+            other_reserved_nonces.push((n, c.observed_tip, c.observed_height));
+        }
+    }
     let granted_max_credits =
         check_disconnect_grant(session, wallet_id, &grant, id, request_hash).await?;
     // Hold (do not cancel yet) any parked login response for THIS identity
@@ -2945,6 +3074,8 @@ pub(crate) async fn disconnect(
             && !super::withdrawal::takes(nonce_state, k, id)
         {
             c.nonce = None;
+            c.observed_tip = None;
+            c.observed_height = None;
             session.withdrawal_nonces.advance_floor(id, k);
         }
     }
@@ -3035,6 +3166,8 @@ pub(crate) async fn disconnect(
             );
             let reserved =
                 reserved_nonce_on_retire(pending.nonce, nonce_state, id_height, nonce_height, id);
+            let observed_tip = reserved.map(|_| nonce_state & IDENTITY_NONCE_VALUE_FILTER);
+            let observed_height = reserved.map(|_| id_height.max(nonce_height));
             if reserved.is_none() {
                 session.withdrawal_nonces.advance_floor(id, pending.nonce);
             }
@@ -3043,8 +3176,11 @@ pub(crate) async fn disconnect(
                 transition_hash: pending.transition_hash,
                 observed_debit,
                 nonce: reserved,
+                observed_tip,
+                observed_height,
             });
             let _ = put_record(session, wallet_id, record).await;
+            session.vault.revoke_grant(&grant);
             return Err(ConnectError::Failed {
                 failure: ConnectFailure::DisconnectConflict,
             });
@@ -3082,8 +3218,11 @@ pub(crate) async fn disconnect(
                     transition_hash: pending.transition_hash,
                     observed_debit,
                     nonce: None,
+                    observed_tip: None,
+                    observed_height: None,
                 });
                 let _ = put_record(session, wallet_id, record).await;
+                session.vault.revoke_grant(&grant);
                 return Err(ConnectError::Failed {
                     failure: ConnectFailure::DisconnectConflict,
                 });
@@ -3141,6 +3280,28 @@ pub(crate) async fn disconnect(
                     });
                 }
                 return Err(refusal);
+            }
+
+            if let Err(e) = session.check_funds_gate(wallet_id, FlowKind::AppDisconnect) {
+                if confirm_disabled(net, wallet, id, &record, &pending.keys).await {
+                    session.withdrawal_nonces.advance_floor(id, pending.nonce);
+                    let response_may_have_landed =
+                        reconcile_response_delivery(net, &mut record, request_hash, id).await;
+                    record.pending_disconnect = None;
+                    record.last_conflict = None;
+                    if !verified.has_absent && pending.keys.len() == verified.to_disable.len() {
+                        record.state = RecordState::Disconnected;
+                    }
+                    if let Err(e) = put_record(session, wallet_id, record).await {
+                        tracing::warn!("app connect record after disconnect: {}", e.code());
+                    }
+                    return Ok(DisconnectDone {
+                        identity: owner,
+                        keys_disabled: pending.keys,
+                        response_may_have_landed,
+                    });
+                }
+                return Err(PlatformError::from(e).into());
             }
 
             if let Ok(bytes) = hex::decode(&pending.transition_hex)
@@ -3216,6 +3377,8 @@ pub(crate) async fn disconnect(
                     nonce_height2,
                     id,
                 );
+                let observed_tip = reserved.map(|_| tip2);
+                let observed_height = reserved.map(|_| id_height2.max(nonce_height2));
                 if reserved.is_none() {
                     session.withdrawal_nonces.advance_floor(id, pending.nonce);
                 }
@@ -3224,8 +3387,11 @@ pub(crate) async fn disconnect(
                     transition_hash: pending.transition_hash,
                     observed_debit,
                     nonce: reserved,
+                    observed_tip,
+                    observed_height,
                 });
                 let _ = put_record(session, wallet_id, record).await;
+                session.vault.revoke_grant(&grant);
                 return Err(ConnectError::Failed {
                     failure: ConnectFailure::DisconnectConflict,
                 });
@@ -3242,7 +3408,7 @@ pub(crate) async fn disconnect(
         return Err(PlatformError::Unavailable.into());
     }
     // One nonce owner per identity across Disconnect, transfers, withdrawals,
-    // and any other app's unresolved Disconnect: never sign a nonce held
+    // and any other app's live pending Disconnect: never sign a nonce held
     // unresolved by another flow.
     match session.withdrawal_nonces.ownership(id, nonce_state) {
         super::withdrawal::NonceOwner::Free => {}
@@ -3256,7 +3422,7 @@ pub(crate) async fn disconnect(
         }
     }
     let nonce_tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
-    for other_nonce in other_pending_nonces {
+    for other_nonce in other_live_pendings {
         if super::withdrawal::takes(nonce_state, other_nonce, id) {
             return Err(ConnectError::Failed {
                 failure: ConnectFailure::PendingWrite,
@@ -3266,10 +3432,44 @@ pub(crate) async fn disconnect(
             return Err(PlatformError::Unavailable.into());
         }
     }
+    // Retired conflict reservations from other apps forbid signing AT `other_k`
+    // only (their dead bytes carry a stale revision and can only consume
+    // `other_k` via a paid bump, never changing keys or revision). Skip past
+    // admissible reservations by computing a local floor (`max(tip+1, k+1)`)
+    // without raising `withdrawal_nonces.floor` (which would wedge the owning
+    // record's own re-quote at `other_k`). Still refuse `Unavailable` on a
+    // stale read (`other_k > tip`).
+    let mut other_reserved_floor = 0u64;
+    for (other_k, observed_tip, observed_height) in other_reserved_nonces {
+        if super::withdrawal::takes(nonce_state, other_k, id) {
+            if observed_tip.is_none_or(|obs| nonce_tip < obs)
+                || observed_height.is_none_or(|obs_h| nonce_height < obs_h)
+            {
+                return Err(PlatformError::Unavailable.into());
+            }
+            other_reserved_floor =
+                other_reserved_floor.max(other_k.checked_add(1).ok_or_else(|| {
+                    PlatformError::Internal {
+                        detail: "identity nonce overflow".into(),
+                    }
+                })?);
+        } else if other_k > nonce_tip {
+            return Err(PlatformError::Unavailable.into());
+        }
+    }
+    let session_floor = session.withdrawal_nonces.floor(id);
+    let fallback_nonce = nonce_tip
+        .checked_add(1)
+        .ok_or_else(|| PlatformError::Internal {
+            detail: "identity nonce overflow".into(),
+        })?
+        .max(session_floor)
+        .max(other_reserved_floor);
     // If this record retired an earlier revision-conflicted transition whose
     // nonce `k` is not proven spent yet, sign at `k` while `takes(nonce_state, k)`
     // so the only competitor for `k` is our own dead bytes (never a transfer or
-    // withdrawal). Refuse Unavailable on a stale read (`k > tip`).
+    // withdrawal). Refuse `Unavailable` on a stale read (`k > tip`). Clear the
+    // reservation only when `k` itself is proved spent (`k <= tip && !takes`).
     let next_nonce = if let Some(reserved_k) = record.last_conflict.as_ref().and_then(|c| c.nonce) {
         if super::withdrawal::takes(nonce_state, reserved_k, id) {
             reserved_k
@@ -3278,20 +3478,17 @@ pub(crate) async fn disconnect(
         } else {
             if let Some(c) = &mut record.last_conflict {
                 c.nonce = None;
+                c.observed_tip = None;
+                c.observed_height = None;
             }
-            nonce_tip
-                .checked_add(1)
-                .ok_or_else(|| PlatformError::Internal {
-                    detail: "identity nonce overflow".into(),
-                })?
+            fallback_nonce
         }
     } else {
-        nonce_tip
-            .checked_add(1)
-            .ok_or_else(|| PlatformError::Internal {
-                detail: "identity nonce overflow".into(),
-            })?
+        fallback_nonce
     };
+    if !super::withdrawal::takes(nonce_state, next_nonce, id) {
+        return Err(PlatformError::Unavailable.into());
+    }
     let (disable, fee) = select_disconnect_batch(net, &fresh, &verified.to_disable).await?;
     if fee > granted_max_credits {
         return Err(PlatformError::GrantExceeded {
@@ -3332,7 +3529,12 @@ pub(crate) async fn disconnect(
         .map(|path| vec![(path, master.data().to_vec())])
         .unwrap_or_default();
     let lease = session
-        .begin_lease_holding(wallet_id, FlowKind::AppDisconnect, &[grant], held)
+        .begin_lease_holding(
+            wallet_id,
+            FlowKind::AppDisconnect,
+            std::slice::from_ref(&grant),
+            held,
+        )
         .await
         .map_err(PlatformError::from)?;
     let permit = write_permit(&lease, "app_connect_disconnect", fee)?;
@@ -3441,6 +3643,8 @@ pub(crate) async fn disconnect(
                     nonce_height2,
                     id,
                 );
+                let observed_tip = reserved.map(|_| tip2);
+                let observed_height = reserved.map(|_| id_height2.max(nonce_height2));
                 if reserved.is_none() {
                     session.withdrawal_nonces.advance_floor(id, next_nonce);
                 }
@@ -3449,8 +3653,11 @@ pub(crate) async fn disconnect(
                     transition_hash,
                     observed_debit,
                     nonce: reserved,
+                    observed_tip,
+                    observed_height,
                 });
                 let _ = put_record(session, wallet_id, record).await;
+                session.vault.revoke_grant(&grant);
                 return Err(ConnectError::Failed {
                     failure: ConnectFailure::DisconnectConflict,
                 });

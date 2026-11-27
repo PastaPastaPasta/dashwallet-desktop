@@ -1416,7 +1416,7 @@ fn a_close_returns_once_the_wallet_database_is_released() {
         "{:?}",
         started.elapsed()
     );
-    assert!(matches!(open(), Err(EngineError::StorageInUse(_))));
+    assert!(matches!(open(), Err(EngineError::StorageInUse { .. })));
     drop(held);
     open().unwrap();
     engine.block_on(engine.shutdown()).unwrap();

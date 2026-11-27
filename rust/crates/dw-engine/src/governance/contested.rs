@@ -16,12 +16,11 @@ use dash_sdk::platform::transition::masternode_vote_keys::{
     VotingKeyProblem, diagnose_voting_key_failure,
 };
 use dash_sdk::platform::transition::put_settings::PutSettings;
-use dash_sdk::query_types::ResourceVotesByIdentity;
+use dash_sdk::query_types::{ResourceVoteWithCount, ResourceVotesByIdentity};
 use dpp::consensus::ConsensusError;
 use dpp::consensus::signature::SignatureError;
 use dpp::consensus::state::state_error::StateError;
 use dpp::dashcore::ProTxHash;
-use dpp::dashcore::hashes::Hash as _;
 use dpp::identifier::MasternodeIdentifiers;
 use dpp::platform_value::Value;
 use dpp::platform_value::string_encoding::Encoding;
@@ -258,11 +257,12 @@ impl NameVoteNet for SdkNames {
             start_at: None,
             order_ascending: true,
         };
-        let votes: ResourceVotesByIdentity = ResourceVote::fetch_many(&self.0, query).await?;
+        let votes: ResourceVotesByIdentity =
+            ResourceVoteWithCount::fetch_many(&self.0, query).await?;
         Ok(votes
             .into_values()
             .flatten()
-            .filter_map(dpns_choice)
+            .filter_map(|v| dpns_choice(v.resource_vote))
             .collect())
     }
 
@@ -320,7 +320,9 @@ impl NameVoteNet for SdkNames {
 
 /// A DPNS `domain` vote as `(label, choice)`; other polls are not names.
 fn dpns_choice(vote: ResourceVote) -> Option<(String, NameChoice)> {
-    let VotePoll::ContestedDocumentResourceVotePoll(poll) = vote.vote_poll();
+    let VotePoll::ContestedDocumentResourceVotePoll(poll) = vote.vote_poll() else {
+        return None;
+    };
     if poll.contract_id != SystemDataContract::DPNS.id() || poll.document_type_name != "domain" {
         return None;
     }

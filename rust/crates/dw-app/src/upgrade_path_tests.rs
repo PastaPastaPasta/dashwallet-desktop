@@ -30,7 +30,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 use dw_engine::DashNetwork;
 use dw_vault::{MemoryOsStore, VaultConfig};
 use serde_json::{Value, json};
@@ -1380,8 +1380,7 @@ fn p2pkh_input_problem(
     index: usize,
     script: &dashcore::ScriptBuf,
 ) -> Option<String> {
-    use dashcore::hashes::Hash as _;
-    use dashcore::secp256k1::{Message, ecdsa};
+    use dashcore::ecdsa::EcdsaSignature;
     let mut pushes = tx.input[index].script_sig.instructions();
     let (Some(Ok(sig)), Some(Ok(key)), None) = (pushes.next(), pushes.next(), pushes.next()) else {
         return Some("its scriptSig is not two pushes".into());
@@ -1407,8 +1406,15 @@ fn p2pkh_input_problem(
             Ok(h) => h,
             Err(e) => return Some(format!("the sighash: {e}")),
         };
-    ecdsa::Signature::from_der(der)
-        .and_then(|s| ecdsa::verify(&s, Message::from_digest(hash.to_byte_array()), &pk.inner))
+    let sig = match EcdsaSignature::from_der(der) {
+        Ok(sig) => sig,
+        Err(e) => return Some(format!("the signature does not verify: {e}")),
+    };
+    if !sig.is_low_s() {
+        return Some("the signature does not verify: high S".into());
+    }
+    pk.inner
+        .verify(&hash.to_byte_array(), sig)
         .err()
         .map(|e| format!("the signature does not verify: {e}"))
 }
@@ -1846,14 +1852,11 @@ fn v0_1_0_deposits_and_fee_come_from_the_transactions_dashd_named() {
 
 #[test]
 fn a_p2pkh_input_verifies_only_with_its_own_key_signature_and_sighash() {
-    use dashcore::hashes::Hash as _;
-    use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+    use dashcore::ecdsa::EcdsaSecretKey;
     let key = |b: u8| {
-        let sk = SecretKey::from_secret_bytes([b; 32]).unwrap();
-        (
-            sk,
-            dashcore::PublicKey::new(PublicKey::from_secret_key(&sk)),
-        )
+        let sk = EcdsaSecretKey::from_bytes(&[b; 32]).unwrap();
+        let pk = dashcore::PublicKey::new(sk.public_key());
+        (sk, pk)
     };
     let (sk, pk) = key(1);
     let (other_sk, other_pk) = key(2);
@@ -1873,22 +1876,22 @@ fn a_p2pkh_input_verifies_only_with_its_own_key_signature_and_sighash() {
         }],
         special_transaction_payload: None,
     };
-    let script_sig =
-        |tx: &dashcore::Transaction, sk: &SecretKey, pk: &dashcore::PublicKey, hash_type: u8| {
-            let hash = dashcore::sighash::SighashCache::new(tx)
-                .legacy_signature_hash(0, &script, u32::from(hash_type))
-                .unwrap();
-            let mut der = ecdsa::sign(Message::from_digest(hash.to_byte_array()), sk)
-                .serialize_der()
-                .to_vec();
-            der.push(hash_type);
-            let pk = pk.to_bytes();
-            let mut bytes = vec![der.len() as u8];
-            bytes.extend_from_slice(&der);
-            bytes.push(pk.len() as u8);
-            bytes.extend_from_slice(&pk);
-            dashcore::ScriptBuf::from_bytes(bytes)
-        };
+    let script_sig = |tx: &dashcore::Transaction,
+                      sk: &EcdsaSecretKey,
+                      pk: &dashcore::PublicKey,
+                      hash_type: u8| {
+        let hash = dashcore::sighash::SighashCache::new(tx)
+            .legacy_signature_hash(0, &script, u32::from(hash_type))
+            .unwrap();
+        let mut der = sk.sign(&hash.to_byte_array()).with_der(<[u8]>::to_vec);
+        der.push(hash_type);
+        let pk = pk.to_bytes();
+        let mut bytes = vec![der.len() as u8];
+        bytes.extend_from_slice(&der);
+        bytes.push(pk.len() as u8);
+        bytes.extend_from_slice(&pk);
+        dashcore::ScriptBuf::from_bytes(bytes)
+    };
     tx.input[0].script_sig = script_sig(&tx, &sk, &pk, 1);
     assert_eq!(p2pkh_input_problem(&tx, 0, &script), None);
     let mut moved = tx.clone();

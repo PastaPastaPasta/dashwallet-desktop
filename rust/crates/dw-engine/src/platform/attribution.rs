@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 use dashcore::{ScriptBuf, Transaction, Txid};
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::platform_value::string_encoding::Encoding;
@@ -139,8 +139,8 @@ impl Payees {
                 payees.shared_pairs.insert((side.owner, side.contact));
             }
             for pool in account.managed_account_type().address_pools() {
-                for info in pool.addresses.values() {
-                    let script = info.script_pubkey.clone();
+                for info in pool.addresses().values() {
+                    let script = info.address.script_pubkey();
                     match shared {
                         true => payees.add_shared(script, side.contact),
                         false => payees.add_script(script, side),
@@ -301,7 +301,7 @@ fn hold<K: Eq + std::hash::Hash>(held: &mut HashMap<K, Option<Side>>, key: K, si
 /// An account's first address, which its xpub alone decides.
 fn root_of(account: &ManagedCoreFundsAccount) -> Option<ScriptBuf> {
     let pools = account.managed_account_type().address_pools();
-    Some(pools.first()?.addresses.get(&0)?.script_pubkey.clone())
+    Some(pools.first()?.addresses().get(&0)?.address.script_pubkey())
 }
 
 /// A transaction's attributed payments: per side, the duffs of its outputs.

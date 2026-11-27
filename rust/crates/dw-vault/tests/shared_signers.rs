@@ -20,8 +20,8 @@ mod common;
 use std::str::FromStr;
 
 use common::*;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::hash160;
 use dw_protx::payloads::sign_hash_compact;
 use dw_protx::shared::rules::verify_hash_canonical;
 use dw_protx::shared::{
@@ -56,15 +56,15 @@ fn owner_signer(v: &Vault) -> VaultSigner {
     v.masternode_signer(&wallet(1), &token(v, MN_OP)).unwrap()
 }
 
-fn hash160_of(secret: &SecretKey) -> [u8; 20] {
-    hash160::Hash::hash(&PublicKey::from_secret_key(secret).serialize()).to_byte_array()
+fn hash160_of(secret: &EcdsaSecretKey) -> [u8; 20] {
+    hash160::Hash::hash(&secret.public_key().to_compressed()).to_byte_array()
 }
 
 /// Wallet 1's keychain owner key `index`, derived here.
-fn own_secret(v: &Vault, index: u32) -> SecretKey {
+fn own_secret(v: &Vault, index: u32) -> EcdsaSecretKey {
     let master = ExtendedPrivKey::new_master(v.network(), &[1; 64]).unwrap();
     let path = DerivationPath::from_str(&format!("m/9'/1'/3'/2'/{index}")).unwrap();
-    master.derive_priv(&path).unwrap().private_key
+    master.derive_priv(&path).unwrap().private_key.clone()
 }
 
 fn own_id(v: &Vault, index: u32) -> [u8; 20] {
@@ -72,10 +72,10 @@ fn own_id(v: &Vault, index: u32) -> [u8; 20] {
 }
 
 /// `sig` is `SignCompact(digest)` by `secret`, canonical for its key id.
-fn signed_by(sig: &[u8; 65], digest: [u8; 32], secret: &SecretKey) {
+fn signed_by(sig: &[u8; 65], digest: [u8; 32], secret: &EcdsaSecretKey) {
     assert_eq!(
         *sig,
-        sign_hash_compact(&secret.to_secret_bytes(), &digest).unwrap()
+        sign_hash_compact(&secret.to_bytes(), &digest).unwrap()
     );
     assert!(verify_hash_canonical(digest, hash160_of(secret), sig));
 }
@@ -122,7 +122,7 @@ fn owned_by(tx: &SpecialTx, owners: &[(usize, [u8; 20])]) -> SpecialTx {
 }
 
 /// The owner secrets of the vector's parties (their WIFs), by key id.
-fn dashd_owner(case: &serde_json::Value, key_id: [u8; 20]) -> SecretKey {
+fn dashd_owner(case: &serde_json::Value, key_id: [u8; 20]) -> EcdsaSecretKey {
     case["parties"]
         .as_array()
         .unwrap()
@@ -291,7 +291,7 @@ fn update_share_signs_the_payload_hash() {
     v.store_masternode_key(
         &registration.txid().to_byte_array(),
         "owner",
-        &owner.to_secret_bytes(),
+        &*owner.to_bytes(),
     )
     .unwrap();
     let s = owner_signer(&v);

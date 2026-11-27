@@ -858,6 +858,9 @@ export const dashpay = {
     critical: "This key has critical access: it can do anything these contracts let your identity do, including sending the app's tokens your identity holds. The funding limit doesn't cap tokens.",
     /** Under a CRITICAL binding that can't reach tokens: a read-only contract without tokens, or one document type. */
     criticalNoTokens: "This key has critical access: within what it covers, it can do anything your identity can.",
+    /** Under a binding on the app's contracts, a document type or a group, unless the critical warning
+     * names tokens already: a document write can carry a token cost the identity pays. */
+    tokenCost: "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
     cannot: "It can't spend Dash from this wallet, withdraw credits, transfer credits to anyone or change your other keys. It can spend your identity's credits up to the funding limit.",
     limit: "Funding limit (Dash)",
     limitHint: "The most this app can spend from your identity's credits.",
@@ -880,6 +883,8 @@ export const dashpay = {
     deniedAfterApprove: "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
     return: "Return to {host}",
     retrySend: "Retry sending",
+    /** Under a quote that failed: quotes the same choice again. */
+    retryQuote: "Try again",
     sendFailed: "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
     planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
     err: {
@@ -888,6 +893,8 @@ export const dashpay = {
       unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
       invalid: "This sign-in request can't be read. Ask the app for a new one.",
       newer: "This link needs a newer version of Dash Wallet.",
+      /** A new request while every request kept is on screen or being approved. */
+      busy: "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
       stale: "This sign-in request has expired. Ask the app for a new one.",
       protocol: "This network doesn't support app sign-in yet.",
       noIdentity: "You need a DashPay username to sign in to apps. Create one in DashPay first.",

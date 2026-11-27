@@ -63,6 +63,10 @@ dw-uri = { workspace = true }
 dw-vault = { workspace = true }
 # Owner-only directories and files, changed through descriptors.
 dw-fs = { workspace = true }
+# M3: wallet files the fork builds wrote, checked and upgraded before the
+# persister opens; the persister opens only through its token.
+dw-shielded-drain = { workspace = true }
+dw-store-upgrade = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -97,8 +101,11 @@ md-5 = "0.10"
 rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [dev-dependencies]
-# `test-utils`: signs a test's own spend of a held coin, as a send does.
+# `test-utils`: TestWalletContext and dashcore's test transactions for the
+# input authorization tests.
 key-wallet = { workspace = true, features = ["test-utils"] }
+dash-spv = { workspace = true, features = ["test-utils"] }
+bech32 = { version = "0.11.1", default-features = false, features = ["alloc"] }
 dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim", "fault-inject"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
@@ -106,13 +113,19 @@ dw-message = { workspace = true }
 serde_json = "1"
 # The Orchard note an unshield test spends through dpp's own builder (the
 # pinned platform's grovedb, the crate the graph already uses).
-grovedb-commitment-tree = { git = "https://github.com/PastaPastaPasta/grovedb", rev = "b48a1d5067f33165f5c8880b252da51b79b2fcd1" }
+grovedb-commitment-tree = { git = "https://github.com/dashpay/grovedb", tag = "v7.0.0" }
 tempfile = { workspace = true }
+# A chosen P9a outcome on the real open path, one test binary each.
+dw-store-upgrade = { workspace = true, features = ["test-support"] }
+# A fork-written shielded store for the drain's call-site tests.
+dw-shielded-drain = { workspace = true, features = ["test-support"] }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests. `net` and
 # `io-util`: the local JSON-RPC mock of the collateral tests.
 tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
+# tests/bl187_v24_payloads.rs frames P2P messages with dashcore's codec, as dash-spv's peer does.
+tokio-util = { version = "0.7.18", features = ["codec"] }
 # tests/m4_dashpay_contract.rs renders the DashPay facade's surface from its
 # source for docs/contracts/m4-dashpay-engine.md (both already in the graph).
 syn = { version = "2", features = ["full", "printing"] }

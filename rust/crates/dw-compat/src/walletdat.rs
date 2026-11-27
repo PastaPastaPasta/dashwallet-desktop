@@ -25,9 +25,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSecretKey};
 use key_wallet::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypter::{self, MasterKeyRecord};
 use crate::descriptor::PkhDescriptor;
@@ -215,7 +215,7 @@ pub(crate) fn der_secret(der: &[u8]) -> Option<Zeroizing<[u8; 32]>> {
     let os = b.take(oslen)?;
     let mut out = Zeroizing::new([0u8; 32]);
     out[32 - oslen..].copy_from_slice(os);
-    SecretKey::from_secret_bytes(*out).ok()?;
+    EcdsaSecretKey::from_bytes(&out).ok()?;
     Some(out)
 }
 
@@ -489,7 +489,7 @@ impl SqliteWallet {
         // The descriptor must be rooted at this key (a master xpub, depth 0).
         let xpub = key_wallet::bip32::ExtendedPubKey::from_str(&external.key)
             .map_err(|e| corrupt(format!("descriptor key: {e}")))?;
-        if xpub.depth != 0 || xpub.public_key.serialize() != pubkey {
+        if xpub.depth != 0 || xpub.public_key.to_compressed() != pubkey {
             return Err(WalletDatError::Unsupported(
                 "the receive descriptor is not rooted at the wallet's master key".into(),
             ));
@@ -718,7 +718,7 @@ impl SqliteWallet {
             let derived = xpub
                 .derive_pub(&path)
                 .map_err(|_| corrupt("hdpubkey record"))?;
-            Ok(derived.public_key.serialize() == child.pubkey)
+            Ok(derived.public_key.to_compressed() == child.pubkey)
         };
         let mut network = None;
         for child in &self.hd_children {
@@ -745,7 +745,7 @@ struct ErasedXprv(ExtendedPrivKey);
 
 impl Drop for ErasedXprv {
     fn drop(&mut self) {
-        self.0.private_key.non_secure_erase();
+        self.0.private_key.zeroize();
     }
 }
 
@@ -813,24 +813,24 @@ fn bip32_master(seed: &[u8]) -> Result<(Zeroizing<[u8; 32]>, [u8; 33]), WalletDa
     let mut master =
         key_wallet::bip32::ExtendedPrivKey::new_master(dashcore::Network::Mainnet, seed)
             .map_err(|_| corrupt("HD seed is not a BIP32 seed"))?;
-    let pubkey = master.private_key.public_key().serialize();
+    let pubkey = master.private_key.public_key().to_compressed();
     let mut secret = Zeroizing::new([0u8; 32]);
-    secret.copy_from_slice(&master.private_key.to_secret_bytes());
-    master.private_key.non_secure_erase();
+    secret.copy_from_slice(&master.private_key.to_bytes()[..]);
+    master.private_key.zeroize();
     Ok((secret, pubkey))
 }
 
 fn pubkey_matches(secret: &[u8; 32], pubkey: &[u8]) -> bool {
-    let Some(sk) = SecretKey::from_secret_bytes(*secret).ok() else {
+    let Some(sk) = EcdsaSecretKey::from_bytes(secret).ok() else {
         return false;
     };
-    let pk = PublicKey::from_secret_key(&sk);
-    pk.serialize().as_slice() == pubkey || pk.serialize_uncompressed().as_slice() == pubkey
+    let pk = sk.public_key();
+    pk.to_compressed().as_slice() == pubkey || pk.to_uncompressed().as_slice() == pubkey
 }
 
 fn pubkey_of(secret: &[u8; 32]) -> Option<[u8; 33]> {
-    let sk = SecretKey::from_secret_bytes(*secret).ok()?;
-    Some(PublicKey::from_secret_key(&sk).serialize())
+    let sk = EcdsaSecretKey::from_bytes(secret).ok()?;
+    Some(sk.public_key().to_compressed())
 }
 
 /// `file://` URI of `path` for SQLite (review L5): the absolute,
@@ -1351,7 +1351,7 @@ fn valid_pubkey(pubkey: &[u8]) -> bool {
     matches!(
         (pubkey.len(), pubkey.first()),
         (33, Some(0x02 | 0x03)) | (65, Some(0x04))
-    ) && PublicKey::from_slice(pubkey).is_ok()
+    ) && EcdsaPublicKey::from_bytes(pubkey).is_ok()
 }
 /// Most keys a legacy wallet may have derived on one HD chain, keypool
 /// included. Larger wallets are refused.
@@ -1769,8 +1769,8 @@ mod tests {
     }
 
     fn compressed(secret: &[u8; 32]) -> [u8; 33] {
-        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes(*secret).unwrap();
-        dashcore::secp256k1::PublicKey::from_secret_key(&sk).serialize()
+        let sk = dashcore::ecdsa::EcdsaSecretKey::from_bytes(secret).unwrap();
+        sk.public_key().to_compressed()
     }
 
     fn ser_chain(
@@ -1905,11 +1905,7 @@ mod tests {
         let child_secret = {
             let master = ExtendedPrivKey::new_master(Network::Regtest, &seed[..]).unwrap();
             let path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
-            master
-                .derive_priv(&path)
-                .unwrap()
-                .private_key
-                .to_secret_bytes()
+            *master.derive_priv(&path).unwrap().private_key.to_bytes()
         };
         let child_pub = compressed(&child_secret);
         let loose = [0x22u8; 32];
@@ -1984,10 +1980,11 @@ mod tests {
         );
         let child_secret = {
             let xprv = ExtendedPrivKey::new_master(Network::Regtest, &seed[..]).unwrap();
-            xprv.derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+            *xprv
+                .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
                 .unwrap()
                 .private_key
-                .to_secret_bytes()
+                .to_bytes()
         };
         let child_pub = compressed(&child_secret);
         let ct = crypter::aes_cbc_encrypt(&master, &crypter::pubkey_iv(&child_pub), &child_secret);
@@ -2042,7 +2039,7 @@ mod tests {
             let expect = ExtendedPrivKey::new_master(Network::Regtest, &built.seed).unwrap();
             assert_eq!(
                 root.master_pubkey,
-                expect.private_key.public_key().serialize()
+                expect.private_key.public_key().to_compressed()
             );
             assert_eq!(root.external.key.as_str(), "tpub");
         }
@@ -2080,7 +2077,7 @@ mod tests {
                 .unwrap()
                 .private_key
                 .public_key()
-                .serialize()
+                .to_compressed()
         };
         let pairs = [
             (db_key("hdchain"), chain),
@@ -2360,10 +2357,11 @@ mod tests {
         let crypted_master = crypter::aes_cbc_encrypt(&pass_key, &pass_iv, &master);
         let child_secret = {
             let xprv = ExtendedPrivKey::new_master(Network::Regtest, &seed[..]).unwrap();
-            xprv.derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+            *xprv
+                .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
                 .unwrap()
                 .private_key
-                .to_secret_bytes()
+                .to_bytes()
         };
         let child_pub = compressed(&child_secret);
         let ct = crypter::aes_cbc_encrypt(&master, &crypter::pubkey_iv(&child_pub), &child_secret);
@@ -2515,9 +2513,9 @@ mod tests {
     fn a_ckey_of_the_wrong_shape_is_corrupt() {
         let secret = [0x45u8; 32];
         let ct = [0x99u8; 48];
-        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap();
-        let pk = dashcore::secp256k1::PublicKey::from_secret_key(&sk);
-        let (short, long) = (pk.serialize(), pk.serialize_uncompressed());
+        let sk = dashcore::ecdsa::EcdsaSecretKey::from_bytes(&secret).unwrap();
+        let pk = sk.public_key();
+        let (short, long) = (pk.to_compressed(), pk.to_uncompressed());
         let mut bad_prefix = short;
         bad_prefix[0] = 0x05;
         let mut hybrid = long;
@@ -2588,7 +2586,7 @@ mod tests {
             .unwrap()
             .private_key
             .public_key()
-            .serialize();
+            .to_compressed();
         let pairs = [
             (db_key("hdchain"), chain),
             (db_key_pub("hdpubkey", &child), ser_hdpubkey(&child)),
@@ -2649,7 +2647,7 @@ mod tests {
                 .unwrap()
                 .private_key
                 .public_key()
-                .serialize()
+                .to_compressed()
         };
         let mut key = db_key("lockedutxo");
         let txid = [0xabu8; 32];
@@ -2799,7 +2797,7 @@ mod tests {
                 .unwrap()
                 .private_key
                 .public_key()
-                .serialize()
+                .to_compressed()
         });
 
         let loose = read_bdb(&vector("bdb_core24_nonhd.dat")).unwrap();
@@ -2864,7 +2862,7 @@ mod tests {
                 .unwrap()
                 .private_key
                 .public_key()
-                .serialize()
+                .to_compressed()
         };
         let child = child_of(&seed[..]);
         let abandon_child = child_of(&abandon_seed[..]);

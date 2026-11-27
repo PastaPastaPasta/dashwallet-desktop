@@ -7,10 +7,10 @@ mod common;
 use std::str::FromStr;
 
 use common::*;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+use dashcore::hashes::hash160;
 use dashcore::signer::double_sha;
+use dpp::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use dpp::secp256k1::{Message, PublicKey, SecretKey};
 use dw_vault::{
     Credential, GrantKind, GrantPurpose, GrantToken, SignerError, SignerLife, SignerScope,
     UnlockScope, Vault, VaultError, VaultSigner, WalletSigner,
@@ -164,7 +164,7 @@ async fn uses(s: &VaultSigner, p: &DerivationPath) -> Uses {
     let key_data = s
         .public_key(p)
         .await
-        .map(|k| k.serialize().to_vec())
+        .map(|k| k.to_compressed().to_vec())
         .unwrap_or_default();
     Uses {
         sign: !refused(s.sign_ecdsa(p, [1; 32]).await),
@@ -728,8 +728,11 @@ async fn identity_signatures_need_the_named_key_and_verify() {
     for key in 0..=5 {
         let p = path(&format!("m/9'/1'/5'/0'/0'/0'/{key}'"));
         let public = s.public_key(&p).await.unwrap();
-        let hash = hash160::Hash::hash(&public.serialize());
-        for key_data in [public.serialize().to_vec(), hash.as_byte_array().to_vec()] {
+        let hash = hash160::Hash::hash(&public.to_compressed());
+        for key_data in [
+            public.to_compressed().to_vec(),
+            hash.as_byte_array().to_vec(),
+        ] {
             assert!(s.identity_key_matches(&p, &key_data).unwrap());
             let sig = s.sign_identity(&p, &key_data, data).unwrap();
             // Compact recoverable, compressed flag (dashcore::signer::sign).
@@ -737,6 +740,7 @@ async fn identity_signatures_need_the_named_key_and_verify() {
             let rec = RecoverableSignature::from_compact(&sig[1..], recid).unwrap();
             assert!(sig[0] >= 31, "compressed flag");
             let msg = Message::from_digest(digest);
+            let public = PublicKey::from(public);
             assert_eq!(rec.recover_ecdsa(msg).unwrap(), public);
             public.verify(msg, &rec.to_standard()).unwrap();
         }
@@ -745,9 +749,9 @@ async fn identity_signatures_need_the_named_key_and_verify() {
             .public_key(&path(&format!("m/9'/1'/5'/0'/0'/1'/{key}'")))
             .await
             .unwrap();
-        assert!(!s.identity_key_matches(&p, &other.serialize()).unwrap());
+        assert!(!s.identity_key_matches(&p, &other.to_compressed()).unwrap());
         assert!(matches!(
-            s.sign_identity(&p, &other.serialize(), data),
+            s.sign_identity(&p, &other.to_compressed(), data),
             Err(SignerError::KeyMismatch(_))
         ));
         assert!(matches!(
@@ -802,7 +806,7 @@ async fn a_grant_redeems_only_while_the_vault_holds_a_candidate_key() {
         .public_key(&key)
         .await
         .unwrap()
-        .serialize()
+        .to_compressed()
         .to_vec();
     let unheld = (key.clone(), vec![2; 33]);
     let grant = v
@@ -886,7 +890,7 @@ async fn a_grant_tells_whether_the_vault_holds_an_identity_key_without_being_use
         .public_key(&key)
         .await
         .unwrap()
-        .serialize();
+        .to_compressed();
     let grant = v
         .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
         .unwrap();

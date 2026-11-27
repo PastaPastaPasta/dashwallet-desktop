@@ -11,11 +11,9 @@
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use dashcore::secp256k1::ecdh::shared_secret_point;
-use dashcore::secp256k1::ecdsa::RecoverableSignature;
-use dashcore::secp256k1::{Message, PublicKey, SecretKey};
-use dashcore::sign_message::MessageSignature;
 use dashcore::signer::double_sha;
+use dpp::secp256k1::ecdh::shared_secret_point;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use hkdf::Hkdf;
 use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::dip9::ApplicationKeyPurpose;
@@ -88,8 +86,9 @@ pub fn key_path(
             purpose,
             rotation,
         } => {
-            let path =
-                DerivationPath::application_encryption_path(network, identity, contract, purpose);
+            let path = DerivationPath::application_encryption_path_without_rotation(
+                network, identity, contract, purpose,
+            );
             match rotation {
                 Some(index) => path.extend([ChildNumber::Hardened { index }]),
                 None => path,
@@ -189,7 +188,7 @@ impl VaultSigner {
     ) -> Result<[u8; 33], SignerError> {
         let path = self.app_key_path(identity, app_eph_pub, key)?;
         self.with_key(&path, KeyUse::AppConnectPublicKey, |x| {
-            PublicKey::from_secret_key(&x.private_key).serialize()
+            x.private_key.public_key().to_compressed()
         })
     }
 
@@ -210,15 +209,11 @@ impl VaultSigner {
             .try_into()
             .map_err(|_| SignerError::Derivation("digest length".into()))?;
         self.with_key(&path, KeyUse::AppConnectSign, |x| {
-            let public = PublicKey::from_secret_key(&x.private_key).serialize();
+            let public = x.private_key.public_key().to_compressed();
             if public[..] != *key_data {
                 return Err(SignerError::KeyMismatch(path.to_string()));
             }
-            let sig = RecoverableSignature::sign_ecdsa_recoverable(
-                Message::from_digest(digest),
-                &x.private_key,
-            );
-            Ok(MessageSignature::new(sig, true).serialize())
+            Ok(crate::signer::sign_compact(digest, &x.private_key))
         })?
     }
 
@@ -248,9 +243,8 @@ impl VaultSigner {
         let plaintext = self.run(&uses, |op| {
             let mut slots = Zeroizing::new(Vec::with_capacity(32 * paths.len()));
             for path in &paths {
-                let secret = op.with_key(path, KeyUse::AppConnectSeal, |x| {
-                    Zeroizing::new(x.private_key.to_secret_bytes())
-                })?;
+                let secret =
+                    op.with_key(path, KeyUse::AppConnectSeal, |x| x.private_key.to_bytes())?;
                 slots.extend_from_slice(&secret[..]);
             }
             Ok(slots)

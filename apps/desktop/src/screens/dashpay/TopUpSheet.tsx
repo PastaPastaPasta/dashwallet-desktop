@@ -36,6 +36,7 @@ import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { moveToDashWallet } from "./DashPayCard";
+import { platformHoldText } from "../../api/platformHold";
 
 /** "Move to Dash wallet" for a held top-up: Home's transfer, at the move to the Dash wallet. */
 function useMoveToCore(flow: TopUpFlow, walletId: string) {
@@ -205,7 +206,7 @@ function ConfirmStep({ flow, walletId, costs, amount, discreet }: { flow: TopUpF
       <p className="sheet-text">{TOPUP_COPY.confirm.message}</p>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="topup-quote-error">
-          {topUpErrorText(quote.error, amount, discreet)}
+          {platformHoldText(quote.error, false) ?? topUpErrorText(quote.error, amount, discreet)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -270,7 +271,7 @@ function PlatformConfirmStep({ flow, walletId, name, amount, discreet, masked }:
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="topup-quote-error">
-          {fromPlatformErrorText(quote.error, amount, discreet)}
+          {platformHoldText(quote.error, false) ?? fromPlatformErrorText(quote.error, amount, discreet)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">

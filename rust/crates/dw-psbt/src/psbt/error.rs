@@ -6,7 +6,6 @@
 use core::fmt;
 
 use dashcore::consensus::encode;
-use dashcore::hashes;
 use dashcore::io;
 
 use crate::psbt::raw;
@@ -45,7 +44,7 @@ pub enum Error {
     /// Unable to parse as a standard sighash type.
     NonStandardSighashType(u32),
     /// Parsing errors from bitcoin_hashes
-    HashParse(hashes::Error),
+    HashParse(core::array::TryFromSliceError),
     /// The pre-image must hash to the corresponding psbt hash
     InvalidPreimageHashPair {
         /// Hash-type
@@ -60,9 +59,9 @@ pub enum Error {
     /// Parsing error indicating invalid public keys
     InvalidPublicKey(dashcore::crypto::key::Error),
     /// Parsing error indicating invalid secp256k1 public keys
-    InvalidSecp256k1PublicKey(dashcore::secp256k1::Error),
+    InvalidSecp256k1PublicKey(secp256k1::Error),
     /// Parsing error indicating invalid ECDSA signatures
-    InvalidEcdsaSignature(dashcore::crypto::ecdsa::Error),
+    InvalidEcdsaSignature(dashcore::crypto::ecdsa::DecodeError),
     /// Error related to a xpub key
     XPubKey(&'static str),
     /// Error related to PSBT version
@@ -154,13 +153,6 @@ impl std::error::Error for Error {
             | Version(_)
             | PartialDataConsumption => None,
         }
-    }
-}
-
-#[doc(hidden)]
-impl From<hashes::Error> for Error {
-    fn from(e: hashes::Error) -> Error {
-        Error::HashParse(e)
     }
 }
 

@@ -156,6 +156,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_send",
     "DashPay.platform_send_grant",
     "DashPay.platform_send_bind",
+    // #762: the cancel of a held withdrawal or contact payout.
+    "DashPay.platform_cancel_quote",
+    "DashPay.platform_cancel",
     // 0.2 X1b slice 1: "Add from Dash wallet".
     "DashPay.platform_fund_quote",
     "DashPay.platform_fund",
@@ -264,6 +267,7 @@ const NOT_FACADE: &[&str] = &[
     "banner.rs",
     "banner_tests.rs",
     "bringup.rs",
+    "close_unload_gate_tests.rs",
     "contact_names.rs",
     "contact_payout.rs",
     "contacts_model.rs",
@@ -290,6 +294,7 @@ const NOT_FACADE: &[&str] = &[
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
+    "known_wallets_tests.rs",
     "lease",
     "lock_inputs.rs",
     "lock_inputs_tests.rs",
@@ -308,6 +313,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund.rs",
     "platform_fund_tests.rs",
     "platform_moves.rs",
+    "platform_held_exit_tests.rs",
     "platform_mainnet_flag_tests.rs",
     "platform_moves_tests.rs",
     "platform_register.rs",
@@ -332,6 +338,9 @@ const NOT_FACADE: &[&str] = &[
     "registration_shielded.rs",
     "registration_tests",
     "registration_tests.rs",
+    "removal_gate_tests.rs",
+    "restore_hold.rs",
+    "restore_hold_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
     "shield_drain.rs",
@@ -340,11 +349,13 @@ const NOT_FACADE: &[&str] = &[
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_disposition_tests.rs",
+    "shielded_executed_tests.rs",
+    "shielded_import_tests.rs",
     "shielded_payout.rs",
     "shielded_pool.rs",
     "shielded_release.rs",
-    "shielded_release_tests.rs",
     "shielded_status_lock_tests.rs",
+    "shielded_store_drain_tests.rs",
     "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",
@@ -1026,6 +1037,7 @@ fn error_codes_match_the_contract() {
             PlatformError::BroadcastUnknown { artifact: s() },
             PlatformError::WillBeSent { artifact: s() },
             PlatformError::Cancelled,
+            PlatformError::Restored,
             PlatformError::NeedsGrant {
                 purpose: BudgetPurpose::Funding,
             },
@@ -1251,6 +1263,9 @@ fn error_codes_match_the_contract() {
             ShieldedError::CoinsUnconfirmed { coins: 0 },
             ShieldedError::MoveRunning,
             ShieldedError::CoinsChanged,
+            ShieldedError::StoreClosed {
+                reason: ShieldedStoreClosed::Failed,
+            },
         ],
         ShieldedError::code,
     );
@@ -1719,6 +1734,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
+            dp.platform_cancel_quote(s()).await.map(drop),
+            dp.platform_cancel(s(), s(), s()).await.map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)
                 .await
                 .map(drop),

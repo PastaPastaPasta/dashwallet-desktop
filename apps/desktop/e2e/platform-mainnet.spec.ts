@@ -86,6 +86,19 @@ for (const theme of ["light", "dark"] as const) {
       await done(page, errors);
     });
 
+    test("a held move's details offer no Cancel: it waits for Platform", async ({ page }) => {
+      const errors = await open(page, "platform-move-failed-may-land", theme);
+      await page.getByTestId("sidebar-activity").click();
+      await page.getByTestId("tx-list").waitFor();
+      await page.locator('button[data-txid="platform:moveToCore:pm-held:mayland"]').click();
+      await page.getByTestId("source-detail").waitFor();
+      await expect(page.getByTestId("source-detail-status")).toHaveText("May still go through");
+      await expect(page.getByTestId("source-detail-cancel")).toHaveCount(0);
+      await shot(page, `${theme}-held-move-no-cancel`);
+      expect(await callsOf(page, "platform_cancel_quote")).toBe(0);
+      await done(page, errors);
+    });
+
     test("a held move with more on the addresses names the rest", async ({ page }) => {
       const errors = await open(page, "platform-move-held-and-rest", theme);
       await openTransfer(page, "platformToCore");

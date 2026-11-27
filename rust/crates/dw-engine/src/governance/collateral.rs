@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderMasternodeType;
-use dashcore::hashes::Hash;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_governance::params::EVONODE_VOTE_WEIGHT;

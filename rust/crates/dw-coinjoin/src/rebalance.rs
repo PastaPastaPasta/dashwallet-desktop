@@ -206,7 +206,6 @@ pub fn select_inputs(rebalance: &Rebalance, coins: &[MixCoin]) -> Option<Vec<Mix
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashcore::hashes::Hash;
     use dashcore::{OutPoint, ScriptBuf, Txid};
 
     fn promote(smaller: u32, larger: u32, goal: u32) -> bool {

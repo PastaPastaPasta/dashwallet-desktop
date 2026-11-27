@@ -7,7 +7,6 @@ use crate::psbt::map::Map;
 use crate::psbt::{Error, raw};
 use core::convert::TryFrom;
 use dashcore::blockdata::script::ScriptBuf;
-use dashcore::secp256k1;
 use key_wallet::bip32::KeySource;
 use std::collections::{BTreeMap, btree_map};
 

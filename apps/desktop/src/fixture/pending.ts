@@ -20,6 +20,7 @@ import type { NetworkSwitch } from "../api/generated/NetworkSwitch";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
 import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
+import type { PlatformCancelQuote } from "../api/generated/PlatformCancelQuote";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
@@ -29,15 +30,18 @@ import type { ContactPayQuoteInfo } from "../api/generated/ContactPayQuoteInfo";
 import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
-import { heldExitOp, isHeldOp } from "../platform/move";
+import { heldExitOp, isHeldOp, isHeldSend } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, restoredNetwork, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
+import { restoreFailure, storeRestoreError } from "./errors";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
+import { FIXTURE_DATA_DIR } from "./settings";
 
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
@@ -248,6 +252,23 @@ export function switchedWorld(): World | null {
   return active;
 }
 
+/** What the gate waits for (`restore_status`), as the engine counts it: while RESTORED is set with
+ * Platform off, Platform's first check is not waited for; `platformOff` is the session's. */
+function restoreStatusOf(world: World): RestoreStatus {
+  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false };
+  const off = world.noPlatform === true;
+  return { ...s, waiting: off && !s.platformOnly ? s.waiting.filter((w) => w !== "platformPass") : s.waiting, platformOff: off };
+}
+
+/** Clears RESTORED once nothing holds it; with Platform off, Platform's check stays held (C6). */
+function settleRestored(world: World) {
+  const s = restoreStatusOf(world);
+  if (s.waiting.length === 0 && s.historyWallets.length === 0 && !s.clearFailed) {
+    world.restored = false;
+    world.restoreStatus = world.noPlatform ? { waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true, platformOff: true } : undefined;
+  }
+}
+
 function keepWorlds(world: World) {
   if (typeof sessionStorage !== "undefined") sessionStorage.setItem(SWITCH_KEY, JSON.stringify({ active: world, others: otherNetworks }));
 }
@@ -277,9 +298,21 @@ function heldTopUp(p: PlatformWorld): PlatformActivity | null {
   return held && p.heldInputs?.[held.id] ? held : null;
 }
 
-/** The inputs of a held move, contact payment or top-up from Platform, where the world names them: its
- * exit (C3-9) moves those only. `null`: no such hold. */
+/** A held send (failed by height, may still land): "Move to Dash wallet" at its inputs is its exit. */
+const heldSendOf = (p: PlatformWorld): PlatformActivity | null => p.activity.find(isHeldSend) ?? null;
+
+/** The inputs a send signed: where the world names them, else its fee source (the fixture's quote plans
+ * one input), else every address (a Max). */
+function sendInputs(p: PlatformWorld, send: PlatformActivity): string[] {
+  const source = p.terms[send.id]?.quote.feeSource;
+  return p.heldInputs?.[send.id] ?? (source ? [source] : p.addresses.map((a) => a.address));
+}
+
+/** The inputs of a held send, move, contact payment or top-up from Platform, where the world names them:
+ * its exit (C3-9) moves those only. `null`: no such hold. */
 function exitInputs(p: PlatformWorld): string[] | null {
+  const send = heldSendOf(p);
+  if (send) return sendInputs(p, send);
   const held = heldExitOp(p.activity);
   return held ? (p.heldInputs?.[held.id] ?? null) : null;
 }
@@ -390,8 +423,9 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
   const p = platformOf(ctx.world, "platform_move_to_core_quote");
   // On mainnet only a held move's exit passes.
   if (!p.activity.some(isHeldOp)) refuseSendsOff(ctx.world);
-  // As the engine's quote: a send that may still land holds the next move, refused before any passphrase.
-  const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
+  // As the engine's quote: a send Platform has not answered, or a cancel, holds the next move, refused
+  // before any passphrase. A held send's exit is this move.
+  const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a) && (a.state === "pending" || !!a.cancels));
   if (sending) throw moveHeld(sending.id);
   const credits = moveCredits(p, amount);
   // An exit signs exactly its held record's inputs: an amount the largest of fewer of them carry is refused
@@ -406,7 +440,23 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
     }
   }
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
-  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? null };
+  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? heldSendOf(p)?.id ?? null };
+}
+
+/** `platform_cancel_quote`, as the engine's: the held move or contact payment `of`, answered, beside no
+ * other hold that its document could not tell apart; its amount, to the wallet's own receive address. */
+function cancelQuote(ctx: Ctx, walletId: string, of: string): PlatformCancelQuote {
+  wallet(ctx.world, walletId);
+  const p = platformOf(ctx.world, "platform_cancel_quote");
+  // On mainnet only a held cancel of `of` is quoted again; a new one is off.
+  if (!p.activity.some((a) => a.cancels === of && isHeldOp(a))) refuseSendsOff(ctx.world);
+  const held = p.activity.find((a) => a.id === of && (a.kind === "moveToCore" || a.kind === "contactPayment") && isHeldOp(a));
+  if (!held) throw fail("credits.quote_changed", "that move or payment no longer holds");
+  if (held.state === "pending") throw moveHeld(held.id);
+  const other = p.activity.find((a) => a.id !== of && isHeldOp(a) && (a.state === "pending" || !!a.cancels || (a.kind !== "moveToCore" && a.kind !== "contactPayment")));
+  if (other) throw moveHeld(other.id);
+  if (total(p) < BigInt(held.credits)) throw fail("credits.quote_changed", "the held inputs no longer carry its amount");
+  return { of, credits: held.credits, feeCredits: String(SEND_FEE_CREDITS), to: p.receive.address, grant: { maxDuffs: 0, maxCredits: held.credits } };
 }
 
 /** The engine's recipient check (m4 §2.12): a Platform address of this network that is not one of
@@ -582,6 +632,95 @@ function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
 }
 
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
+  // App::quit_app and restart_app, from the screens shown instead of the wallet. A restart frees a
+  // store the session before held, and the page starts again.
+  quit_app: (_: Record<string, never>, { world }: Ctx) => {
+    (world.appExits ??= []).push("quit");
+    return null;
+  },
+  restart_app: (_: Record<string, never>, { world, relaunch }: Ctx) => {
+    (world.appExits ??= []).push("restart");
+    world.storageHeld = undefined;
+    // The start's drain finishes once the other program has let go, or after a passing failure.
+    const shielded = world.pending.shielded;
+    if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
+    if (world.networkSwitch) world.networkSwitch.reopenFails = false;
+    world.noPlatform = undefined;
+    // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
+    if (world.restoreRequested) {
+      world.restoreRequested = false;
+      world.openRefusal = undefined;
+      world.restored = true;
+    }
+    relaunch?.();
+    return null;
+  },
+  // App::restore_available, request_restore, keep_current_files and cancel_restore (DTO contract v3),
+  // for the window's network, before it opens.
+  restore_available: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreAvailable");
+    return world.restoreAvailable === true;
+  },
+  request_restore: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("requestRestore");
+    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`));
+    world.restoreRequested = true;
+    return null;
+  },
+  // Keep runs KeepLive: the request and the journal go, RESTORED stays.
+  keep_current_files: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("keepCurrentFiles");
+    if (world.openRestore?.state === "foreign") {
+      world.openRestore = undefined;
+      world.restored = true;
+    }
+    return null;
+  },
+  // Only the request goes; nothing was changed, so the current data opens.
+  cancel_restore: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("cancelRestore");
+    if (world.openRestore?.state === "notStarted") world.openRestore = undefined;
+    return null;
+  },
+  // B addendum 1: what RESTORED waits for; Try again, which writes a clear that failed before; and
+  // Finish without Dash Platform, which closes the network unless busy and opens it without Platform
+  // (as usual if that fails), under one lock as `switch_network` does.
+  restore_status: (_: Record<string, never>, { world }: Ctx) => (world.restored || world.restoreStatus?.platformOnly ? restoreStatusOf(world) : null),
+  restore_retry: (_: Record<string, never>, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreRetry");
+    if (world.restored && world.restoreStatus?.clearFailed) {
+      world.restoreStatus = { ...world.restoreStatus, clearFailed: false };
+      settleRestored(world);
+    }
+    return null;
+  },
+  finish_without_platform: (_: Record<string, never>, { world }: Ctx) => {
+    // Nothing unless Platform's first check is what RESTORED waits for.
+    if (!world.restored || !restoreStatusOf(world).waiting.includes("platformPass")) return openedNetwork(world, restoredNetwork(world));
+    const knob = world.finishWithoutPlatform;
+    if (knob === "busy" || knob === "draining")
+      throw fail("app.network_busy", "closing the network would cut what runs", {
+        kind: "networkBusy",
+        flows: knob === "busy" ? ["registration"] : [],
+        mixing: false,
+        broadcast: false,
+        stalled: false,
+        draining: knob === "draining",
+      });
+    restarted(world);
+    if (knob === "rolledBack") {
+      world.finishWithoutPlatform = undefined;
+      throw fail("app.network_switch_failed", `${world.launch.network.dirName} did not open without Platform: fixture`, {
+        kind: "networkSwitch",
+        network: world.launch.network,
+        rolledBack: true,
+      });
+    }
+    world.noPlatform = true;
+    settleRestored(world);
+    keepWorlds(world);
+    return openedNetwork(world, restoredNetwork(world));
+  },
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
   // then the source: Shielded is off until its slice; Platform pays one address withdrawal.
   contact_pay_quote: ({ walletId, identity, contact, credits, source }: CommandArgs["contact_pay_quote"], { world }: Ctx) => {
@@ -641,10 +780,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       // Saved last, as dw-app saves it; `saveFails` keeps the choice the switch started from.
       world.pending.networkChoice = knobs.saveFails ? before : { chosen: network, saved: true };
       keepWorlds(world);
-      return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+      return { opened: openedNetwork(world, world.launch.network), choice: networkView(world) };
     }
     world.pending.networkChoice = { chosen: network, saved: true };
-    return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+    return { opened: openedNetwork(world, world.launch.network), choice: networkView(world) };
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,
@@ -811,8 +950,12 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
   platform_move_to_core: ({ walletId, amount, to, exitOf, grant }: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
     const { world } = ctx;
-    // As the engine, first: the exit of a top-up that no longer holds is not the move Confirm showed.
-    if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) {
+    // As the engine, first: the exit of a top-up or send that no longer holds is not the move Confirm showed.
+    const exited = (() => {
+      const p = platformOf(world, "platform_move_to_core");
+      return heldTopUp(p) ?? heldSendOf(p);
+    })();
+    if (exitOf != null && exited?.id !== exitOf) {
       refuseSendsOff(world);
       throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
     }
@@ -830,7 +973,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const p = platformOf(world, "platform_move_to_core");
     // A send that may still land, or a move Platform has not answered, holds the next move (it waits until it
     // settles). A move that failed by height does not: the next one signs at the same inputs and frees it.
-    const holding = p.activity.find((a) => isHeldOp(a) && (a.kind === "send" || a.state === "pending"));
+    const holding = p.activity.find((a) => isHeldOp(a) && ((a.kind === "send" && a.id !== exitOf) || a.state === "pending"));
     if (holding) throw moveHeld(holding.id);
     preCheck(p);
     const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a)).map((a) => a.id);
@@ -848,6 +991,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const feeCredits = state === "done" ? q.feeCredits : null;
     const exit = exitInputs(p);
     const lost = state === "failed" ? heldTopUp(p)?.id : undefined;
+    // The exit of a held send: its document says which of the two went through; neither is replaced.
+    const send = exitOf != null && exited?.kind === "send" ? exited.id : null;
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
       { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
@@ -856,7 +1001,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       ...p.activity.map((a) =>
         supersedes.includes(a.id)
           ? { ...a, state: "replaced" as const, mayLand: false }
-          : state === "done" && a.kind === "toIdentity" && isHeldOp(a)
+          : state === "done" && (a.kind === "toIdentity" || a.id === send) && isHeldOp(a)
             ? { ...a, state: "failed" as const, mayLand: false }
             : state === "failed" && a.kind === "toIdentity" && isHeldOp(a)
               ? { ...a, state: "done" as const, mayLand: false }
@@ -867,6 +1012,41 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // one does; a `pending` one has not been seen yet.
     if (state === "done") p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
     if (lost) landHeldTopUp(ctx, lost);
+    // A lost exit of a send: the send went through, its recipient paid.
+    if (state === "failed" && send) landSend(p, send);
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
+  },
+  platform_cancel_quote: ({ walletId, of }: { walletId: string; of: string }, ctx: Ctx) => cancelQuote(ctx, walletId, of),
+  // As the engine: the cancel signs the held item's inputs at its nonces to the quote's own address. As
+  // `nextMove` says, it goes through (the held item fails, the amount less the fee arrives at that
+  // address), stays unanswered, or loses (`lost`: the held item went through, the cancel failed unpaid).
+  platform_cancel: ({ walletId, of, to, grant }: { walletId: string; of: string; to: string; grant: string }, ctx: Ctx): PlatformSendOutcome => {
+    const { world } = ctx;
+    const q = cancelQuote(ctx, walletId, of);
+    if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
+    const p = platformOf(world, "platform_cancel");
+    preCheck(p);
+    const g = checkGrant(world, grant, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
+    if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.credits))
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.credits, remaining: g.grant.purpose.maxCredits });
+    useGrant(world, grant);
+    if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the cancel");
+    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" ? "failed" : "done";
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const id = `pc-${p.activity.length + 1}`;
+    const credits = BigInt(q.credits);
+    const arrives = credits - SEND_FEE_CREDITS;
+    const row: PlatformActivity = { id, kind: "send", state, credits: q.credits, address: null, to: q.to, expectedDuffs: null, feeCredits: state === "done" ? q.feeCredits : null, at, mayLand: state === "pending", estimated: false, cancels: of };
+    p.activity = [
+      row,
+      ...p.activity.map((a) => (a.id !== of ? a : state === "done" ? { ...a, state: "failed" as const, mayLand: false } : state === "failed" ? { ...a, state: "done" as const, mayLand: false } : a)),
+    ];
+    if (state !== "pending") spend(p, credits);
+    if (state === "done") {
+      p.addresses = [...p.addresses, { address: q.to, credits: String(arrives) }];
+      p.activity = [{ id: `pa-${p.activity.length + 1}`, kind: "incoming", state: "done", credits: String(arrives), address: q.to, to: null, expectedDuffs: null, feeCredits: null, at, mayLand: false, estimated: false }, ...p.activity];
+    }
+    return { id, credits: q.credits, amountCredits: q.credits, feeFromAmount: true, to: q.to, state, mayLand: state === "pending", feeCredits: row.feeCredits, estimated: false };
   },
 };

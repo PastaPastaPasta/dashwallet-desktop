@@ -15,7 +15,7 @@ import { CREDITS_PER_DUFF } from "../api/pending";
 import { failureText, Model } from "../onboarding/model";
 import { t } from "../i18n";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify, preflightText, stillHeld } from "./move";
+import { invalidArgumentText, isHeldOp, isHeldSend, moveCanRetry, moveErrorText, onMoveSettledNotify, preflightText, stillHeld } from "./move";
 import { isAddressSendsOff } from "./mainnetOff";
 
 export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "authorizePlatformSend" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
@@ -348,8 +348,9 @@ export function sendOutcomeCopy(outcome: PlatformSendOutcome, credits: (c: strin
   }
 }
 
-/** An earlier send of the wallet that failed by height and may still go through (the one Retry applies to). */
-export const heldSend = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => activity?.find((a) => a.kind === "send" && a.state === "failed" && a.mayLand && a.to !== null) ?? null;
+/** An earlier send of the wallet that failed by height and may still go through (the one Retry applies to).
+ * A cancel is no payment to retry. */
+export const heldSend = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => activity?.find(isHeldSend) ?? null;
 
 /** What a retry of the held send `row` asks for, in order: its credits (the amount), then Max when
  * the engine says that is not its amount (Activity does not say which a send was). */

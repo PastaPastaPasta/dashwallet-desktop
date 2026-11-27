@@ -12,9 +12,9 @@ import {
   canRetry,
   combineResultText,
   MOVE_COPY,
-  moveErrorText,
   planFee,
   planReceives,
+  refusalText,
   resultText,
   shieldResultText,
   type MoveMixedFlow,
@@ -207,7 +207,7 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
           {step === "refused" && (
             <>
               <p className="form-problem" role="alert" data-testid="move-mixed-refusal">
-                {moveErrorText(flow.error, amount, shieldedWait(shieldedStatus))}
+                {refusalText(flow, amount, shieldedWait(shieldedStatus))}
               </p>
               <div className="sheet-actions">
                 {canRetry(flow.error) && (

@@ -4170,8 +4170,8 @@ mod tests {
     /// that key's HASH160 is the address; no other key, no other address.
     #[test]
     fn a_platform_address_signer_signs_its_own_address_only() {
-        use dashcore::hashes::{Hash, hash160};
-        use dashcore::sign_message::MessageSignature;
+        use dashcore::hashes::hash160;
+        use dashcore::sign_message::{from_slice, recover_pubkey};
         use key_wallet::bip32::ExtendedPrivKey;
 
         let dir = tempfile::tempdir().unwrap();
@@ -4202,16 +4202,17 @@ mod tests {
             .unwrap()
             .derive_priv(&path)
             .unwrap();
-        let public = dashcore::secp256k1::PublicKey::from_secret_key(&key.private_key);
-        let hash = *hash160::Hash::hash(&public.serialize()).as_byte_array();
+        let public = key.private_key.public_key();
+        let hash = *hash160::Hash::hash(&public.to_compressed()).as_byte_array();
         assert_eq!(s.platform_address_matches(&path, &hash), Ok(true));
         let sig = s
             .sign_platform_address(&path, &hash, b"transition")
             .unwrap();
-        let recovered = MessageSignature::from_slice(&sig)
-            .unwrap()
-            .recover_pubkey(dashcore::hashes::sha256d::Hash::hash(b"transition"))
-            .unwrap();
+        let recovered = recover_pubkey(
+            &from_slice(&sig).unwrap(),
+            dashcore::hashes::sha256d::Hash::hash(b"transition"),
+        )
+        .unwrap();
         assert_eq!(recovered.inner, public);
 
         let mut other = hash;
@@ -4531,8 +4532,8 @@ mod tests {
         let v = vault_with_wallet(dir.path(), Some(b"old-pw"), 0x5a);
         let w = [1u8; 32];
         let key = DerivationPath::from_str("m/9'/1'/5'/0'/0'/0'/0'").unwrap();
-        let peer = dashcore::secp256k1::PublicKey::from_secret_key(
-            &dashcore::secp256k1::SecretKey::from_secret_bytes([0x42; 32]).unwrap(),
+        let peer = dpp::secp256k1::PublicKey::from_secret_key(
+            &dpp::secp256k1::SecretKey::from_secret_bytes([0x42; 32]).unwrap(),
         );
 
         v.lock();

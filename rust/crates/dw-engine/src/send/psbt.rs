@@ -224,13 +224,13 @@ pub(super) fn derivation_of(
     info: &ManagedWalletInfo,
     address: &Address,
     fingerprint: Option<Fingerprint>,
-) -> Option<(dashcore::secp256k1::PublicKey, Fingerprint, DerivationPath)> {
+) -> Option<(dashcore::ecdsa::EcdsaPublicKey, Fingerprint, DerivationPath)> {
     let fp = fingerprint?;
     // Only a funds address's: a payment to a keys-only one leaves the
     // wallet (MG-04 D55), so no signer should take it for change.
     let a = crate::coins::own_funds_address_info(info, address)?;
     let pk = match a.public_key? {
-        PublicKeyType::ECDSA(bytes) => dashcore::secp256k1::PublicKey::from_slice(&bytes).ok()?,
+        PublicKeyType::ECDSA(bytes) => dashcore::ecdsa::EcdsaPublicKey::from_bytes(&bytes).ok()?,
         _ => return None,
     };
     Some((pk, fp, a.path))
@@ -543,6 +543,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_while_restored()?;
             if !dw_psbt::finalize(&mut psbt) {
                 return Err(PsbtFailure::NotComplete.into());
             }

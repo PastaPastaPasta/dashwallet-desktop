@@ -6,7 +6,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-mkdir "$work/bin"
+mkdir "$work/bin" "$work/parts"
 
 cat > "$work/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -52,6 +52,7 @@ azure=$'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1'
 run() {
   : > "$work/log"
   PATH="$work/bin:$PATH" DW_APT_MIRRORS="$work/mirrors" DW_APT_SOURCES="$work/sources" FAKE_LOG="$work/log" \
+    DW_APT_SOURCE_PARTS="$work/parts" \
     FAKE_GOOD_MIRROR="$1" "$here/linux-host-deps.sh" rust > /dev/null 2> "$work/err"
 }
 fail() {
@@ -144,6 +145,19 @@ if run nowhere; then fail "no mirror list: the script passed"; fi
 
 echo "linux-host-deps: mirror fallback ok"
 
+# A packages.microsoft.com source is dropped before the update; every other source stays.
+write_sources
+printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
+echo 'deb [arch=amd64] https://packages.microsoft.com/ubuntu/24.04/prod noble main' > "$work/parts/microsoft-prod.list"
+printf 'Types: deb\nURIs: https://packages.microsoft.com/repos/azure-cli/\nSuites: noble\n' > "$work/parts/azure-cli.sources"
+echo 'deb http://ppa.launchpadcontent.net/example/ppa/ubuntu noble main' > "$work/parts/other.list"
+run http://us-east-2.ec2. || fail "a packages.microsoft.com source: the script failed"
+[ ! -e "$work/parts/microsoft-prod.list" ] || fail "the packages.microsoft.com .list source was kept"
+[ ! -e "$work/parts/azure-cli.sources" ] || fail "the packages.microsoft.com .sources source was kept"
+[ -f "$work/parts/other.list" ] || fail "a source not on packages.microsoft.com was dropped"
+rm -f "$work/parts/other.list"
+echo "linux-host-deps: packages.microsoft.com sources dropped"
+
 # The Actions cache (.github/actions/linux-host-deps): a hit installs from it; live-first tries once.
 mkdir -p "$work/cache/archives"
 touch "$work/cache/archives/a.deb"
@@ -151,6 +165,7 @@ run_cached() {
   : > "$work/log"
   : > "$work/summary"
   PATH="$work/bin:$PATH" DW_APT_MIRRORS="$work/mirrors" DW_APT_SOURCES="$work/sources" FAKE_LOG="$work/log" \
+    DW_APT_SOURCE_PARTS="$work/parts" \
     FAKE_GOOD_MIRROR="$1" DW_APT_CACHE="$work/cache" DW_APT_CACHE_TOOL="$work/apt-cache" \
     GITHUB_STEP_SUMMARY="$work/summary" "${@:2}" "$here/linux-host-deps.sh" rust > /dev/null 2> "$work/err"
 }
@@ -163,9 +178,12 @@ images_mirrors() {
 }
 
 images_mirrors
+echo 'deb https://packages.microsoft.com/ubuntu/24.04/prod noble main' > "$work/parts/microsoft-prod.list"
 run_cached nowhere env || fail "a cache hit: the script failed"
 expect_log "verify install-cache " "a cache hit"
 no_summary "a cache hit"
+[ -f "$work/parts/microsoft-prod.list" ] || fail "a cache hit dropped a source"
+rm -f "$work/parts/microsoft-prod.list"
 
 images_mirrors
 run_cached http://us-east-2.ec2. env DW_APT_LIVE_FIRST=1 || fail "live-first, live works: the script failed"

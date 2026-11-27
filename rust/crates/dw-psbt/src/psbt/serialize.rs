@@ -12,8 +12,7 @@
 
 use core::convert::TryInto;
 
-use dashcore::hashes::{Hash, hash160, ripemd160, sha256, sha256d};
-use dashcore::secp256k1;
+use dashcore::hashes::{hash160, ripemd160, sha256, sha256d};
 
 use super::map::{Input, Map, Output, PsbtSighashType};
 use crate::psbt::{Error, PartiallySignedTransaction, SigKey};
@@ -25,6 +24,7 @@ use dashcore::consensus::encode::{self, Decodable, serialize};
 use dashcore::crypto::ecdsa;
 use dashcore::crypto::key::PublicKey;
 use dashcore::io;
+use dashcore::sighash::EcdsaSighashType;
 use key_wallet::bip32::KeySource;
 use key_wallet::bip32::{ChildNumber, Fingerprint};
 
@@ -189,15 +189,11 @@ impl Deserialize for ecdsa::Signature {
         // also has a field sighash_u32 (See BIP141). For example, when signing with non-standard
         // 0x05, the sighash message would have the last field as 0x05u32 while, the verification
         // would use check the signature assuming sighash_u32 as `0x01`.
-        ecdsa::Signature::from_slice(bytes).map_err(|e| match e {
-            ecdsa::Error::EmptySignature => Error::InvalidEcdsaSignature(e),
-            ecdsa::Error::NonStandardSighashType(flag) => Error::NonStandardSighashType(flag),
-            ecdsa::Error::Secp256k1(..) => Error::InvalidEcdsaSignature(e),
-            ecdsa::Error::HexEncoding(..) => {
-                unreachable!("Decoding from slice, not hex")
-            }
-            _ => Error::InvalidEcdsaSignature(e),
-        })
+        if let Some(&flag) = bytes.last() {
+            EcdsaSighashType::from_standard(u32::from(flag))
+                .map_err(|_| Error::NonStandardSighashType(u32::from(flag)))?;
+        }
+        ecdsa::Signature::from_slice(bytes).map_err(Error::InvalidEcdsaSignature)
     }
 }
 
@@ -276,6 +272,28 @@ mod tests {
         let non_standard_sighash = [222u8, 0u8, 0u8, 0u8]; // 32 byte value.
         let sighash = PsbtSighashType::deserialize(&non_standard_sighash);
         assert!(sighash.is_ok())
+    }
+
+    #[test]
+    fn partial_signatures_need_a_standard_sighash_byte_and_der() {
+        let der = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01];
+        let with = |flag: u8| [&der[..], &[flag]].concat();
+        assert!(ecdsa::Signature::deserialize(&with(0x01)).is_ok());
+        for flag in [0x00, 0x04, 0x05, 0x80, 0xff] {
+            assert!(matches!(
+                ecdsa::Signature::deserialize(&with(flag)),
+                Err(Error::NonStandardSighashType(f)) if f == u32::from(flag)
+            ));
+        }
+        let bad_der = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x02, 0x01, 0x01];
+        assert!(matches!(
+            ecdsa::Signature::deserialize(&bad_der),
+            Err(Error::InvalidEcdsaSignature(_))
+        ));
+        assert!(matches!(
+            ecdsa::Signature::deserialize(&[]),
+            Err(Error::InvalidEcdsaSignature(_))
+        ));
     }
 
     #[test]

@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{BlockHash, OutPoint, Transaction, Txid};
 use dw_appdb::{AppDb, ProposalRow};
 use dw_governance::object::{GovernanceObject, display_hex};
