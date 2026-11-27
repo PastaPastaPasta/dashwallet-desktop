@@ -83,7 +83,7 @@ export function ResultSheet({
     heldAt.current = null;
     if (outcome.kind !== "unknown") return;
     const a = document.activeElement;
-    if (held && a !== held && a !== document.body && a !== closeButton.current?.closest('[role="dialog"]')) return;
+    if (a !== held && a !== document.body && a !== closeButton.current?.closest('[role="dialog"]')) return;
     (canRetry ? retryButton : closeButton).current?.focus();
   }, [busy, canRetry, outcome]);
 
@@ -134,10 +134,10 @@ export function ResultSheet({
         )}
         {outcome.kind === "unknown" && (
           <>
-            <DashButton ref={closeButton} variant="tintedGray" size="large" data-testid="pay-result-close" disabled={busy} onClick={() => onDone(false)}>
+            <DashButton ref={closeButton} variant="tintedGray" size="large" data-testid="pay-result-close" data-autofocus={!canRetry || undefined} disabled={busy} onClick={() => onDone(false)}>
               {t("pay.result.close")}
             </DashButton>
-            {canRetry && (
+            {(canRetry || busy) && (
               <DashButton ref={retryButton} variant="filledBlue" size="large" data-testid="pay-result-retry" data-autofocus disabled={busy} onClick={() => void retry()}>
                 {busy ? t("pay.result.sending") : t("pay.result.retry")}
               </DashButton>

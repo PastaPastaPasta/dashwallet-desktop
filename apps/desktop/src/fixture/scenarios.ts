@@ -172,6 +172,7 @@ export interface World {
   shellSync: ShellSync | null;
   /** Txids `open_tx_in_explorer` accepted, in call order. The command takes no network. */
   explorerOpened?: string[];
+  giftClaimOpened?: string;
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
   /** `open_project_link` calls, in order (the fixture opens nothing). */
