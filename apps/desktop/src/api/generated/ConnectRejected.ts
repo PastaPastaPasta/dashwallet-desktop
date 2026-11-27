@@ -3,4 +3,4 @@
 /**
  * Why an App Connect link was refused before any sheet.
  */
-export type ConnectRejected = "invalid" | "unsupported" | "needsNewerWallet";
+export type ConnectRejected = "invalid" | "unsupported" | "needsNewerWallet" | "busy";

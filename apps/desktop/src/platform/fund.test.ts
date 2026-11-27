@@ -252,7 +252,7 @@ describe("the Add from Dash wallet error texts", () => {
   it("has words for the too-many-coins and unfinished-add refusals", () => {
     expect(text(appError("credits.too_many_inputs", { kind: "number", value: 700 }))).toBe("That takes too many separate coins at once. Consolidate your coins first, then try again.");
     expect(text(appError("credits.fund_pending", { kind: "txid", txid: "ab" }))).toBe("An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.");
-    expect(text(appError("platform.feature_off", { kind: "feature", feature: "platform" }))).toBe("Platform addresses are not active on this network yet.");
+    expect(text(appError("platform.feature_off", { kind: "feature", feature: "platform" }))).toBe("Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.");
   });
 
   it("a refused Finish names its own lock only while it can still be finished", () => {

@@ -142,6 +142,8 @@ export interface MasternodesWorld {
   issued: number;
   /** The next update's one hand-off finds no peers: it is saved `not_sent`. */
   nextUpdateNotSent: boolean;
+  /** A held registration's height; absent: 180,000 blocks below the tip. */
+  registeredHeights: Record<string, number>;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -170,9 +172,9 @@ function payout(n: number, daysAgo: number, address: string, unattributed = fals
   };
 }
 
-const roles = (r: Partial<MasternodeRow["roles"]> = {}): MasternodeRow["roles"] => ({ collateral: false, owner: false, voting: false, payout: false, operator: false, attached: [], ...r });
+export const roles = (r: Partial<MasternodeRow["roles"]> = {}): MasternodeRow["roles"] => ({ collateral: false, owner: false, voting: false, payout: false, operator: false, attached: [], ...r });
 
-function row(proTxHash: string, label: string | null, patch: Partial<MasternodeRow>): MasternodeRow {
+export function row(proTxHash: string, label: string | null, patch: Partial<MasternodeRow>): MasternodeRow {
   return {
     proTxHash,
     kind: "regular",
@@ -259,6 +261,7 @@ export function newMasternodesWorld(): MasternodesWorld {
     spendInputs: false,
     issued: 0,
     nextUpdateNotSent: false,
+    registeredHeights: {},
   };
 }
 
@@ -935,7 +938,7 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
         list: copy(listedOf(m, proTxHash)?.facts ?? null),
         registration: held
           ? {
-              registeredHeight: HEIGHT - 180_000,
+              registeredHeight: m.registeredHeights[proTxHash] ?? HEIGHT - 180_000,
               collateral: copy(r.collateral),
               ownerAddress: proTxHash in m.ownerKeys ? keyInfo("owner", m.ownerKeys[proTxHash]).address : addr(`ow${proTxHash.slice(0, 4)}`),
               // The wallet's own record, whatever the sync state (reads.rs:596): the list's entry agrees with it.

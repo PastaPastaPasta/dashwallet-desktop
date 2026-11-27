@@ -2426,6 +2426,10 @@ input[type="radio"]:disabled {
   margin-bottom: 0;
 }
 
+.pay-banner.is-updating > .dash-button {
+  flex-shrink: 0;
+}
+
 .pay-fee-line {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -2975,6 +2979,10 @@ input[type="radio"]:disabled {
 
 .onboarding-text {
   text-align: center;
+}
+
+.store-open-text {
+  overflow-wrap: anywhere;
 }
 
 .onboarding-note,
@@ -4948,6 +4956,19 @@ button.bell-row-open:focus-visible {
   opacity: var(--dw-opacity-disabled);
 }
 
+.restored-state-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.restored-state-panel .history-gap-actions {
+  margin-top: 0;
+}
+
 .history-gap-notice {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
@@ -5508,6 +5529,38 @@ button.bell-row-open:focus-visible {
 
 .pay-with-source[data-disabled] .topup-choice-amount {
   color: var(--dw-role-text-secondary);
+}
+
+/* "Make your username private": a source's note, balance and reason, one line each. */
+.pay-with-source .topup-choice-buys > span {
+  display: block;
+}
+
+/* The tip shown instead of the sources while the Shielded balance cannot pay; the pool's warning in
+   the warning color. */
+.privacy-tip {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-neutral-tint);
+}
+
+.privacy-tip[data-tone="warning"] {
+  background: var(--dw-role-warning-tint);
+}
+
+.privacy-tip-title {
+  margin: 0 0 var(--dw-space-xs);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.privacy-tip[data-tone="warning"] .privacy-tip-title {
+  color: var(--dw-role-warning);
+}
+
+.privacy-tip-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .topup-title {
@@ -6727,6 +6780,82 @@ button.bell-row-open:focus-visible {
   align-items: end;
 }
 
+/* A shared masternode's pane section: the share bar (this wallet's shares in the accent), its legend and lines. */
+.sh-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.sh-detail p {
+  margin: 0;
+}
+
+.sh-sharebar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin: var(--dw-space-xs) 0;
+}
+
+.sh-sharebar > span {
+  flex-basis: 0;
+  border-radius: 2px;
+  background: var(--dw-role-progress-track);
+}
+
+.sh-sharebar > span.is-mine {
+  background: var(--dw-role-accent);
+}
+
+.sh-node-hash {
+  display: block;
+}
+
+.sh-key-lines {
+  overflow-wrap: anywhere;
+}
+
+.sh-legend,
+.sh-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0 0 var(--dw-space-xs);
+  padding: 0;
+  list-style: none;
+}
+
+.sh-legend {
+  flex-flow: row wrap;
+  gap: var(--dw-space-xxs) var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.sh-legend li::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--dw-space-xxs);
+  border-radius: 2px;
+  background: var(--dw-role-progress-track);
+}
+
+.sh-legend li.is-mine {
+  color: var(--dw-role-text-primary);
+}
+
+.sh-legend li.is-mine::before {
+  background: var(--dw-role-accent);
+}
+
+.sh-standby-share {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
 .page-masternodes .mg-notice {
   margin-bottom: var(--dw-space-l);
 }
@@ -7011,7 +7140,15 @@ button.bell-row-open:focus-visible {
   padding: 0;
 }
 
-.connect-critical {
+.connect-quote-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+}
+
+.connect-critical,
+.connect-key-note {
   margin: var(--dw-space-xs) 0 0;
   margin-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
 }
@@ -7116,4 +7253,86 @@ button.bell-row-open:focus-visible {
 .connect-step:not([data-current])::before {
   content: "";
   width: var(--dw-space-l);
+}
+
+.connected-apps-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+  width: 100%;
+  margin: var(--dw-space-s) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connected-app-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  padding-top: var(--dw-space-m);
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.connected-app-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+.connected-app-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  min-width: 0;
+  flex: 1;
+}
+
+.connected-app-returns {
+  margin: 0;
+}
+
+.connected-app-actions {
+  flex-shrink: 0;
+}
+
+.connected-app-meta {
+  padding: 0;
+}
+
+.connected-app-keys-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+}
+
+.connected-app-keys {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connected-app-key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.connected-app-key-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+}
+
+.connected-app-key-detail {
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.connected-app-critical {
+  margin: var(--dw-space-xxs) 0 0;
 }

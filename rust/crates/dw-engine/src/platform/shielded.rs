@@ -20,7 +20,9 @@ use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::{DispatchState, GrantRequest};
 use super::payments::Counterparty;
-use super::shielded_pool::{self as pool, on_pool, on_pool_signing};
+use super::shielded_pool::{
+    self as pool, on_pool, on_pool_keyset, on_pool_signing, on_pool_signing_keyset,
+};
 use crate::EngineError;
 
 /// The protocol version from which Platform takes shielded-pool
@@ -82,6 +84,12 @@ pub struct ShieldedStatus {
     /// engine builds it in the background when the session's Platform side
     /// starts on an active network).
     pub prover_ready: bool,
+    /// The library can spend from the pool's key set: send, unshield to Core
+    /// or Platform, and pay a contact from Shielded. While false those, and a
+    /// new move into the pool, refuse `platform.unavailable` before anything
+    /// else; finishing a shield already sent, receive, sync and the balance
+    /// keep working. Read on an inactive network too.
+    pub spends_available: bool,
     /// Whether the account's viewing key is bound, or what holds its first
     /// bind; `None` while the network is not active. Once bound the receive
     /// address reads before any scan ([`ShieldedAddress`]).
@@ -149,6 +157,9 @@ pub struct ShieldedSyncInfo {
     pub scan: Option<ShieldedScanProgress>,
     /// The wallet's last pass this session failed, until one succeeds.
     pub last_pass_failed: bool,
+    /// As [`ShieldedStatus::spends_available`], read on an inactive network
+    /// too, so Receive holds the address without waiting for a status read.
+    pub spends_available: bool,
 }
 
 /// A shielded payment address of the wallet, for "Receive" and its QR.
@@ -327,6 +338,57 @@ pub struct UnresolvedSpend {
     pub transition: String,
     /// Re-sends so far.
     pub attempts: u32,
+}
+
+/// Why the shielded store stays closed ([`ShieldedError::StoreClosed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedStoreClosed {
+    /// No copy of the store from this upgrade: neither a verified
+    /// before-upgrade snapshot nor this upgrade's part-upgraded copy.
+    NoUpgradeCopy,
+    /// Another app holds the store.
+    InUse,
+    /// A stored record could not be read: the store is damaged.
+    Damaged,
+    /// The drain could not read or write a store, or the dispatch journal
+    /// did not open, this start.
+    Failed,
+}
+
+impl ShieldedStoreClosed {
+    /// The serialized name, as the error's data carries it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoUpgradeCopy => "no_upgrade_copy",
+            Self::InUse => "in_use",
+            Self::Damaged => "damaged",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::fmt::Display for ShieldedStoreClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoUpgradeCopy => "no copy of it from the upgrade",
+            Self::InUse => "in use",
+            Self::Damaged => "damaged",
+            Self::Failed => "the drain did not finish",
+        })
+    }
+}
+
+impl From<&dw_shielded_drain::ShieldedDrainError> for ShieldedStoreClosed {
+    fn from(e: &dw_shielded_drain::ShieldedDrainError) -> Self {
+        use dw_shielded_drain::ShieldedDrainError as E;
+        match e {
+            E::Precondition => Self::NoUpgradeCopy,
+            E::StoreInUse => Self::InUse,
+            E::Corrupt { .. } => Self::Damaged,
+            _ => Self::Failed,
+        }
+    }
 }
 
 /// A spend whose notes the library holds because it may still go through
@@ -566,10 +628,15 @@ impl DashPay {
 
     /// The wallet's shielded receive address. A bound key's address reads
     /// with no read of the note store, so it answers during a pass; the
-    /// first bind goes through the pool.
+    /// first bind goes through the pool. While the library cannot spend from
+    /// the key set (`spends_available`) no address is issued:
+    /// `platform.unavailable` first.
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError> {
         let wallet = self.wallet_id;
         let bound = pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            if !pool::keyset_spends(&pw) {
+                return Err(super::PlatformError::Unavailable.into());
+            }
             Ok(pool::bound_address(&pw).await)
         })
         .await?;
@@ -586,7 +653,7 @@ impl DashPay {
     /// buys, with the refusals of [`Self::shield_from_core`].
     pub async fn shield_quote(&self, amount: FundAmount) -> Result<ShieldQuote, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_keyset(&self.session, wallet, move |session, lib| async move {
             match amount {
                 FundAmount::Duffs { duffs } => pool::shield_quote(&session, &lib, duffs).await,
                 FundAmount::All => pool::shield_max_quote(&session, wallet, &lib).await,
@@ -605,7 +672,7 @@ impl DashPay {
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             pool::shield(&session, wallet, &lib, amount, &grant).await
         })
         .await
@@ -615,7 +682,7 @@ impl DashPay {
     /// 0's coins in one asset lock. Reads coins only.
     pub async fn shield_mixed_quote(&self) -> Result<MixedShieldQuote, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_keyset(&self.session, wallet, move |session, lib| async move {
             super::shield_drain::quote(&session, wallet, &lib).await
         })
         .await
@@ -661,7 +728,7 @@ impl DashPay {
     /// it and `resume_shield` applies it.
     pub async fn shield_mixed_coins(&self, grant: String) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             super::shield_drain::drain(&session, wallet, &lib, &grant).await
         })
         .await
@@ -690,7 +757,7 @@ impl DashPay {
         to: String,
         credits: u64,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+        on_pool_keyset(&self.session, self.wallet_id, move |_, lib| async move {
             pool::send_quote(&lib, &to, credits).await
         })
         .await
@@ -711,7 +778,7 @@ impl DashPay {
         confirm_unrecorded: bool,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let what = (to.as_str(), credits);
             let (memo, confirmed) = (memo.as_deref(), confirm_unrecorded);
             pool::send(&session, wallet, &lib, what, memo, &grant, confirmed).await
@@ -726,7 +793,7 @@ impl DashPay {
         credits: u64,
         to: Option<String>,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+        on_pool_keyset(&self.session, self.wallet_id, move |_, lib| async move {
             pool::unshield_quote(&lib, credits, to.as_deref()).await
         })
         .await
@@ -744,7 +811,7 @@ impl DashPay {
         confirm_unrecorded: bool,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
@@ -760,7 +827,7 @@ impl DashPay {
         to: Option<String>,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
         pool::refuse_on_mainnet(self.session.network().core_network())?;
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+        on_pool_keyset(&self.session, self.wallet_id, move |_, lib| async move {
             pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
         })
         .await
@@ -780,7 +847,7 @@ impl DashPay {
     ) -> Result<UnshieldToPlatformOutcome, ShieldedError> {
         pool::refuse_on_mainnet(self.session.network().core_network())?;
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
@@ -797,7 +864,6 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
             let mut rows = pool::history(&lib, offset, limit).await?;
-            super::shielded_release::mark_refused(&session, wallet, &mut rows).await;
             session.name_shielded_payouts(wallet, &mut rows).await;
             Ok(rows)
         })

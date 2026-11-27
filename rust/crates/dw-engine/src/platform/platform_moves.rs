@@ -124,8 +124,9 @@ use super::money_gate::{Refusal, Subject};
 use super::names::{NameAuthority, check_credit_cap};
 use super::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
-    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
+    PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformCancelQuote,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+    RecipientProblem,
 };
 use super::registration_flow::parse_identity;
 use super::requests::{leased, write_permit};
@@ -183,6 +184,19 @@ impl MoveKind {
     /// registration's create, held and exited alike (C-routes C3-9).
     pub(crate) fn credits_identity(self) -> bool {
         matches!(self, MoveKind::ToIdentity | MoveKind::Register)
+    }
+
+    /// Executed, it leaves a withdrawal document whose id its inputs, nonces
+    /// and payout give: a move to Core or a contact payout.
+    pub(crate) fn withdraws(self) -> bool {
+        matches!(self, MoveKind::ToCore | MoveKind::ToContact)
+    }
+
+    /// Executed, it leaves nothing but its nonces taken: beside a held one
+    /// only a withdrawal's document says which of a key's moves executed
+    /// (C-routes C3-9, #762).
+    fn leaves_no_document(self) -> bool {
+        self.credits_identity() || self == MoveKind::Transfer
     }
 }
 
@@ -244,6 +258,96 @@ pub(crate) struct MoveRecord {
     /// transition may have marked unable to land (#471).
     #[serde(default)]
     pub(crate) rule: u8,
+    /// The held withdrawal or contact payout this transfer cancels (#762):
+    /// at its inputs and nonces, to one of the wallet's own Platform
+    /// addresses, so it pays no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cancel_of: Option<String>,
+    /// The held send or cancel this move to Core is the way out of (#762,
+    /// #1006).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exit_of: Option<String>,
+    /// A way out whose link fields disagree with its id: it stays a contact
+    /// payout with no link, settled only on a withdrawal's document.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) link_conflict: bool,
+}
+
+/// What a way out of a held record is (#762).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Link {
+    /// The "Move to Dash wallet" of a held send.
+    Exit,
+    /// The cancel of a held withdrawal or payout.
+    Cancel,
+}
+
+/// A way out's id: its link and the record it is the way out of, which a
+/// build that drops the fields it does not know keeps (C D1 H1). No other
+/// id starts so.
+fn way_out_id(link: Link, of: &str, at: &str) -> String {
+    match link {
+        Link::Exit => format!("exit-of-{of}-at-{at}"),
+        Link::Cancel => format!("cancel-of-{of}-at-{at}"),
+    }
+}
+
+/// The link and the record a way out's `id` names.
+pub(crate) fn way_out_of(id: &str) -> Option<(Link, &str)> {
+    let (link, rest) = match id.strip_prefix("exit-of-") {
+        Some(rest) => (Link::Exit, rest),
+        None => (Link::Cancel, id.strip_prefix("cancel-of-")?),
+    };
+    let (of, _) = rest.rsplit_once("-at-")?;
+    (!of.is_empty()).then_some((link, of))
+}
+
+impl MoveRecord {
+    /// A way out of a held send or payout (#762): stored as a contact
+    /// payout, so a build before it settles the pair only on a withdrawal's
+    /// document and otherwise holds it.
+    fn way_out(&self) -> bool {
+        self.cancel_of.is_some() || self.exit_of.is_some() || self.link_conflict
+    }
+
+    /// Its kind and link back from the stored form: from the fields, or
+    /// from the id once a build before #762 dropped them. Fields that
+    /// disagree with the id leave it a linkless contact payout.
+    fn restore_link(&mut self) {
+        let named = way_out_of(&self.id).map(|(link, of)| (link, of.to_owned()));
+        let fields = match (self.exit_of.take(), self.cancel_of.take()) {
+            (None, None) => None,
+            (Some(of), None) => Some((Link::Exit, of)),
+            (None, Some(of)) => Some((Link::Cancel, of)),
+            (Some(_), Some(_)) => {
+                self.link_conflict = true;
+                None
+            }
+        };
+        let agree = fields.is_none() || fields == named;
+        match named {
+            Some((link, of)) if agree && !self.link_conflict => {
+                self.kind = match link {
+                    Link::Exit => MoveKind::ToCore,
+                    Link::Cancel => MoveKind::Transfer,
+                };
+                match link {
+                    Link::Exit => self.exit_of = Some(of),
+                    Link::Cancel => self.cancel_of = Some(of),
+                }
+            }
+            None if fields.is_none() && !self.link_conflict => {}
+            _ => {
+                self.link_conflict = true;
+                self.kind = MoveKind::ToContact;
+            }
+        }
+    }
+
+    /// A contact payout's record: never a way out stored as one.
+    pub(crate) fn pays_contact(&self) -> bool {
+        self.kind == MoveKind::ToContact && !self.link_conflict
+    }
 }
 
 /// Records written since #471: no error after a signature settles one.
@@ -380,6 +484,7 @@ impl FundRecord {
             estimated: self.estimated,
             contact: None,
             unattributed: false,
+            cancels: None,
         }
     }
 
@@ -491,6 +596,11 @@ pub(crate) enum FromShieldedSource {
     /// `unshield_to_platform`: armed by the dispatch hook's accept, settled
     /// by the spend's artifact.
     Unshield,
+    /// The refund of the registration `draft`'s Shielded-funded create
+    /// that executed as Platform's fallback (C-funding F13): written done
+    /// and armed only once its proof is read
+    /// ([`arm_registration_refund`]), `credits` the most it can return.
+    Registration { draft: i64 },
 }
 
 /// Credits on their way from the wallet's shielded notes to one of its
@@ -606,12 +716,34 @@ impl FromShieldedRecord {
         format!("from-shielded-{}", self.activity)
     }
 
+    /// What its row shows: a refund only what a read showed of it.
+    fn shown(&self) -> u64 {
+        match self.source {
+            FromShieldedSource::Unshield => self.credits,
+            FromShieldedSource::Registration { .. } => {
+                (self.credits).saturating_sub(self.unseen.saturating_add(self.unclaimed))
+            }
+        }
+    }
+
+    /// Whether it is a row: armed, and a refund only once a read showed it.
+    fn listed(&self) -> bool {
+        self.armed
+            && match self.source {
+                FromShieldedSource::Unshield => true,
+                FromShieldedSource::Registration { .. } => self.shown() > 0,
+            }
+    }
+
     fn activity(&self) -> PlatformActivity {
         PlatformActivity {
             id: self.id(),
-            kind: PlatformActivityKind::FromShielded,
+            kind: match self.source {
+                FromShieldedSource::Unshield => PlatformActivityKind::FromShielded,
+                FromShieldedSource::Registration { .. } => PlatformActivityKind::RegistrationRefund,
+            },
             state: self.state,
-            credits: self.credits,
+            credits: self.shown(),
             address: Some(self.to.clone()),
             to: None,
             expected_duffs: None,
@@ -621,6 +753,7 @@ impl FromShieldedRecord {
             estimated: false,
             contact: None,
             unattributed: false,
+            cancels: None,
         }
     }
 
@@ -711,6 +844,7 @@ fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, Platfo
         estimated: false,
         contact: None,
         unattributed: false,
+        cancels: None,
     };
     let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
     Ok(vec![(key, Some(json(&row)?))])
@@ -746,9 +880,10 @@ pub(crate) async fn stage_from_shielded(
 /// Arms the record of the spend `activity`, after its artifact and before
 /// any send of it: from the dispatch hook's accept, and again from its
 /// admission of a re-send, so a spend whose arming a stop cut off is armed
-/// before it leaves (C-routes C1-9). Whether the spend has a record: one
-/// with none was dispatched before records were kept. A record of another
-/// transition than `st_hash` is an error: that send is not the record's.
+/// before it leaves (C-routes C1-9). Whether the spend has a pending record,
+/// armed now or before; `false` when it has none, or its record is settled.
+/// A record of another transition than `st_hash` is an error: that send is
+/// not the record's.
 pub(crate) async fn arm_from_shielded(
     session: &NetworkSession,
     wallet: WalletId,
@@ -765,7 +900,10 @@ pub(crate) async fn arm_from_shielded(
             detail: "the FromShielded record is of another transition".into(),
         });
     }
-    if !record.armed && record.state == PlatformActivityState::Pending {
+    if record.state != PlatformActivityState::Pending {
+        return Ok(false);
+    }
+    if !record.armed {
         #[cfg(test)]
         if tests::arm_write_fails(&store.appdb) {
             return Err(PlatformError::Storage {
@@ -777,6 +915,59 @@ pub(crate) async fn arm_from_shielded(
         store.commit(vec![from_shielded_write(&record)?]).await?;
     }
     Ok(true)
+}
+
+/// The height of the wallet's Platform address activity baseline: no rise
+/// above it has been read as anyone's yet. 0 before the first read.
+pub(crate) async fn activity_height(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Result<u64, PlatformError> {
+    let store = Store::of(session, wallet)?;
+    Ok(store.baseline().await?.map_or(0, |b| b.height))
+}
+
+/// Writes the refund record of the registration `draft`'s create, the spend
+/// `activity`, once the create is proved executed as Platform's fallback
+/// (C-funding F13): done and armed, at most `cap` credits of `to`'s rise
+/// still to read as its own, from the first read at or above `executed_by`
+/// (the height its nullifiers were proved spent at) back. Only while no
+/// read since `named_at` (the activity's height when the hook named the
+/// create, before it could execute) may have shown the refund: otherwise
+/// that read showed it as `incoming`, and the record claims nothing. One
+/// record per spend; under the move lock, which callers take after the
+/// shielded wallet lock (C-routes §0).
+pub(crate) async fn arm_registration_refund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (activity, st_hash): ([u8; 32], [u8; 32]),
+    (draft, to, cap): (i64, String, u64),
+    (named_at, executed_by): (u64, u64),
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if store
+        .shielded_record(&hex::encode(activity))
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let read = store.baseline().await?.map_or(0, |b| b.height);
+    let unread = read <= named_at;
+    let mut record = FromShieldedRecord::staged(
+        FromShieldedSource::Registration { draft },
+        (activity, st_hash),
+        to,
+        if unread { cap } else { 0 },
+    );
+    record.state = PlatformActivityState::Done;
+    record.armed = true;
+    record.armed_at = now_nanos();
+    record.unseen = record.credits;
+    record.done_height = executed_by.saturating_sub(1);
+    store.commit(vec![from_shielded_write(&record)?]).await
 }
 
 /// The wallet's `FromShielded` records, each pending one settled by its
@@ -1182,6 +1373,7 @@ impl MoveRecord {
             estimated: self.estimated(),
             contact: None,
             unattributed: self.winner_unknown(),
+            cancels: self.cancel_of.clone(),
         }
     }
 
@@ -1224,6 +1416,7 @@ impl MoveRecord {
     /// Asked again for `amount` to `to`, a send it is: its exact retry.
     fn retried_by(&self, to: &str, amount: WithdrawAmount) -> bool {
         self.kind == MoveKind::Transfer
+            && self.cancel_of.is_none()
             && self.to == to
             && match amount {
                 WithdrawAmount::All => self.fee_from_output,
@@ -1276,6 +1469,14 @@ impl MoveRecord {
             self.expected_duffs,
             self.to.as_str(),
         )
+    }
+
+    /// The newest cancel of this record that still holds: a cancel of it
+    /// again re-signs that one's terms (#762).
+    fn held_cancel<'a>(&self, moves: &'a [MoveRecord]) -> Option<&'a MoveRecord> {
+        (moves.iter())
+            .filter(|m| m.cancel_of.as_deref() == Some(self.id.as_str()) && m.holds())
+            .max_by_key(|m| (m.at, m.id.clone()))
     }
 
     /// Its inputs at their signed nonces: two moves with one key cannot
@@ -1366,15 +1567,16 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
 }
 
 /// What the withdrawal document of a "Move to Dash wallet" beside a held
-/// top-up showed (C-routes C3-9), by the move's id: present or absent, read
-/// at or above the proof the nonces were taken in. A move not in it is
-/// undecided.
+/// top-up, send or cancel showed (C-routes C3-9, #762), by the move's id:
+/// present or absent, read at or above the proof the nonces were taken in.
+/// A move not in it is undecided.
 pub(crate) type Exits = BTreeMap<String, bool>;
 
-/// [`settle`], a top-up and the "Move to Dash wallet" at its key decided by
-/// `exits` (C-routes C3-9): of the two, the one the exit's document names
-/// is `done` and the other `failed`, never `replaced`; with no evidence
-/// both stay as they were and hold.
+/// [`settle`], a move that leaves no document (a top-up, a send, a cancel)
+/// and the "Move to Dash wallet" at its key decided by `exits` (C-routes
+/// C3-9, #762): of the two, the one the move's document names is `done`
+/// and the other `failed`, never `replaced`; with no evidence both stay as
+/// they were and hold.
 pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) -> BTreeSet<usize> {
     let mut changed = BTreeSet::new();
     let landed: BTreeSet<Vec<(String, u32)>> = (moves.iter())
@@ -1397,9 +1599,15 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                 .collect()
         };
         let (top_ups, exit_moves) = (
-            of(MoveKind::credits_identity),
+            of(MoveKind::leaves_no_document),
             of(|k| k == MoveKind::ToCore),
         );
+        // Two members that leave no document and differ: nothing could say
+        // which executed (`run` never signs such a pair, #762), so the
+        // group keeps holding.
+        if (top_ups.iter()).any(|&i| moves[i].terms() != moves[top_ups[0]].terms()) {
+            continue;
+        }
         if !top_ups.is_empty() && !exit_moves.is_empty() {
             let found: Vec<usize> = (exit_moves.iter().copied())
                 .filter(|&i| exits.get(&moves[i].id) == Some(&true))
@@ -1440,11 +1648,23 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             let Some(winner) = winner else {
                 continue;
             };
-            for &i in &group {
+            // A send's identical retry the winner executed in place of.
+            let retried: Vec<bool> = (group.iter())
+                .map(|&i| {
+                    i != winner
+                        && moves[i].kind == MoveKind::Transfer
+                        && moves[i].terms() == moves[winner].terms()
+                })
+                .collect();
+            for (&i, retried) in group.iter().zip(retried) {
                 if i == winner {
                     moves[i].done(seen);
                 } else {
-                    moves[i].state = PlatformActivityState::Failed;
+                    moves[i].state = if retried {
+                        PlatformActivityState::Replaced
+                    } else {
+                        PlatformActivityState::Failed
+                    };
                     moves[i].can_land = false;
                 }
             }
@@ -1651,9 +1871,21 @@ pub(crate) fn settle_payouts(
             continue;
         };
         let present = group.iter().copied().find(|&i| doc(i) == Some(true));
+        // A cancel leaves no document (#762): every withdrawal's absent, it
+        // is the one that executed.
+        let cancel = (group.iter().copied())
+            .filter(|&i| moves[i].cancel_of.is_some() && moves[i].reached(seen))
+            .max_by_key(|&i| (moves[i].at, moves[i].id.clone()));
+        let absent = (group.iter().copied())
+            .filter(|&i| moves[i].kind.withdraws())
+            .all(|i| doc(i) == Some(false));
         let winner = match (doc(payout), present) {
             (Some(true), _) => Some(payout),
             (_, Some(exit)) => Some(exit),
+            (Some(false), None) if absent && cancel.is_some() => cancel,
+            // Another write took some of the key's nonces: none of its
+            // members executed, and none can.
+            (Some(false), None) if absent && !moves[payout].reached(seen) => None,
             (Some(false), None) if group.iter().all(|&i| doc(i) == Some(false)) => None,
             _ => continue,
         };
@@ -1730,6 +1962,7 @@ pub(crate) fn changes(
             estimated: false,
             contact: None,
             unattributed: false,
+            cancels: None,
         };
         if is > was {
             let rose = is - was;
@@ -2296,7 +2529,7 @@ async fn pre_check(
     let refusal = |e: dpp::ProtocolError| refused(e, target.kind(), version, network);
     let inputs = inputs.clone();
     let built = match (target, script) {
-        (Target::Platform(to), _) => {
+        (Target::Platform(to) | Target::Cancel(to), _) => {
             AddressFundsTransferTransition::try_from_inputs_with_signer(
                 inputs,
                 [(to, credits)].into(),
@@ -2614,7 +2847,8 @@ pub(crate) fn exit_document(record: &MoveRecord, network: Network) -> Option<Ide
 }
 
 /// The evidence [`settle_with`] needs for each "Move to Dash wallet" that
-/// shares its inputs and nonces with a held top-up and whose nonces `seen`
+/// shares its inputs and nonces with a held move that leaves no document (a
+/// top-up, a send, a cancel) and whose nonces `seen`
 /// shows taken: its withdrawal document, read by id at or above `seen`'s
 /// height, under rule 5 when it applies. A read that fails, is behind or
 /// is unverified decides nothing.
@@ -2627,7 +2861,7 @@ async fn exits(
     let network = session.vault.network();
     let mut out = Exits::new();
     let beside_top_up = |m: &MoveRecord| {
-        (moves.iter()).any(|t| t.kind.credits_identity() && t.holds() && t.key() == m.key())
+        (moves.iter()).any(|t| t.kind.leaves_no_document() && t.holds() && t.key() == m.key())
     };
     for exit in (moves.iter())
         .filter(|m| m.kind == MoveKind::ToCore && m.holds() && m.reached(seen) && beside_top_up(m))
@@ -2689,7 +2923,7 @@ async fn read(
 }
 
 /// One wallet's moves and activity reads, one at a time.
-fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: LazyLock<Mutex<HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>>> =
         LazyLock::new(Mutex::default);
     let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
@@ -2849,6 +3083,7 @@ impl Store {
             if m.state == PlatformActivityState::Pending {
                 m.can_land = true;
             }
+            m.restore_link();
         }
         moves.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
         Ok(moves)
@@ -2862,7 +3097,12 @@ fn json(value: &impl Serialize) -> Result<String, PlatformError> {
 }
 
 fn move_write(record: &MoveRecord) -> Result<(String, Option<String>), PlatformError> {
-    Ok((format!("{MOVE_PREFIX}{}", record.id), Some(json(record)?)))
+    let stored = (record.way_out()).then(|| MoveRecord {
+        kind: MoveKind::ToContact,
+        ..record.clone()
+    });
+    let value = json(stored.as_ref().unwrap_or(record))?;
+    Ok((format!("{MOVE_PREFIX}{}", record.id), Some(value)))
 }
 
 /// A write of the app.sqlite settings: the key and its value (`None`
@@ -2918,7 +3158,7 @@ pub(crate) async fn pool(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the wallet has no Platform payment account".into(),
         })?;
-    Ok((account.addresses.addresses.values())
+    Ok((account.addresses.addresses().values())
         .filter_map(|a| {
             let p2pkh = PlatformP2PKHAddress::from_address(&a.address).ok()?;
             Some((PlatformAddress::P2pkh(p2pkh.to_bytes()), a.path.clone()))
@@ -3033,13 +3273,10 @@ async fn observe(
     let mut rows = 0;
     // A proof older than the baseline's (a node behind) decides nothing.
     if baseline.as_ref().is_none_or(|b| seen.height >= b.height) {
-        // A pending move's inputs, and those of a top-up's group whose
-        // nonces are taken while no evidence names its member yet (C3-9).
-        let top_ups: BTreeSet<_> = (moves.iter())
-            .filter(|m| m.kind.credits_identity())
-            .map(MoveRecord::key)
-            .collect();
-        let deciding = |m: &MoveRecord| m.holds() && m.reached(seen) && top_ups.contains(&m.key());
+        // A pending move's inputs, and those of a group whose nonces are
+        // taken while no evidence names its member yet (C3-9, P8, #762):
+        // the member settled later carries the fall.
+        let deciding = |m: &MoveRecord| m.holds() && m.reached(seen);
         let held: BTreeSet<String> = (moves.iter())
             .filter(|m| m.state == PlatformActivityState::Pending || deciding(m))
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
@@ -3235,6 +3472,12 @@ pub(crate) async fn activity(
     wallet: &PlatformWallet,
     wallet_id: WalletId,
 ) -> Result<Vec<PlatformActivity>, CreditsError> {
+    // Every recorded fallback is derived into the pool first, so the read
+    // below covers a refund to one after a reload. Unreadable, the read
+    // goes on without them, as before.
+    if let Err(e) = retire_handed_out(session, wallet).await {
+        tracing::info!("restoring the Platform address records before reading activity: {e}");
+    }
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let store = Store::of(session, wallet_id)?;
@@ -3281,7 +3524,7 @@ pub(crate) async fn activity(
         .chain(
             shielded
                 .iter()
-                .filter(|r| r.armed)
+                .filter(|r| r.listed())
                 .map(FromShieldedRecord::activity),
         )
         .collect();
@@ -3302,13 +3545,17 @@ pub(crate) enum Target<'a> {
     Contact,
     /// One of the wallet's own identities (a top-up, C-routes C3-2).
     Identity(&'a Identity),
+    /// One of the wallet's own Platform addresses, never an input: the
+    /// cancel of a held withdrawal or contact payout (#762), a transfer at
+    /// its inputs and nonces that pays no one.
+    Cancel(PlatformAddress),
 }
 
 impl Target<'_> {
     fn kind(&self) -> MoveKind {
         match self {
             Target::Core(_) => MoveKind::ToCore,
-            Target::Platform(_) => MoveKind::Transfer,
+            Target::Platform(_) | Target::Cancel(_) => MoveKind::Transfer,
             Target::Contact => MoveKind::ToContact,
             Target::Identity(_) => MoveKind::ToIdentity,
         }
@@ -3317,7 +3564,7 @@ impl Target<'_> {
     pub(crate) fn limits(&self, version: &PlatformVersion) -> Result<Limits, PlatformError> {
         match self {
             Target::Core(_) => Limits::at(version),
-            Target::Platform(_) => Ok(Limits::transfer_at(version)),
+            Target::Platform(_) | Target::Cancel(_) => Ok(Limits::transfer_at(version)),
             Target::Contact => Limits::to_contact_at(version),
             Target::Identity(_) => Ok(Limits::top_up_at(version)),
         }
@@ -3331,7 +3578,7 @@ impl Target<'_> {
     ) -> Result<Plan, CreditsError> {
         match self {
             Target::Core(_) | Target::Contact => plan(balances, amount, limits),
-            Target::Platform(_) => transfer_plan(balances, amount, limits),
+            Target::Platform(_) | Target::Cancel(_) => transfer_plan(balances, amount, limits),
             Target::Identity(_) => return top_up_plan(balances, amount, limits),
         }
         .map_err(|r| r.error(self.kind(), limits))
@@ -3354,6 +3601,29 @@ fn plan_beside(
         balances.retain(|a, _| only.contains(bech32m(a, network).as_str()));
     }
     target.plan(&balances, amount, limits)
+}
+
+/// The cancel of `held` (#762): each input gives what it gave `held`, and
+/// the one output pays the fee, so it signs at `held`'s inputs whatever the
+/// fee source keeps now. Refused when the output, less the fee band, would
+/// fall below a transfer's least output.
+fn cancel_plan(held: &MoveRecord, limits: &Limits) -> Result<Plan, CreditsError> {
+    let inputs: BTreeMap<PlatformAddress, u64> = (held.inputs.iter())
+        .map(|i| parse(&i.address).map(|a| (a, i.credits)))
+        .collect::<Option<_>>()
+        .ok_or(PlatformError::Unavailable)?;
+    let (&fee_source, _) = inputs.first_key_value().ok_or(PlatformError::Unavailable)?;
+    let given: u64 = inputs.values().sum();
+    if given < limits.min.saturating_add(limits.keep(inputs.len())) {
+        return Err(CreditsError::SendOutOfRange { min: limits.min });
+    }
+    Ok(Plan {
+        fee: limits.fee(inputs.len()),
+        inputs,
+        fee_source,
+        reserve: 0,
+        fee_from_output: true,
+    })
 }
 
 /// A quoted send (`PlatformSendQuote::operation`): what `platform_send`
@@ -3523,23 +3793,23 @@ pub(crate) async fn quote(
     if !(moves.iter()).any(|m| m.holds() && !m.reached(&seen)) {
         address_sends_open(network)?;
     }
-    // As the move will decide, before anything is asked of the user: a
-    // send that may still execute holds the next move (it must have the
-    // send's exact terms, which no move has).
-    if let Some(h) =
-        (moves.iter()).find(|m| m.kind == MoveKind::Transfer && m.holds() && !m.reached(&seen))
-    {
-        return Err(CreditsError::MovePending { id: h.id.clone() });
-    }
-    // A move, contact payment, top-up or registration's create not settled:
-    // the move beside it takes exactly its inputs (C-routes C3-9), as `run`
-    // plans it, so Confirm shows that move; one Platform has not answered
-    // holds the next move, as the move refuses it.
-    let held = (moves.iter())
-        .find(|m| m.kind.credits_identity() && m.holds())
-        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(&seen)));
+    // A move, send, cancel, contact payment, top-up or registration's create
+    // not settled: the move beside it takes exactly its inputs (C-routes
+    // C3-9, #762, #1006), as `run` plans it, so Confirm shows that move; one
+    // Platform has not answered holds the next move, as the move refuses it.
+    let held = beside(&moves, &seen);
     if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
+    // A held cancel is exited only by a move named its exit, or the exit of
+    // its identical re-send that Platform answered.
+    if let Some(c) = (moves.iter()).find(|m| {
+        m.cancel_of.is_some()
+            && m.holds()
+            && !m.reached(&seen)
+            && (m.state == PlatformActivityState::Pending || held.is_none_or(|h| !resends(h, m)))
+    }) {
+        return Err(CreditsError::MovePending { id: c.id.clone() });
     }
     let version = net.version();
     let target = Target::Core("");
@@ -3559,8 +3829,12 @@ pub(crate) async fn quote(
             return Err(CreditsError::MovePending { id: h.id.clone() });
         }
     }
+    let taken: BTreeSet<String> = match held {
+        Some(c) if c.cancel_of.is_some() => paid_at(&moves, c).map(str::to_owned).collect(),
+        _ => BTreeSet::new(),
+    };
     let to = session
-        .current_receiving_address(wallet_id)
+        .current_receiving_address(wallet_id, &taken)
         .await
         .map_err(PlatformError::from)?;
     let credits = planned.may_lose();
@@ -3573,7 +3847,162 @@ pub(crate) async fn quote(
             max_duffs: 0,
             max_credits: credits,
         },
-        exit_of: (held.filter(|h| h.kind.credits_identity())).map(|h| h.id.clone()),
+        exit_of: (held.filter(|h| named_exit(h, version))).map(|h| h.id.clone()),
+    })
+}
+
+/// The held record a move to Core is planned beside (C-routes C3-9, #762):
+/// one that leaves no document and may still execute (a top-up or a
+/// registration's create also once its nonces are taken), else any that
+/// may still execute whose nonces are not taken.
+fn beside<'m>(moves: &'m [MoveRecord], seen: &Seen) -> Option<&'m MoveRecord> {
+    let open = |m: &&MoveRecord| m.holds() && (m.kind.credits_identity() || !m.reached(seen));
+    (moves.iter())
+        .filter(open)
+        .find(|m| m.kind.leaves_no_document())
+        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(seen)))
+}
+
+/// A held withdrawal or payout with no cancel at `version`: its cancel's
+/// output, less the fee, would fall below a transfer's least
+/// (`cancel_plan`'s `credits.send_out_of_range`, #1006).
+fn uncancellable(held: &MoveRecord, version: &PlatformVersion) -> bool {
+    held.kind.withdraws()
+        && matches!(
+            cancel_plan(held, &Limits::transfer_at(version)),
+            Err(CreditsError::SendOutOfRange { .. })
+        )
+}
+
+/// The addresses the held withdrawals and payouts at `cancel`'s inputs pay,
+/// but for its own exits and those of its identical re-sends. The exit
+/// beside a held cancel pays none of them, as its quote picks its address,
+/// so its document is its own (#1006); a second exit may pay the first
+/// one's, as exits paying one address share one document.
+fn paid_at<'m>(moves: &'m [MoveRecord], cancel: &'m MoveRecord) -> impl Iterator<Item = &'m str> {
+    let key = cancel.key();
+    let own = move |id: &str| (moves.iter()).any(|c| c.id == id && resends(cancel, c));
+    (moves.iter())
+        .filter(move |m| m.holds() && m.kind.withdraws() && m.key() == key)
+        .filter(move |m| !m.exit_of.as_deref().is_some_and(own))
+        .map(|m| m.to.trim())
+}
+
+/// `m` is the transfer `named` signed again: itself, its identical retry,
+/// or, of a cancel, its identical re-send of the same record (#762, #1006).
+/// The exit of `named` follows these, and no other member that leaves no
+/// document.
+fn resends(named: &MoveRecord, m: &MoveRecord) -> bool {
+    named.kind == MoveKind::Transfer && m.cancel_of == named.cancel_of && m.terms() == named.terms()
+}
+
+/// The move beside `held` is its named exit: beside a record that leaves
+/// no document (a top-up, a send, a cancel), which only the exit's document
+/// tells apart from it, and beside a withdrawal or payout that has no
+/// cancel (#762, #1006). Beside one that has a cancel, the move is as
+/// before: unnamed, at its inputs and nonces.
+fn named_exit(held: &MoveRecord, version: &PlatformVersion) -> bool {
+    held.kind.leaves_no_document() || uncancellable(held, version)
+}
+
+/// The cancel of the held withdrawal or contact payout `of` (#762): one
+/// proved read with rule 5, the held record's inputs at their nonces, each
+/// giving what it gave the record, the fee from the one output, to the
+/// wallet's Platform receive address; beside a cancel of `of` that holds,
+/// that cancel again on its own terms. Refused unless `of` holds and is
+/// answered, beside no other hold at its key that leaves no document.
+pub(crate) async fn cancel_quote(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    of: &str,
+) -> Result<PlatformCancelQuote, CreditsError> {
+    let network = session.vault.network();
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    new_cancel_open(network, &moves, of)?;
+    let pool = pool(wallet).await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    let held = (moves.iter())
+        .find(|m| m.id == of && m.kind.withdraws() && m.holds() && !m.reached(&seen))
+        .ok_or(CreditsError::QuoteChanged)?;
+    // As the cancel will decide: nothing pending, and it follows only
+    // withdrawals at that key.
+    if let Some(p) = (moves.iter()).find(|m| m.state == PlatformActivityState::Pending) {
+        return Err(CreditsError::MovePending { id: p.id.clone() });
+    }
+    // A cancel of it that holds is offered again as it was signed: its
+    // exact re-send, whatever the fee or the receive address is now.
+    let resend = held.held_cancel(&moves);
+    let at_key = |m: &MoveRecord| {
+        m.key() == held.key()
+            && (m.kind.withdraws() || resend.is_some_and(|c| c.terms() == m.terms()))
+    };
+    if let Some(h) = (moves.iter()).find(|m| m.holds() && m.id != held.id && !at_key(m)) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
+    let (planned, to) = match resend {
+        Some(c) => (
+            c.replan(&BTreeMap::new())
+                .ok_or(PlatformError::Unavailable)?,
+            c.to.clone(),
+        ),
+        None => (
+            cancel_plan(held, &Limits::transfer_at(net.version()))?,
+            next_receive_address(session, wallet, network)
+                .await?
+                .address,
+        ),
+    };
+    let credits = planned.may_lose();
+    Ok(PlatformCancelQuote {
+        of: held.id.clone(),
+        credits,
+        fee_credits: planned.fee,
+        to,
+        grant: GrantRequest {
+            max_duffs: 0,
+            max_credits: credits,
+        },
+    })
+}
+
+/// `DashPay::platform_cancel` (#762): the quote's cancel of `of` to `to`,
+/// one of the wallet's own Platform addresses, under `grant`. Moved by
+/// `run` as a move is, settled by the held record's document.
+pub(crate) async fn cancel(
+    net: &impl MoveNet,
+    session: &Arc<NetworkSession>,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    (of, to): (&str, &str),
+    grant: &str,
+) -> Result<PlatformSendOutcome, CreditsError> {
+    let network = session.vault.network();
+    held_exit_open(network, &records(session, wallet_id).await?)?;
+    let address = parse(to.trim()).ok_or(PlatformError::InvalidArgument {
+        detail: "not a Platform address of this network".into(),
+    })?;
+    if bech32m(&address, network) != to.trim() {
+        return Err(PlatformError::InvalidArgument {
+            detail: "not a Platform address of this network".into(),
+        }
+        .into());
+    }
+    let ask = (WithdrawAmount::All, Target::Cancel(address), Some(of), None);
+    let (record, _) = run(net, session, wallet, wallet_id, ask, grant, None).await?;
+    let row = record.activity();
+    Ok(PlatformSendOutcome {
+        id: record.id.clone(),
+        credits: row.credits,
+        amount_credits: record.given(),
+        fee_from_amount: record.fee_from_output,
+        to: row.to,
+        state: record.state,
+        may_land: row.may_land,
+        fee_credits: row.fee_credits,
+        estimated: row.estimated,
+        unattributed: record.winner_unknown(),
     })
 }
 
@@ -3651,7 +4080,13 @@ pub(crate) async fn send_quote(
         Some(h) if !h.reached(&seen) => {
             return Err(CreditsError::MovePending { id: h.id.clone() });
         }
-        _ => (target.plan(&balances, amount, &limits)?, None),
+        _ => {
+            let planned = target.plan(&balances, amount, &limits)?;
+            // As the send will decide: a new send whose inputs could not
+            // pay their own "Move to Dash wallet" is refused (#762).
+            exit_possible(&planned, &balances, version)?;
+            (planned, None)
+        }
     };
     let credits = planned.may_lose();
     let operation = session.platform.send_ops.issue(SendOp {
@@ -3786,6 +4221,17 @@ fn held_exit_open(network: Network, moves: &[MoveRecord]) -> Result<(), Platform
     }
 }
 
+/// [`address_sends_open`] for a cancel of `of`: with the flag off no new
+/// cancel is offered, only a held cancel of `of` again on its own terms;
+/// the held record waits for its document.
+fn new_cancel_open(network: Network, moves: &[MoveRecord], of: &str) -> Result<(), PlatformError> {
+    let resend = (moves.iter()).any(|m| m.cancel_of.as_deref() == Some(of) && m.holds());
+    match address_sends_open(network) {
+        Err(_) if resend => Ok(()),
+        open => open,
+    }
+}
+
 /// [`address_sends_open`], or, with the flag off, a send that `retry_of`
 /// names as the exact retry (the same recipient and amount) of a stored
 /// send that still holds; read from the local store only.
@@ -3805,6 +4251,7 @@ async fn retry_open(
     let moves = Store::of(session, wallet_id)?.moves().await?;
     let exact = (moves.iter()).find(|m| m.id == id).is_some_and(|m| {
         m.kind == MoveKind::Transfer
+            && m.cancel_of.is_none()
             && m.holds()
             && to.as_deref().is_some_and(|to| m.retried_by(to, amount))
     });
@@ -4083,8 +4530,10 @@ pub(crate) async fn run(
     let balances = proved_balances(&pool, &seen, network);
     // With the flag off only a held move's exit or a held send's exact
     // retry signs: anything else is the flag's refusal, never a new plan.
-    let off = matches!(target, Target::Core(_) | Target::Platform(_))
-        && address_sends_open(network).is_err();
+    let off = matches!(
+        target,
+        Target::Core(_) | Target::Platform(_) | Target::Cancel(_)
+    ) && address_sends_open(network).is_err();
     let flag = || {
         CreditsError::from(PlatformError::FeatureOff {
             feature: PLATFORM_ADDRESS_SENDS.into(),
@@ -4108,15 +4557,28 @@ pub(crate) async fn run(
     // only its exact retry.
     let retry_of = named.filter(|_| matches!(target, Target::Platform(_)));
     let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
+    let cancel_of = named.filter(|_| matches!(target, Target::Cancel(_)));
     // The exit's quote was planned beside that record: once it no longer
-    // holds, this is not the move Confirm showed, whatever else holds now,
-    // and a lagging read does not hide that.
-    let exited = match exit_of {
+    // holds, or its quote would no longer name it, this is not the move
+    // Confirm showed, whatever else holds now, and a lagging read does not
+    // hide that. A move to Core exits a held top-up, send or cancel, or a
+    // withdrawal or payout that has no cancel ([`named_exit`]; C3-9, #762,
+    // #1006); a cancel, a held withdrawal or payout, whose document says
+    // which of the two executed.
+    let exits_kind = |m: &MoveRecord| match target {
+        Target::Cancel(_) => m.kind.withdraws(),
+        _ => named_exit(m, version),
+    };
+    let exited = match exit_of.or(cancel_of) {
         Some(id) => Some(
             (moves.iter())
-                .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
+                .find(|m| m.id == id && exits_kind(m) && m.holds())
                 .ok_or_else(|| {
-                    if off {
+                    // Still held, its cancel available again: a fresh quote
+                    // moves beside it unnamed (#1006).
+                    let cancellable = exit_of.is_some()
+                        && (moves.iter()).any(|m| m.id == id && m.holds() && m.kind.withdraws());
+                    if off && !cancellable {
                         flag()
                     } else {
                         CreditsError::QuoteChanged
@@ -4142,6 +4604,44 @@ pub(crate) async fn run(
                     id: pending.id.clone(),
                 });
             }
+            // A held cancel is exited only by a move named its exit, or the
+            // exit of its identical re-send (#1006), and a cancel of a record
+            // that has one holding is only its exact re-send, as the quotes
+            // offer them.
+            let cancel = (moves.iter()).find(|m| {
+                m.cancel_of.is_some()
+                    && m.holds()
+                    && match target {
+                        Target::Core(_) => {
+                            !exited.is_some_and(|e| resends(e, m)) && !m.reached(&seen)
+                        }
+                        Target::Cancel(to) => {
+                            m.cancel_of.as_deref() == cancel_of && m.to != bech32m(&to, network)
+                        }
+                        _ => false,
+                    }
+            });
+            if let Some(c) = cancel {
+                return Err(CreditsError::MovePending { id: c.id.clone() });
+            }
+            // A withdrawal or payout with no cancel is exited only by a move
+            // named its exit, as its quote names it (#1006): unnamed, this
+            // is not the move Confirm showed.
+            if let (Target::Core(_), None) = (target, exit_of)
+                && beside(&moves, &seen).is_some_and(|h| uncancellable(h, version))
+            {
+                return Err(CreditsError::QuoteChanged);
+            }
+            if let (Target::Core(to), Some(c)) = (target, exited)
+                && c.cancel_of.is_some()
+                && let Ok(script) = withdrawal::destination(network, to)
+                && paid_at(&moves, c).any(|paid| {
+                    (withdrawal::destination(network, paid))
+                        .is_ok_and(|s| s.as_bytes() == script.as_bytes())
+                })
+            {
+                return Err(CreditsError::QuoteChanged);
+            }
             let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
             // The hold may have settled since the entry's check: with the
             // flag off nothing new is planned, granted or signed.
@@ -4156,17 +4656,39 @@ pub(crate) async fn run(
                 // (C-routes §0, C3-9).
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
-            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)
-                .map_err(|e| match e {
-                    // The exit sends its quoted amount: inputs that no
-                    // longer carry it are not the move Confirm showed.
-                    CreditsError::Platform(PlatformError::InsufficientCredits { .. })
-                        if exited.is_some() =>
-                    {
-                        CreditsError::QuoteChanged
+            let planned = match (target, exited) {
+                (Target::Cancel(_), Some(h)) => {
+                    // Its inputs still carry what they gave the held
+                    // record while its nonces are unused; less, and it
+                    // executed: not the cancel Confirm showed.
+                    let short = (h.inputs.iter()).any(|i| {
+                        parse(&i.address)
+                            .is_none_or(|a| balances.get(&a).copied().unwrap_or(0) < i.credits)
+                    });
+                    if short {
+                        return Err(CreditsError::QuoteChanged);
                     }
-                    e => e,
-                })?;
+                    // Re-sent, it signs that cancel's terms, at any protocol
+                    // version: of equal terms, whichever executes pays the
+                    // same.
+                    match h.held_cancel(&moves) {
+                        Some(c) => c.replan(&balances).ok_or(PlatformError::Unavailable.into()),
+                        None if off => Err(flag()),
+                        None => Ok(cancel_plan(h, &limits)?),
+                    }
+                }
+                _ => plan_beside(&target, balances.clone(), amount, &limits, held, network),
+            }
+            .map_err(|e| match e {
+                // The exit sends its quoted amount: inputs that no
+                // longer carry it are not the move Confirm showed.
+                CreditsError::Platform(PlatformError::InsufficientCredits { .. })
+                    if exited.is_some() =>
+                {
+                    CreditsError::QuoteChanged
+                }
+                e => e,
+            })?;
             let planned = match (target, quoted) {
                 (Target::Identity(_), Some(q)) if !q.takes_fee_as(&planned) => {
                     top_up_plan_as(&balances, amount, &limits, q).unwrap_or(planned)
@@ -4181,8 +4703,21 @@ pub(crate) async fn run(
             (held, planned)
         }
     };
-    if let Target::Identity(_) = target {
+    // A top-up or a new send whose inputs could not pay their own "Move to
+    // Dash wallet" would hold them with no way out (C3-9, #762).
+    if matches!(target, Target::Identity(_))
+        || (matches!(target, Target::Platform(_)) && retry_of.is_none())
+    {
         exit_possible(&planned, &balances, version)?;
+    }
+    // A cancel pays one of the wallet's own addresses, never one it spends.
+    if let Target::Cancel(to) = target
+        && (!pool.contains_key(&to) || planned.inputs.contains_key(&to))
+    {
+        return Err(PlatformError::InvalidArgument {
+            detail: "a cancel pays one of this wallet's other Platform addresses".into(),
+        }
+        .into());
     }
     let mut inputs = BTreeMap::new();
     for (address, credits) in &planned.inputs {
@@ -4196,7 +4731,7 @@ pub(crate) async fn run(
             to.to_owned(),
             withdrawal::expected_duffs(planned.credits(), version)?,
         ),
-        Target::Platform(address) => (bech32m(&address, network), 0),
+        Target::Platform(address) | Target::Cancel(address) => (bech32m(&address, network), 0),
         // The leg names the address once it is reserved.
         Target::Contact => (
             String::new(),
@@ -4204,7 +4739,16 @@ pub(crate) async fn run(
         ),
         Target::Identity(identity) => (identity.id().to_string(Encoding::Base58), 0),
     };
-    let mut id = format!("move-{}-{}", seen.height, moves.len());
+    let at = format!("{}-{}", seen.height, moves.len());
+    // The exit of a held send or cancel carries its link (#762, #1006).
+    let exit_of_send = (exit_of.and(exited))
+        .filter(|h| h.kind == MoveKind::Transfer)
+        .map(|h| h.id.clone());
+    let mut id = match (&exit_of_send, cancel_of) {
+        (Some(of), _) => way_out_id(Link::Exit, of, &at),
+        (None, Some(of)) => way_out_id(Link::Cancel, of, &at),
+        (None, None) => format!("move-{at}"),
+    };
     // A payout's row may outlive a record never written (P6), and a reference
     // is never reused.
     if matches!(target, Target::Contact) {
@@ -4244,25 +4788,46 @@ pub(crate) async fn run(
         unattributed: false,
         version: Some(version.protocol_version),
         rule: HOLD_RULE,
+        cancel_of: cancel_of.map(str::to_owned),
+        exit_of: exit_of_send,
+        link_conflict: false,
     };
     // A move `failed` by height may still execute: only one at its very
     // inputs and nonces may follow it, and when either pays a Platform
-    // address (someone else's) only its exact retry, so whichever of the
-    // two lands pays what the user asked, once.
+    // address only its exact retry, so whichever of the two lands pays what
+    // the user asked, once. Two exits differ (#762), each settled by a
+    // withdrawal's document: the named "Move to Dash wallet" of a held
+    // send or cancel (#1006), and the cancel of a held withdrawal or
+    // payout. Never a cancel beside a send or a top-up: neither leaves a
+    // document to tell them apart. The named exit follows its transfer and
+    // that one's identical retries or re-sends only, so the key keeps one
+    // member that leaves no document.
+    let follows = |h: &MoveRecord| exited.is_some_and(|e| resends(e, h));
     let blocks = |h: &&MoveRecord| {
-        h.key() != record.key()
-            || ((h.kind == MoveKind::Transfer || record.kind == MoveKind::Transfer)
-                && h.terms() != record.terms())
+        if h.key() != record.key() {
+            return true;
+        }
+        if h.terms() == record.terms() {
+            return false;
+        }
+        match (h.kind, record.kind) {
+            (MoveKind::Transfer, MoveKind::ToCore) => !follows(h),
+            (MoveKind::ToCore | MoveKind::ToContact, MoveKind::Transfer) => cancel_of.is_none(),
+            (MoveKind::Transfer, _) | (_, MoveKind::Transfer) => true,
+            _ => false,
+        }
     };
-    if exit_of.is_some() && held.is_some_and(|h| h.key() != record.key()) {
+    if exit_of.or(cancel_of).is_some() && held.is_some_and(|h| h.key() != record.key()) {
         return Err(if off {
             flag()
         } else {
             CreditsError::QuoteChanged
         });
     }
-    // Beside an exit, any other hold blocks it as it would block a move.
-    let mut others = (moves.iter()).filter(|m| m.holds() && exit_of.is_some_and(|id| m.id != id));
+    // Beside an exit or a cancel, any other hold blocks it as it would
+    // block a move.
+    let mut others =
+        (moves.iter()).filter(|m| m.holds() && exit_of.or(cancel_of).is_some_and(|id| m.id != id));
     if let Some(held) = held.filter(blocks).or_else(|| others.find(blocks)) {
         // A held send has no exit but its retry: it holds as before.
         if off && (retry_of.is_some() || held.kind != MoveKind::Transfer) {
@@ -4277,7 +4842,7 @@ pub(crate) async fn run(
             Err(PlatformError::InvalidArgument { .. }) if off => return Err(flag()),
             script => Some(script?),
         },
-        Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
+        Target::Platform(_) | Target::Cancel(_) | Target::Contact | Target::Identity(_) => None,
     };
     let output = (script.as_ref(), planned.credits());
     let proved_version = (session.platform.enabled())
@@ -4296,7 +4861,7 @@ pub(crate) async fn run(
     // A send pays someone else: only a fresh grant, redeemed into a lease
     // for this send alone, never a lease another action holds.
     let flow = match target {
-        Target::Core(_) | Target::Identity(_) => FlowKind::PlatformAddressMove,
+        Target::Core(_) | Target::Identity(_) | Target::Cancel(_) => FlowKind::PlatformAddressMove,
         Target::Platform(_) => FlowKind::PlatformAddressSend,
         Target::Contact => FlowKind::ContactPayFromBalance,
     };
@@ -4333,6 +4898,7 @@ pub(crate) async fn run(
         Target::Platform(_) => "platform_send",
         Target::Contact => "contact_pay",
         Target::Identity(_) => "top_up_from_platform",
+        Target::Cancel(_) => "platform_cancel",
     };
     let permit = write_permit(&lease, label, record.credits)?;
     let signer = match permit.platform_address_signer(paths) {
@@ -4374,7 +4940,7 @@ pub(crate) async fn run(
     let strategy = planned.fee_strategy();
     let mut balance = None;
     let call = match (target, script) {
-        (Target::Platform(address), _) => {
+        (Target::Platform(address) | Target::Cancel(address), _) => {
             let output = (address, planned.credits());
             leased(&lease, net.transfer(inputs, output, strategy, &signer)).await
         }
@@ -4486,21 +5052,39 @@ async fn own_core_destination(
 /// public key material; the same one until a sync pass sees it funded).
 pub(crate) async fn receive_address(
     net: &impl MoveNet,
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
     address_sends_open(network)?;
     sends_active(net.sends_version().await)?;
-    next_receive_address(wallet, network).await
+    next_receive_address(session, wallet, network).await
 }
 
 /// The payment account's lowest unused address, as [`receive_address`]
 /// names it, with no version check.
 pub(crate) async fn next_receive_address(
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
+    let (address, index) = next_receive(session, wallet).await?;
+    Ok(PlatformReceiveAddress {
+        address: bech32m(&address, network),
+        index,
+    })
+}
+
+/// [`next_receive_address`] with its index. Never the fallback of one of
+/// the wallet's Shielded-funded registrations, and recorded as handed out
+/// before it is returned, so no later fallback is it (C-funding F13;
+/// [`retire_handed_out`]).
+pub(crate) async fn next_receive(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<(PlatformAddress, u32), PlatformError> {
+    let handed_out = retire_handed_out(session, wallet).await?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,
@@ -4516,10 +5100,231 @@ pub(crate) async fn next_receive_address(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the receive address is not in the payment account".into(),
         })?;
-    Ok(PlatformReceiveAddress {
-        address: bech32m(&address, network),
-        index,
+    if handed_out.is_none_or(|h| index > h) {
+        let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+        (session.appdb_op(move |db| {
+            db.raise_setting_durable(
+                &scope,
+                dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
+                u64::from(index),
+            )
+        }))
+        .await
+        .map_err(PlatformError::from)?;
+    }
+    Ok((address, index))
+}
+
+/// Restores, in the payment account, the marks of what the wallet handed
+/// out, which the account keeps in memory only: every index below the
+/// highest receive address handed out (that one stays Receive's until it
+/// is funded) and every fallback the wallet's Shielded-funded registrations
+/// were given ([`fallback_address`]), each derived first if a reload has
+/// not yet. Their durable record is the wallet's local scope of
+/// `app.sqlite`, and the rows' own funding for a fallback given before it.
+/// Returns that highest index.
+async fn retire_handed_out(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<u32>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, handed_out) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        let recorded =
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?;
+        let handed_out = db.setting(&scope, dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT)?;
+        Ok((db.registration_rows(&id)?, recorded, handed_out))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let index = |value: &str| {
+        value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })
+    };
+    let handed_out = handed_out.as_deref().map(index).transpose()?;
+    let named = (rows.iter()).filter_map(|row| match Funding::decode(&row.funding) {
+        Decoded::Known(Funding::Shielded { fallback, .. }) => Some(fallback),
+        _ => None,
+    });
+    let deepest = (recorded.iter())
+        .map(|(_, value)| index(value))
+        .collect::<Result<Vec<u32>, _>>()?
+        .into_iter()
+        .chain(handed_out)
+        .max();
+    let given = (recorded.into_iter()).filter_map(|(key, _)| {
+        key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)
+            .map(str::to_owned)
+    });
+    let fallbacks: BTreeSet<PlatformAddress> =
+        named.chain(given).filter_map(|a| parse(&a)).collect();
+    if deepest.is_none() && fallbacks.is_empty() {
+        return Ok(None);
+    }
+    with_payment_pool(wallet, |pool, source| {
+        if let Some(deepest) = deepest {
+            let next = pool.highest_generated().map_or(0, |h| h + 1);
+            let missing = deepest.saturating_add(1).saturating_sub(next);
+            (pool.generate_addresses(missing, source)).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        }
+        let given: Vec<u32> = (pool.addresses().iter())
+            .filter(|(_, info)| {
+                PlatformP2PKHAddress::from_address(&info.address)
+                    .is_ok_and(|p| fallbacks.contains(&PlatformAddress::P2pkh(p.to_bytes())))
+            })
+            .map(|(index, _)| *index)
+            .collect();
+        for index in (0..handed_out.unwrap_or(0)).chain(given) {
+            mark_index_used(pool, index)?;
+        }
+        Ok(())
     })
+    .await?;
+    Ok(handed_out)
+}
+
+/// Marks the derived address at `index` used; an index not derived is an
+/// error, never skipped.
+fn mark_index_used(
+    pool: &mut key_wallet::managed_account::address_pool::AddressPool,
+    index: u32,
+) -> Result<(), PlatformError> {
+    let address = (pool.address_at_index(index)).ok_or_else(|| PlatformError::Internal {
+        detail: format!("the Platform payment address {index} is not derived"),
+    })?;
+    pool.mark_used(&address);
+    Ok(())
+}
+
+/// `f` on the payment account's address pool and its public key source,
+/// under one write lock of the wallet.
+async fn with_payment_pool<T>(
+    wallet: &PlatformWallet,
+    f: impl FnOnce(
+        &mut key_wallet::managed_account::address_pool::AddressPool,
+        &key_wallet::KeySource,
+    ) -> Result<T, PlatformError>,
+) -> Result<T, PlatformError> {
+    use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+    let internal = |detail: &str| PlatformError::Internal {
+        detail: detail.into(),
+    };
+    let mut wm = wallet.wallet_manager().write().await;
+    let (core, info) = wm
+        .get_wallet_mut_and_info_mut(&wallet.wallet_id())
+        .ok_or(PlatformError::WalletNotFound)?;
+    let key = PlatformPaymentAccountKey {
+        account: ACCOUNT,
+        key_class: 0,
+    };
+    let xpub = (core.accounts.platform_payment_accounts.get(&key))
+        .map(|a| a.account_xpub)
+        .ok_or_else(|| internal("the wallet has no Platform payment key"))?;
+    let account = (info.core_wallet)
+        .platform_payment_managed_account_at_index_mut(ACCOUNT)
+        .ok_or_else(|| internal("the wallet has no Platform payment account"))?;
+    f(&mut account.addresses, &key_wallet::KeySource::Public(xpub))
+}
+
+/// A new registration's fallback (C-funding F13), published beside the
+/// identity it creates, so never an address handed out before: once the
+/// account's marks of what was handed out are restored, under one lock of
+/// the account its lowest unused address (the one Receive may be showing,
+/// at or above the highest handed out) and the next are marked used, and
+/// the next is the fallback. It is recorded durably, with its index,
+/// before it is returned. A recorded one that never left this install
+/// ([`unpublished_fallback`]) is given again instead, so registrations
+/// dropped before their create was sent take no more of the account.
+pub(crate) async fn fallback_address(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    network: Network,
+) -> Result<String, PlatformError> {
+    if let Some(address) = unpublished_fallback(session, wallet).await? {
+        return Ok(address);
+    }
+    retire_handed_out(session, wallet).await?;
+    let (fallback, index) = with_payment_pool(wallet, |pool, source| {
+        let mut take = || -> Result<_, PlatformError> {
+            let internal = |detail: String| PlatformError::Internal { detail };
+            let next = (pool.next_unused(source)).map_err(|e| internal(e.to_string()))?;
+            let index = (pool.address_index(&next))
+                .ok_or_else(|| internal("the next Platform payment address has no index".into()))?;
+            pool.mark_used(&next);
+            Ok((next, index))
+        };
+        take()?;
+        let (next, index) = take()?;
+        let fallback = PlatformAddress::try_from(next).map_err(|e| PlatformError::Internal {
+            detail: e.to_string(),
+        })?;
+        Ok((fallback, index))
+    })
+    .await?;
+    let address = bech32m(&fallback, network);
+    let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+    let (key, value) = (
+        dw_appdb::dp_registration_fallback(&address),
+        index.to_string(),
+    );
+    (session
+        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(&value)))
+        .await)
+        .map_err(PlatformError::from)?;
+    Ok(address)
+}
+
+/// The lowest recorded fallback that no registration row names and no
+/// create published ([`dw_appdb::dp_registration_published`]): it never
+/// left this install. `None` while any row is of a funding this build does
+/// not read, as its fallback is unknown. A failed read, or a record that
+/// does not read as an index, refuses the hand-out.
+async fn unpublished_fallback(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<String>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, published) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        Ok((
+            db.registration_rows(&id)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX)?,
+        ))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let mut named = HashSet::new();
+    for row in &rows {
+        match Funding::decode(&row.funding) {
+            Decoded::Known(Funding::Shielded { fallback, .. }) => {
+                named.insert(fallback);
+            }
+            Decoded::Known(_) => {}
+            Decoded::Unsupported => return Ok(None),
+        }
+    }
+    let published: HashSet<&str> = (published.iter())
+        .filter_map(|(key, _)| key.strip_prefix(dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX))
+        .collect();
+    let mut free = Vec::new();
+    for (key, value) in &recorded {
+        let Some(address) = key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX) else {
+            continue;
+        };
+        let index = value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })?;
+        if !named.contains(address) && !published.contains(address) {
+            free.push((index, address.to_owned()));
+        }
+    }
+    Ok(free.into_iter().min().map(|(_, address)| address))
 }
 
 /// The outcome's write; tests make it fail.
@@ -4590,6 +5395,7 @@ impl NetworkSession {
         address_grant: String,
         spend_grant: String,
     ) -> Result<PlatformAddressBalance, CreditsError> {
+        self.refuse_platform_funds(wallet_id)?;
         self.dashpay(wallet_id)
             .on_wallet(move |session, manager, wallet| async move {
                 // The input bound (`lock_inputs`), before a grant is redeemed.
@@ -4650,6 +5456,7 @@ impl NetworkSession {
                         Vec::new(),
                         &signer,
                         &lock_signer,
+                        None,
                         None,
                     )
                     .await;

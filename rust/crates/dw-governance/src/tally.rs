@@ -572,7 +572,6 @@ pub fn sort_key(status: Status, absolute_yes: i64, threshold: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashcore::hashes::Hash;
 
     fn cv(key: u8, op: u8, outcome: VoteOutcome, time: i64) -> CurrentVote {
         CurrentVote {

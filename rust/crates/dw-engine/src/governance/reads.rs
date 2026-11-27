@@ -1,7 +1,6 @@
 //! The read calls (mg-engine §2.2, §2.3): the clock and the budget from the
 //! tip, proposal rows and votes from the store. Memory only.
 
-use dashcore::hashes::Hash;
 use dw_governance::clock;
 use dw_governance::object::{atoi_u32, display_hex, outpoint_short, parse_display_hex};
 use dw_governance::params::{GovernanceParams, PROPOSAL_FEE_CONFIRMATIONS, governance_params};
@@ -472,8 +471,8 @@ fn build_table(network: &crate::DashNetwork, store: &GovernanceStore, tip: u32, 
 mod tests {
     use super::*;
     use dashcore::hashes::hash160;
-    use dashcore::secp256k1::{Message, PublicKey, SecretKey};
     use dashcore::{Network, OutPoint, Txid};
+    use dpp::secp256k1::{Message, PublicKey, SecretKey};
     use dw_governance::object::GovernanceObject;
     use dw_governance::store::{ListEntry, OperatorVote, ResolvedMasternode, VoteRejection};
     use dw_governance::vote::{GovernanceVote, VoteOutcome, to_recoverable_compact};
@@ -507,8 +506,8 @@ mod tests {
         let pk = PublicKey::from_secret_key(&sk);
         let mut v = v.clone();
         let d = v.signing_digest(Network::Regtest);
-        let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
-        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+        let s = dpp::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk.into(), &d)
             .unwrap()
             .to_vec();
         v

@@ -20,15 +20,21 @@ describe("the From step (C-funding P16)", () => {
 
   it("lists a source that cannot pay with its reason, never hides it", () => {
     const rows = fromRows({ ...base, platform: "absent" });
-    expect(rows.find((r) => r.source === "shielded")?.reason).toBe("Not available on this network yet.");
+    expect(rows.find((r) => r.source === "shielded")?.reason).toBe("Not available in this version");
     expect(rows.find((r) => r.source === "platform")?.reason).toBe("No balance to pay with.");
     expect(rows.find((r) => r.source === "core")?.reason).toBeNull();
     expect(rows).toHaveLength(3);
   });
 
+  it("says Shielded is not in this version even when Shielded spends are on", () => {
+    expect(fromRows(base).find((r) => r.source === "shielded")?.reason).toBe("Not available in this version");
+    expect(fromRows({ ...base, shieldedSpendsOff: false }).find((r) => r.source === "shielded")?.reason).toBe("Not available in this version");
+    expect(fromRows({ ...base, shieldedSpendsOff: true }).find((r) => r.source === "shielded")?.reason).toBe("Not available in this version");
+  });
+
   it("keeps the balances off on mainnet", () => {
     const rows = fromRows({ ...base, live: liveSources("mainnet") });
-    expect(rows.map((r) => r.reason)).toEqual([null, "Not available on this network yet.", "Not available on this network yet."]);
+    expect(rows.map((r) => r.reason)).toEqual([null, "Not available in this version", "Not available on this network yet."]);
     expect(chosenReason(rows, "platform")).toBe("Not available on this network yet.");
     expect(fromRows({ ...base, live: liveSources("testnet") }).find((r) => r.source === "platform")?.reason).toBeNull();
   });
@@ -52,7 +58,7 @@ describe("the From step (C-funding P16)", () => {
     // A balance read late, or refreshed to nothing, after Platform was chosen.
     expect(chosenReason(fromRows({ ...base, platform: "loading" }), "platform")).toBeNull();
     expect(chosenReason(fromRows({ ...base, platform: 0 }), "platform")).toBe("No balance to pay with.");
-    expect(chosenReason(fromRows(base), "shielded")).toBe("Not available on this network yet.");
+    expect(chosenReason(fromRows(base), "shielded")).toBe("Not available in this version");
     expect(chosenReason(fromRows({ ...base, platform: 0 }), "core")).toBeNull();
   });
 });
@@ -123,6 +129,17 @@ describe("a payment from a balance's flow", () => {
     const internal = payFlow(() => Promise.reject(appError("internal")));
     await internal.pay(QUOTE, null);
     expect(internal.step).toBe("lost");
+  });
+
+  it("an outcome the engine could not confirm may already be out: unknown and held, never 'nothing was paid'", async () => {
+    for (const code of ["platform.broadcast_unknown", "platform.will_be_sent"] as const) {
+      const flow = payFlow(() => Promise.reject(appError(code)));
+      await flow.pay(QUOTE, null);
+      expect([code, flow.step, flow.unresolved !== null]).toEqual([code, "lost", true]);
+    }
+    const refused = payFlow(() => Promise.reject(appError("platform.insufficient_credits")));
+    await refused.pay(QUOTE, null);
+    expect([refused.step, refused.unresolved]).toEqual(["refused", null]);
   });
 
   it("a lost reply keeps the contact held after the sheet closes, until a later read settles it", async () => {

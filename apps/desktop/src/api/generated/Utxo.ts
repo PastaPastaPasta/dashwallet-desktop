@@ -34,4 +34,10 @@ spendable: boolean,
  * Kept out of spending and every balance, and why; `null` for any
  * other coin.
  */
-excluded: CoinExclusion | null, };
+excluded: CoinExclusion | null,
+/**
+ * Held back while the payment from before a restore that sent or
+ * spends it is unproven: not offered or counted as spendable until it
+ * is mined, dropped or abandoned (`coins.pendingUnproven`).
+ */
+pendingUnproven: boolean, };

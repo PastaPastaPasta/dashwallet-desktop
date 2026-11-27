@@ -127,6 +127,92 @@ fn a_started_approval_keeps_its_link_past_the_bound() {
     assert!(inbox.connect.get(&queued[0]).is_none(), "the oldest not started goes");
 }
 
+/// The request whose sheet is on screen stays past the bound, before
+/// Approve is pressed; showing another sheet lets it go again.
+#[test]
+fn the_shown_request_keeps_its_link_past_the_bound() {
+    let inbox = Inbox::default();
+    let shown = link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os));
+    assert!(inbox.connect.show(&shown).is_some());
+    let queued: Vec<String> = (1..MAX_CONNECT_LINKS)
+        .map(|_| link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os)))
+        .collect();
+    let next = link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os));
+    assert!(inbox.connect.get(&shown).is_some_and(|l| l.shown));
+    assert!(inbox.connect.get(&queued[0]).is_none(), "the oldest not shown goes");
+    assert!(inbox.connect.start(&shown).is_some(), "Approve still answers it");
+
+    assert!(inbox.connect.show(&next).is_some());
+    assert!(!inbox.connect.get(&shown).unwrap().shown, "one sheet at a time");
+    assert!(inbox.connect.show("unknown").is_none());
+    assert!(!inbox.connect.get(&next).unwrap().shown);
+}
+
+/// Reading a sheet over IPC is what marks its request as shown, even when
+/// the wallet then refuses it.
+#[test]
+fn reading_a_sheet_keeps_its_request_past_the_bound() {
+    use tauri::Manager;
+    let demo = crate::ipc_tests::Demo::new();
+    let state = demo.handle().state::<crate::state::AppState>();
+    let inbox = &state.shell.inbox;
+    let ids: Vec<String> = (0..MAX_CONNECT_LINKS)
+        .map(|_| link_id(&take(inbox, &connect_uri(false), LinkOrigin::Os)))
+        .collect();
+    let read = demo.call(
+        "app_connect_sheet",
+        serde_json::json!({ "walletId": "none", "linkId": ids[0] }),
+    );
+    assert!(read.is_err(), "{read:?}");
+    take(inbox, &connect_uri(false), LinkOrigin::Os);
+    assert!(inbox.connect.get(&ids[0]).is_some_and(|l| l.shown));
+    assert!(inbox.connect.get(&ids[1]).is_none());
+}
+
+/// With every request kept on screen or being approved, a new one is
+/// refused, and none of those is lost.
+#[test]
+fn a_new_request_is_refused_when_every_kept_one_is_shown_or_started() {
+    let inbox = Inbox::default();
+    let kept: Vec<String> = (0..MAX_CONNECT_LINKS)
+        .map(|_| link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os)))
+        .collect();
+    for id in &kept[1..] {
+        assert!(inbox.connect.start(id).is_some());
+    }
+    assert!(inbox.connect.show(&kept[0]).is_some());
+    assert_eq!(
+        take(&inbox, &connect_uri(true), LinkOrigin::Os),
+        LinkRoute::Rejected {
+            reason: LinkRejected::Connect {
+                reason: ConnectRejected::Busy
+            }
+        }
+    );
+    assert!(kept.iter().all(|id| inbox.connect.get(id).is_some()));
+
+    for id in &kept[1..] {
+        inbox.connect.unstart(id);
+        inbox.connect.answer(id, Status::Ok);
+        assert!(inbox.connect.start(id).is_none());
+    }
+    take(&inbox, &connect_uri(false), LinkOrigin::Os);
+    assert!(inbox.connect.get(&kept[0]).is_some(), "still shown");
+    assert!(inbox.connect.get(&kept[1]).is_none(), "an answered one goes");
+}
+
+/// "Retry sending" needs the approval that parked the response: a request
+/// that never started has none to send.
+#[test]
+fn only_a_started_request_can_resend() {
+    let inbox = Inbox::default();
+    let id = link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os));
+    assert!(inbox.connect.started(&id).is_none());
+    assert!(inbox.connect.start(&id).is_some());
+    assert!(inbox.connect.started(&id).is_some());
+    assert!(inbox.connect.started("unknown").is_none());
+}
+
 #[test]
 fn refused_links_get_no_sheet() {
     let inbox = Inbox::default();

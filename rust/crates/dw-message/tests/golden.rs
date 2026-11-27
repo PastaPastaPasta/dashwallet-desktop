@@ -142,13 +142,11 @@ fn agrees_with_rust_dashcore_sign_message() {
             dashcore::hashes::Hash::to_byte_array(theirs),
             message_hash(m.as_bytes())
         );
-        let sig =
-            dashcore::sign_message::MessageSignature::from_base64(c["signature"].as_str().unwrap())
-                .unwrap();
+        let sig = dashcore::sign_message::from_base64(c["signature"].as_str().unwrap()).unwrap();
         let addr: dashcore::Address<dashcore::address::NetworkUnchecked> =
             c["address"].as_str().unwrap().parse().unwrap();
         let addr = addr.require_network(Network::Regtest).unwrap();
-        assert!(sig.is_signed_by_address(&addr, theirs).unwrap());
+        assert!(dashcore::sign_message::is_signed_by_address(&sig, &addr, theirs).unwrap());
     }
 }
 
@@ -158,10 +156,9 @@ proptest! {
                         msg in prop::collection::vec(any::<u8>(), 0..400)) {
         let s = Secret { key: Zeroizing::new(key), compressed };
         let sig = sign_message(&s, &msg).unwrap();
-        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes(key).unwrap();
-        let pk = dashcore::secp256k1::PublicKey::from_secret_key(&sk);
-        let ser = if compressed { pk.serialize().to_vec() } else { pk.serialize_uncompressed().to_vec() };
-        let hash = <dashcore::hashes::hash160::Hash as dashcore::hashes::Hash>::hash(&ser);
+        let pk = dashcore::ecdsa::EcdsaSecretKey::from_bytes(&key).unwrap().public_key();
+        let ser = if compressed { pk.to_compressed().to_vec() } else { pk.to_uncompressed().to_vec() };
+        let hash = dashcore::hashes::hash160::Hash::hash(&ser);
         let addr = dw_uri::keyio::encode_destination(
             &dw_uri::keyio::Destination::PubKeyHash(dashcore::hashes::Hash::to_byte_array(hash)), Network::Mainnet);
         prop_assert_eq!(verify_message(&addr, &sig, &msg, Network::Mainnet), Ok(()));

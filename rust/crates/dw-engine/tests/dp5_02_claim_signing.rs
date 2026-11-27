@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashcore::ephemerealdata::instant_lock::InstantLock;
-use dashcore::secp256k1::{PublicKey, SecretKey};
 use dashcore::transaction::special_transaction::TransactionPayload;
 use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut};
@@ -33,6 +32,7 @@ use dpp::identity::v0::IdentityV0;
 use dpp::identity::{Identity, IdentityPublicKey};
 use dpp::platform_value::BinaryData;
 use dpp::prelude::{AssetLockProof, Identifier};
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::serialization::PlatformSerializable;
 use dpp::state_transition::StateTransition;
 use dpp::state_transition::identity_create_transition::IdentityCreateTransition;
@@ -129,10 +129,10 @@ fn plain_keys(keys: &BTreeMap<u32, IdentityPublicKey>) -> PlainKeys {
     let mut plain = BTreeMap::new();
     for (id, key) in keys {
         let path = keys_policy::key_path(NETWORK, INDEX, *id).unwrap();
-        let secret = master.derive_priv(&path).unwrap().private_key;
-        let public = PublicKey::from_secret_key(&secret).serialize();
+        let secret = master.derive_priv(&path).unwrap().private_key.clone();
+        let public = secret.public_key().to_compressed();
         assert_eq!(key.data().as_slice(), public.as_slice(), "key {id}");
-        plain.insert(public.to_vec(), secret.to_secret_bytes());
+        plain.insert(public.to_vec(), *secret.to_bytes());
     }
     PlainKeys(plain)
 }

@@ -105,6 +105,73 @@ pub fn dp_payout_marker(reference: &str) -> String {
     format!("dp_payout/{reference}")
 }
 
+/// The `local:` key written with a Shielded-funded registration's created
+/// identity (`AppDb::set_registration_funding_durable`): a row naming an
+/// identity without it was not named on this install (a `.dwbackup`
+/// restore), so the journal's silence about it proves nothing. Its value is
+/// the height of the Platform address activity's baseline when it was
+/// written, before the create could execute.
+pub fn dp_registration_named(identity: &str) -> String {
+    format!("dp_registration_named/{identity}")
+}
+
+/// The `local:` key the shielded dispatch hook writes, durably, once a
+/// Shielded-funded registration's create artifact is in the journal and
+/// before the library may send it: with it, a missing artifact proves
+/// nothing (a lost or older journal), so the row waits (C-funding F12).
+pub fn dp_registration_dispatched(identity: &str) -> String {
+    format!("dp_registration_dispatched/{identity}")
+}
+
+/// The `local:` key holding the highest height of a proved read that saw
+/// the anchor of a Shielded-funded registration's create, by the hex of its
+/// transition hash, still recorded: only an absence read above it proves
+/// the anchor pruned (C-funding F12). By transition, not identity: a create
+/// signed again over the same notes names the same identity.
+pub fn dp_registration_anchor_seen(st_hash: &str) -> String {
+    format!("dp_registration_anchor_seen/{st_hash}")
+}
+
+/// The `local:` key the engine writes, durably and before it settles the
+/// journal, once it proves what a Shielded-funded registration's create,
+/// by the hex of its transition hash, did although the library left it
+/// unresolved: `executed` or `pruned` (never executes). This is the
+/// engine's own proof; the journal's disposition columns hold only the
+/// library's strings (C-funding F12).
+pub fn dp_registration_proved(st_hash: &str) -> String {
+    format!("dp_registration_proved/{st_hash}")
+}
+
+/// The `local:` keys, by address (bech32m), of the fallbacks the wallet's
+/// Shielded-funded registrations were given (C-funding F13), each valued
+/// its index in the Platform payment account: written durably before its
+/// registration may name it, and kept after the registration is gone, so
+/// the address is never handed out as a receive address. One no row names
+/// and never published ([`DP_REGISTRATION_PUBLISHED_PREFIX`]) is given to
+/// the next registration again.
+pub const DP_REGISTRATION_FALLBACK_PREFIX: &str = "dp_registration_fallback/";
+
+/// The `local:` keys, by address (bech32m), of the fallbacks a create named
+/// (C-funding F13): written durably by the dispatch hook before it names
+/// the create in its row, so before the create may leave. Such a fallback
+/// is never given to a registration again.
+pub const DP_REGISTRATION_PUBLISHED_PREFIX: &str = "dp_registration_published/";
+
+/// [`DP_REGISTRATION_PUBLISHED_PREFIX`]'s key of `address`.
+pub fn dp_registration_published(address: &str) -> String {
+    format!("{DP_REGISTRATION_PUBLISHED_PREFIX}{address}")
+}
+
+/// The `local:` key of the highest index of the Platform payment account
+/// the wallet handed out as a receive address (C-funding F13), written
+/// durably before the address is: no fallback is taken at or below it.
+pub const DP_PLATFORM_RECEIVE_HANDED_OUT: &str = "dp_platform_receive_handed_out";
+
+/// [`DP_REGISTRATION_FALLBACK_PREFIX`]'s key of `address`.
+pub fn dp_registration_fallback(address: &str) -> String {
+    format!("{DP_REGISTRATION_FALLBACK_PREFIX}{address}")
+}
+
 /// The `local:` key the shielded dispatch hook writes, durably, once a
 /// payout's artifact is in the journal and before the library may send
 /// it: with it, a missing artifact proves nothing (a lost or older

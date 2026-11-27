@@ -34,7 +34,7 @@ afterEach(() => resetWalletGate());
 describe("forgetWalletContent", () => {
   it("keeps the lock screen's reads and the network, and drops everything else", () => {
     const client = new QueryClient();
-    const kept = [keys.network, keys.lockStatus, keys.lastLockReport, [...keys.lockReconcile, { flows: [] }], keys.lockDrain];
+    const kept = [keys.network, keys.lockStatus, keys.lastLockReport, [...keys.lockReconcile, { flows: [] }], keys.lockDrain, keys.upgradeNotice];
     const dropped = [keys.wallets, keys.balance("w"), keys.history("w", {} as never, 20), keys.receiveAddress("w"), keys.contactsAll("w"), keys.sync, ["qr", "dash:x"]];
     for (const k of [...kept, ...dropped]) client.setQueryData(k, "x");
     forgetWalletContent(client);
@@ -105,6 +105,40 @@ describe("the lock gate", () => {
     expect(backend.kind).toBe("fixture");
     expect(asked).toEqual(["balance", "unlock", "lockStatus"]);
     expect(refusedWhileLocked({ code: "vault.locked", message: "", data: null })).toBe(false);
+  });
+
+  it("lets Quit and Restart through a gate that never opened, as on a refused or held store", async () => {
+    resetWalletGate(true);
+    const asked: string[] = [];
+    const ask = (name: string) => async () => (asked.push(name), null);
+    const backend = guardWhileLocked({ quitApp: ask("quitApp"), restartApp: ask("restartApp"), balance: ask("balance") } as unknown as Backend);
+    await expect(backend.balance("w")).rejects.toMatchObject({ code: "vault.locked" });
+    expect(await backend.quitApp()).toBeNull();
+    expect(await backend.restartApp()).toBeNull();
+    expect(asked).toEqual(["quitApp", "restartApp"]);
+  });
+
+  it("lets the refused open's restore and recover calls and Report a problem through a gate that never opened", async () => {
+    resetWalletGate(true);
+    const asked: string[] = [];
+    const ask = (name: string, answer: unknown = null) => async () => (asked.push(name), answer);
+    const backend = guardWhileLocked({
+      restoreAvailable: ask("restoreAvailable", true),
+      requestRestore: ask("requestRestore"),
+      keepCurrentFiles: ask("keepCurrentFiles"),
+      cancelRestore: ask("cancelRestore"),
+      recoverInFreshFolder: ask("recoverInFreshFolder"),
+      openProjectLink: ask("openProjectLink"),
+      contactPay: ask("contactPay"),
+    } as unknown as Backend);
+    await expect(backend.contactPay("w", "i", "c", {} as never, "g")).rejects.toMatchObject({ code: "vault.locked" });
+    expect(await backend.restoreAvailable()).toBe(true);
+    expect(await backend.requestRestore()).toBeNull();
+    expect(await backend.keepCurrentFiles()).toBeNull();
+    expect(await backend.cancelRestore()).toBeNull();
+    expect(await backend.recoverInFreshFolder()).toBeNull();
+    expect(await backend.openProjectLink("issues")).toBeNull();
+    expect(asked).toEqual(["restoreAvailable", "requestRestore", "keepCurrentFiles", "cancelRestore", "recoverInFreshFolder", "openProjectLink"]);
   });
 
   it("stays closed from the start until a status says the vault is not locked", () => {

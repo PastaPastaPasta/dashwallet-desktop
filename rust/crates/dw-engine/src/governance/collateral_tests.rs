@@ -10,7 +10,6 @@ use dashcore::blockdata::transaction::special_transaction::provider_registration
 };
 use dashcore::bls_sig_utils::BLSPublicKey;
 use dashcore::hash_types::{InputsHash, PubkeyHash};
-use dashcore::hashes::Hash;
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
@@ -91,7 +90,8 @@ pub(in crate::governance) fn summary(
         is_valid: true,
         is_evonode: evonode,
         has_extended_net_info: false,
-        net_info: None,
+        service_addresses: Vec::new(),
+        operator_key_is_legacy: false,
     }
 }
 

@@ -16,6 +16,8 @@
 // (`World.cut`), not derived from the leases.
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { OpenedNetwork } from "../api/generated/OpenedNetwork";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
@@ -45,7 +47,7 @@ import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
-import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
+import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedOff, shieldedQuote, shieldedSpendsOff } from "./registration";
 import { connectHandlers, connectRoute, takeConnect } from "./connect";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -55,14 +57,18 @@ import { landHeldTopUp as landTopUp, topUpHandlers, type TopUpDeps } from "./top
 import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
-import { isClosed, settingsHandlers } from "./settings";
-import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
+import { FIXTURE_DATA_DIR, isClosed, restoreOnly, settingsHandlers } from "./settings";
+import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
+import type { RestoredNetworkInfo } from "../api/storeOpen";
+import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
 
 export interface Ctx {
   world: World;
   emit(event: AppEvent): void;
+  /** Quits and relaunches the page as `FixtureHandle.relaunch` does (absent outside a page). */
+  relaunch?(): void;
 }
 
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
@@ -263,7 +269,14 @@ function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurpo
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
   const sensitive = purposes.some(
-    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp" || p.kind === "appConnect",
+    (p) =>
+      p.kind === "revealSecret" ||
+      p.kind === "wipe" ||
+      p.kind === "changeCredential" ||
+      p.kind === "governance" ||
+      p.kind === "masternodeOp" ||
+      p.kind === "appConnect" ||
+      p.kind === "appDisconnect",
   );
   if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
     throw fail("vault.credential_required", "the passphrase is required");
@@ -674,7 +687,10 @@ function paymentsChanged(ctx: Ctx, walletId: string, identity: string) {
 export function payeeOfPayout(w: World, walletId: string, pair: Pair, credits: string, source: PaymentSourceName): ContactDetailInfo {
   if (source === "core" || !/^[0-9]+$/.test(credits) || BigInt(credits) === 0n) throw fail("invalid_argument", "not a payment from a balance");
   checkContact(w, walletId, pair, "prepare");
-  if (source === "shielded") throw fail("platform.feature_off", "shielded_contact_payment", { kind: "feature", feature: "shielded_contact_payment" });
+  if (source === "shielded") {
+    if (w.launch.network.kind !== "mainnet" && w.pending.shielded?.spendsAvailable === false) throw fail("platform.unavailable", "this build cannot spend from Shielded");
+    throw fail("platform.feature_off", "shielded_contact_payment", { kind: "feature", feature: "shielded_contact_payment" });
+  }
   return pairContact(w, walletId, pair);
 }
 
@@ -740,6 +756,16 @@ const TOP_UP_DEPS: TopUpDeps = { wallet, dashpay, grant: checkGrant, useGrant, c
 /** A held top-up from Platform executed in its exit's place (platform_move_to_core's `lost`). */
 export const landHeldTopUp = (ctx: Ctx, id: string) => landTopUp(TOP_UP_DEPS, ctx, id);
 
+/** The window's network with its `restored` (DTO contract v3). */
+/** `open_network`'s answer for `world` on `network`: its lock and the store upgrade's notice. */
+export function openedNetwork(world: World, network: NetworkInfo): OpenedNetwork {
+  return { network, lock: world.lock, notice: world.upgradeNotice ?? null };
+}
+
+export function restoredNetwork(world: World): RestoredNetworkInfo {
+  return { ...world.launch.network, restored: world.restored === true };
+}
+
 export const HANDLERS: Handlers = {
   // Pay and Receive (U-03): send.ts.
   ...sendHandlers(sendDeps),
@@ -780,14 +806,34 @@ export const HANDLERS: Handlers = {
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
-    // Row 74: the network a failed switch left did not reopen; the splash's Retry opens it.
-    if (world.networkSwitch?.reopenFails) {
-      world.networkSwitch.reopenFails = false;
-      throw { code: "storage_in_use", message: `fixture: reopening ${world.launch.network.dirName} failed`, data: null } satisfies AppError;
+    // A data folder others can change is refused before anything below it is read or written.
+    if (world.openNotPrivate) throw storeNotPrivateError(world.openNotPrivate);
+    // A pending restore runs before the stores are checked, and any failure of it stops the open.
+    const restore = world.openRestore;
+    if (restore) {
+      if (restore.state === "refused" || restore.state === "noSpace") world.openRestore = undefined;
+      throw storeRestoreError(restore);
     }
-    return { network: world.launch.network, lock: world.lock };
+    if (world.openRefusal) throw storeRefusedError(world.openRefusal);
+    if (world.openRetry) throw storeRetryError(`${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`);
+    // Row 74: the network a failed switch left did not reopen; at this pin the store stays held until a
+    // restart (`storageInUse=retry` is the build where trying again frees it).
+    if (world.networkSwitch?.reopenFails) throw storageInUseError(false, `fixture: reopening ${world.launch.network.dirName} failed`);
+    if (world.storageHeld) {
+      const { retryable } = world.storageHeld;
+      if (retryable) world.storageHeld = undefined;
+      throw storageInUseError(retryable);
+    }
+    return openedNetwork(world, restoredNetwork(world));
   },
-  active_network: (_, { world }) => world.launch.network,
+  active_network: (_, { world }) => restoredNetwork(world),
+  // Engine::recover_in_fresh_folder: only after a refused open; the next open is the new folder's.
+  recover_in_fresh_folder: (_, { world }) => {
+    if (!world.openRefusal) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
+    (world.restoreCalls ??= []).push("recover");
+    startOverInNewFolder(world);
+    return null;
+  },
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
   // The vault's status counts its wait down (dw-vault `retry_after`) when a scenario sets one
@@ -830,7 +876,8 @@ export const HANDLERS: Handlers = {
     setLock(ctx, passphrase === null ? "noKeys" : "unlocked");
     return world.lock;
   },
-  generate_mnemonic: ({ wordCount, language }) => {
+  generate_mnemonic: ({ wordCount, language }, { world }) => {
+    if (world.restored) throw restoreOnly();
     if (language !== "english" || (wordCount !== 12 && wordCount !== 24)) throw fail("invalid_argument", "the fixture makes English phrases of 12 or 24 words");
     return wordCount === 12 ? CREATED_12 : CREATED_24;
   },
@@ -1151,7 +1198,14 @@ export const HANDLERS: Handlers = {
       };
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
-    if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
+    if (funding.kind === "shielded") {
+      // registration_shielded.rs `FEATURE`: off on mainnet before any read.
+      if (world.launch.network.kind === "mainnet") throw shieldedOff();
+      checkTemporary(request);
+      const spendsOff = shieldedSpendsOff(world.pending.shielded);
+      if (spendsOff) throw spendsOff;
+      return shieldedQuote(label, world.pending.shielded, request.temporaryLabel);
+    }
     checkTemporary(request);
     if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label, request.temporaryLabel);

@@ -38,7 +38,8 @@ pub struct SigKey(pub PublicKey);
 
 impl Ord for SigKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.0.compressed, self.0.inner).cmp(&(other.0.compressed, other.0.inner))
+        (self.0.compressed, self.0.inner.to_compressed())
+            .cmp(&(other.0.compressed, other.0.inner.to_compressed()))
     }
 }
 
@@ -61,7 +62,7 @@ impl Ord for XpubKey {
                 x.depth,
                 x.parent_fingerprint,
                 x.child_number,
-                x.public_key,
+                x.public_key.to_compressed(),
                 x.chain_code,
             )
         };
@@ -214,9 +215,9 @@ mod tests {
     fn signatures_and_xpubs_keep_the_pre_1144_order() {
         use dashcore::Network;
         use dashcore::crypto::ecdsa;
-        use dashcore::secp256k1::{self, Message, SecretKey, ecdsa as secp_ecdsa};
         use dashcore::sighash::EcdsaSighashType;
         use key_wallet::bip32::{ChainCode, ExtendedPrivKey};
+        use secp256k1::{self, Message, SecretKey, ecdsa as secp_ecdsa};
 
         let inner = |n: u8| {
             secp256k1::PublicKey::from_secret_key(&SecretKey::from_secret_bytes([n; 32]).unwrap())
@@ -240,8 +241,8 @@ mod tests {
             psbt.inputs[0].partial_sigs.insert(
                 SigKey(pk),
                 ecdsa::Signature {
-                    sig,
-                    hash_ty: EcdsaSighashType::All,
+                    signature: sig,
+                    sighash_type: EcdsaSighashType::All,
                 },
             );
         }
@@ -250,8 +251,8 @@ mod tests {
         let master = ExtendedPrivKey::new_master(Network::Testnet, &[9; 32]).unwrap();
         let mut a = ExtendedPubKey::from_priv(&master);
         let mut b = a;
-        b.public_key = inner(5);
-        if a.public_key.serialize() > b.public_key.serialize() {
+        b.public_key = inner(5).into();
+        if a.public_key.to_compressed() > b.public_key.to_compressed() {
             std::mem::swap(&mut a.public_key, &mut b.public_key);
         }
         a.chain_code = ChainCode::from_bytes([0xee; 32]);

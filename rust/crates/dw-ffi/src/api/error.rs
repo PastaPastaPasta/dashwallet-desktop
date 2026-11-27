@@ -66,10 +66,15 @@ impl From<dw_engine::EngineError> for EngineError {
             E::InvalidConfig(_) => Self::InvalidConfig { detail },
             E::InvalidArgument(_) => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
-            E::StorageInUse(_) => Self::StorageInUse { detail },
+            E::StorageInUse { .. } => Self::StorageInUse { detail },
             // The frozen Swift shells have no code for it: `storage`, with
             // the newer-build text as its detail (DP3-04b D35).
-            E::Storage(_) | E::StorageTooNew(_) => Self::Storage { detail },
+            E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_) => Self::Storage { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::WalletAlreadyExists { detail },
@@ -78,7 +83,7 @@ impl From<dw_engine::EngineError> for EngineError {
             // never produce it.
             E::Sdk(_) | E::InsufficientCredits { .. } => Self::Sdk { detail },
             E::Spv(_) => Self::Spv { detail },
-            E::Io(_) => Self::Io { detail },
+            E::Io(_) | E::RetryableIo(_) => Self::Io { detail },
             E::NotImplemented(_) => Self::NotImplemented { detail },
             E::SpvNotRunning
             | E::SpvRunning
@@ -115,8 +120,13 @@ impl From<dw_engine::EngineError> for EngineError {
             E::StuckFunding(_) => Self::InvalidArgument { detail },
             // The frozen Swift shells have no shielded funds, so no wallet
             // of theirs holds a shielded spend (0.1 E1, DEC-1046).
-            E::ShieldedSpendUnresolved => Self::Wallet { detail },
+            E::ShieldedSpendUnresolved | E::ShieldedSpendHeld(_) => Self::Wallet { detail },
             E::LastStartupWallet => Self::InvalidArgument { detail },
+            // The frozen Swift shells have no money gate.
+            E::Restored => Self::Wallet { detail },
+            // The frozen Swift shells never open a restored folder's add
+            // flow with a mark set (Q107 C1 is the desktop's).
+            E::RestoreOnly => Self::InvalidArgument { detail },
         }
     }
 }
@@ -161,7 +171,8 @@ mod tests {
 
     /// The §4 row of `EngineError` lists exactly the codes its variants
     /// have, plus the engine codes it marks as not in the frozen dw-ffi
-    /// (`shielded_spend_unresolved`, reported as `wallet`).
+    /// (`shielded_spend_unresolved`, reported as `wallet`; `storage_refused`
+    /// and `storage_not_private`, reported as `storage`).
     #[test]
     fn engine_error_codes_match_the_contract() {
         let contract = contract_engine_codes();
@@ -169,10 +180,19 @@ mod tests {
             .filter(|(_, engine_only)| *engine_only)
             .map(|(code, _)| code.as_str())
             .collect();
-        assert_eq!(engine_only, ["shielded_spend_unresolved"]);
+        assert_eq!(
+            engine_only,
+            [
+                "shielded_spend_unresolved",
+                "storage_refused",
+                "storage_not_private"
+            ]
+        );
         // Reported as the row says.
         let mapped = EngineError::from(dw_engine::EngineError::ShieldedSpendUnresolved);
         assert_eq!(mapped.code(), "wallet");
+        let mapped = EngineError::from(dw_engine::EngineError::RetryableIo(String::new()));
+        assert_eq!(mapped.code(), "io");
         let mut listed: Vec<&str> = (contract.iter())
             .filter(|(_, engine_only)| !engine_only)
             .map(|(code, _)| code.as_str())

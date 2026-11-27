@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::SecretKey;
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::hash160;
 use dashcore::{PrivateKey, PubkeyHash, ScriptBuf};
 use zeroize::Zeroizing;
 
@@ -59,7 +59,7 @@ fn parse_secret(
         let mut bytes = Zeroizing::new([0u8; 32]);
         hex::decode_to_slice(key, &mut bytes[..]).map_err(|_| invalid())?;
         PrivateKey::new(
-            SecretKey::from_secret_bytes(*bytes).map_err(|_| invalid())?,
+            EcdsaSecretKey::from_bytes(&bytes).map_err(|_| invalid())?,
             network,
         )
     } else {
@@ -80,7 +80,7 @@ fn parse_secret(
         private
     };
     let id = hash160::Hash::hash(&private.public_key().to_bytes()).to_byte_array();
-    Ok((Zeroizing::new(private.inner.to_secret_bytes()), id))
+    Ok((private.inner.to_bytes(), id))
 }
 
 /// What a key of each role is checked against (MG-03 §4, MG-00 D13, D24):
@@ -561,14 +561,14 @@ mod tests {
         let hex_key = "01".repeat(32);
         let (secret, id) = parse_secret(&hex_key, NET).unwrap();
         assert_eq!(&secret[..], &[1u8; 32]);
-        let wif = PrivateKey::new(SecretKey::from_secret_bytes([1; 32]).unwrap(), NET).to_wif();
+        let wif = PrivateKey::new(EcdsaSecretKey::from_bytes(&[1; 32]).unwrap(), NET).to_wif();
         assert_eq!(
             parse_secret(&wif, NET).unwrap().1,
             id,
             "the same key, compressed"
         );
         let mainnet = PrivateKey::new(
-            SecretKey::from_secret_bytes([1; 32]).unwrap(),
+            EcdsaSecretKey::from_bytes(&[1; 32]).unwrap(),
             dashcore::Network::Mainnet,
         );
         assert_eq!(
@@ -584,7 +584,7 @@ mod tests {
         // Refused with fixed text: the vault's bare secret reads back
         // compressed, another id (D36).
         let uncompressed =
-            PrivateKey::new_uncompressed(SecretKey::from_secret_bytes([1; 32]).unwrap(), NET)
+            PrivateKey::new_uncompressed(EcdsaSecretKey::from_bytes(&[1; 32]).unwrap(), NET)
                 .to_wif();
         let refused = parse_secret(&uncompressed, NET).unwrap_err();
         assert_eq!(refused.code(), "invalid_argument");

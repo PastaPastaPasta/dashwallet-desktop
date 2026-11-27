@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
-import { CARDS, CHIP_TEXT, CHIPS, platformRunFails } from "./dashpay";
+import { CARDS, CHIPS, CHIP_TEXT, payFrom, payFromDashWallet, platformRunFails, privacyTip, setShielded, shieldedRunFails } from "./dashpay";
 import { openConnect, quoted } from "./connect";
 import type { ConnectOutcome } from "../src/fixture/connect";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
@@ -459,6 +459,7 @@ for (const theme of THEMES) {
     test(`visual identities-${view} ${theme}`, async ({ page }) => {
       await openIdentities(page, "dashpay-identities", theme);
       await page.getByTestId("identity-row").first().waitFor();
+      await page.getByTestId("connected-apps-empty").waitFor();
       await go(page);
       await page.mouse.move(0, 0);
       await shoot(page, `identities-${view}`, theme);
@@ -488,9 +489,10 @@ for (const theme of THEMES) {
 // readiness states, the voting info and the FAQ.
 const SHOT = { animations: "disabled", caret: "hide" } as const;
 
-const JOIN: Record<string, { scenario: string; ready: string }> = {
+const JOIN: Record<string, { scenario: string; ready: string; shielded?: Record<string, unknown> }> = {
   join: { scenario: "dashpay-no-identity", ready: "join-cost" },
-  "join-shortfall": { scenario: "empty", ready: "join-shortfall" },
+  // C-funding F16: neither balance can pay.
+  "join-shortfall": { scenario: "empty", ready: "join-shortfall", shielded: { balance: "0", notes: undefined } },
   "join-waiting": { scenario: "dashpay-waiting-for-sync", ready: "join-waiting" },
   "join-watch-only": { scenario: "dashpay-watch-only", ready: "join-watch-only" },
   "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
@@ -504,6 +506,7 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
 /** Step 1 for the contested "alice", then its instant offer (DP1-09 D4 reversed). */
 async function instantOffered(page: Page) {
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await page.getByTestId("registration-name-field").fill("alice");
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
@@ -585,36 +588,47 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
       await page.getByTestId("registration-instantRetry").waitFor();
     },
   },
-  // C-funding F19: "Pay another way".
+  // C-funding F19: "Make your username private", Shielded first; Platform behind Advanced, opened.
   "pay-with": {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
-      await expect(page.getByTestId("pay-with-shielded-reason")).toBeVisible();
+      await page.getByTestId("join-create").click();
+      await expect(page.getByTestId("pay-with-shielded-note")).toBeVisible();
       await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+      await page.getByTestId("privacy-advanced").click();
+      await expect(page.getByTestId("pay-with-platform-balance")).toBeVisible();
+      await page.mouse.move(0, 0);
     },
   },
-  // A Platform move that may still execute holds the balance: the Platform row's reason.
-  "pay-with-move-pending": {
-    scenario: "platform-send-held",
-    reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
-      await expect(page.getByTestId("pay-with-platform-reason")).toHaveText("Another Platform transfer is still being confirmed. Try again when it is done.");
-    },
-  },
-  // Dash wallet short of the cost: its reason; Continue off.
+  // Dash wallet short of the cost: its reason; Continue off until Shielded is picked.
   "pay-with-short": {
     scenario: "empty",
     reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("join-create").click();
       await expect(page.getByTestId("pay-with-core-reason")).toBeVisible();
       await expect(page.getByTestId("registration-next")).toBeDisabled();
+    },
+  },
+  // C-funding F16: the tip cards that replace the sources while Shielded cannot pay.
+  "privacy-nothing": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { balance: "0", notes: undefined }, "nothing") },
+  "privacy-partly": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { balance: "1000000000", notes: undefined }, "partly") },
+  "privacy-resting": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { restingUntil: 1_900_000_000 }, "resting") },
+  "privacy-pool": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { poolNotes: 120 }, "pool") },
+  // On mainnet a username paid from the Shielded balance is off (flag shielded_registration): the Dash wallet only.
+  "privacy-mainnet": {
+    scenario: "dashpay-no-identity-mainnet",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+      await expect(page.getByTestId("pay-with-shielded-note")).toHaveCount(0);
+      await page.mouse.move(0, 0);
     },
   },
   name: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
       await page.getByTestId("registration-name-field").fill("alice");
       await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
     },
@@ -623,6 +637,19 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
+  // C-funding F20: Confirm paid from the Shielded balance.
+  "confirm-shielded": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await payFrom(page, "shielded");
       await page.getByTestId("registration-name-field").fill("alice-77");
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();
@@ -633,9 +660,8 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   "confirm-platform": {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
-      await page.getByTestId("pay-with-platform").getByRole("radio").check();
-      await page.getByTestId("registration-next").click();
+      await page.getByTestId("join-create").click();
+      await payFrom(page, "platform");
       await page.getByTestId("registration-name-field").fill("alice-77");
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();
@@ -646,15 +672,18 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
   held: { scenario: "dashpay-registering-held", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=held]").waitFor() },
+  "shielded-recheck": { scenario: "dashpay-registering-shielded-recheck", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
   stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
   refunded: { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "paidFailure") },
+  "shielded-consumed": { scenario: "dashpay-no-identity", reach: (page) => shieldedRunFails(page, "alice-77", "consumed") },
   "quote-changed": { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "replanRefused") },
   // PRODUCT #4: the welcome, after a new username's run to its end.
   welcome: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
       await page.getByTestId("registration-name-field").fill("alice-77");
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();
@@ -698,9 +727,10 @@ for (const theme of THEMES) {
       await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
     });
   }
-  for (const [name, { scenario, ready }] of Object.entries(JOIN)) {
+  for (const [name, { scenario, ready, shielded }] of Object.entries(JOIN)) {
     test(`visual dashpay-${name} ${theme}`, async ({ page }) => {
       await openJoin(page, scenario, theme);
+      if (shielded) await setShielded(page, shielded);
       await page.getByTestId(ready).waitFor();
       await shoot(page, `dashpay-${name}`, theme);
     });
@@ -1397,7 +1427,7 @@ const approveConnect = async (page: Page) => {
   await page.getByTestId("connect-approve").click();
   await authorize(page);
 };
-const CONNECT: Record<string, { outcome: ConnectOutcome; reach: (page: Page) => Promise<unknown> }> = {
+const CONNECT: Record<string, { outcome: ConnectOutcome; returnsTo?: string | null; reach: (page: Page) => Promise<unknown> }> = {
   sheet: { outcome: "ok", reach: quoted },
   "sheet-end": { outcome: "ok", reach: async (page) => (await quoted(page), page.getByTestId("connect-approve").scrollIntoViewIfNeeded()) },
   done: { outcome: "ok", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-done").waitFor()) },
@@ -1406,15 +1436,232 @@ const CONNECT: Record<string, { outcome: ConnectOutcome; reach: (page: Page) => 
   refused: { outcome: "stale", reach: (page) => page.getByTestId("connect-refusal").waitFor() },
   failed: { outcome: "failed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-refusal").waitFor()) },
   "not-confirmed": { outcome: "notConfirmed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-quote-error").scrollIntoViewIfNeeded()) },
+  "quote-retry": { outcome: "quoteOffline", reach: (page) => page.getByTestId("connect-quote-retry").scrollIntoViewIfNeeded() },
+  credits: { outcome: "credits", reach: (page) => page.getByTestId("connect-quote-retry").scrollIntoViewIfNeeded() },
+  "denied-typed": {
+    outcome: "notConfirmed",
+    returnsTo: null,
+    reach: async (page) => {
+      await approveConnect(page);
+      await page.getByTestId("connect-quote-error").waitFor();
+      await page.getByTestId("connect-deny").click();
+      await page.getByTestId("connect-denied").waitFor();
+    },
+  },
 };
 
 for (const theme of THEMES) {
-  for (const [name, { outcome, reach }] of Object.entries(CONNECT)) {
+  for (const [name, { outcome, returnsTo, reach }] of Object.entries(CONNECT)) {
     test(`visual connect-${name} ${theme}`, async ({ page }) => {
-      await openConnect(page, outcome, theme);
+      await openConnect(page, outcome, theme, returnsTo);
       await reach(page);
       await page.mouse.move(0, 0);
       await shoot(page, `connect-${name}`, theme);
+    });
+  }
+}
+
+// Settings ▸ Advanced ▸ Connected apps & Disconnect: list, empty, confirm with fee,
+// passphrase prompt, error, and after disconnect.
+const CONNECTED_APPS: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  list: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().waitFor();
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+  empty: {
+    scenario: "dashpay-connected-apps-empty",
+    reach: async (page) => {
+      await page.getByTestId("connected-apps-empty").waitFor();
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+  confirm: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+    },
+  },
+  passphrase: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.getByTestId("disconnect-confirm").click();
+      await page.getByTestId("grant-sheet-field").waitFor();
+    },
+  },
+  error: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.evaluate(() => {
+        window.__dwFixture!.world.disconnectOutcome = "notConfirmed";
+      });
+      await page.getByTestId("disconnect-confirm").click();
+      await authorize(page);
+      await page.getByTestId("disconnect-error").waitFor();
+    },
+  },
+  after: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.getByTestId("disconnect-confirm").click();
+      await authorize(page);
+      await page.getByTestId("connected-apps-done").waitFor();
+      await expect(page.getByTestId("connected-app-row")).toHaveCount(1);
+      await expect(page.getByTestId("connected-apps-refresh")).toHaveText("Refresh");
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(CONNECTED_APPS)) {
+    test(`visual connected-apps-${name} ${theme}`, async ({ page }) => {
+      await openIdentities(page, scenario, theme);
+      await page.getByTestId("connected-apps-card").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `connected-apps-${name}`, theme);
+    });
+  }
+}
+
+// The way out of a held Platform item: Move to Dash wallet on a held payment's details and its
+// Confirm line, and the cancel of a held move or contact payment, from Confirm to its outcome.
+const openDetails = async (page: Page, txid: string) => {
+  await page.getByTestId("sidebar-activity").click();
+  await page.getByTestId("tx-list").waitFor();
+  await page.locator(`button[data-txid="${txid}"]`).click();
+  await page.getByTestId("source-detail").waitFor();
+};
+const HELD_EXIT: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  "send-details": { scenario: "platform-send-failed-may-land", reach: (page) => openDetails(page, "platform:send:ps-held:mayland") },
+  "send-move-confirm": {
+    scenario: "platform-send-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:send:ps-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "move-details": { scenario: "platform-move-failed-may-land", reach: (page) => openDetails(page, "platform:moveToCore:pm-held:mayland") },
+  "move-cancel-confirm": {
+    scenario: "platform-move-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-body").waitFor();
+    },
+  },
+  "move-cancel-done": {
+    scenario: "platform-move-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-cancel-outcome").waitFor();
+    },
+  },
+  "payout-cancel-confirm": {
+    scenario: "platform-payout-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:contactPayment:cp-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-body").waitFor();
+    },
+  },
+  "cancel-details": { scenario: "platform-cancel-failed-may-land", reach: (page) => openDetails(page, "platform:cancelMove:pc-held:mayland") },
+  "cancel-move-confirm": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelMove:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "cancel-move-done": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelMove:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-move-outcome-text").waitFor();
+    },
+  },
+  "payout-cancel-move-confirm": {
+    scenario: "platform-payout-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelPayment:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "move-resend-refused": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.cancelPreCheck = "rulesUnsupported"));
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-cancel-refused").waitFor();
+    },
+  },
+  "move-too-small-cancel": {
+    scenario: "platform-move-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+    },
+  },
+  "move-too-small-move-confirm": {
+    scenario: "platform-move-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "payout-too-small-cancel": {
+    scenario: "platform-payout-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:contactPayment:cp-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(HELD_EXIT)) {
+    test(`visual held-exit-${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("hero").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `held-exit-${name}`, theme);
     });
   }
 }

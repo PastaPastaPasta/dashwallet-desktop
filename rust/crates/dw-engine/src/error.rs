@@ -18,17 +18,48 @@ pub enum EngineError {
     /// The data root is held by another process (its instance lock,
     /// `dw_fs::instance`), or the wallet database for this network is still
     /// held by a previous session in this process (SqlitePersister's
-    /// open-path registry).
-    #[error("wallet storage in use: {0}")]
-    StorageInUse(String),
+    /// open-path registry). `retryable`: whether trying again in this
+    /// process may succeed; false when only a restart clears it.
+    #[error("wallet storage in use: {detail}")]
+    StorageInUse { detail: String, retryable: bool },
     #[error("storage error: {0}")]
     Storage(String),
-    /// The wallet database was written by a newer build: its upstream or its
-    /// fork schema history is beyond what this build knows (DP3-04b D35).
-    /// Nothing was changed; the newer build, or a backup this build wrote,
-    /// opens it.
+    /// The wallet database was written by a newer build: its schema history
+    /// is beyond what this build knows (DP3-04b D35), met outside the open's
+    /// store-upgrade check (which reports it as [`Self::StoreRefused`] with
+    /// cause `SchemaTooNew`). Nothing was changed.
     #[error("this wallet file was written by a newer build: {0}")]
     StorageTooNew(String),
+    /// The open's store-upgrade check refused the network's wallet data
+    /// (dw-store-upgrade): nothing in the folder was changed. Carries the
+    /// cause and the way out the folder's proved state allows.
+    #[error("this build can't safely open the wallet data in {}: {}", .0.folder.display(), .0.detail)]
+    StoreRefused(Box<crate::store_upgrade::StoreRefusal>),
+    /// The data root, a directory above it, or one on a symlinked network
+    /// directory's path lets someone other than the user or root replace its
+    /// entries ([`dw_fs::insecure_ancestor`]): the open refused it before
+    /// reading or writing anything below. `folder` is that directory; its
+    /// mode was left as it is.
+    #[error("the data folder is not private: {detail}")]
+    DataFolderNotPrivate {
+        folder: std::path::PathBuf,
+        reason: dw_fs::InsecureReason,
+        detail: String,
+    },
+    /// A requested or part-done restore stopped the open, or a restore
+    /// command was refused (dw-store-upgrade): its state says what changed.
+    #[error("the restore in {} stopped ({:?}, {}): {}", .0.folder.display(), .0.state, .0.cause, .0.detail)]
+    StoreRestore(Box<crate::store_upgrade::RestoreFailure>),
+    /// The open's store upgrade stopped on the machine (the disk full or not
+    /// writable, an I/O fault) and runs again at the next start: quit and
+    /// open again, never an earlier version, as the file may be
+    /// part-upgraded (`copy::retry_copy_for`).
+    #[error("the upgrade of the wallet data in {} stopped: {}", .0.folder.display(), .0.detail)]
+    StoreRetry(Box<crate::store_upgrade::RetryFailure>),
+    /// The open's store-upgrade step failed for the machine (disk full, an
+    /// I/O error, the snapshot), not the data: trying again may succeed.
+    #[error("io error: {0}")]
+    RetryableIo(String),
     #[error("wallet not found: {0}")]
     WalletNotFound(String),
     /// The phrase is not a valid BIP39 mnemonic in any supported wordlist.
@@ -162,11 +193,41 @@ pub enum EngineError {
     /// and its reservations (platform-wallet has no detach at the pin).
     #[error("a shielded payment is still being confirmed; wait, or quit and reopen the app")]
     ShieldedSpendUnresolved,
+    /// The user's removal of a wallet that holds a shielded spend whose
+    /// result is not known (Q86 Q-PURGE C2): the removal would delete the
+    /// spend's record and its notes' hold. Nothing was removed. Code
+    /// `shielded_spend_unresolved`, with why it holds.
+    #[error(
+        "a shielded payment from this wallet may still be going through; nothing was removed ({0:?})"
+    )]
+    ShieldedSpendHeld(ShieldedHold),
     /// `set_load_on_startup` would leave no wallet on the load-on-startup
     /// list: with no wallet open the app starts in onboarding, where closed
     /// wallets cannot be reached.
     #[error("at least one wallet opens at start")]
     LastStartupWallet,
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    #[error("funds actions wait for the first sync after a restore")]
+    Restored,
+    /// The network's wallet data is a restore not yet cleared (its RESTORED
+    /// mark, Q107 C1): until its first full sync a wallet is added only from
+    /// its recovery phrase, so a new wallet, a file or key import and a
+    /// watch-only wallet are refused, nothing changed.
+    #[error("the wallet data is a restore not yet synced; add a wallet from its recovery phrase")]
+    RestoreOnly,
+}
+
+/// Why a wallet's removal is refused ([`EngineError::ShieldedSpendHeld`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldedHold {
+    /// A spend the library stored, or reserved notes for, may still be going
+    /// through: the hold clears once it resolves.
+    InFlight,
+    /// A spend this build did not make or cannot read: a DEC-1057 marker, a
+    /// fork-era hold, or a marker, journal, outcome or store that does not
+    /// read. A confirmation alone does not clear it.
+    CarriedOver,
 }
 
 impl EngineError {
@@ -176,9 +237,14 @@ impl EngineError {
             EngineError::InvalidConfig(_) => "invalid_config",
             EngineError::InvalidArgument(_) => "invalid_argument",
             EngineError::NetworkNotOpen(_) => "network_not_open",
-            EngineError::StorageInUse(_) => "storage_in_use",
+            EngineError::StorageInUse { .. } => "storage_in_use",
             EngineError::Storage(_) => "storage",
             EngineError::StorageTooNew(_) => "storage_too_new",
+            EngineError::StoreRefused(_) => "storage_refused",
+            EngineError::DataFolderNotPrivate { .. } => "storage_not_private",
+            EngineError::StoreRestore(_) => "storage_restore",
+            EngineError::StoreRetry(_) => "storage_retry",
+            EngineError::RetryableIo(_) => "io",
             EngineError::WalletNotFound(_) => "wallet_not_found",
             EngineError::InvalidMnemonic(_) => "invalid_mnemonic",
             EngineError::WalletAlreadyExists(_) => "wallet_already_exists",
@@ -218,8 +284,12 @@ impl EngineError {
             EngineError::Masternode(_) => "masternode",
             EngineError::StuckFunding(_) => "stuck_funding",
             EngineError::Contact(_) => "contact",
-            EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
+            EngineError::ShieldedSpendUnresolved | EngineError::ShieldedSpendHeld(_) => {
+                "shielded_spend_unresolved"
+            }
             EngineError::LastStartupWallet => "last_startup_wallet",
+            EngineError::Restored => "restored",
+            EngineError::RestoreOnly => "restore_only",
         }
     }
 }
@@ -248,6 +318,17 @@ impl From<dw_appdb::AppDbError> for EngineError {
     }
 }
 
+impl EngineError {
+    /// A held store that may clear in this process: a close in progress
+    /// releases it, or another process exits.
+    pub(crate) fn storage_in_use(detail: impl Into<String>) -> Self {
+        Self::StorageInUse {
+            detail: detail.into(),
+            retryable: true,
+        }
+    }
+}
+
 impl From<SignerError> for EngineError {
     fn from(e: SignerError) -> Self {
         EngineError::Signer(e)
@@ -257,18 +338,12 @@ impl From<SignerError> for EngineError {
 impl From<WalletStorageError> for EngineError {
     fn from(e: WalletStorageError) -> Self {
         match e {
-            WalletStorageError::AlreadyOpen { .. } => EngineError::StorageInUse(e.to_string()),
+            WalletStorageError::AlreadyOpen { .. } => EngineError::storage_in_use(e.to_string()),
             WalletStorageError::SchemaVersionUnsupported {
                 found,
                 max_supported,
             } => EngineError::StorageTooNew(format!(
                 "schema version {found}, this build supports up to {max_supported}"
-            )),
-            WalletStorageError::ForkSchemaVersionUnsupported {
-                found,
-                max_supported,
-            } => EngineError::StorageTooNew(format!(
-                "fork schema version {found}, this build supports up to {max_supported}"
             )),
             other => EngineError::Storage(other.to_string()),
         }

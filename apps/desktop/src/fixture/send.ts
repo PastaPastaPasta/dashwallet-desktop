@@ -119,6 +119,8 @@ export interface SendWorld {
   /** The wallet is catching up after a chain fork: Abandon and Remove Unconfirmed are refused with
    * `rescan_in_progress`. */
   catchingUp: boolean;
+  /** Payments that still hold their `restore_hold` from before a restore (Q92 H2), until abandoned. */
+  restoreHeld: string[];
 }
 
 /** The coins of `txid` the engine withholds (`coins.pendingUnproven`). */
@@ -142,6 +144,7 @@ export const newSendWorld = (): SendWorld => ({
   debitUnknown: [],
   checkingSpentCoins: [],
   catchingUp: false,
+  restoreHeld: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -194,6 +197,7 @@ export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[
     coinjoinRounds: null,
     spendable: confirmations > 0,
     excluded: null,
+    pendingUnproven: false,
     ...extra,
   });
   return [
@@ -638,6 +642,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         label: null,
         isChange: true,
         spendable: true,
+        pendingUnproven: false,
       });
     const row: TxRow = {
       txid: s.txid,
@@ -889,6 +894,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         withheldOutputs: withheldCoins(wallet(world, walletId).coins, txid).map((u) => u.outpoint),
         checkingSpentCoins: world.send.checkingSpentCoins.includes(txid),
         lastAnnouncedAt: world.send.announced[txid] ?? null,
+        restoreHeld: world.send.restoreHeld.includes(txid),
       };
       return extras;
     },
@@ -896,6 +902,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
       if (ctx.world.send.catchingUp) throw fail("rescan_in_progress", "a rescan is in progress");
+      if (ctx.world.restored) throw refused("restored");
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
@@ -915,7 +922,13 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       }
       const mine = ctx.world.send.sent[txid];
       if (mine) {
-        w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
+        const isChange = (u: Utxo) => !!mine.change && sameOutpoint(u.outpoint, mine.change);
+        // A held change was counted as pending, not confirmed.
+        for (const u of w.coins.filter((c) => isChange(c) && c.pendingUnproven)) {
+          moveBalance(w, -u.amount, "unconfirmed");
+          moveBalance(w, u.amount);
+        }
+        w.coins = [...w.coins.filter((u) => !isChange(u)), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
         delete ctx.world.send.sent[txid];
         moveBalance(w, -row.amount);
       } else {
@@ -928,10 +941,12 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         sh.abandonable = true;
         sh.abandonCharge = abandonFee(sh.reserved.length);
       }
+      ctx.world.send.restoreHeld = ctx.world.send.restoreHeld.filter((t) => t !== txid);
       changed(ctx, w, [txid]);
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
+      if (world.restored) throw refused("restored");
       const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);

@@ -14,19 +14,18 @@ use dw_appdb::dispatch::{
     ArtifactKind, ArtifactOrigin, ArtifactStatus, NewShieldedArtifact, ShieldedArtifact,
 };
 use dw_vault::SHIELDED_ACCOUNT;
-use platform_wallet::PlatformWalletError;
-use platform_wallet::wallet::shielded::store::{NotExecutedReason, PendingRedrive};
+use platform_wallet::wallet::shielded::store::PendingRedrive;
 use platform_wallet::wallet::shielded::{
-    CachedOrchardProver, DispatchedNote, NetworkShieldedCoordinator, OrchardKeySet,
-    ShieldedDispatch, ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedSpendDisposition,
-    ShieldedStore, SubwalletId,
+    DispatchedNote, NetworkShieldedCoordinator, ShieldedActivityEntry, ShieldedActivityKind,
+    ShieldedActivityStatus, ShieldedDirection, ShieldedDispatch, ShieldedDispatchKind,
+    ShieldedDispatchPayload, ShieldedStore, SubwalletId,
 };
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::{self, PASS, options};
-use super::{NOTE, bound_address, core_address, note, payee, signed_spend};
+use super::{NOTE, bound_address, core_address, note, signed_spend};
 use crate::{DashNetwork, EngineError, ImportOptions, NetworkSession};
 
 /// A nullifier no note of the account has: a padding action's.
@@ -107,10 +106,11 @@ impl Hooked {
             attempts: 0,
             identity_nonce_finalized: false,
             identity_user_abandoned: false,
+            anchor_height: Some(ANCHOR_HEIGHT),
         };
         self.f.engine.block_on(async move {
             (coordinator.store().write().await)
-                .arm_unsent_redrive(id, redrive)
+                .arm_redrive(id, redrive)
                 .unwrap();
         });
     }
@@ -206,15 +206,25 @@ impl Hooked {
     /// Rewrites the journal row of spend `n` in place, as a later writer
     /// of its state would leave it: `set` is the SQL after `SET`.
     fn rewrite(&self, n: u8, set: &str) {
+        self.rewriter(n, set)();
+    }
+
+    /// [`Self::rewrite`], to run later (from a library's pass).
+    fn rewriter(&self, n: u8, set: &str) -> impl FnOnce() + Send + 'static {
         let path = (self.f.session.data_dir()).join(dw_appdb::dispatch::DISPATCH_DB_FILE);
-        let changed = rusqlite::Connection::open(path)
-            .unwrap()
-            .execute(
-                &format!("UPDATE shielded_artifact SET {set} WHERE wallet = ?1 AND activity = ?2"),
-                rusqlite::params![&self.f.wallet.0[..], &[n; 32][..]],
-            )
-            .unwrap();
-        assert_eq!(changed, 1, "one artifact row");
+        let (wallet, set) = (self.f.wallet.0, set.to_owned());
+        move || {
+            let changed = rusqlite::Connection::open(path)
+                .unwrap()
+                .execute(
+                    &format!(
+                        "UPDATE shielded_artifact SET {set} WHERE wallet = ?1 AND activity = ?2"
+                    ),
+                    rusqlite::params![&wallet[..], &[n; 32][..]],
+                )
+                .unwrap();
+            assert_eq!(changed, 1, "one artifact row");
+        }
     }
 
     /// The wallet's background lease, created while the vault is unlocked.
@@ -275,12 +285,58 @@ impl Hooked {
     fn attempts(&self, n: u8) -> Option<u32> {
         let (coordinator, wallet) = (Arc::clone(&self.coordinator), self.f.wallet.0);
         (self.f.engine)
-            .block_on(async move { coordinator.pending_spend_redrives(wallet).await })
+            .block_on(async move { stored_spends(&coordinator, wallet).await })
             .unwrap()
             .into_iter()
             .find(|(_, r)| r.activity_id == [n; 32])
             .map(|(_, r)| r.attempts)
     }
+}
+
+/// The proved height at which a test spend's anchor was in Platform's
+/// recorded set, as the library keeps it with each record.
+const ANCHOR_HEIGHT: u64 = 1_000;
+
+/// `wallet`'s stored spend records, as the library holds them.
+async fn stored_spends(
+    coordinator: &NetworkShieldedCoordinator,
+    wallet: [u8; 32],
+) -> Result<Vec<(SubwalletId, PendingRedrive)>, String> {
+    (coordinator.store().read().await)
+        .pending_redrives_for_wallet(wallet)
+        .map_err(|e| e.to_string())
+}
+
+/// What the library does with stored spend `n` the hook refused before its
+/// first broadcast (operations.rs `settle_failed_spend`): its record retired
+/// and its notes released, its history row failed.
+fn refuse_undelivered<S: ShieldedStore>(store: &mut S, id: SubwalletId, n: u8)
+where
+    S::Error: std::fmt::Debug,
+{
+    let record = (store.pending_redrives(id).unwrap().into_iter())
+        .find(|r| r.activity_id == [n; 32])
+        .expect("the stored spend");
+    assert!(store.retire_undelivered_spend(id, &[n; 32], &[]).unwrap());
+    for nullifier in &record.nullifiers {
+        store.clear_pending(id, nullifier).unwrap();
+    }
+    let entry = ShieldedActivityEntry {
+        id: [n; 32],
+        kind: ShieldedActivityKind::Sent,
+        direction: ShieldedDirection::Out,
+        amount: 1_000,
+        fee: None,
+        counterparty: None,
+        memo: None,
+        block_height: None,
+        status: ShieldedActivityStatus::Failed,
+        created_at_ms: 0,
+        min_note_position: None,
+        note_cmxs: Vec::new(),
+        spent_nullifiers: record.nullifiers,
+    };
+    store.save_activity(id, &entry).unwrap();
 }
 
 /// The nullifiers spend `n` taking the notes at `positions` publishes: a
@@ -310,8 +366,10 @@ fn unspent(positions: &[u64]) -> Vec<([u8; 32], bool)> {
         .collect()
 }
 
-async fn recording(coordinator: &NetworkShieldedCoordinator) -> bool {
-    (coordinator.store().read().await).records_spend_dispositions()
+/// Whether the engine set its dispatch hook on `coordinator`: the library
+/// does not say.
+fn recording(session: &NetworkSession, coordinator: &Arc<NetworkShieldedCoordinator>) -> bool {
+    pool::hooked(session, coordinator)
 }
 
 /// The hook checks each selected note against the account's notes: a spend
@@ -530,13 +588,6 @@ impl super::super::shielded_release::ReleaseNet for Anchors {
             read
         })
     }
-
-    fn nullifiers(
-        &self,
-        _: Vec<[u8; 32]>,
-    ) -> super::super::trust::BoxFuture<Option<super::super::shielded_release::Statuses>> {
-        Box::pin(async { None })
-    }
 }
 
 /// Q80 R1: before anything of a spend is written or sent, the hook reads
@@ -682,6 +733,7 @@ fn admit_refuses_an_artifact_with_a_disposition() {
     assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
     for (kind, reason) in [
         ("'unresolved'", "'cancelled'"),
+        ("'unresolved'", "'unattributable'"),
         ("'not_executed'", "'refused'"),
         ("'executed'", "NULL"),
     ] {
@@ -810,6 +862,20 @@ fn a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook() {
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 8, h.st_hash(8)), Ok(()));
 }
 
+/// The fork held a pass without the wallet's lease while a record armed
+/// before the hook was set (re-sent without asking it) stood beside a hooked
+/// one. Upstream asks `admit` before every re-send, records stored before
+/// the hook included, and `admit` requires the lease
+/// (`a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook`):
+/// no record is re-sent without asking. The fork's body is kept below, not
+/// compiled.
+#[test]
+#[ignore = "P13b: every stored spend asks admit, so no record predates the hook and no pass is held for one"]
+fn a_pass_is_held_without_the_lease_while_a_spend_predates_the_hook() {
+    panic!("P13b: no hookless record on upstream");
+}
+
+#[cfg(any())]
 /// Any unmarked (pre-hook) record keeps the wallet-wide lease hold, including
 /// when a marked hooked record is present beside it.
 #[test]
@@ -910,10 +976,10 @@ fn close_during_redrive_pass_admit_refuses_without_attempt_bump() {
 
 /// A quit begun between the library's store of a spend (unsent, its note
 /// reserved) and the hook's answer: with the wallet's lease still held the
-/// hook refuses it and writes nothing. The library then records it
-/// `NotExecuted(Refused)`, which frees its note (its `record_refusal`,
-/// staged here: no spend built in a test reaches the network's hook), so
-/// nothing was sent and nothing of it holds the wallet.
+/// hook refuses it and writes nothing. The library then retires its record,
+/// frees its note and fails its history row ([`refuse_undelivered`], staged
+/// here: no spend built in a test reaches the network's hook), so nothing
+/// was sent and nothing of it holds the wallet.
 #[test]
 fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
     let h = Hooked::new();
@@ -925,7 +991,7 @@ fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
         let mut store = coordinator.store().write().await;
         let n = note(1, NOTE).nullifier;
         assert!(store.mark_pending(id, &n).unwrap());
-        (store.set_pending_spend(id, &n, [0xa0; 32], [1; 32])).unwrap();
+        (store.set_pending_spend(id, &n, [0xa0; 32], [1; 32], Some(ANCHOR_HEIGHT))).unwrap();
     });
     h.during_a_held_quit(|| {
         assert!(h.f.session.leases.background(&h.f.wallet).is_some());
@@ -938,23 +1004,15 @@ fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
         h.f.engine.block_on(async move {
             let mut store = coordinator.store().write().await;
             assert!(store.get_unspent_notes(id).unwrap().is_empty(), "reserved");
-            (store.resolve_unsent_redrive(id, &[1; 32], NotExecutedReason::Refused)).unwrap();
+            refuse_undelivered(&mut *store, id, 1);
             assert_eq!(store.get_unspent_notes(id).unwrap().len(), 1, "freed");
             assert!(store.stale_pending_spends(id).unwrap().is_empty());
             drop(store);
             assert!(
-                (coordinator.pending_spend_redrives(wallet.0).await)
+                stored_spends(&coordinator, wallet.0)
+                    .await
                     .unwrap()
                     .is_empty()
-            );
-            let dispositions = coordinator.spend_dispositions(wallet.0).await.unwrap();
-            assert!(
-                matches!(
-                    &dispositions[..],
-                    [d] if d.disposition
-                        == ShieldedSpendDisposition::NotExecuted(NotExecutedReason::Refused)
-                ),
-                "{dispositions:?}"
             );
             assert!(!pool::holds_stored_spends(&manager, wallet).await);
         });
@@ -1144,7 +1202,7 @@ fn the_hook_is_set_on_every_open_path() {
     // Bound, so the reopened session (its vault locked) binds from storage.
     assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
     let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
-    assert!(f.engine.block_on(recording(&coordinator)));
+    assert!(recording(&f.session, &coordinator));
     drop((coordinator, manager));
 
     // A reopened session has a new store: the hook again, by the same call.
@@ -1158,7 +1216,7 @@ fn the_hook_is_set_on_every_open_path() {
     assert!(f.engine.block_on(manager.shielded_coordinator()).is_none());
     assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
     let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
-    assert!(f.engine.block_on(recording(&coordinator)));
+    assert!(recording(&f.session, &coordinator));
 
     // The Platform start.
     let started = topup_tests::fixture(true);
@@ -1178,7 +1236,7 @@ fn the_hook_is_set_on_every_open_path() {
         pool::start(&s, &m, &[wallet], &cancelled).await;
         let coordinator = (m.shielded_coordinator().await)
             .expect("the start opens the store on an active network");
-        assert!(recording(&coordinator).await);
+        assert!(recording(&s, &coordinator));
         assert!(pool::admit_pass(&s, &m).await.is_ok());
     });
 }
@@ -1196,7 +1254,7 @@ fn a_pass_is_held_while_the_hook_is_not_set_and_the_next_open_sets_it() {
             .await
             .unwrap();
         let bare = m.shielded_coordinator().await.unwrap();
-        assert!(!recording(&bare).await);
+        assert!(!recording(&s, &bare));
         assert_eq!(
             pool::admit_pass(&s, &m).await.err(),
             Some(pool::PassHeld::NoHook)
@@ -1205,19 +1263,22 @@ fn a_pass_is_held_while_the_hook_is_not_set_and_the_next_open_sets_it() {
 
         let opened = pool::coordinator(&s, &m, None).await.unwrap();
         assert!(Arc::ptr_eq(&opened, &bare));
-        assert!(recording(&bare).await);
+        assert!(recording(&s, &bare));
         assert!(pool::admit_pass(&s, &m).await.is_ok());
         // Set once: a later open leaves it.
         pool::coordinator(&s, &m, None).await.unwrap();
-        assert!(recording(&bare).await);
+        assert!(recording(&s, &bare));
     });
 }
 
 /// The library refuses a key set that is not the account's before it
-/// selects, builds, stores or asks the hook anything, on both spends, and
-/// the facade reads that as a refusal with nothing sent.
+/// selects, builds, stores or asks the hook anything, on a send and an
+/// unshield to Core or to a Platform address, and the engine reads that as
+/// a refusal with nothing sent.
 #[test]
 fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
+    use platform_wallet::PlatformWalletError;
+    use platform_wallet::wallet::shielded::{CachedOrchardProver, OrchardKeySet};
     let h = Hooked::new();
     h.hold_notes(&[1, 2]);
     // Another wallet's key set (the payee's fixed test seed).
@@ -1235,7 +1296,7 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
                 &coordinator,
                 &other,
                 SHIELDED_ACCOUNT,
-                &payee().to_raw_bytes(),
+                &super::payee().to_raw_bytes(),
                 NOTE / 2,
                 [0; 36],
                 &prover,
@@ -1254,26 +1315,33 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
             )
             .await
             .unwrap_err();
+        let unshield = pw
+            .shielded_unshield_to_with_keyset(
+                &coordinator,
+                &other,
+                SHIELDED_ACCOUNT,
+                &super::platform_text(dpp::address_funds::PlatformAddress::P2pkh([0x51; 20])),
+                NOTE / 2,
+                &prover,
+            )
+            .await
+            .unwrap_err();
         // Nothing reserved, stored or resolved.
         let store = coordinator.store().read().await;
         let id = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
         assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert!(store.pending_redrives(id).unwrap().is_empty());
         assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
-        drop(store);
         assert!(
-            (coordinator.pending_spend_redrives(wallet.0).await)
-                .unwrap()
-                .is_empty()
+            (store.get_activity(id, 0, 10).unwrap()).is_empty(),
+            "no history row"
         );
-        assert!(
-            (coordinator.spend_dispositions(wallet.0).await)
-                .unwrap()
-                .is_empty()
-        );
-        [transfer, withdraw]
+        [transfer, withdraw, unshield]
     });
-    let journal = h.f.session.leases.journal.get().unwrap();
-    assert_eq!(journal.shielded_artifacts(&h.f.wallet.0), Ok(Vec::new()));
+    let artifacts = (h.f.engine)
+        .block_on(h.f.session.leases.shielded_artifacts(h.f.wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
     for refused in refusals {
         assert!(
             matches!(
@@ -1419,6 +1487,193 @@ fn a_payout_spend_whose_dispatch_is_not_recorded_is_refused_unsent() {
     assert_eq!(payout_hash(&h.f, "sh-c"), Some(hex::encode(h.st_hash(5))));
 }
 
+/// P6 at a re-send: a payout spend the hook accepted, whose recorded
+/// dispatch is gone (a restart after a refusal whose artifact could not be
+/// settled), is never re-sent; with its dispatch recorded it is.
+#[test]
+fn a_payout_spend_is_re_sent_only_with_its_dispatch_recorded() {
+    let h = Hooked::new();
+    h.lease();
+    let (session, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    payout_row(&h.f, "sh-d");
+    let arm = session.arm_payout(wallet, "sh-d");
+    let withdrawal = h.staged_as(6, &[6], ShieldedDispatchKind::Withdraw);
+    assert_eq!(h.dispatch(withdrawal), Ok(()));
+    drop(arm);
+    assert!(dispatched(&h.f, "sh-d"));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 6, h.st_hash(6)), Ok(()));
+
+    let set = |value: Option<&'static str>| {
+        let scope = dw_appdb::local_scope(&wallet.to_string());
+        let key = dw_appdb::dp_payout_dispatched("sh-d");
+        (h.f.engine)
+            .block_on(session.appdb_op(move |db| db.set_setting_durable(&scope, &key, value)))
+            .unwrap();
+    };
+    set(None);
+    let refused = h.admit(SHIELDED_ACCOUNT, 6, h.st_hash(6)).unwrap_err();
+    assert!(refused.contains("dispatch was not recorded"), "{refused}");
+    set(Some("1"));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 6, h.st_hash(6)), Ok(()));
+}
+
+/// While key set spends are off, through the real library a send, a
+/// withdrawal and an unshield are `platform.unavailable` before the grant
+/// is read, and nothing is stored, reserved or written to the journal.
+#[test]
+fn every_spend_through_the_library_is_unavailable_while_key_set_spends_are_off() {
+    let h = Hooked::new();
+    pool::force_keyset_spends(&h.f.session, false);
+    h.lease();
+    h.hold_notes(&[1, 2]);
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    for route in ["send", "withdraw", "unshield"] {
+        let refused = (h.f.engine)
+            .block_on(on_pool(&s, wallet, move |s, lib| async move {
+                let code = match route {
+                    "send" => {
+                        let to = (super::payee_text(), NOTE);
+                        (pool::send(&s, wallet, &lib, (&to.0, to.1), None, "unknown", false).await)
+                            .map(|_| ())
+                    }
+                    "withdraw" => (pool::unshield(&s, wallet, &lib, NOTE, None, "unknown", false)
+                        .await)
+                        .map(|_| ()),
+                    _ => {
+                        (pool::unshield_to_platform(&s, wallet, &lib, NOTE, None, "unknown", false)
+                            .await)
+                            .map(|_| ())
+                    }
+                };
+                Ok(code.unwrap_err().code())
+            }))
+            .unwrap();
+        assert_eq!(refused, "platform.unavailable", "{route}");
+    }
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let store = coordinator.store().read().await;
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
+    });
+    let artifacts = (h.f.engine)
+        .block_on(s.leases.shielded_artifacts(wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
+}
+
+/// With key set spends on, a send through the real library spends with the
+/// key set the vault derives from the wallet's own seed for that call: the
+/// library takes it as the account's spend authority (no
+/// `ShieldedKeysetMismatch`) and goes on past its notes' selection to the
+/// network, where it fails offline before anything is stored or sent. The
+/// notes it reserved are released and nothing is recorded or asked of the
+/// hook.
+#[test]
+fn a_send_through_the_library_spends_with_the_wallets_own_key_set() {
+    use platform_wallet::PlatformWalletError;
+    let h = Hooked::new();
+    pool::force_keyset_spends(&h.f.session, true);
+    h.lease();
+    h.hold_notes(&[1, 2]);
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        (coordinator.store().write().await)
+            .set_last_synced_note_index(id, 3)
+            .unwrap();
+    });
+    let grant = (h.f.session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::PlatformOp {
+                max_duffs: 0,
+                max_credits: 2 * NOTE,
+            },
+            Some(&h.f.wallet.0),
+            dw_vault::Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id;
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let failed = (h.f.engine)
+        .block_on(on_pool(&s, wallet, move |s, lib| async move {
+            let to = super::payee_text();
+            let quoting = (NOTE / 2, pool::Quoting::Send(&to));
+            let flow = super::super::flows::FlowKind::ShieldedSpend;
+            let armed = pool::arm(&s, wallet, &lib, quoting, &grant, flow).await?;
+            let permit = super::super::requests::write_permit(
+                &armed.lease,
+                "transfer",
+                armed.quote.total_credits,
+            )?;
+            let sent = super::super::requests::leased(
+                &armed.lease,
+                lib.transfer(&permit, &super::payee(), NOTE / 2, [0; 36]),
+            )
+            .await;
+            permit.finish(sent.is_ok());
+            Ok(sent)
+        }))
+        .unwrap();
+    let Err(pool::SpendError::Library(e)) = failed else {
+        panic!("{failed:?}");
+    };
+    // Past the key set check and the notes' selection, the first network
+    // call (the recorded anchors) finds no node.
+    assert!(matches!(*e, PlatformWalletError::Sdk(_)), "{e:?}");
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let store = coordinator.store().read().await;
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
+    });
+    let artifacts = (h.f.engine)
+        .block_on(s.leases.shielded_artifacts(wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
+}
+
+/// The balance the desktop shows is the library's reservation-aware sum.
+/// With three notes scanned and one reserved by a spend in flight (its
+/// record saved and its reservation anchored, as before the first
+/// broadcast), the status reads two notes spendable and a spend may select
+/// only those two; once the reservation is released, all three.
+#[test]
+fn a_reserved_note_is_not_counted_spendable() {
+    let h = Hooked::new();
+    h.hold_notes(&[1, 2, 3]);
+    h.store_unsent(1, &[2]);
+    let reserved = note(2, NOTE).nullifier;
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        store.set_last_synced_note_index(id, 4).unwrap();
+        assert!(store.mark_pending(id, &reserved).unwrap());
+        (store.set_pending_spend(id, &reserved, [0xa0; 32], [1; 32], Some(ANCHOR_HEIGHT))).unwrap();
+    });
+    let read = || {
+        let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+        (h.f.engine)
+            .block_on(on_pool(&s, wallet, |_, lib| async move {
+                let status = pool::status(&lib).await?;
+                let mut selectable: Vec<u64> =
+                    (lib.unspent().await?.iter()).map(|n| n.position).collect();
+                selectable.sort_unstable();
+                Ok((status.active, status.ready, status.balance, selectable))
+            }))
+            .unwrap()
+    };
+    assert_eq!(read(), (true, true, 2 * NOTE, vec![1, 3]));
+
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        assert!(store.clear_pending(id, &reserved).unwrap());
+    });
+    assert_eq!(read(), (true, true, 3 * NOTE, vec![1, 2, 3]));
+}
+
 // ---- C-routes C1b-2: the unshield's FromShielded record ----
 
 /// What unshield `n` taking the notes at `positions` signs: `to` credited
@@ -1481,10 +1736,11 @@ impl Hooked {
             attempts: 0,
             identity_nonce_finalized: false,
             identity_user_abandoned: false,
+            anchor_height: Some(ANCHOR_HEIGHT),
         };
         self.f.engine.block_on(async move {
             (coordinator.store().write().await)
-                .arm_unsent_redrive(id, redrive)
+                .arm_redrive(id, redrive)
                 .unwrap();
         });
         ShieldedDispatchPayload {
@@ -1651,12 +1907,132 @@ fn unshield_hook_refuses_when_its_record_is_not_written() {
     assert_eq!(h.intended_record(), None);
 }
 
+/// **A refusal between the artifact and the arming:** the record is
+/// written before the artifact, so it is there unarmed (no row); the send
+/// is refused and the artifact settled `not_executed` (the library retires
+/// its record), so no re-send is admitted. **A stop between the artifact
+/// and the arming** leaves both open: the pass's re-send is admitted only
+/// once the hook armed the record. An unshield artifact with no record is
+/// refused, as `dispatch` refuses one whose record is gone.
+#[test]
+fn an_unshield_refused_before_its_arming_is_settled_and_a_stopped_one_is_armed_at_re_send() {
+    let h = Hooked::new();
+    let fee = UNSHIELD_FEE;
+    let payload = h.staged_unshield(
+        1,
+        &[1],
+        unshield_bytes(1, &[1], own_platform(), NOTE / 2 + fee),
+    );
+    let hash = payload.st_hash;
+    h.intend(own_platform(), NOTE / 2);
+    super::super::platform_moves::tests::fail_next_arm_of(&h.f.session);
+    let refused = h.dispatch(payload).unwrap_err();
+    assert!(refused.contains("not armed"), "{refused}");
+    assert_eq!(h.artifact(1).unwrap().status, ArtifactStatus::NotExecuted);
+    let records = h.records();
+    assert_eq!((records.len(), records[0].armed), (1, false));
+    assert_eq!(h.intended_record(), None);
+    h.lease();
+    let refused = h.admit(SHIELDED_ACCOUNT, 1, hash).unwrap_err();
+    assert!(refused.contains("does not allow a send"), "{refused}");
+    assert!(!h.records()[0].armed);
+
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let stopped_hash = [0x33; 32];
+    let record = super::super::platform_moves::FromShieldedRecord {
+        activity: hex::encode([3; 32]),
+        st_hash: hex::encode(stopped_hash),
+        ..records[0].clone()
+    };
+    let stopped = dw_appdb::dispatch::NewShieldedArtifact {
+        activity: [3; 32],
+        origin: dw_appdb::dispatch::ArtifactOrigin::Dispatched,
+        st_hash: Some(stopped_hash),
+        kind: Some(ArtifactKind::Unshield),
+        anchor: Some([0xa0; 32]),
+        identity_id: None,
+        selected: vec![[0x93; 32]],
+        published: vec![[0x93; 32], [0xee; 32]],
+    };
+    let wrote = (h.f.engine).block_on(async move {
+        super::super::platform_moves::stage_from_shielded(&s, wallet, record)
+            .await
+            .unwrap();
+        s.leases.record_shielded_artifact(wallet, stopped).await
+    });
+    assert_eq!(wrote, Ok(true));
+    let armed = |n: u8| {
+        (h.records().into_iter())
+            .find(|r| r.activity == hex::encode([n; 32]))
+            .unwrap()
+            .armed
+    };
+    assert!(!armed(3));
+    super::super::platform_moves::tests::fail_next_arm_of(&h.f.session);
+    let refused = h.admit(SHIELDED_ACCOUNT, 3, stopped_hash).unwrap_err();
+    assert!(refused.contains("not armed"), "{refused}");
+    assert!(!armed(3));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 3, stopped_hash), Ok(()));
+    assert!(armed(3), "armed before the re-send");
+
+    let before = h.records().len();
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let legacy = dw_appdb::dispatch::NewShieldedArtifact {
+        activity: [2; 32],
+        origin: dw_appdb::dispatch::ArtifactOrigin::Dispatched,
+        st_hash: Some([0x22; 32]),
+        kind: Some(ArtifactKind::Unshield),
+        anchor: Some([0xa0; 32]),
+        identity_id: None,
+        selected: vec![[0x92; 32]],
+        published: vec![[0x92; 32], [0xee; 32]],
+    };
+    let wrote = (h.f.engine)
+        .block_on(async move { s.leases.record_shielded_artifact(wallet, legacy).await });
+    assert_eq!(wrote, Ok(true));
+    let refused = h.admit(SHIELDED_ACCOUNT, 2, [0x22; 32]).unwrap_err();
+    assert!(refused.contains("it is gone"), "{refused}");
+    assert_eq!(h.records().len(), before);
+}
+
+/// A re-send whose `FromShielded` record is settled (failed or done) while
+/// its artifact is still open is refused: nothing arms a settled record.
+#[test]
+fn an_unshield_whose_record_is_settled_is_not_admitted() {
+    use super::super::platform_addresses::PlatformActivityState;
+    let h = Hooked::new();
+    let fee = UNSHIELD_FEE;
+    for (n, state) in [
+        (1u8, PlatformActivityState::Failed),
+        (2, PlatformActivityState::Done),
+    ] {
+        let payload = h.staged_unshield(
+            n,
+            &[u64::from(n)],
+            unshield_bytes(n, &[u64::from(n)], own_platform(), NOTE / 2 + fee),
+        );
+        let hash = payload.st_hash;
+        h.intend(own_platform(), NOTE / 2);
+        assert_eq!(h.dispatch(payload), Ok(()));
+        h.lease();
+        assert_eq!(h.admit(SHIELDED_ACCOUNT, n, hash), Ok(()));
+        let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+        (h.f.engine).block_on(async move {
+            super::super::platform_moves::tests::set_record_state(&s, wallet, [n; 32], state).await
+        });
+        let refused = h.admit(SHIELDED_ACCOUNT, n, hash).unwrap_err();
+        assert!(refused.contains("it is gone"), "{state:?}: {refused}");
+        assert_eq!(h.artifact(n).unwrap().status, ArtifactStatus::Registered);
+    }
+}
+
 /// **A stop between the artifact and the arming:** the record is written
 /// before the artifact, so it is there unarmed (no row); the send is
 /// refused, and the pass's re-send is admitted only once the hook armed
 /// the record. An unshield artifact with no record (dispatched before
 /// records were kept) is admitted as before.
 #[test]
+#[ignore = "P13a placement ruling: a refusal after the artifact settles it not_executed and upstream retires the record, so a refused unshield is never re-sent (ported: an_unshield_refused_before_its_arming_is_settled_and_a_stopped_one_is_armed_at_re_send)"]
 fn unshield_resend_is_admitted_only_once_its_record_is_armed() {
     let h = Hooked::new();
     let fee = UNSHIELD_FEE;
@@ -1744,7 +2120,7 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
     let anchor = merkle_path.root(ExtractedNoteCommitment::from(note.commitment()));
     let spend = SpendableNote { note, merkle_path };
     let change = OrchardAddress::from_raw_bytes(&address.to_raw_address_bytes()).unwrap();
-    let prover = CachedOrchardProver::new();
+    let prover = platform_wallet::wallet::shielded::CachedOrchardProver;
     let (st, fee) = build_unshield_transition(
         vec![spend],
         own_platform(),
@@ -1780,13 +2156,1288 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
     );
 }
 
+// ---- C-funding C4b-2: a Shielded-funded registration's create ----
+
+const DENOMINATION: u64 = 3_000_000_000;
+
+/// What create `n` taking the notes at `positions` signs: `denomination`,
+/// refunded to `fallback` on failure, its id derived from its actions
+/// unless `id` says otherwise.
+fn create_bytes(
+    n: u8,
+    positions: &[u64],
+    (denomination, fallback): (u64, dpp::address_funds::PlatformAddress),
+    id: Option<dpp::prelude::Identifier>,
+) -> (Vec<u8>, [u8; 32]) {
+    use dpp::serialization::PlatformSerializable;
+    use dpp::shielded::SerializedAction;
+    use dpp::state_transition::StateTransition;
+    use dpp::state_transition::state_transitions::shielded::identity_create_from_shielded_pool_transition::{
+        IdentityCreateFromShieldedPoolTransition, derive_identity_id_from_actions,
+        v0::IdentityCreateFromShieldedPoolTransitionV0,
+    };
+    let mut published = nullifiers(positions);
+    if published.len() == 1 {
+        published.push(PADDING);
+    }
+    let actions: Vec<_> = (published.into_iter())
+        .map(|nullifier| SerializedAction {
+            nullifier,
+            rk: [n; 32],
+            cmx: [0x30 + n; 32],
+            encrypted_note: vec![0x40 + n; 216],
+            cv_net: [0x50 + n; 32],
+            spend_auth_sig: [0x60 + n; 64],
+        })
+        .collect();
+    let derived = derive_identity_id_from_actions(&actions);
+    let identity_id = id.unwrap_or(derived);
+    let st = StateTransition::IdentityCreateFromShieldedPool(
+        IdentityCreateFromShieldedPoolTransition::V0(IdentityCreateFromShieldedPoolTransitionV0 {
+            public_keys: Vec::new(),
+            denomination,
+            actions,
+            anchor: [0xa0; 32],
+            proof: vec![0x70; 512],
+            binding_signature: [0x71; 64],
+            send_to_address_on_creation_failure: fallback,
+            identity_id,
+        }),
+    );
+    (st.serialize_to_bytes().unwrap(), derived.to_buffer())
+}
+
+fn shielded_funding(identity: Option<String>) -> String {
+    super::super::registration_rows::Funding::Shielded {
+        denomination: DENOMINATION,
+        fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
+        identity,
+    }
+    .encode()
+}
+
+impl Hooked {
+    /// A `keys_prepared` Shielded-funded row of the wallet; its draft.
+    fn shielded_row(&self) -> i64 {
+        let row = dw_appdb::NewRegistration {
+            identity_index: Some(0),
+            identity: None,
+            label: "alice2".into(),
+            temp_label: None,
+            funding: shielded_funding(None),
+            initial_profile: None,
+            phase: "keys_prepared".into(),
+        };
+        let w = self.f.wallet.to_string();
+        (self.f.engine)
+            .block_on(
+                self.f
+                    .session
+                    .appdb_op(move |db| db.insert_registration(&w, &row, 1)),
+            )
+            .unwrap()
+    }
+
+    fn row_funding(&self, draft: i64) -> String {
+        let w = self.f.wallet.to_string();
+        (self.f.engine)
+            .block_on(
+                self.f
+                    .session
+                    .appdb_op(move |db| db.registration_row(&w, draft)),
+            )
+            .unwrap()
+            .unwrap()
+            .funding
+    }
+
+    /// Whether the journal marks the create of `st_hash` consumed.
+    fn marked_consumed(&self, st_hash: [u8; 32]) -> bool {
+        let leases = &self.f.session.leases;
+        (self.f.engine)
+            .block_on(leases.consumed_creates(self.f.wallet, vec![st_hash]))
+            .unwrap()
+            .contains(&st_hash)
+    }
+
+    fn setting(&self, key: String) -> Option<String> {
+        let scope = dw_appdb::local_scope(&self.f.wallet.to_string());
+        (self.f.engine)
+            .block_on(self.f.session.appdb_op(move |db| db.setting(&scope, &key)))
+            .unwrap()
+    }
+
+    /// Arms the wallet's create intent for row `draft`.
+    fn intend_create(&self, draft: i64, denomination: u64) {
+        let intent = super::super::registration_shielded::CreateIntent::new(
+            (draft, 0),
+            denomination,
+            own_platform(),
+            shielded_funding(None),
+        );
+        (self.f.session.platform.registration_intents.lock().unwrap())
+            .insert(self.f.wallet, intent);
+    }
+
+    /// Notes, the stored unsent create and its payload.
+    fn staged_create(
+        &self,
+        n: u8,
+        positions: &[u64],
+        bytes: Vec<u8>,
+        id: [u8; 32],
+    ) -> ShieldedDispatchPayload {
+        ShieldedDispatchPayload {
+            kind: ShieldedDispatchKind::IdentityCreate { identity_id: id },
+            ..self.staged_unshield(n, positions, bytes)
+        }
+    }
+}
+
+/// C-funding F11: the hook names the identity a Shielded-funded create
+/// makes in its row, durably and with the activity's height, before the
+/// artifact exists (the artifact names it too), then records the dispatch
+/// before the library may send; its fallback is marked published first.
+/// Mutants: write the artifact without the identity (dw-appdb refuses it,
+/// so nothing is sent); leave the fallback unmarked.
+#[test]
+fn a_create_is_named_in_its_row_before_its_artifact() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    h.intend_create(draft, DENOMINATION);
+    let (bytes, id) = create_bytes(1, &[1], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(1, &[1], bytes, id);
+    assert_eq!(h.dispatch(payload), Ok(()));
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(h.row_funding(draft), shielded_funding(Some(name.clone())));
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_named(&name)).as_deref(),
+        Some("0")
+    );
+    assert!(
+        h.setting(dw_appdb::dp_registration_dispatched(&name))
+            .is_some()
+    );
+    // Its fallback left with it: never given to a registration again.
+    let fallback = own_platform().to_bech32m_string(dashcore::Network::Testnet);
+    assert!(
+        h.setting(dw_appdb::dp_registration_published(&fallback))
+            .is_some()
+    );
+    let artifact = h.artifact(1).unwrap();
+    assert_eq!(
+        (artifact.kind, artifact.identity_id),
+        (Some(ArtifactKind::IdentityCreate), Some(id))
+    );
+    let named = (h.f.session.platform.registration_intents.lock().unwrap())
+        .get(&h.f.wallet)
+        .and_then(|i| i.named());
+    assert_eq!(named, Some(id));
+}
+
+/// F11: no intent, no create; with one armed, no other spend, no second
+/// create, and no create of another denomination, fallback or id: each
+/// refused before anything is written, the row unnamed.
+#[test]
+fn only_the_armed_create_is_accepted() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(1, &[1], (DENOMINATION, own_platform()), None);
+    let refused = h
+        .dispatch(h.staged_create(1, &[1], bytes.clone(), id))
+        .unwrap_err();
+    assert!(refused.contains("did not start"), "{refused}");
+    h.intend_create(draft, DENOMINATION);
+    let refused = h.dispatch(h.staged(2, &[2])).unwrap_err();
+    assert!(refused.contains("only it"), "{refused}");
+    let other = dpp::address_funds::PlatformAddress::P2pkh([0x52; 20]);
+    let forged = dpp::prelude::Identifier::from([0x77; 32]);
+    for (n, (bytes, id)) in [
+        (
+            3,
+            create_bytes(3, &[3], (DENOMINATION + 1, own_platform()), None),
+        ),
+        (4, create_bytes(4, &[4], (DENOMINATION, other), None)),
+        (
+            5,
+            create_bytes(5, &[5], (DENOMINATION, own_platform()), Some(forged)),
+        ),
+    ] {
+        let refused = h
+            .dispatch(h.staged_create(n, &[n as u64], bytes, id))
+            .unwrap_err();
+        assert!(refused.contains("not the one"), "{n}: {refused}");
+        assert!(h.artifact(n).is_none());
+    }
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+    assert!(h.artifact(1).is_none() && h.artifact(2).is_none());
+}
+
+/// F12: when the hook cannot record the create's dispatch after writing its
+/// artifact, it settles the artifact `not_executed` and refuses the spend:
+/// the row stays named, and its evidence reads unsent.
+#[test]
+fn a_create_whose_dispatch_is_not_recorded_is_refused_unsent() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    h.intend_create(draft, DENOMINATION);
+    (h.f.session.platform.registration_faults.lock().unwrap()).dispatch_record = true;
+    let (bytes, id) = create_bytes(6, &[6], (DENOMINATION, own_platform()), None);
+    let refused = h.dispatch(h.staged_create(6, &[6], bytes, id)).unwrap_err();
+    assert!(refused.contains("dispatch was not recorded"), "{refused}");
+    assert_eq!(h.artifact(6).unwrap().status, ArtifactStatus::NotExecuted);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert!(
+        h.setting(dw_appdb::dp_registration_dispatched(&name))
+            .is_none()
+    );
+    assert_eq!(h.row_funding(draft), shielded_funding(Some(name)));
+}
+
+/// Platform's proved reads, scripted: the height every nullifier reads
+/// spent at (`None`: none is, read at `unspent_at`), the height the anchor
+/// reads pruned at (`None`: still recorded), and the identity read; each
+/// read noted.
+#[derive(Default)]
+struct Evidence {
+    spent: std::sync::Mutex<Option<u64>>,
+    unspent_at: std::sync::Mutex<u64>,
+    pruned: std::sync::Mutex<Option<u64>>,
+    recorded_at: std::sync::Mutex<u64>,
+    identity: std::sync::Mutex<(bool, u64)>,
+    reads: std::sync::Mutex<Vec<&'static str>>,
+}
+
+impl super::super::registration_shielded::CreateEvidence for Evidence {
+    async fn nullifiers(
+        &self,
+        _: &[[u8; 32]],
+    ) -> Result<NullifierRead, crate::platform::PlatformError> {
+        self.reads.lock().unwrap().push("spent");
+        Ok(match *self.spent.lock().unwrap() {
+            Some(at) => NullifierRead::Spent(at),
+            None => NullifierRead::Unspent(*self.unspent_at.lock().unwrap()),
+        })
+    }
+
+    async fn anchor_recorded(
+        &self,
+        _: [u8; 32],
+    ) -> Result<(bool, u64), crate::platform::PlatformError> {
+        self.reads.lock().unwrap().push("anchor");
+        Ok(match *self.pruned.lock().unwrap() {
+            Some(at) => (false, at),
+            None => (true, *self.recorded_at.lock().unwrap()),
+        })
+    }
+
+    async fn identity(
+        &self,
+        _: dpp::prelude::Identifier,
+    ) -> Result<(bool, u64), crate::platform::PlatformError> {
+        self.reads.lock().unwrap().push("identity");
+        Ok(*self.identity.lock().unwrap())
+    }
+}
+
+use super::super::registration_shielded::{NullifierRead, ShieldedAsk, ShieldedOutcome};
+
+impl Hooked {
+    /// A Shielded-funded row whose create `n` the hook accepted: its draft
+    /// and the identity it named.
+    fn dispatched_create(&self, n: u8) -> (i64, String) {
+        self.dispatched_create_of(n, &[n as u64])
+    }
+
+    /// [`Self::dispatched_create`] of the notes at `positions`: two or more
+    /// publish no padding.
+    fn dispatched_create_of(&self, n: u8, positions: &[u64]) -> (i64, String) {
+        let draft = self.shielded_row();
+        self.intend_create(draft, DENOMINATION);
+        let (bytes, id) = create_bytes(n, positions, (DENOMINATION, own_platform()), None);
+        assert_eq!(
+            self.dispatch(self.staged_create(n, positions, bytes, id)),
+            Ok(())
+        );
+        (self.f.session.platform.registration_intents.lock().unwrap()).remove(&self.f.wallet);
+        (
+            draft,
+            super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id)),
+        )
+    }
+
+    /// One evidence pass of row `draft` named `identity`.
+    fn evidence(&self, draft: i64, identity: &str, ev: &Evidence) -> ShieldedOutcome {
+        self.evidence_with(draft, identity, ev, &super::FakeShielded::default())
+    }
+
+    /// [`Self::evidence`] over library `lib`.
+    fn evidence_with(
+        &self,
+        draft: i64,
+        identity: &str,
+        ev: &Evidence,
+        lib: &super::FakeShielded,
+    ) -> ShieldedOutcome {
+        let ask = ShieldedAsk {
+            draft,
+            owner: 0,
+            index: 0,
+            denomination: DENOMINATION,
+            fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
+            identity: Some(identity.to_owned()),
+        };
+        let version = dpp::version::PlatformVersion::latest();
+        let (s, wallet) = (Arc::clone(&self.f.session), self.f.wallet);
+        (self.f.engine)
+            .block_on(super::super::registration_shielded::fund(
+                &s,
+                wallet,
+                (lib, ev, version),
+                ask,
+                None,
+            ))
+            .unwrap()
+    }
+
+    fn refunds(&self) -> Vec<super::super::platform_moves::FromShieldedRecord> {
+        use super::super::platform_moves::FromShieldedSource;
+        (self.records().into_iter())
+            .filter(|r| matches!(r.source, FromShieldedSource::Registration { .. }))
+            .collect()
+    }
+
+    /// Stores the Platform activity's baseline at `height`.
+    fn baseline_at(&self, height: u64) {
+        let scope = dw_appdb::local_scope(&self.f.wallet.to_string());
+        let value = serde_json::json!({"height": height, "balances": {}}).to_string();
+        (self.f.engine)
+            .block_on(self.f.session.appdb_op(move |db| {
+                db.set_setting_durable(&scope, "platform_address/baseline", Some(&value))
+            }))
+            .unwrap();
+    }
+}
+
+/// F12: a create the journal holds that is not executed yet waits, unless
+/// its identity is proved present; one that reads not executed is unsent.
+/// No create is made either way.
+#[test]
+fn an_unsettled_create_waits_and_an_unsent_one_is_cleared() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(1);
+    let ev = Evidence::default();
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unknown);
+    h.rewrite(1, "status = 'unresolved'");
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unknown);
+    ev.reads.lock().unwrap().clear();
+    *ev.identity.lock().unwrap() = (true, 5);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Registered(id.clone())
+    );
+    assert!(
+        !ev.reads.lock().unwrap().contains(&"anchor"),
+        "present first"
+    );
+    h.rewrite(1, "status = 'not_executed'");
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unsent);
+    assert!(h.refunds().is_empty());
+}
+
+/// F12: no artifact for the named identity: never sent while the row was
+/// named here and no dispatch was recorded; with the dispatch recorded the
+/// journal is lost or older, so it waits; named on another install (a
+/// restore), only the identity's proved presence settles it.
+#[test]
+fn a_missing_artifact_proves_unsent_only_with_the_markers() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new([0x44; 32]));
+    let ev = Evidence::default();
+    assert_eq!(
+        h.evidence(draft, &name, &ev),
+        ShieldedOutcome::Unknown,
+        "restored"
+    );
+    *ev.identity.lock().unwrap() = (true, 1);
+    assert_eq!(
+        h.evidence(draft, &name, &ev),
+        ShieldedOutcome::Registered(name.clone())
+    );
+    *ev.identity.lock().unwrap() = (false, 1);
+    let scope = dw_appdb::local_scope(&h.f.wallet.to_string());
+    let set = |key: String| {
+        let scope = scope.clone();
+        (h.f.engine)
+            .block_on(
+                h.f.session
+                    .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("0"))),
+            )
+            .unwrap()
+    };
+    set(dw_appdb::dp_registration_named(&name));
+    assert_eq!(h.evidence(draft, &name, &ev), ShieldedOutcome::Cleared);
+    set(dw_appdb::dp_registration_dispatched(&name));
+    assert_eq!(h.evidence(draft, &name, &ev), ShieldedOutcome::Unknown);
+}
+
+/// F12, F13: an executed create whose nullifiers are proved spent at h and
+/// whose identity is proved absent at or above h ran as Platform's
+/// fallback: its refund record is written once, done and armed, at most the
+/// denomination of the fallback address's rise still to read. Absence read
+/// below h (a node behind) proves nothing and arms nothing; nor do
+/// nullifiers not yet spent. Mutant: drop the height check.
+#[test]
+fn an_executed_create_absent_above_its_spend_is_the_fallback() {
+    use super::super::platform_moves::FromShieldedSource;
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(2);
+    h.rewrite(2, "status = 'executed'");
+    let ev = Evidence::default();
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unknown,
+        "not spent"
+    );
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 99);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Unknown,
+        "stale absence"
+    );
+    assert!(h.refunds().is_empty());
+    assert_eq!(
+        ev.reads.lock().unwrap()[1..],
+        ["spent", "identity"],
+        "the spend first, then the identity at or above it"
+    );
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
+    let refunds = h.refunds();
+    assert_eq!(refunds.len(), 1, "one record per create");
+    let r = &refunds[0];
+    assert_eq!(r.source, FromShieldedSource::Registration { draft });
+    assert_eq!(
+        (r.credits, r.unseen, r.done_height, r.armed),
+        (DENOMINATION, DENOMINATION, 99, true)
+    );
+    *ev.identity.lock().unwrap() = (true, 101);
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
+}
+
+/// F13: a read of the Platform activity since the hook named the create
+/// may have shown the refund as `incoming` already: the record claims
+/// nothing, and lists no row. Mutant: absorb whatever the baseline.
+#[test]
+fn a_read_since_the_create_was_named_claims_nothing() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(3);
+    h.rewrite(3, "status = 'executed'");
+    h.baseline_at(80);
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
+    let refunds = h.refunds();
+    assert_eq!(
+        (refunds.len(), refunds[0].credits, refunds[0].unseen),
+        (1, 0, 0)
+    );
+}
+
+/// The lock order (C-routes §0): a Shielded-funded create's pass holds the
+/// shielded wallet lock, then takes the Platform move lock to write its
+/// refund record; with the move lock held elsewhere it waits holding the
+/// shielded lock, and completes once the move lock is let go. No holder
+/// takes them the other way, so nothing deadlocks.
+#[test]
+fn lock_order_shielded_register() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(4);
+    h.rewrite(4, "status = 'executed'");
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let moves = super::super::platform_moves::wallet_lock(wallet);
+    let held = h.f.engine.block_on(Arc::clone(&moves).lock_owned());
+    let pass = {
+        let s = Arc::clone(&s);
+        let ask = ShieldedAsk {
+            draft,
+            owner: 0,
+            index: 0,
+            denomination: DENOMINATION,
+            fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
+            identity: Some(id.clone()),
+        };
+        s.rt.clone().spawn(async move {
+            let ev = Evidence::default();
+            *ev.spent.lock().unwrap() = Some(10);
+            *ev.identity.lock().unwrap() = (false, 10);
+            let lib = super::FakeShielded::default();
+            let version = dpp::version::PlatformVersion::latest();
+            super::super::registration_shielded::fund(&s, wallet, (&lib, &ev, version), ask, None)
+                .await
+        })
+    };
+    wait_until(
+        || pool::wallet_lock(&s, wallet).try_lock().is_err(),
+        "the pass holds the shielded lock",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!pass.is_finished(), "it waits for the move lock");
+    drop(held);
+    let outcome =
+        h.f.engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), pass).await });
+    assert_eq!(
+        outcome.unwrap().unwrap().unwrap(),
+        ShieldedOutcome::Fallback(id)
+    );
+}
+
+impl Hooked {
+    /// A Shielded registration lease of the wallet, under a grant of
+    /// `credits`.
+    fn registration_lease(&self, credits: u64) -> crate::platform::lease::Lease {
+        let wallet = self.f.wallet;
+        let grant = (self.f.session.vault())
+            .authorize(
+                dw_vault::GrantPurpose::PlatformOp {
+                    max_duffs: 0,
+                    max_credits: credits,
+                },
+                Some(&wallet.0),
+                dw_vault::Credential::Passphrase(PASS),
+            )
+            .unwrap()
+            .id;
+        let s = Arc::clone(&self.f.session);
+        (self.f.engine)
+            .block_on(async move { s.begin_shielded_registration_lease(wallet, &[grant]).await })
+            .unwrap()
+    }
+
+    /// One create pass of row `draft` with `lib` under `lease`.
+    fn create(
+        &self,
+        draft: i64,
+        lib: &super::FakeShielded,
+        ev: &Evidence,
+        lease: &crate::platform::lease::Lease,
+    ) -> Result<ShieldedOutcome, crate::platform::PlatformError> {
+        let ask = ShieldedAsk {
+            draft,
+            owner: 0,
+            index: 0,
+            denomination: DENOMINATION,
+            fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
+            identity: None,
+        };
+        let version = dpp::version::PlatformVersion::latest();
+        let (s, wallet) = (Arc::clone(&self.f.session), self.f.wallet);
+        (self.f.engine).block_on(super::super::registration_shielded::fund(
+            &s,
+            wallet,
+            (lib, ev, version),
+            ask,
+            Some(lease),
+        ))
+    }
+}
+
+/// A library whose notes pay the denomination, rested, the pool's count
+/// unknown, its creates asking the hook `hook`.
+fn paying(hook: Option<super::CreateHook>) -> super::FakeShielded {
+    let lib = super::FakeShielded {
+        notes: vec![note(1, 2 * DENOMINATION)],
+        rest: std::sync::Mutex::new(Some(pool::RestClock {
+            scanned: true,
+            seen: [(note(1, 2 * DENOMINATION).cmx, 0)].into(),
+        })),
+        ..Default::default()
+    };
+    *lib.create_hook.lock().unwrap() = hook;
+    lib
+}
+
+/// The hook answering a create with `payload`.
+fn hook_of(h: &Hooked, payload: ShieldedDispatchPayload) -> super::CreateHook {
+    let hook = Arc::clone(&h.hook);
+    Arc::new(move || {
+        let (hook, payload) = (Arc::clone(&hook), payload.clone());
+        Box::pin(async move { hook.dispatch(payload).await.map_err(|e| e.reason) })
+    })
+}
+
+/// F11, F12: the create runs through the hook, which names the row before
+/// the library signs; a proved identity then registers it and settles its
+/// artifact executed with the engine's proof. The library got
+/// the keyset create of the row's slot at the denomination, refunding to
+/// the row's fallback, never the seed path (the fake has none).
+#[test]
+fn a_create_through_the_hook_registers_its_proved_identity() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(7, &[7], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(7, &[7], bytes, id);
+    let lib = paying(Some(hook_of(&h, payload)));
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 3);
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Registered(name.clone()))
+    );
+    assert_eq!(h.row_funding(draft), shielded_funding(Some(name)));
+    let artifact = h.artifact(7).unwrap();
+    assert_eq!(
+        (
+            artifact.status,
+            h.setting(dw_appdb::dp_registration_proved(&hex::encode(
+                artifact.st_hash.unwrap()
+            ))),
+        ),
+        (ArtifactStatus::Executed, Some("executed".into())),
+        "proved executed, so an unresolved outcome of it is acknowledged later"
+    );
+    let spent = lib.spent.lock().unwrap().clone();
+    assert_eq!(spent.len(), 1);
+    assert_eq!(
+        (spent[0].operation, spent[0].credits),
+        ("identity_create", DENOMINATION)
+    );
+    assert!(
+        h.f.session
+            .platform
+            .registration_intents
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// F16: Platform's pool-floor refusal of a create the hook named leaves it
+/// unknown: its artifact is not settled unsent, so no second create, and
+/// the row waits. A hook refusal before naming refuses the create, nothing
+/// named; a create the hook never saw is never retried.
+#[test]
+fn a_named_create_refused_by_the_pool_floor_stays_unknown() {
+    use platform_wallet::PlatformWalletError;
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(8, &[8], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(8, &[8], bytes, id);
+    let lib = paying(Some(hook_of(&h, payload)));
+    *lib.fails.lock().unwrap() = Some(PlatformWalletError::ShieldedBroadcastFailed(
+        "Shielded pool has insufficient notes: pool has 10 notes but minimum 250 required".into(),
+    ));
+    let ev = Evidence::default();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unknown)
+    );
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(h.row_funding(draft), shielded_funding(Some(name)));
+
+    let draft = h.shielded_row();
+    let refuse: super::CreateHook = Arc::new(|| Box::pin(async { Err("closing".to_owned()) }));
+    let lib = paying(Some(refuse));
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let refused = h.create(draft, &lib, &ev, &lease).unwrap();
+    assert!(
+        matches!(refused, ShieldedOutcome::Refused(ref e) if e.code() == "shielded.spend_refused"),
+        "{refused:?}"
+    );
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+
+    let lib = paying(None);
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unaccepted)
+    );
+}
+
+/// F16: a check that does not pass at the call refuses before anything is
+/// signed: an unsettled spend (no second create while one may still go
+/// through), and the pool's proved count below Platform's floor.
+#[test]
+fn a_create_signs_nothing_while_a_check_fails() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let ev = Evidence::default();
+    let lib = paying(None);
+    *lib.pool_notes.lock().unwrap() = Some(10);
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::NotReady(
+            crate::platform::ShieldedCheck::PoolSize,
+            None
+        ))
+    );
+    let lib = paying(None);
+    lib.held.lock().unwrap().insert([9; 32]);
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::NotReady(
+            crate::platform::ShieldedCheck::NoUnsettledSpend,
+            None
+        ))
+    );
+    assert!(lib.spent.lock().unwrap().is_empty());
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+}
+
+/// While the library cannot spend from a lease's key set, a new create is
+/// refused before its readiness is read (a pool below the floor would
+/// answer `PoolSize` there), so before any hold, permit or intent: nothing
+/// signed, the row unnamed. A named row still settles by evidence: its
+/// fallback is proved, settled and its refund armed.
+#[test]
+fn without_keyset_spends_a_new_create_is_refused_and_a_named_one_settles() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let lib = paying(None);
+    lib.no_keyset_spends
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    *lib.pool_notes.lock().unwrap() = Some(10);
+    let ev = Evidence::default();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Err(crate::platform::PlatformError::Unavailable)
+    );
+    assert!(lib.spent.lock().unwrap().is_empty());
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+    assert!(
+        h.f.session
+            .platform
+            .registration_intents
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+
+    let (named, id) = h.dispatched_create(5);
+    h.rewrite(
+        5,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    let lib = super::FakeShielded::default();
+    lib.no_keyset_spends
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        h.evidence_with(named, &id, &ev, &lib),
+        ShieldedOutcome::Fallback(id)
+    );
+    assert_eq!(h.refunds().len(), 1);
+    assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::Executed);
+}
+
+/// Mainnet: off (flag `shielded_registration`) until a payment that stays
+/// unknown has a way out (C-funding C3). A new create is refused before
+/// its readiness is read, so before any hold, permit or intent: nothing
+/// signed, the row unnamed. A named row still settles by evidence: its
+/// fallback is proved, settled and its refund armed.
+#[test]
+fn on_mainnet_a_new_create_is_refused_and_a_named_one_settles() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let mut lib = paying(None);
+    lib.network = dpp::dashcore::Network::Mainnet;
+    let ev = Evidence::default();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let off = Err(crate::platform::PlatformError::FeatureOff {
+        feature: "shielded_registration".into(),
+    });
+    assert_eq!(h.create(draft, &lib, &ev, &lease), off);
+    assert!(lib.spent.lock().unwrap().is_empty());
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+    assert!(
+        h.f.session
+            .platform
+            .registration_intents
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+
+    let (named, id) = h.dispatched_create(5);
+    h.rewrite(
+        5,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    let lib = super::FakeShielded {
+        network: dpp::dashcore::Network::Mainnet,
+        ..Default::default()
+    };
+    assert_eq!(
+        h.evidence_with(named, &id, &ev, &lib),
+        ShieldedOutcome::Fallback(id)
+    );
+    assert_eq!(h.refunds().len(), 1);
+    assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::Executed);
+}
+
+/// F12: the library resolves every failure of a create after its dispatch
+/// `unresolved` (`Cancelled`, operations.rs `settle_failed_spend`), a paid
+/// fallback included: every published nullifier proved spent, the bundle's
+/// padding included, which only this create spends, attributes the spend
+/// to it, so an unresolved create settles as an executed one does.
+#[test]
+fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(4);
+    h.rewrite(
+        4,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone()),
+        "padded: no hold needed"
+    );
+    assert_eq!(h.refunds().len(), 1);
+    let artifact = h.artifact(4).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::Executed, false),
+        "settled for the consume step to acknowledge once its notes read spent"
+    );
+    let st_hash = hex::encode(artifact.st_hash.unwrap());
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&st_hash))
+            .as_deref(),
+        Some("executed"),
+        "the engine's proof, beside the library's strings"
+    );
+    assert!(
+        !h.marked_consumed(artifact.st_hash.unwrap()),
+        "a padded create is never marked consumed"
+    );
+    *ev.identity.lock().unwrap() = (true, 101);
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
+}
+
+/// F12 (as #860's R4): a create of two or more notes publishes no padding,
+/// so its nullifiers read spent may be another spend's of the same notes
+/// (another install of the seed): held or not, they never claim a refund.
+/// Its identity present registers it; absent at or above the spent read,
+/// the notes are gone whoever spent them: its proof is written consumed
+/// and the journal marks it so, its artifact stays unresolved and the row
+/// is told so; absent below it
+/// decides nothing. Mutants: refund it as a fallback; consume it on an
+/// absence read below the spend.
+#[test]
+fn an_unpadded_create_spent_never_claims_the_fallback() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    h.rewrite(
+        12,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let artifact = h.artifact(12).unwrap();
+    assert_eq!(artifact.published.len(), 2, "no padding");
+    let proved = || {
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(
+            artifact.st_hash.unwrap(),
+        )))
+    };
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 99);
+    let lib = super::FakeShielded::default();
+    for held in [false, true] {
+        if held {
+            lib.held.lock().unwrap().insert(artifact.st_hash.unwrap());
+        }
+        assert_eq!(
+            h.evidence_with(draft, &id, &ev, &lib),
+            ShieldedOutcome::Unknown,
+            "absent below the spend, held: {held}"
+        );
+        assert_eq!(proved(), None);
+        assert!(!h.marked_consumed(artifact.st_hash.unwrap()));
+    }
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Consumed(id.clone())
+    );
+    assert!(h.refunds().is_empty(), "no refund is claimed");
+    assert_eq!(proved().as_deref(), Some("consumed"));
+    assert!(
+        h.marked_consumed(artifact.st_hash.unwrap()),
+        "marked in the journal too, which outlives the app rows"
+    );
+    let artifact = h.artifact(12).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::Unresolved { unrecorded: false }, false),
+        "acknowledged by the next read of the outcomes once its notes read spent"
+    );
+}
+
+/// F12: a create of two or more notes read spent registers when its
+/// identity reads present, whatever it was proved before.
+#[test]
+fn an_unpadded_create_spent_with_its_identity_registers() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    h.rewrite(
+        12,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (true, 101);
+    let lib = super::FakeShielded::default();
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Registered(id)
+    );
+    assert!(h.refunds().is_empty());
+    assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Executed);
+}
+
+/// F12: an unresolved create none of whose nullifiers is spent may still
+/// execute while its anchor is recorded, and so does one whose unspent
+/// read is below the height its anchor read pruned at (a node behind).
+/// Read at or above it, it never executed and never can: its artifact
+/// settles `not_executed` (pruned), the library's hold on its notes is
+/// acknowledged, and it reads unsent. The prune counts only from a read
+/// above the highest that saw the anchor recorded, so a node behind it
+/// proves nothing. Mutant: drop either height check.
+#[test]
+fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(5);
+    h.rewrite(
+        5,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let st_hash = h.artifact(5).unwrap().st_hash.unwrap();
+    let lib = super::FakeShielded::default();
+    lib.held.lock().unwrap().insert(st_hash);
+    let ev = Evidence::default();
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "never read recorded: no height the prune must be above"
+    );
+    *ev.pruned.lock().unwrap() = None;
+    *ev.recorded_at.lock().unwrap() = 120;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "anchor recorded"
+    );
+    *ev.pruned.lock().unwrap() = Some(110);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "a node behind the read that saw it recorded"
+    );
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 150;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "unspent read below the prune"
+    );
+    assert!(lib.acks.lock().unwrap().is_empty());
+    assert_eq!(
+        h.artifact(5).unwrap().status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    ev.reads.lock().unwrap().clear();
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unsent
+    );
+    assert_eq!(
+        ev.reads.lock().unwrap()[..],
+        ["spent", "identity", "anchor", "spent"],
+        "the prune first, then the nullifiers at or above it"
+    );
+    let artifact = h.artifact(5).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::NotExecuted, true)
+    );
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash)))
+            .as_deref(),
+        Some("pruned")
+    );
+    assert_eq!(lib.acks.lock().unwrap()[..], [st_hash]);
+    assert!(lib.held.lock().unwrap().is_empty(), "its notes are free");
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unsent
+    );
+    assert_eq!(lib.acks.lock().unwrap().len(), 1, "settled: not read again");
+    assert!(h.refunds().is_empty());
+}
+
+/// F12: the same notes signed again name the same identity. The create
+/// that may still execute answers, not the earlier one that never did, and
+/// its anchor's prune counts only above a read that saw its own anchor
+/// recorded: the earlier create's height proves nothing of it.
+#[test]
+fn a_create_signed_again_over_the_same_notes_answers_for_its_identity() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(5);
+    let _ = h.dispatched_create(6);
+    let identity = super::super::registration_flow::parse_identity(&id).unwrap();
+    let unresolved =
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'";
+    h.rewrite(5, unresolved);
+    let lib = super::FakeShielded::default();
+    let ev = Evidence::default();
+    *ev.recorded_at.lock().unwrap() = 100;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "the earlier create's anchor read recorded at 100"
+    );
+    h.rewrite(5, "status = 'not_executed'");
+    h.rewrite(
+        6,
+        &format!(
+            "{unresolved}, identity_id = X'{}'",
+            hex::encode(identity.to_buffer())
+        ),
+    );
+    let st_hash = h.artifact(6).unwrap().st_hash.unwrap();
+    lib.held.lock().unwrap().insert(st_hash);
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "the later create's anchor never read recorded; the earlier one's height is not its"
+    );
+    *ev.pruned.lock().unwrap() = None;
+    *ev.recorded_at.lock().unwrap() = 150;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown
+    );
+    *ev.pruned.lock().unwrap() = Some(200);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unsent
+    );
+    assert_eq!(h.artifact(6).unwrap().status, ArtifactStatus::NotExecuted);
+    assert_eq!(lib.acks.lock().unwrap()[..], [st_hash]);
+}
+
+/// F12: a create the hook named and then refused (its artifact could not
+/// be written) clears its name and fails retryable, unsent: it is not
+/// signed again at once, in a loop.
+#[test]
+fn a_create_refused_after_its_naming_is_unsent_not_signed_again() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(10, &[10], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(10, &[10], bytes, id);
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let earlier = dw_appdb::dispatch::NewShieldedArtifact {
+        activity: payload.activity_id,
+        origin: dw_appdb::dispatch::ArtifactOrigin::Dispatched,
+        st_hash: Some([0x33; 32]),
+        kind: Some(ArtifactKind::Transfer),
+        anchor: Some([0xa0; 32]),
+        identity_id: None,
+        selected: vec![[0x93; 32]],
+        published: vec![[0x93; 32], [0xee; 32]],
+    };
+    let wrote = (h.f.engine)
+        .block_on(async move { s.leases.record_shielded_artifact(wallet, earlier).await });
+    assert_eq!(wrote, Ok(true));
+    let lib = paying(Some(hook_of(&h, payload)));
+    let ev = Evidence::default();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unsent)
+    );
+    assert!(lib.spent.lock().unwrap().is_empty());
+}
+
+/// F12: a create that succeeds is resolved unattributable by the library
+/// (its success marks the notes spent with no action read), which the pass
+/// `sync_now` runs settles `executed` with no proof before the identity is
+/// read. The proved identity still records the engine's proof (upstream
+/// keeps the notes until its own scan reads them spent). A proof that cannot be written leaves the row on evidence, not
+/// registered; the next pass records it. Mutants: prove only in-flight
+/// artifacts; register without the proof.
+#[test]
+fn a_create_settled_executed_before_its_proof_is_still_proved() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(7, &[7], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(7, &[7], bytes, id);
+    let lib = paying(Some(hook_of(&h, payload)));
+    *lib.on_sync.lock().unwrap() = Some(Box::new(h.rewriter(
+        7,
+        "status = 'executed', disposition_kind = 'unresolved', disposition_reason = 'unattributable'",
+    )));
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 3);
+    (h.f.session.platform.registration_faults.lock().unwrap()).proof_write = true;
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unknown),
+        "no proof written, so not registered"
+    );
+    let st_hash = h.artifact(7).unwrap().st_hash.unwrap();
+    let proved = || h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash)));
+    assert_eq!(proved(), None);
+    assert_eq!(h.artifact(7).unwrap().status, ArtifactStatus::Executed);
+
+    (h.f.session.platform.registration_faults.lock().unwrap()).proof_write = false;
+    *ev.spent.lock().unwrap() = Some(3);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(
+        h.evidence(draft, &name, &ev),
+        ShieldedOutcome::Registered(name.clone())
+    );
+    assert_eq!(proved().as_deref(), Some("executed"));
+    let artifact = h.artifact(7).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::Executed, false)
+    );
+}
+
+/// F17: a pass in flight when a create starts may find a note; the create
+/// reads its notes and their rest only once no pass runs, so a note just
+/// found makes it wait instead of paying from that note. Mutant: hold the
+/// passes after the readiness read.
+#[test]
+fn a_create_reads_its_notes_only_once_no_pass_runs() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(9, &[9], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(9, &[9], bytes, id);
+    let lib = Arc::new(paying(Some(hook_of(&h, payload))));
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let pass = h.f.engine.block_on(s.platform.shielded_spends.read());
+    let create = {
+        let (s, lib) = (Arc::clone(&s), Arc::clone(&lib));
+        let ask = ShieldedAsk {
+            draft,
+            owner: 0,
+            index: 0,
+            denomination: DENOMINATION,
+            fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
+            identity: None,
+        };
+        s.rt.clone().spawn(async move {
+            let ev = Evidence::default();
+            let version = dpp::version::PlatformVersion::latest();
+            super::super::registration_shielded::fund(
+                &s,
+                wallet,
+                (&*lib, &ev, version),
+                ask,
+                Some(&lease),
+            )
+            .await
+        })
+    };
+    wait_until(
+        || pool::wallet_lock(&s, wallet).try_lock().is_err(),
+        "the create holds the shielded lock",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    // The pass finds a larger note, just now.
+    *lib.notes_now.lock().unwrap() =
+        Some(vec![note(1, 2 * DENOMINATION), note(2, 3 * DENOMINATION)]);
+    drop(pass);
+    let outcome =
+        h.f.engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), create).await });
+    let outcome = outcome.unwrap().unwrap().unwrap();
+    assert!(
+        matches!(
+            outcome,
+            ShieldedOutcome::NotReady(crate::platform::ShieldedCheck::Rested, Some(_))
+        ),
+        "{outcome:?}"
+    );
+    assert!(lib.spent.lock().unwrap().is_empty(), "nothing signed");
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+}
+
+/// F11: a stop between a create's artifact and its dispatch record leaves
+/// the library's stored create, which a pass may re-send: the re-send is
+/// admitted only once the dispatch is recorded, so a send never goes out
+/// without it; one whose record cannot be written is refused. Mutant:
+/// admit a create without its record.
+#[test]
+fn a_create_resent_by_a_pass_records_its_dispatch_first() {
+    let h = Hooked::new();
+    h.lease();
+    let (_, name) = h.dispatched_create(11);
+    let st_hash = h.artifact(11).unwrap().st_hash.unwrap();
+    let key = dw_appdb::dp_registration_dispatched(&name);
+    let unrecord = || {
+        let (scope, key) = (dw_appdb::local_scope(&h.f.wallet.to_string()), key.clone());
+        (h.f.engine)
+            .block_on((h.f.session).appdb_op(move |db| db.set_setting_durable(&scope, &key, None)))
+            .unwrap();
+    };
+    unrecord();
+    assert_eq!(h.setting(key.clone()), None, "stopped before the record");
+
+    (h.f.session.platform.registration_faults.lock().unwrap()).dispatch_record = true;
+    let refused = h.admit(SHIELDED_ACCOUNT, 11, st_hash).unwrap_err();
+    assert!(refused.contains("dispatch was not recorded"), "{refused}");
+    assert_eq!(h.setting(key.clone()), None);
+
+    (h.f.session.platform.registration_faults.lock().unwrap()).dispatch_record = false;
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 11, st_hash), Ok(()));
+    assert!(h.setting(key).is_some());
+}
+
 // ---- #444 D1: the signed bytes carry the anchor and the nullifiers ----
 
 /// Each family the engine sends is accepted when its signed bytes decode
 /// to the anchor and the nullifiers the library hands the hook: a transfer,
-/// a withdrawal (a contact payout's family too), an identity top-up and an
-/// identity creation from the pool. (An unshield's acceptance is
-/// `unshield_hook_arms_its_record_after_the_artifact`.)
+/// a withdrawal (a contact payout's family too) and an identity top-up. (An
+/// unshield's acceptance is `unshield_hook_arms_its_record_after_the_artifact`,
+/// an identity create's `a_create_is_named_in_its_row_before_its_artifact`:
+/// the hook accepts only the create the engine started.)
 #[test]
 fn each_family_whose_bytes_match_is_accepted() {
     let h = Hooked::new();
@@ -1795,9 +3446,6 @@ fn each_family_whose_bytes_match_is_accepted() {
         ShieldedDispatchKind::Withdraw,
         ShieldedDispatchKind::IdentityTopUp {
             identity_id: [0x41; 32],
-        },
-        ShieldedDispatchKind::IdentityCreate {
-            identity_id: [0x42; 32],
         },
     ];
     for (i, kind) in kinds.into_iter().enumerate() {

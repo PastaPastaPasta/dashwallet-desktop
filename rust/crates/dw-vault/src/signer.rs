@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use dashcore::secp256k1::{Message, PublicKey, SecretKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSecretKey, EcdsaSignature};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use key_wallet::{ExtendedPubKeySigner, Network, Signer, SignerMethod};
-use zeroize::Zeroizing;
+use zeroize::Zeroize;
 
 use crate::paths::{self, is_bip44_path, is_coinjoin_path};
 use crate::types::{KeySource, WalletId};
@@ -163,13 +163,17 @@ pub enum SignerScope {
     /// while the full key needs no prompt
     /// ([`crate::Vault::shielded_viewing_key`]).
     ShieldedView,
-    /// One App Connect login, from an `AppConnect` grant: public keys of the
-    /// DIP-13 application keys (session keys `m/9'/coin'/5'/6'/…`, shared
-    /// encryption keys `m/9'/coin'/5'/7'/…`), the proof-of-possession
-    /// signature of a new encryption key, and their seal to the app
-    /// ([`VaultSigner::app_connect_seal`]). Only session keys of the
-    /// request whose ephemeral key hashes to `request` are in reach; no
-    /// identity key, address or raw key leaves it.
+    /// One App Connect login, from an `AppConnect` grant, and only through
+    /// the methods that build each key's path ([`VaultSigner::app_key_path`]),
+    /// which refuse any request but the one whose ephemeral key hashes to
+    /// `request`: the public keys of that request's DIP-13 session keys
+    /// (`m/9'/coin'/5'/6'/…`) and of the shared encryption keys
+    /// (`m/9'/coin'/5'/7'/…`) of the identity and contract the caller names,
+    /// each encryption key's proof-of-possession signature, and their seal to
+    /// the app ([`VaultSigner::app_connect_seal`]). A session key never
+    /// signs. No signature or public key through a raw path (the `Signer`
+    /// trait, [`VaultSigner::sign_identity`]), and no identity key, address
+    /// or other raw key.
     AppConnect { request: [u8; 20] },
 }
 
@@ -207,6 +211,12 @@ pub(crate) enum KeyUse {
     /// The key is sealed to an App Connect app
     /// ([`VaultSigner::app_connect_seal`]).
     AppConnectSeal,
+    /// The public key of a request's App Connect key
+    /// ([`VaultSigner::app_public_key`]).
+    AppConnectPublicKey,
+    /// The proof-of-possession signature of a request's App Connect
+    /// encryption key ([`VaultSigner::sign_app_key`]).
+    AppConnectSign,
 }
 
 impl SignerScope {
@@ -238,9 +248,11 @@ impl SignerScope {
             // No export of an asset-lock credit key or its account
             // ([`paths::is_asset_lock_credit_key`]).
             SignerScope::Full => match key_use {
-                KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal | KeyUse::AppConnectSeal => {
-                    false
-                }
+                KeyUse::OwnerPayload
+                | KeyUse::MasternodeWithdrawal
+                | KeyUse::AppConnectSeal
+                | KeyUse::AppConnectPublicKey
+                | KeyUse::AppConnectSign => false,
                 KeyUse::Sign | KeyUse::Message => {
                     !paths::is_owner_key(path, network) && !paths::is_voting_key(path, network)
                 }
@@ -263,7 +275,9 @@ impl SignerScope {
                 | KeyUse::Vote
                 | KeyUse::OwnerPayload
                 | KeyUse::MasternodeWithdrawal
-                | KeyUse::AppConnectSeal => false,
+                | KeyUse::AppConnectSeal
+                | KeyUse::AppConnectPublicKey
+                | KeyUse::AppConnectSign => false,
                 KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
                     paths::is_dashpay_receiving_account(path, network)
                         || paths::is_auto_accept_key(path, network)
@@ -316,14 +330,15 @@ impl SignerScope {
             }
             // ZIP-32 starts from the seed ([`VaultSigner::with_seed`]).
             SignerScope::ShieldedSpend | SignerScope::ShieldedView => false,
-            // The request binding of a session key is checked where its
-            // path is built ([`VaultSigner::app_key_path`]).
+            // The request binding of a key is checked where its path is
+            // built ([`VaultSigner::app_key_path`]); only the App Connect
+            // uses, which build their paths there, are allowed.
             SignerScope::AppConnect { .. } => {
                 let session = paths::app_session_key(path, network).is_some();
                 let encryption = paths::app_encryption_key(path, network).is_some();
                 match key_use {
-                    KeyUse::PublicKey | KeyUse::AppConnectSeal => session || encryption,
-                    KeyUse::Sign => encryption,
+                    KeyUse::AppConnectPublicKey | KeyUse::AppConnectSeal => session || encryption,
+                    KeyUse::AppConnectSign => encryption,
                     _ => false,
                 }
             }
@@ -372,13 +387,9 @@ const METHODS: &[SignerMethod] = &[SignerMethod::Digest];
 /// `27 + 4 + recid ‖ r ‖ s`, deterministic (RFC 6979).
 /// Also what `dashcore::signer::sign` makes for a Platform
 /// `ECDSA_HASH160` key (MG-07's name votes).
-pub(crate) fn sign_compact(digest: [u8; 32], secret: &SecretKey) -> [u8; 65] {
-    let sig =
-        ecdsa::RecoverableSignature::sign_ecdsa_recoverable(Message::from_digest(digest), secret);
-    let (recid, rs) = sig.serialize_compact();
-    let mut out = [0u8; 65];
-    out[0] = 27 + recid.to_u8() + 4;
-    out[1..].copy_from_slice(&rs);
+pub(crate) fn sign_compact(digest: [u8; 32], secret: &EcdsaSecretKey) -> [u8; 65] {
+    let mut out = secret.sign_recoverable(&digest).to_bytes();
+    out[0] = 27 + ((out[0] - 27) & 3) + 4;
     out
 }
 
@@ -544,7 +555,7 @@ impl VaultSigner {
         pro_tx_hash: &[u8; 32],
         role: &str,
         key_use: KeyUse,
-        f: impl FnOnce(&SecretKey) -> T,
+        f: impl FnOnce(&EcdsaSecretKey) -> T,
     ) -> Result<T, SignerError> {
         if !self.scope.allows_attached(key_use, role) {
             return Err(SignerError::PathNotAllowed(format!(
@@ -555,10 +566,10 @@ impl VaultSigner {
             self.alive()?;
             /// Erases the secret when dropped, so a panicking `f` erases it
             /// too.
-            struct Erased(SecretKey);
+            struct Erased(EcdsaSecretKey);
             impl Drop for Erased {
                 fn drop(&mut self) {
-                    self.0.non_secure_erase();
+                    self.0.zeroize();
                 }
             }
             let secret = Erased(self.vault.attached_secret(
@@ -608,14 +619,14 @@ impl Op<'_> {
             .derive_priv(path)
             .map_err(|e| SignerError::Derivation(e.to_string()))?;
         let out = f(&xpriv);
-        xpriv.private_key.non_secure_erase();
+        xpriv.private_key.zeroize();
         Ok(out)
     }
 }
 
 impl Drop for Op<'_> {
     fn drop(&mut self) {
-        self.master.private_key.non_secure_erase();
+        self.master.private_key.zeroize();
     }
 }
 
@@ -688,19 +699,16 @@ impl Signer for VaultSigner {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         self.with_key(path, KeyUse::Sign, |x| {
             // Low-R grinding, as Dash Core's `CKey::Sign`: one byte smaller on
             // average, and the same signature dashd makes for the sighash.
-            let sig = ecdsa::sign_low_r(Message::from_digest(sighash), &x.private_key);
-            (sig, PublicKey::from_secret_key(&x.private_key))
+            (x.private_key.sign(&sighash), x.private_key.public_key())
         })
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
-        self.with_key(path, KeyUse::PublicKey, |x| {
-            PublicKey::from_secret_key(&x.private_key)
-        })
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
+        self.with_key(path, KeyUse::PublicKey, |x| x.private_key.public_key())
     }
 }
 
@@ -727,7 +735,7 @@ impl WalletSigner for VaultSigner {
     ) -> Result<String, SignerError> {
         self.with_key(path, KeyUse::Message, |x| {
             let secret = dw_uri::keyio::Secret {
-                key: Zeroizing::new(x.private_key.to_secret_bytes()),
+                key: x.private_key.to_bytes(),
                 compressed: true,
             };
             dw_message::sign_message(&secret, message)
@@ -746,7 +754,7 @@ mod tests {
     }
 
     const T: Network = Network::Testnet;
-    const ALL_USES: [KeyUse; 10] = [
+    const ALL_USES: [KeyUse; 13] = [
         KeyUse::Sign,
         KeyUse::Message,
         KeyUse::PublicKey,
@@ -757,6 +765,9 @@ mod tests {
         KeyUse::Vote,
         KeyUse::OwnerPayload,
         KeyUse::MasternodeWithdrawal,
+        KeyUse::AppConnectSeal,
+        KeyUse::AppConnectPublicKey,
+        KeyUse::AppConnectSign,
     ];
     /// A withdrawal scope of each key kind (MG-13 P3).
     const WITHDRAW_OWNER: SignerScope = SignerScope::MasternodeWithdrawal {

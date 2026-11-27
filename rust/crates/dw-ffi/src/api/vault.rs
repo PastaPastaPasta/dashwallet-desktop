@@ -285,9 +285,15 @@ impl From<dw_engine::EngineError> for VaultError {
             E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {
-                Self::Storage { detail }
-            }
+            E::StorageInUse { .. }
+            | E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
+            | E::RetryableIo(_)
+            | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(_) => Self::NotImplemented { call: detail },
             _ => Self::Internal { detail },
         }
@@ -367,7 +373,8 @@ impl From<dw_vault::GrantPurpose> for GrantPurpose {
             P::PlatformOp { .. }
             | P::IdentityScan
             | P::MasternodeWithdraw { .. }
-            | P::AppConnect { .. } => Self::PlatformOp,
+            | P::AppConnect { .. }
+            | P::AppDisconnect { .. } => Self::PlatformOp,
             // The frozen enum has no masternode purposes (MG-05), which a
             // host here cannot request: a `MasternodeOp` shows as the spend
             // it caps, a `Governance` grant as the signature it makes.

@@ -7,7 +7,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, InstantLock, OutPoint, Transaction, TxIn, TxOut, Txid};
 use dw_vault::{Credential, GrantPurpose};
 
@@ -4464,6 +4463,11 @@ fn credited_with_late_events(
 ) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
     use platform_wallet::changeset::PlatformWalletPersistence;
     use platform_wallet::key_wallet_manager::WalletInterface;
+    // Earlier block events spawn async reconciles that publish key-wallet's
+    // current balance to the hub; wait for them before crediting `tx` so a
+    // delayed reconcile cannot publish `tx`'s balance ahead of its events.
+    super::own_spend_balance_tests::reconciles_done(engine, session);
+    session.hub.settle_rereads();
     let manager = session.manager().unwrap();
     let tx = tx.clone();
     let events = engine.block_on(async move {
@@ -4618,7 +4622,8 @@ fn add_contact_account(engine: &Engine, session: &NetworkSession, id: WalletId) 
             network: dashcore::Network::Regtest,
             account_xpub: xpub,
             is_watch_only: true,
-        });
+        })
+        .unwrap();
         (info.core_wallet.accounts)
             .insert_funds_bearing_account(managed)
             .unwrap();
@@ -4635,16 +4640,20 @@ fn signed_by_contact(mut tx: Transaction, input: usize, index: u32) -> Transacti
             dashcore::sighash::EcdsaSighashType::All.to_u32(),
         )
         .unwrap();
-    let key = (contact_key().derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index }]))
-        .unwrap()
-        .private_key;
-    let sig = key.sign_ecdsa(dashcore::secp256k1::Message::from_digest(
+    let key = dpp::secp256k1::SecretKey::from_secret_bytes(
+        *(contact_key().derive_priv(&[key_wallet::bip32::ChildNumber::Normal { index }]))
+            .unwrap()
+            .private_key
+            .to_bytes(),
+    )
+    .unwrap();
+    let sig = key.sign_ecdsa(dpp::secp256k1::Message::from_digest(
         *sighash.as_byte_array(),
     ));
     tx.input[input].script_sig = dashcore::blockdata::script::Builder::new()
         .push_slice(dashcore::ecdsa::Signature::sighash_all(sig).serialize())
         .push_key(&dashcore::PublicKey::new(
-            dashcore::secp256k1::PublicKey::from_secret_key(&key),
+            dpp::secp256k1::PublicKey::from_secret_key(&key),
         ))
         .into_script();
     tx
@@ -4854,6 +4863,7 @@ fn mined_in_history_only(
         TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 0));
     (session.hub).apply_wallet_event(
         &platform_wallet::key_wallet_manager::WalletEvent::TransactionDetected {
+            locked_outpoints: Vec::new(),
             wallet_id: id.0,
             record: Box::new(record),
             balance,
@@ -6622,7 +6632,7 @@ fn a_lock_no_wallet_event_names_keeps_a_locked_payments_claims() {
         txid: payment.txid(),
         ..InstantLock::default()
     };
-    let heard = |validated| dash_spv::sync::SyncEvent::InstantLockReceived {
+    let heard = |validated| dash_spv::SyncEvent::InstantLockReceived {
         instant_lock: lock.clone(),
         validated,
     };
@@ -6758,7 +6768,7 @@ fn a_lock_whose_store_failed_is_stored_at_the_next_lock_heard() {
     let a = OutPoint::new(paid.txid(), 0);
     let (session, payment, _) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, FOREIGN);
     let txid = payment.txid();
-    let heard = |txid| dash_spv::sync::SyncEvent::InstantLockReceived {
+    let heard = |txid| dash_spv::SyncEvent::InstantLockReceived {
         instant_lock: InstantLock {
             txid,
             ..InstantLock::default()
@@ -7486,10 +7496,7 @@ fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_ope
 #[test]
 fn abandoning_stops_the_spv_client_sending_it() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
-    let stopped = |txid: Txid| {
-        let manager = session.manager().unwrap();
-        engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await })
-    };
+    let stopped = |txid: Txid| crate::tx_actions::rebroadcast_stop_asked(&session, txid);
     let pay_from = |vouts: [u32; 2]| {
         let coins = vouts.map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
         let tx = send(
@@ -7640,6 +7647,8 @@ fn track_lock(
     status: platform_wallet::AssetLockStatus,
 ) {
     let row = platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: OutPoint::new(funding.txid(), 0),
         transaction: funding.clone(),
         account_index: 0,
@@ -7685,8 +7694,7 @@ pub(super) fn assert_funding_refused(
 
 /// `txid` is still pending: not stopped, marked or abandoned.
 fn assert_kept(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) {
-    let manager = session.manager().unwrap();
-    let stopped = engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await });
+    let stopped = crate::tx_actions::rebroadcast_stop_asked(session, txid);
     assert!(!stopped, "{txid} stopped");
     assert!(
         !engine.block_on(session.abandon_marked(id, txid)),
@@ -7870,7 +7878,7 @@ fn a_lock_arriving_while_a_beaten_payments_drop_is_held_keeps_it_and_its_claims(
     };
     session
         .hub
-        .on_sync_event(&dash_spv::sync::SyncEvent::InstantLockReceived {
+        .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
             instant_lock: lock,
             validated: true,
         });
@@ -8045,6 +8053,7 @@ fn a_detected_record_whose_lock_names_another_transaction_changes_nothing() {
 
     (session.hub).apply_wallet_event(
         &platform_wallet::key_wallet_manager::WalletEvent::TransactionDetected {
+            locked_outpoints: Vec::new(),
             wallet_id: other.0,
             record: Box::new(record),
             balance,

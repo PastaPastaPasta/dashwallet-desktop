@@ -17,6 +17,7 @@ import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmoun
 import { useT } from "../../i18n";
 import { failureText, useModel } from "../../onboarding/model";
 import { AUTO_LOCK_CHOICES, SecurityText } from "../../settings/security";
+import { SHIELDED_SPENDS_COPY, shieldedSpendsOff } from "../../shielded/spends";
 import { Page } from "../Routes";
 import { useViewAction, ViewFacts } from "./CoinJoinCard";
 import { MoveMixedSheet } from "./MoveMixedSheet";
@@ -115,6 +116,7 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
   const id = useId();
   const shieldedStatus = useShieldedStatus(walletId);
   const shielded = shieldedStatus.data?.active === true;
+  const spendsOff = shieldedSpendsOff(shieldedStatus.data);
   const wait = moveShieldWait(shieldedStatus.data);
   // The plan itself says what there is to move.
   if (!showsMoveCard(status, flow)) return null;
@@ -134,11 +136,11 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
           {MOVE_COPY.card.open}
         </DashButton>
         {shielded && (
-          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={wait !== null} why={wait?.why} onClick={() => flow.begin("shielded")}>
+          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={spendsOff || wait !== null} why={spendsOff ? SHIELDED_SPENDS_COPY.shieldIn : wait?.why} onClick={() => flow.begin("shielded")}>
             {MOVE_COPY.card.shield}
           </DashButton>
         )}
-        {shielded && wait?.unlock && (
+        {shielded && !spendsOff && wait?.unlock && (
           <DashButton variant="tintedBlue" data-testid="coinjoin-move-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
             {wait.unlock === "unlock" ? t("transfer.shielded.receive.unlock") : t("shell.status.unlockFully")}
           </DashButton>

@@ -360,6 +360,7 @@ fn closing_during_the_bring_up_is_clean() {
     let marker = f
         .engine
         .network_dir(&DashNetwork::Regtest)
+        .unwrap()
         .join(".session-open");
     assert!(!marker.exists(), "the close was not clean");
 
@@ -681,6 +682,7 @@ fn close_waits_for_a_bring_up_key_read() {
     assert!(f.rec.notices(NoticeCode::UncleanShutdown).is_empty());
     let marker = engine
         .network_dir(&DashNetwork::Regtest)
+        .unwrap()
         .join(".session-open");
     assert!(!marker.exists(), "the close was not clean");
     engine.block_on(engine.shutdown()).unwrap();
@@ -735,6 +737,7 @@ fn close_reports_a_key_read_it_could_not_wait_for() {
     let marker = f
         .engine
         .network_dir(&DashNetwork::Regtest)
+        .unwrap()
         .join(".session-open");
     assert!(marker.exists(), "an unclean close removed the marker");
     store.release();

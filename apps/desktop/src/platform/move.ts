@@ -13,10 +13,12 @@ import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { platformOp } from "../dashpay/topup";
+import { contactName, shortAddress } from "../format/tx";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
+import { platformHoldText } from "../api/platformHold";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -100,6 +102,44 @@ export const MOVE_COPY = {
       return t("transfer.move.failed.text");
     },
   },
+  /** The move is the exit of a payment from Platform that may still go through: only one of the two goes
+   * through. `recipient`: the payment's contact, else its shortened address. */
+  exitSend: {
+    line: (amount: string, recipient: string) => t("transfer.move.exitSend.line", { amount, recipient }),
+    done: (recipient: string) => t("transfer.move.exitSend.done", { recipient }),
+    lost: (recipient: string) => t("transfer.move.exitSend.lost", { recipient }),
+  },
+  /** The move is the exit of a cancel that may still go through, beside the move or payment it cancels:
+   * only one of the three goes through. `recipient`: the cancelled payment's. */
+  exitCancel: {
+    line: {
+      move: (amount: string) => t("transfer.move.exitCancel.line.move", { amount }),
+      payment: (amount: string, recipient: string) => t("transfer.move.exitCancel.line.payment", { amount, recipient }),
+    },
+    done: {
+      get move() {
+        return t("transfer.move.exitCancel.done.move");
+      },
+      payment: (recipient: string) => t("transfer.move.exitCancel.done.payment", { recipient }),
+    },
+    lostToCancel: {
+      get move() {
+        return t("transfer.move.exitCancel.lostToCancel.move");
+      },
+      payment: (recipient: string) => t("transfer.move.exitCancel.lostToCancel.payment", { recipient }),
+    },
+    get lostToMove() {
+      return t("transfer.move.exitCancel.lostToMove");
+    },
+    lostToPayment: (recipient: string) => t("transfer.move.exitCancel.lostToPayment", { recipient }),
+  },
+  /** The move is the exit of a move too small to cancel: only one of the two goes through. */
+  exitMove: {
+    line: (amount: string) => t("transfer.move.exitMove.line", { amount }),
+    get lost() {
+      return t("transfer.move.exitMove.lost");
+    },
+  },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
   replaced: {
     get title() {
@@ -151,13 +191,75 @@ export const MOVE_COPY = {
   },
 };
 
+/** Who a held payment from Platform pays, as its row shows it: the contact, else the shortened address. */
+export const recipientOf = (a: PlatformActivity): string => contactName(a.contact) ?? (a.to ? shortAddress(a.to) : "");
+
+/** What a move is the exit of (`MoveToCoreQuote.exitOf`), from Activity's rows: a held send, a held cancel
+ * beside the move or contact payment it cancels (`held`), or a held move or contact payment too small to
+ * cancel. `null` for a top-up's exit or a row Activity does not show. */
+export type MoveExit = { kind: "send" | "move" | "payment"; row: PlatformActivity } | { kind: "cancel"; of: "move" | "payment"; row: PlatformActivity; held: PlatformActivity | null };
+
+export function moveExit(activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): MoveExit | null {
+  const row = id ? activity?.find((a) => a.id === id) : undefined;
+  if (!row) return null;
+  if (row.kind === "send") {
+    if (!row.cancels) return { kind: "send", row };
+    const held = activity?.find((a) => a.id === row.cancels) ?? null;
+    return { kind: "cancel", of: held?.kind === "contactPayment" ? "payment" : "move", row, held };
+  }
+  if (row.kind === "moveToCore") return { kind: "move", row };
+  if (row.kind === "contactPayment") return { kind: "payment", row };
+  return null;
+}
+
+/** The record an Activity row is "Move to Dash wallet" out of: the engine keeps that link in the exit's id
+ * (`exit-of-<id>-at-…`). `null` for every other row. */
+export function exitLinkOf(id: string): string | null {
+  const rest = id.startsWith("exit-of-") ? id.slice("exit-of-".length) : null;
+  const at = rest?.lastIndexOf("-at-") ?? -1;
+  return rest && at > 0 ? rest.slice(0, at) : null;
+}
+
+/** Whether the quote names a held record (`exitOf`) that Activity's rows do not show yet: Confirm cannot say
+ * what the move replaces, so Go waits. A top-up's exit has its row, though `moveExit` gives it no line. */
+export const exitUnresolved = (activity: readonly PlatformActivity[] | null | undefined, exitOf: string | null | undefined): boolean => !!exitOf && !activity?.some((a) => a.id === exitOf);
+
+/** Confirm's line for the move out of `exit`: what may still go through, and that only one does. */
+export function moveExitLine(exit: MoveExit, credits: (c: string) => string): string {
+  const C = MOVE_COPY;
+  const amount = credits(exit.row.credits);
+  if (exit.kind === "cancel") return exit.of === "payment" ? C.exitCancel.line.payment(amount, exit.held ? recipientOf(exit.held) : "") : C.exitCancel.line.move(amount);
+  return exit.kind === "move" ? C.exitMove.line(amount) : C.exitSend.line(amount, recipientOf(exit.row));
+}
+
+/** The outcome of the move out of `exit`: `lost` to the one that went through first, else done (`null`:
+ * the plain move's text). */
+function exitOutcomeText(exit: MoveExit, lost: boolean): string | null {
+  const C = MOVE_COPY;
+  const won = (row: PlatformActivity | null) => row?.state === "done";
+  if (exit.kind !== "cancel") {
+    if (exit.kind === "move") return lost && won(exit.row) ? C.exitMove.lost : null;
+    if (!lost) return C.exitSend.done(recipientOf(exit.row));
+    return exit.kind === "send" || won(exit.row) ? C.exitSend.lost(recipientOf(exit.row)) : null;
+  }
+  const recipient = exit.held ? recipientOf(exit.held) : "";
+  const payment = exit.of === "payment";
+  if (!lost) return payment ? C.exitCancel.done.payment(recipient) : C.exitCancel.done.move;
+  if (won(exit.held)) return payment ? C.exitCancel.lostToPayment(recipient) : C.exitCancel.lostToMove;
+  if (won(exit.row)) return payment ? C.exitCancel.lostToCancel.payment(recipient) : C.exitCancel.lostToCancel.move;
+  return null;
+}
+
 /** What the result sheet says of a move's outcome. `failed`: it failed and can no longer land.
- * `credits` and `amount` format credits and duffs. */
-export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
+ * `credits` and `amount` format credits and duffs. `exit`: what the move was the exit of; the documents
+ * say which went through. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string, exit: MoveExit | null = null): { title: string; text: string } {
   const C = MOVE_COPY;
   if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
   if (outcome.state === "replaced") return C.replaced;
-  if (failed) return C.failed;
+  if (failed) return exit === null ? C.failed : { title: C.failed.title, text: exitOutcomeText(exit, true) ?? C.failed.text };
+  const exited = outcome.state === "done" && exit !== null ? exitOutcomeText(exit, false) : null;
+  if (exited !== null) return { title: C.done.title, text: exited };
   if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
   return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
 }
@@ -185,8 +287,9 @@ export function invalidArgumentText(e: { message: string; data: { kind: string; 
 
 /** Platform's structure pre-check refused a move, a send or a top-up before signing. Its consensus
  * error stays in the log. */
-export function preflightText(code: "credits.rules_unsupported" | "credits.preflight_refused", earlier: "send" | "topUp" | null = null): string {
+export function preflightText(code: "credits.rules_unsupported" | "credits.preflight_refused", earlier: "send" | "topUp" | "held" | null = null): string {
   const rules = code === "credits.rules_unsupported";
+  if (earlier === "held") return rules ? t("platform.preflight.rulesUnsupportedHeld") : t("platform.preflight.refusedHeld");
   if (earlier === "send") return rules ? t("platform.preflight.rulesUnsupportedRetry") : t("platform.preflight.refusedRetry");
   if (earlier === "topUp") return rules ? t("platform.preflight.rulesUnsupportedHeldTopUp") : t("platform.preflight.refusedHeldTopUp");
   return rules ? t("platform.preflight.rulesUnsupported") : t("platform.preflight.refused");
@@ -198,9 +301,11 @@ export function preflightText(code: "credits.rules_unsupported" | "credits.prefl
 export const stillHeld = (activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): boolean =>
   !!id && !activity?.some((a) => a.id === id && a.state === "failed" && !a.mayLand);
 
-/** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up the move
- * was the exit of; while it still holds, a pre-check refusal says it may still land. */
+/** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up or payment
+ * the move was the exit of; while it still holds, a pre-check refusal says it may still land. */
 export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, exitOf?: string | null): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":
@@ -209,7 +314,8 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return e.data?.kind === "creditRange" ? t("transfer.move.error.outOfRange", { min: credits(e.data.min), max: credits(e.data.max) }) : t("transfer.move.error.outOfRangeAmount");
     case "credits.move_pending": {
       const id = e.data?.kind === "artifact" ? e.data.artifact : null;
-      return activity?.find((a) => a.id === id)?.kind === "send" ? MOVE_COPY.waiting.heldSend : MOVE_COPY.waiting.held;
+      const held = activity?.find((a) => a.id === id);
+      return held?.kind === "send" && !held.cancels ? MOVE_COPY.waiting.heldSend : MOVE_COPY.waiting.held;
     }
     case "platform.broadcast_unknown":
       return t("transfer.move.error.broadcastUnknown");
@@ -230,13 +336,17 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "credits.rules_unsupported":
     case "credits.preflight_refused":
-      return preflightText(e.code, stillHeld(activity, exitOf) ? "topUp" : null);
+      return preflightText(e.code, stillHeld(activity, exitOf) ? earlierKind(moveExit(activity, exitOf)) : null);
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
       return t("transfer.move.error.stopped", { code: e.code });
   }
 }
+
+/** Which pre-check text names the held item a refused exit leaves standing: a send's, a cancel's, a move's
+ * or a contact payment's, else a top-up's. */
+const earlierKind = (exit: MoveExit | null): "send" | "topUp" | "held" => (exit === null ? "topUp" : exit.kind === "send" ? "send" : "held");
 
 /** Back is offered when a new quote may pass. */
 export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits") || hasCode(e, "credits.quote_changed");
@@ -257,17 +367,37 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
   !!activity?.some((a) => holdingKind(a) && a.state === "pending");
 
-/** The moves, contact payments and top-ups from Platform that hold the addresses and Platform has
+/** The moves, sends, contact payments and top-ups from Platform that hold the addresses and Platform has
  * answered, the newest first: on mainnet, where new moves are off, Move stays offered as their exit (an
- * unanswered one holds every move until it settles). A held send's exit is its retry, on Pay. */
-export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => a.kind !== "send" && a.state !== "pending" && isHeldOp(a)) ?? [];
+ * unanswered one holds every move until it settles). A cancel is not one: its move or payment's
+ * document settles it. */
+export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => !a.cancels && a.state !== "pending" && isHeldOp(a)) ?? [];
+
+/** The held send `a` is, which "Move to Dash wallet" is the way out of; `null` for any other row. */
+export const isHeldSend = (a: PlatformActivity): boolean => a.kind === "send" && !a.cancels && a.state === "failed" && a.mayLand && a.to !== null;
+
+/** A held cancel: "Move to Dash wallet" is its way out beside its own exact re-send. */
+export const isHeldCancel = (a: PlatformActivity): boolean => a.kind === "send" && !!a.cancels && a.state === "failed" && a.mayLand;
+
+/** What the cancel of `a` would be: of a held move to the Dash wallet or contact payment, and only
+ * while no send, top-up or other cancel holds beside it (its document could not tell those apart). Its
+ * own cancel that Platform answered and that still holds is offered again: the engine re-sends it as signed.
+ * While `sendsOff` (mainnet, where this version keeps new moves off) only that re-send is offered: a new
+ * cancel is not, and the move or payment waits for Platform. */
+export function cancelOf(a: PlatformActivity, activity: readonly PlatformActivity[] | null | undefined, sendsOff = false): "move" | "payment" | null {
+  if (a.state !== "failed" || !a.mayLand || (a.kind !== "moveToCore" && a.kind !== "contactPayment")) return null;
+  const blocks = (b: PlatformActivity) => (b.cancels ? b.cancels !== a.id : b.kind !== "moveToCore" && b.kind !== "contactPayment");
+  const beside = activity?.some((b) => b.id !== a.id && isHeldOp(b) && (b.state === "pending" || blocks(b)));
+  if (beside || (sendsOff && !activity?.some((b) => b.cancels === a.id && isHeldOp(b)))) return null;
+  return a.kind === "moveToCore" ? "move" : "payment";
+}
 
 /** The newest of `heldExitOps`, or `null`. */
 export const heldExitOp = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => heldExitOps(activity)[0] ?? null;
 
 /** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
 export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
-  !!activity?.some((a) => a.kind === "send" && isHeldOp(a)) && !activity.some((a) => a.kind === "moveToCore" && isHeldOp(a));
+  !!activity?.some((a) => a.kind === "send" && !a.cancels && isHeldOp(a)) && !activity.some((a) => a.kind === "moveToCore" && isHeldOp(a));
 
 const settledListeners = new Set<() => void>();
 
@@ -289,7 +419,7 @@ export class PlatformMoveFlow extends Model {
   step: MoveStep = "confirm";
   outcome: MoveToCoreOutcome | null = null;
   error: unknown = null;
-  /** The held top-up the last move was the exit of, or `null`. */
+  /** The held top-up or send the last move was the exit of, or `null`. */
   exitOf: string | null = null;
   running = false;
   readonly grants: GrantModel;

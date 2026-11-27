@@ -27,6 +27,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   profileFailure: null,
   invitation: null,
   fromPlatform: false,
+  fromShielded: false,
   createdAt: ROW_AT - 60,
   updatedAt: ROW_AT,
   ...r,

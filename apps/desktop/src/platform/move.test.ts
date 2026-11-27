@@ -7,7 +7,7 @@ import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, moveOutcomeCopy, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { exitLinkOf, exitUnresolved, hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveExit, moveFor, moveOutcomeCopy, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -115,14 +115,16 @@ describe("Move to Dash wallet", () => {
     expect(hasPendingMove(null)).toBe(false);
   });
 
-  it("names the held move whose exit Move offers: the newest move, contact payment or top-up that may still land, never a send or a pending one", () => {
+  it("names the held item whose exit Move offers: the newest move, send, contact payment or top-up that may still land, never a cancel or a pending one", () => {
     const base = { credits: "1", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, estimated: false } as const;
     const older = { ...base, id: "pm-1", kind: "moveToCore", state: "failed", mayLand: true } as const;
     const newer = { ...base, id: "pm-2", kind: "toIdentity", state: "failed", mayLand: true } as const;
     expect(heldExitOp([newer, older])?.id).toBe("pm-2");
     // A hold of two records is one exit, counted.
-    expect(heldExitOps([newer, older, { ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }]).map((a) => a.id)).toEqual(["pm-2", "pm-1"]);
-    expect(heldExitOp([{ ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }])).toBeNull();
+    expect(heldExitOps([newer, older, { ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }]).map((a) => a.id)).toEqual(["pm-2", "pm-1", "ps-1"]);
+    expect(heldExitOp([{ ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }])?.id).toBe("ps-1");
+    // A cancel is settled by its move or payment's document: no exit of its own.
+    expect(heldExitOp([{ ...base, id: "pc-1", kind: "send", state: "failed", mayLand: true, cancels: "pm-1" }])).toBeNull();
     expect(heldExitOp([{ ...older, state: "done", mayLand: false }, { ...base, id: "pm-3", kind: "contactPayment", state: "failed", mayLand: true }])?.id).toBe("pm-3");
     // A pending one is no exit: Platform has not answered it yet.
     expect(heldExitOp([{ ...base, id: "pm-4", kind: "contactPayment", state: "pending", mayLand: false }])).toBeNull();
@@ -169,10 +171,12 @@ describe("Move to Dash wallet", () => {
     const held = appError("credits.move_pending", { kind: "artifact", artifact: heldSend.id });
     expect(moveErrorText(held, credits)).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
     expect(moveErrorText(held, credits, [heldMove])).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
-    // A held payment's own retry, in Pay, is the way out.
+    // A held payment's way out is this move, from its row in Activity.
     expect(moveErrorText(held, credits, [heldSend])).toBe(
-      "An earlier payment from Platform may still go through. Wait for it to finish, or send that same payment again from Pay and press Retry that payment, then move again.",
+      "An earlier payment from your Platform balance may still go through. Wait for it to finish, or open it in Activity and move the same funds to your Dash wallet instead. If the move goes through, that payment isn't made.",
     );
+    // A cancel is no payment to move instead of.
+    expect(moveErrorText(held, credits, [{ ...heldSend, cancels: "pm-1" }])).toBe("An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.");
   });
 
   it("a cancelled passphrase ran nothing: back at the quote, nothing read again", async () => {
@@ -251,6 +255,31 @@ describe("the move's result sheet", () => {
     expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced" }, false, credits, amount)).toEqual({ title: MOVE_COPY.replaced.title, text: MOVE_COPY.replaced.text });
     expect(moveOutcomeCopy(OUTCOME, false, credits, amount).title).toBe("Moved");
     expect(moveOutcomeCopy({ ...OUTCOME, state: "failed" }, true, credits, amount)).toEqual({ title: MOVE_COPY.failed.title, text: MOVE_COPY.failed.text });
+  });
+});
+
+describe("exitUnresolved", () => {
+  const row = (id: string, kind: PlatformActivity["kind"], cancels?: string): PlatformActivity => ({ id, kind, state: "failed", credits: "1000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, mayLand: true, estimated: false, ...(cancels ? { cancels } : {}) });
+  const rows = [row("pt-held", "toIdentity"), row("pc-held", "send", "pm-held"), row("pm-held", "moveToCore")];
+
+  it("holds Go only while the record the quote names has no row", () => {
+    expect(exitUnresolved(rows, null)).toBe(false);
+    expect(exitUnresolved(rows, "pc-held")).toBe(false);
+    expect(exitUnresolved(rows, "pc-later")).toBe(true);
+    expect(exitUnresolved(undefined, "pc-held")).toBe(true);
+  });
+
+  it("leaves a top-up's exit free though it gives no Confirm line", () => {
+    expect(moveExit(rows, "pt-held")).toBeNull();
+    expect(exitUnresolved(rows, "pt-held")).toBe(false);
+  });
+});
+
+describe("exitLinkOf", () => {
+  it("reads the record an exit is out of from its id, as the engine stores the link", () => {
+    expect(exitLinkOf("exit-of-cancel-of-move-1-2-at-5-1-at-9-2")).toBe("cancel-of-move-1-2-at-5-1");
+    expect(exitLinkOf("exit-of-ps-1-at-3")).toBe("ps-1");
+    for (const id of ["pm-1", "cancel-of-move-1-at-5-1", "exit-of--at-3", "exit-of-ps-1"]) expect(exitLinkOf(id)).toBeNull();
   });
 });
 

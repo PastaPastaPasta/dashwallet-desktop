@@ -1,0 +1,196 @@
+{
+  "writer": "origin/main engine (dw-engine tests/q5951_store_writer_main.rs)",
+  "phrase": "abandon x11 about, no BIP39 passphrase, regtest, birth height 0",
+  "dashd_height": 106,
+  "coins_paid": {
+    "10": "e0a8808a51cbcb4283cbe4c499f79f92ecdebc9025c2b302c21d934341a271b6:0",
+    "5": "ce164c8b11ce57a696869fa73831ae74f6585c077431fb2a174d27da80b275ce:0",
+    "2.5": "8b73227db059ddf7afa71a6a8a666572a13f198756024bf485aca47264651cae:0",
+    "1": "2bd0d836b36c26e655e4aae4875abdac0256d99c6c6775f66a30594762efd37c:0"
+  },
+  "user_locked": "8b73227db059ddf7afa71a6a8a666572a13f198756024bf485aca47264651cae:0",
+  "pending_own_spend": "bfebb8ab26e4de33400e6e394bd34173f4c4ed6b34f6af650f179a0791351bea",
+  "abandoned_refused_payment": "510b76666ef949a4214370a226facc5fa112792459672b5a11832cf789826410",
+  "abandon_mode": "dashd network off",
+  "network_dir": "regtest",
+  "live": {
+    "wallet_id": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+    "balances": {
+      "confirmed": 1699999774,
+      "unconfirmed": 0,
+      "immature": 0,
+      "locked": 0,
+      "total": 1699999774,
+      "coinjoin": 0,
+      "withheld": 0,
+      "catching_up": false,
+      "held_unfinished": 0,
+      "held_unvalued": 0,
+      "held_awaiting": false
+    },
+    "coins": [
+      {
+        "outpoint": "8b73227db059ddf7afa71a6a8a666572a13f198756024bf485aca47264651cae:0",
+        "address": "yTGFWr27HBYsb8tkLbGdxLxuKbspamdbnG",
+        "amount": 250000000,
+        "confirmations": 3,
+        "block_height": 104,
+        "instant_locked": false,
+        "chain_locked": false,
+        "user_locked": true,
+        "reserved": false,
+        "is_change": false,
+        "spendable": false,
+        "excluded": null
+      },
+      {
+        "outpoint": "bfebb8ab26e4de33400e6e394bd34173f4c4ed6b34f6af650f179a0791351bea:1",
+        "address": "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM",
+        "amount": 449999774,
+        "confirmations": 0,
+        "block_height": null,
+        "instant_locked": false,
+        "chain_locked": false,
+        "user_locked": false,
+        "reserved": false,
+        "is_change": true,
+        "spendable": true,
+        "excluded": null
+      },
+      {
+        "outpoint": "e0a8808a51cbcb4283cbe4c499f79f92ecdebc9025c2b302c21d934341a271b6:0",
+        "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+        "amount": 1000000000,
+        "confirmations": 5,
+        "block_height": 102,
+        "instant_locked": false,
+        "chain_locked": false,
+        "user_locked": false,
+        "reserved": false,
+        "is_change": false,
+        "spendable": true,
+        "excluded": null
+      }
+    ],
+    "locked_outpoints": [
+      "8b73227db059ddf7afa71a6a8a666572a13f198756024bf485aca47264651cae:0"
+    ],
+    "txs": [
+      {
+        "txid": "bfebb8ab26e4de33400e6e394bd34173f4c4ed6b34f6af650f179a0791351bea",
+        "abandoned": false,
+        "can_abandon": true,
+        "withheld_outputs": [],
+        "checking_spent_coins": false,
+        "total_credit": 449999774,
+        "total_debit": 500000000
+      },
+      {
+        "txid": "510b76666ef949a4214370a226facc5fa112792459672b5a11832cf789826410",
+        "abandoned": true,
+        "can_abandon": false,
+        "withheld_outputs": [],
+        "checking_spent_coins": true,
+        "total_credit": 49999774,
+        "total_debit": 100000000
+      }
+    ]
+  },
+  "reopened_offline": {
+    "wallet_id": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+    "balances": {
+      "confirmed": 1250000000,
+      "unconfirmed": 0,
+      "immature": 0,
+      "locked": 0,
+      "total": 1250000000,
+      "coinjoin": 0,
+      "withheld": 449999774,
+      "catching_up": false,
+      "held_unfinished": 0,
+      "held_unvalued": 0,
+      "held_awaiting": false
+    },
+    "coins": [
+      {
+        "outpoint": "8b73227db059ddf7afa71a6a8a666572a13f198756024bf485aca47264651cae:0",
+        "address": "yTGFWr27HBYsb8tkLbGdxLxuKbspamdbnG",
+        "amount": 250000000,
+        "confirmations": 2,
+        "block_height": 104,
+        "instant_locked": false,
+        "chain_locked": false,
+        "user_locked": true,
+        "reserved": false,
+        "is_change": false,
+        "spendable": false,
+        "excluded": null
+      },
+      {
+        "outpoint": "bfebb8ab26e4de33400e6e394bd34173f4c4ed6b34f6af650f179a0791351bea:1",
+        "address": "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM",
+        "amount": 449999774,
+        "confirmations": 0,
+        "block_height": null,
+        "instant_locked": false,
+        "chain_locked": false,
+        "user_locked": false,
+        "reserved": true,
+        "is_change": true,
+        "spendable": false,
+        "excluded": "PendingUnproven"
+      },
+      {
+        "outpoint": "e0a8808a51cbcb4283cbe4c499f79f92ecdebc9025c2b302c21d934341a271b6:0",
+        "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+        "amount": 1000000000,
+        "confirmations": 4,
+        "block_height": 102,
+        "instant_locked": false,
+        "chain_locked": false,
+        "user_locked": false,
+        "reserved": false,
+        "is_change": false,
+        "spendable": true,
+        "excluded": null
+      }
+    ],
+    "locked_outpoints": [
+      "8b73227db059ddf7afa71a6a8a666572a13f198756024bf485aca47264651cae:0"
+    ],
+    "txs": [
+      {
+        "txid": "bfebb8ab26e4de33400e6e394bd34173f4c4ed6b34f6af650f179a0791351bea",
+        "abandoned": false,
+        "can_abandon": true,
+        "withheld_outputs": [
+          "bfebb8ab26e4de33400e6e394bd34173f4c4ed6b34f6af650f179a0791351bea:1"
+        ],
+        "checking_spent_coins": false,
+        "total_credit": 449999774,
+        "total_debit": 500000000
+      },
+      {
+        "txid": "510b76666ef949a4214370a226facc5fa112792459672b5a11832cf789826410",
+        "abandoned": true,
+        "can_abandon": false,
+        "withheld_outputs": [],
+        "checking_spent_coins": true,
+        "total_credit": 49999774,
+        "total_debit": 100000000
+      }
+    ]
+  },
+  "rescan_hold_marks_after_close": [
+    {
+      "key": "rescan_hold:2bd0d836b36c26e655e4aae4875abdac0256d99c6c6775f66a30594762efd37c:0",
+      "value": "104,106"
+    }
+  ],
+  "rescan_hold_marks_final": [
+    {
+      "key": "rescan_hold:2bd0d836b36c26e655e4aae4875abdac0256d99c6c6775f66a30594762efd37c:0",
+      "value": "104,106"
+    }
+  ]
+}

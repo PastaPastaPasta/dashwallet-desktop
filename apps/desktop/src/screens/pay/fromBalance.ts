@@ -19,12 +19,14 @@ import type { PoolReading } from "../../format/homeBalance";
 import { t } from "../../i18n";
 import { failureText, Model } from "../../onboarding/model";
 import { isHeldOp, moveErrorText, onMoveSettledNotify } from "../../platform/move";
+import { SHIELDED_SPENDS_COPY } from "../../shielded/spends";
 import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
+import { platformHoldText } from "../../api/platformHold";
 
 export type PaySource = PaymentSourceName;
 
-/** The sources this build's engine pays a contact from. Shielded reads "Not available on this
- * network yet." until its slice lands. */
+/** The sources this build's engine pays a contact from. Shielded reads "Not available in this
+ * version" while it is not a live source for contact payments. */
 export const LIVE_SOURCES: ReadonlySet<PaySource> = new Set<PaySource>(["core", "platform"]);
 
 const CORE_ONLY: ReadonlySet<PaySource> = new Set<PaySource>(["core"]);
@@ -46,6 +48,8 @@ export interface FromInputs {
   /** What payments that may still go through hold of the Shielded balance. */
   shieldedHold?: ShieldedHold | null;
   live?: ReadonlySet<PaySource>;
+  /** This build cannot spend from Shielded (shielded/spends.ts). */
+  shieldedSpendsOff?: boolean;
 }
 
 export interface FromRow {
@@ -78,7 +82,16 @@ export function fromRows(i: FromInputs): FromRow[] {
   const pool = (source: "shielded" | "platform", reading: PoolReading): FromRow => {
     const duffs = typeof reading === "number" ? reading : reading === "absent" ? 0 : undefined;
     const empty = source === "shielded" && i.shieldedHold ? t("pay.contact.from.shieldedHeld") : t("pay.contact.from.empty");
-    const reason = !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? empty : null;
+    const reason =
+      source === "shielded" && (i.shieldedSpendsOff || !live.has(source))
+        ? SHIELDED_SPENDS_COPY.source
+        : !live.has(source)
+          ? t("pay.contact.from.notOffered")
+          : i.acceptsToo
+            ? t("pay.contact.from.acceptsToo")
+            : duffs === 0
+              ? empty
+              : null;
     return { source, label: LABEL[source], balance: shown(duffs), reason };
   };
   return [{ source: "core", label: LABEL.core, balance: shown(i.coreDuffs), reason: null }, pool("shielded", i.shielded), pool("platform", i.platform)];
@@ -102,6 +115,8 @@ const heldShort = (e: AppError, hold: ShieldedHold | null): boolean =>
 /** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked;
  * `hold` what payments that may still go through hold of the Shielded balance. */
 export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string, hold: ShieldedHold | null = null): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "shielded.insufficient_funds":
@@ -137,8 +152,11 @@ export type ContactPayApi = Pick<Backend, "contactPay" | "platformActivity" | "a
 /** `lost`: the call failed after it was sent, without a definitive refusal: it may have paid. */
 export type FromStep = "confirm" | "running" | "done" | "refused" | "lost";
 
-/** A refusal the engine answered before anything was signed (every coded refusal but `internal`). */
-const definitive = (e: unknown) => isAppError(e) && e.code !== "internal";
+/** Codes that say the payment may already be out: the engine could not confirm its outcome. */
+const MAYBE_OUT: ReadonlySet<string> = new Set(["internal", "platform.broadcast_unknown", "platform.will_be_sent"]);
+
+/** A refusal the engine answered before anything was signed (every coded refusal but `MAYBE_OUT`'s). */
+const definitive = (e: unknown) => isAppError(e) && !MAYBE_OUT.has(e.code);
 
 /** One payment from a balance: the grant the quote sizes, then `contactPay` (one call at a time). */
 export class ContactPayFlow extends Model {

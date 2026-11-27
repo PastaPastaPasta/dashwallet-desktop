@@ -230,6 +230,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
                 setFilter("needsVote");
                 setTab("governance");
               }}
+              onOpenSession={setShared}
               onContinue={(op) => setRegister({ resume: op })}
             />
           ) : tab === "governance" ? (

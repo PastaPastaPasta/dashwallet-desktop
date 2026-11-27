@@ -18,7 +18,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use dw_appdb::ProposalRow;
 use dw_governance::object::{GovernanceObject, display_hex, parse_display_hex};
@@ -786,7 +785,12 @@ impl Governance {
     /// that may be out (D10). The hand-off is recorded before
     /// the bytes go out, so nothing reads the row as unpaid while they may
     /// be (review r1 M-1); the attempt's failure is its `last_error`.
-    async fn resend_fee(&self, wallet: WalletId, hash: &[u8; 32]) -> Result<(), GovernanceError> {
+    pub(crate) async fn resend_fee(
+        &self,
+        wallet: WalletId,
+        hash: &[u8; 32],
+    ) -> Result<(), GovernanceError> {
+        self.session.refuse_while_restored()?;
         let saved = self.saved(wallet, hash)?;
         let handle = self.session.wallet(&wallet).await?;
         let inputs: Vec<OutPoint> = saved.fee.input.iter().map(|i| i.previous_output).collect();

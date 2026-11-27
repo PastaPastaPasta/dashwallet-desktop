@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 
 use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderMasternodeType;
-use dashcore::hashes::Hash;
 use dashcore::transaction::TransactionPayload;
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_protx::params::{EVONODE_COLLATERAL, MASTERNODE_COLLATERAL, collateral_amount};

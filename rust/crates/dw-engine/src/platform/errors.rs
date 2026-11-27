@@ -16,7 +16,7 @@ use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 use super::profile::{Profile, ProfileField};
 use super::registration::ShieldedCheck;
-pub use super::shielded::ShieldedSyncWait;
+pub use super::shielded::{ShieldedStoreClosed, ShieldedSyncWait};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
@@ -50,7 +50,9 @@ pub enum PlatformError {
     },
     /// A signed artifact was handed off and its outcome is unknown: it may
     /// already be out (E0-04 `MaybeSent`). Never retried blindly.
-    #[error("broadcast outcome unknown for {artifact}")]
+    /// `artifact` is empty when the SDK named none (an unconfirmed
+    /// transition the engine did not build an artifact for).
+    #[error("broadcast outcome unknown{}", for_artifact(artifact))]
     BroadcastUnknown { artifact: String },
     /// The artifact is committed and the engine will send it again, for
     /// example when the network is back. Never retried.
@@ -60,6 +62,10 @@ pub enum PlatformError {
     /// (E0-04 `Cancelled`, `lease.locked`).
     #[error("cancelled before anything was sent")]
     Cancelled,
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    #[error("funds actions wait for the first sync after a restore")]
+    Restored,
     /// The lease is parked or its grants died with an unlock, a scope or a
     /// passphrase change: the flow needs a fresh grant for `purpose`.
     #[error("needs a new grant for {purpose:?}")]
@@ -112,6 +118,7 @@ impl PlatformError {
             Self::BroadcastUnknown { .. } => "platform.broadcast_unknown",
             Self::WillBeSent { .. } => "platform.will_be_sent",
             Self::Cancelled => "platform.cancelled",
+            Self::Restored => "platform.restored",
             Self::NeedsGrant { .. } => "platform.needs_grant",
             Self::LeaseRevoked { .. } => "platform.lease_revoked",
             Self::LeaseExpired => "platform.lease_expired",
@@ -267,6 +274,13 @@ pub enum RegistrationError {
     /// on the addresses; nothing retries.
     #[error("the registration's payment was taken without an identity")]
     Refunded,
+    /// A row's failure, never returned by a call: the notes its create of
+    /// two or more notes selected read spent and the identity it named
+    /// reads absent above that (C-funding F12). Another install of the seed
+    /// may have spent them, so nothing says Platform refunded this create;
+    /// nothing retries.
+    #[error("the registration's payment notes were spent without an identity")]
+    PaymentConsumed,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -295,6 +309,7 @@ impl RegistrationError {
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
             Self::Refunded => "registration.refunded",
+            Self::PaymentConsumed => "registration.payment_consumed",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Credits(e) => e.code(),
@@ -870,6 +885,12 @@ pub enum ShieldedError {
     /// nothing was tracked or sent. Quote again.
     #[error("the mixed coins changed since the move was planned: review it again")]
     CoinsChanged,
+    /// The network's shielded store stays closed this session: this
+    /// start's drain of a store an earlier build wrote did not finish
+    /// (`reason`), so nothing reads or spends its notes. Core and Platform
+    /// funds are unaffected; the next start drains again.
+    #[error("the shielded store stays closed this session ({reason})")]
+    StoreClosed { reason: ShieldedStoreClosed },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -899,6 +920,7 @@ impl ShieldedError {
             Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",
             Self::MoveRunning => "shielded.move_running",
             Self::CoinsChanged => "shielded.coins_changed",
+            Self::StoreClosed { .. } => "shielded.store_closed",
             Self::Platform(e) => e.code(),
         }
     }
@@ -916,6 +938,14 @@ impl ShieldedError {
 // One `From` per source into `PlatformError`. Each maps what has a facade
 // code and falls back to `Internal{detail}`; later tasks extend these in
 // place rather than mapping on their own.
+
+fn for_artifact(artifact: &str) -> String {
+    if artifact.is_empty() {
+        String::new()
+    } else {
+        format!(" for {artifact}")
+    }
+}
 
 fn internal(e: impl std::fmt::Display) -> PlatformError {
     PlatformError::Internal {
@@ -962,6 +992,14 @@ fn sdk_leaf(e: dash_sdk::Error) -> PlatformError {
         return wallet_leaf(promoted);
     }
     match e {
+        // Submitted, outcome unresolved: whatever it wraps is diagnostic,
+        // never a refusal nor leave to send a replacement.
+        Sdk::StateTransitionResultUnconfirmed(cause) => {
+            tracing::info!("a state transition's outcome is unconfirmed: {cause}");
+            PlatformError::BroadcastUnknown {
+                artifact: String::new(),
+            }
+        }
         Sdk::TimeoutReached(..) => PlatformError::Timeout,
         Sdk::DapiClientError(_) | Sdk::StaleNode(_) => PlatformError::Unavailable,
         // A quorum key the provider refused (§2.2): the proof was not judged.
@@ -1026,6 +1064,19 @@ fn wallet_leaf(e: platform_wallet::PlatformWalletError) -> PlatformError {
         Pw::IdentityNotFound(_) => PlatformError::Identity(IdentityError::NotFound),
         Pw::ContactSyncUnreachable { .. } => PlatformError::Unavailable,
         Pw::InvalidParameter(detail) => PlatformError::InvalidArgument { detail },
+        // The library's own "may have been delivered" verdicts: never a
+        // refusal nor leave to resend.
+        e @ (Pw::PublicContactRequestUnconfirmed(_)
+        | Pw::ShieldedBroadcastUnconfirmed { .. }
+        | Pw::ShieldedSpendUnconfirmed { .. }
+        | Pw::ShieldedBroadcastMaybeDelivered(_)
+        | Pw::MasternodeWithdrawalUnconfirmed { .. }
+        | Pw::TransactionBroadcastUnconfirmed(_)) => {
+            tracing::info!("a broadcast's outcome is unconfirmed: {e}");
+            PlatformError::BroadcastUnknown {
+                artifact: String::new(),
+            }
+        }
         e @ (Pw::PersisterLoad(_) | Pw::PersisterStore(_) | Pw::Persistence(_)) => {
             PlatformError::Storage {
                 detail: e.to_string(),
@@ -1069,11 +1120,17 @@ impl From<crate::EngineError> for PlatformError {
             // A replay that runs: a wait for sync, as `PwLib::fence` reports it.
             E::RescanInProgress => Self::ContextUnavailable,
             E::RescanInterrupted => Self::RescanInterrupted,
-            e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
-                Self::Storage {
-                    detail: e.to_string(),
-                }
-            }
+            e @ (E::Storage(_)
+            | E::StorageInUse { .. }
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
+            | E::RetryableIo(_)
+            | E::Io(_)) => Self::Storage {
+                detail: e.to_string(),
+            },
             E::InsufficientCredits {
                 needed, available, ..
             } => Self::InsufficientCredits { needed, available },
@@ -1081,6 +1138,7 @@ impl From<crate::EngineError> for PlatformError {
             E::Signer(dw_vault::SignerError::Locked) => Self::SignerUnavailable,
             E::Signer(dw_vault::SignerError::Vault(e)) => e.into(),
             E::NotImplemented(call) => Self::NotImplemented { call },
+            E::Restored | E::Send(crate::SendFailure::Restored) => Self::Restored,
             E::Contact(ContactError::Platform(e)) => e,
             other => internal(other),
         }
@@ -1322,6 +1380,98 @@ mod mapping_tests {
             "wrapped errors mapped wrong:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// An unconfirmed submission may have executed: `broadcast_unknown`,
+    /// through every wrapper, whatever cause it carries. Before, it fell to
+    /// `internal`, and under a retry envelope to `platform.unavailable`.
+    #[test]
+    fn an_unconfirmed_transition_is_a_broadcast_of_unknown_outcome() {
+        use dash_sdk::Error as Sdk;
+        let unconfirmed = |cause| Sdk::StateTransitionResultUnconfirmed(Box::new(cause));
+        let retried = |last| Sdk::NoAvailableAddressesToRetry(Box::new(last));
+        let token = |source| PlatformWalletError::TokenOperationFailed {
+            operation: "purchase",
+            source,
+        };
+        let unknown = PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        };
+        let cases = [
+            ("timeout", PlatformError::from(unconfirmed(timeout()))),
+            (
+                "balance refusal",
+                PlatformError::from(unconfirmed(balance_refusal())),
+            ),
+            (
+                "generic",
+                PlatformError::from(unconfirmed(Sdk::Generic("x".into()))),
+            ),
+            (
+                "retried",
+                PlatformError::from(retried(unconfirmed(Sdk::Generic("x".into())))),
+            ),
+            (
+                "library",
+                PlatformError::from(PlatformWalletError::Sdk(unconfirmed(timeout()))),
+            ),
+            (
+                "library, retried",
+                PlatformError::from(PlatformWalletError::Sdk(retried(unconfirmed(
+                    balance_refusal(),
+                )))),
+            ),
+            ("token", PlatformError::from(token(unconfirmed(timeout())))),
+        ];
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter(|(_, got)| *got != unknown)
+            .map(|(path, got)| format!("{path}: {got:?}"))
+            .collect();
+        assert!(wrong.is_empty(), "mapped wrong:\n{}", wrong.join("\n"));
+        assert_eq!(unknown.to_string(), "broadcast outcome unknown");
+        let named = PlatformError::BroadcastUnknown {
+            artifact: "st".into(),
+        };
+        assert_eq!(named.to_string(), "broadcast outcome unknown for st");
+    }
+
+    /// The library's own unconfirmed verdicts are `broadcast_unknown` too,
+    /// never `internal`.
+    #[test]
+    fn the_librarys_unconfirmed_verdicts_are_unknown_outcomes() {
+        let id = dpp::prelude::Identifier::from([4u8; 32]);
+        let reason = || String::from("timeout");
+        let cases = [
+            PlatformWalletError::PublicContactRequestUnconfirmed(id),
+            PlatformWalletError::ShieldedBroadcastUnconfirmed {
+                identity_id: id,
+                reason: reason(),
+            },
+            PlatformWalletError::ShieldedSpendUnconfirmed {
+                operation: "transfer",
+                reason: reason(),
+            },
+            PlatformWalletError::ShieldedBroadcastMaybeDelivered(reason()),
+            PlatformWalletError::MasternodeWithdrawalUnconfirmed {
+                identity_id: id,
+                amount_credits: 1,
+                reason: reason(),
+            },
+            PlatformWalletError::TransactionBroadcastUnconfirmed(reason()),
+        ];
+        let unknown = PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        };
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter_map(|e| {
+                let shown = format!("{e:?}");
+                let got = PlatformError::from(e);
+                (got != unknown).then(|| format!("{shown}: {got:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "mapped wrong:\n{}", wrong.join("\n"));
     }
 
     #[test]

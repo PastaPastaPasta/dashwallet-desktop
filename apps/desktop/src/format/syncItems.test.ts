@@ -28,6 +28,7 @@ const shielded = (over: Partial<ShieldedSyncInfo> = {}): ShieldedSyncInfo => ({
   syncing: false,
   scan: null,
   lastPassFailed: false,
+  spendsAvailable: true,
   ...over,
 });
 

@@ -222,6 +222,22 @@ fn a_submit_failing_after_signing_is_settled_by_evidence() {
     }
 }
 
+/// A submit whose wait ends unconfirmed is `Unknown`, whatever its
+/// diagnostic: the row keeps its plan and the next pass at the same height
+/// signs nothing.
+#[test]
+fn an_unconfirmed_submit_is_unknown() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let mut row = w.row(1);
+    w.net.then(Act::Unconfirmed);
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    assert!(row.plan.is_some());
+    assert_eq!(w.registers()[0].state, PlatformActivityState::Pending);
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1);
+}
+
 /// Funds packet: a crash at each step. Stopped after the plan was written
 /// but before its record, before signing, after signing, after the
 /// broadcast, or before the outcome was stored, the restarted row settles

@@ -85,6 +85,10 @@
 //!   classification ([`DispatchJournal::classify_shielded_imports`]) reads
 //!   it as `unresolved` or, its wallet unknown, `archived` for good. The
 //!   0.1 tables stay as they were.
+//! - Schema 12 adds the drained fork tables (the `drain` module) and,
+//!   since, `shielded_create_consumed`: a Shielded create the engine proved
+//!   consumed, which outlives its wallet's app rows
+//!   ([`DispatchJournal::mark_create_consumed`]).
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -107,6 +111,12 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::{AppDbError, Result};
 
+mod drain;
+pub use drain::{
+    DrainedDisposition, DrainedOutcome, DrainedReleaseCandidate, NeverSentSpend, ShieldedDrainPlan,
+    ShieldedDrainState,
+};
+
 /// File name of the journal inside a network directory.
 pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 
@@ -115,8 +125,9 @@ pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 /// so are version 2 (no Mode B tables), 3 (no `signed_lock`), 4 (no
 /// self-spend provenance), 5 (no `durable_record` flag) and 6 (no
 /// `funding_release`); every migration only adds, except that 6 → 7 clears
-/// the flags schema 6 set.
-pub const DISPATCH_SCHEMA: u32 = 11;
+/// the flags schema 6 set. Version 12 adds the tables a fork-written
+/// shielded store drains into (the `drain` module).
+pub const DISPATCH_SCHEMA: u32 = 12;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -365,7 +376,7 @@ const MIGRATE_V9: &str = "UPDATE meta SET v = 10 WHERE k = 'schema';";
 /// gating, reserving nothing) or settled. `disposition_kind` and
 /// `disposition_reason` are the library's stored strings, in the
 /// combinations it decodes; no combination reads as unknown to the CHECK.
-/// `identity_id` is a top-up's identity. A note's `spent` is set once a
+/// `identity_id` is a top-up's identity, or the one a create makes. A note's `spent` is set once a
 /// proved scan or result shows it spent. `IF NOT EXISTS`, as
 /// `shielded_redrive`.
 const SHIELDED_ARTIFACT: &str = "
@@ -437,6 +448,52 @@ INSERT INTO shielded_artifact_note (wallet, activity, nullifier, spent)
 UPDATE meta SET v = 11 WHERE k = 'schema';
 ";
 
+/// Version 12, added since its first build and run at every open of one
+/// (`IF NOT EXISTS`): each Shielded identity create the engine proved
+/// consumed (its notes spent with no identity, nothing owed), by its
+/// wallet and transition hash. It is the journal's copy of `app.sqlite`'s
+/// `dp_registration_proved` proof reading consumed, which a wallet's
+/// removal deletes before it archives the wallet's artifacts. No sweep and
+/// no removal deletes it.
+const SHIELDED_CREATE_CONSUMED: &str = "
+CREATE TABLE IF NOT EXISTS shielded_create_consumed (
+  wallet  BLOB NOT NULL CHECK (length(wallet) = 32),
+  st_hash BLOB NOT NULL CHECK (length(st_hash) = 32),
+  at      INTEGER NOT NULL,
+  PRIMARY KEY (wallet, st_hash)
+) WITHOUT ROWID;
+";
+
+/// Which of `wallet`'s creates `st_hashes` the journal open on `conn`
+/// marks consumed ([`DispatchJournal::mark_create_consumed`]); none in a
+/// journal with no such table.
+pub fn consumed_creates_in(
+    conn: &Connection,
+    wallet: &[u8; 32],
+    st_hashes: &[[u8; 32]],
+) -> Result<BTreeSet<[u8; 32]>> {
+    let table: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+         WHERE type = 'table' AND name = 'shielded_create_consumed')",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut marked = BTreeSet::new();
+    if !table {
+        return Ok(marked);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT EXISTS (SELECT 1 FROM shielded_create_consumed \
+         WHERE wallet = ?1 AND st_hash = ?2)",
+    )?;
+    for st_hash in st_hashes {
+        if stmt.query_row(params![&wallet[..], &st_hash[..]], |r| r.get::<_, bool>(0))? {
+            marked.insert(*st_hash);
+        }
+    }
+    Ok(marked)
+}
+
 /// [`DispatchJournal::record_shielded_artifact`]'s insert. Only a key
 /// conflict is skipped: a row any CHECK refuses is an error.
 const INSERT_ARTIFACT: &str = "
@@ -499,6 +556,16 @@ pub struct UnrecordedSpend {
     pub at: u64,
     /// Each nullifier it spent, by nullifier, `true` once seen spent.
     pub nullifiers: Vec<([u8; 32], bool)>,
+}
+
+/// A spend the fork's shielded store held notes for until it was
+/// acknowledged (its `shielded_spend_dispositions` row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkHold {
+    pub wallet: [u8; 32],
+    pub st_hash: [u8; 32],
+    pub activity: [u8; 32],
+    pub nullifiers: Vec<[u8; 32]>,
 }
 
 /// Where a shielded artifact (schema 11) came from.
@@ -623,7 +690,7 @@ pub struct NewShieldedArtifact {
     /// Required for a dispatched one, as is `anchor`.
     pub kind: Option<ArtifactKind>,
     pub anchor: Option<[u8; 32]>,
-    /// A top-up's identity.
+    /// A top-up's identity, or the one a create makes.
     pub identity_id: Option<[u8; 32]>,
     /// The nullifiers of the wallet's own notes it spends.
     pub selected: Vec<[u8; 32]>,
@@ -1259,47 +1326,20 @@ impl DispatchJournal {
                 .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
                 .optional()?;
             match schema {
+                // Version 12's tables are `IF NOT EXISTS`; one added to
+                // them since its first build reaches a journal made then.
+                Some(12) if schema_read == 12 => {
+                    tx.execute_batch(drain::SHIELDED_DRAIN)?;
+                    tx.execute_batch(SHIELDED_CREATE_CONSUMED)?;
+                }
                 Some(v) if v == i64::from(schema_read) => {}
-                Some(v @ 1..=10) => {
-                    if v == 1 {
-                        tx.execute_batch(STEP_LOG)?;
-                        tx.execute_batch(MIGRATE_V1)?;
+                Some(v @ 1..=11) if v < i64::from(schema_read) => {
+                    if v <= 10 {
+                        migrate_to_11(&tx, v)?;
                     }
-                    if v <= 2 {
-                        tx.execute_batch(MODE_B)?;
-                        tx.execute_batch(MIGRATE_V2)?;
-                    }
-                    if v <= 3 {
-                        tx.execute_batch(SIGNED_LOCK)?;
-                        tx.execute_batch(MIGRATE_V3)?;
-                    }
-                    if v <= 4 {
-                        tx.execute_batch(SELF_SPEND_PROVENANCE)?;
-                        tx.execute_batch(MIGRATE_V4)?;
-                    }
-                    if v <= 5 {
-                        tx.execute_batch(DURABLE_RECORD)?;
-                        tx.execute_batch(TOMBSTONE)?;
-                        tx.execute_batch(MIGRATE_V5)?;
-                    }
-                    if v <= 6 {
-                        tx.execute_batch(RELEASE)?;
-                        tx.execute_batch(MIGRATE_V6)?;
-                    }
-                    if v <= 7 {
-                        tx.execute_batch(TOP_UP_SETTLED)?;
-                        tx.execute_batch(MIGRATE_V7)?;
-                    }
-                    if v <= 8 {
-                        tx.execute_batch(SHIELDED_REDRIVE)?;
-                        tx.execute_batch(MIGRATE_V8)?;
-                    }
-                    if v <= 9 {
-                        tx.execute_batch(SHIELDED_UNRECORDED)?;
-                        tx.execute_batch(MIGRATE_V9)?;
-                    }
-                    tx.execute_batch(SHIELDED_ARTIFACT)?;
-                    tx.execute_batch(MIGRATE_V10)?;
+                    tx.execute_batch(drain::SHIELDED_DRAIN)?;
+                    tx.execute_batch(SHIELDED_CREATE_CONSUMED)?;
+                    tx.execute_batch(drain::MIGRATE_V11)?;
                 }
                 Some(v) if v > i64::from(schema_read) => {
                     return Ok(JournalOpen::NewerSchema(
@@ -1325,6 +1365,8 @@ impl DispatchJournal {
             tx.execute_batch(SHIELDED_REDRIVE)?;
             tx.execute_batch(SHIELDED_UNRECORDED)?;
             tx.execute_batch(SHIELDED_ARTIFACT)?;
+            tx.execute_batch(drain::SHIELDED_DRAIN)?;
+            tx.execute_batch(SHIELDED_CREATE_CONSUMED)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -1336,7 +1378,53 @@ impl DispatchJournal {
             conn: Mutex::new(conn),
         }))
     }
+}
 
+/// Schema `v` (1 to 10) → 11, in the open's transaction.
+fn migrate_to_11(tx: &rusqlite::Transaction<'_>, v: i64) -> Result<()> {
+    if v == 1 {
+        tx.execute_batch(STEP_LOG)?;
+        tx.execute_batch(MIGRATE_V1)?;
+    }
+    if v <= 2 {
+        tx.execute_batch(MODE_B)?;
+        tx.execute_batch(MIGRATE_V2)?;
+    }
+    if v <= 3 {
+        tx.execute_batch(SIGNED_LOCK)?;
+        tx.execute_batch(MIGRATE_V3)?;
+    }
+    if v <= 4 {
+        tx.execute_batch(SELF_SPEND_PROVENANCE)?;
+        tx.execute_batch(MIGRATE_V4)?;
+    }
+    if v <= 5 {
+        tx.execute_batch(DURABLE_RECORD)?;
+        tx.execute_batch(TOMBSTONE)?;
+        tx.execute_batch(MIGRATE_V5)?;
+    }
+    if v <= 6 {
+        tx.execute_batch(RELEASE)?;
+        tx.execute_batch(MIGRATE_V6)?;
+    }
+    if v <= 7 {
+        tx.execute_batch(TOP_UP_SETTLED)?;
+        tx.execute_batch(MIGRATE_V7)?;
+    }
+    if v <= 8 {
+        tx.execute_batch(SHIELDED_REDRIVE)?;
+        tx.execute_batch(MIGRATE_V8)?;
+    }
+    if v <= 9 {
+        tx.execute_batch(SHIELDED_UNRECORDED)?;
+        tx.execute_batch(MIGRATE_V9)?;
+    }
+    tx.execute_batch(SHIELDED_ARTIFACT)?;
+    tx.execute_batch(MIGRATE_V10)?;
+    Ok(())
+}
+
+impl DispatchJournal {
     fn conn(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -1721,6 +1809,65 @@ impl DispatchJournal {
         Ok(added)
     }
 
+    /// Marks each fork hold once (DEC-1057), in one transaction; the number
+    /// marked now. A hold seen before is skipped, even if its marker was
+    /// cleared. Nullifiers already seen spent on an artifact's note are
+    /// marked spent; a hold whose nullifiers are all spent marks nothing. A
+    /// standing marker of the same activity gains the hold's nullifiers.
+    /// The fork kept no anchor, so a new marker's anchor is zero.
+    pub fn import_fork_holds(&self, holds: &[ForkHold], now: u64) -> Result<usize> {
+        if holds.iter().any(|h| h.nullifiers.is_empty()) {
+            return Err(AppDbError::Corrupt(
+                "a fork-held shielded spend holds no nullifier".into(),
+            ));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut imported = 0;
+        for hold in holds {
+            let seen = tx.execute(
+                "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![fork_hold_key(&hold.wallet, &hold.st_hash), now as i64],
+            )? == 0;
+            if seen {
+                continue;
+            }
+            let mut notes = Vec::with_capacity(hold.nullifiers.len());
+            for nullifier in &hold.nullifiers {
+                let spent: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM shielded_artifact_note \
+                     WHERE wallet = ?1 AND nullifier = ?2 AND spent = 1)",
+                    params![&hold.wallet[..], &nullifier[..]],
+                    |r| r.get(0),
+                )?;
+                notes.push((nullifier, spent));
+            }
+            if notes.iter().all(|(_, spent)| *spent) {
+                continue;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO shielded_unrecorded (wallet, activity, anchor, at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    &hold.wallet[..],
+                    &hold.activity[..],
+                    &[0u8; 32][..],
+                    now as i64
+                ],
+            )?;
+            for (nullifier, spent) in notes {
+                tx.execute(
+                    "INSERT OR IGNORE INTO shielded_unrecorded_nullifier \
+                     (wallet, activity, nullifier, spent) VALUES (?1, ?2, ?3, ?4)",
+                    params![&hold.wallet[..], &hold.activity[..], &nullifier[..], spent],
+                )?;
+            }
+            imported += 1;
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
+
     /// The marked shielded spends of `wallet` (schema 10), by activity.
     pub fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>> {
         let conn = self.conn();
@@ -1791,6 +1938,12 @@ impl DispatchJournal {
                  WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
                 params![&wallet[..], &nullifier[..]],
             )?;
+            // A drained fork hold lifts on the same flag (schema 12).
+            mirrored += tx.execute(
+                "UPDATE shielded_drained_hold SET spent = 1 \
+                 WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
+                params![&wallet[..], &nullifier[..]],
+            )?;
         }
         if flagged == 0 {
             if mirrored > 0 {
@@ -1849,14 +2002,17 @@ impl DispatchJournal {
                 "a dispatched shielded artifact has no kind or no anchor".into(),
             ));
         }
-        let top_up = artifact.kind == Some(ArtifactKind::IdentityTopUp);
-        if (artifact.identity_id.is_some() && !top_up)
-            || (top_up
+        let names = matches!(
+            artifact.kind,
+            Some(ArtifactKind::IdentityTopUp | ArtifactKind::IdentityCreate)
+        );
+        if (artifact.identity_id.is_some() && !names)
+            || (names
                 && artifact.origin == ArtifactOrigin::Dispatched
                 && artifact.identity_id.is_none())
         {
             return Err(AppDbError::Corrupt(
-                "only a top-up names an identity, and a dispatched one must".into(),
+                "only a top-up or a create names an identity, and a dispatched one must".into(),
             ));
         }
         let status = match artifact.origin {
@@ -1959,10 +2115,12 @@ impl DispatchJournal {
     }
 
     /// Settles `wallet`'s shielded artifacts of transition `st_hash`
-    /// (schema 11, archived ones aside) from the library's disposition of
-    /// it, in one transaction: `status` (`Executed`, `NotExecuted` or
-    /// `Unresolved`), the disposition's stored strings (`None` for one the
-    /// library could not read) and `acked`, which is only ever raised. A
+    /// (schema 11, archived ones aside) from the outcome the library
+    /// reports of it, in one transaction: `status` (`Executed`, `NotExecuted`
+    /// or `Unresolved`), the outcome's stored strings (`None` when the
+    /// outcome does not say why, or for a disposition the library could not
+    /// read) and `acked`, which is only ever raised (by a fork-era
+    /// acknowledgement; the engine passes `false`). A
     /// registered or unresolved artifact takes any of them; a settled one
     /// only its own status again (a replay), and anything else is refused.
     /// Nothing is written while one is unclassified.
@@ -2025,6 +2183,45 @@ impl DispatchJournal {
         )?;
         tx.commit()?;
         Ok(ArtifactSettled::Settled)
+    }
+
+    /// Marks `wallet`'s Shielded create `st_hash` consumed, durably, while
+    /// an unresolved `identity_create` artifact of the wallet has that
+    /// transition; `false` when none has. The first mark stands.
+    pub fn mark_create_consumed(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        now: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let create: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM shielded_artifact WHERE wallet = ?1 AND st_hash = ?2 \
+             AND kind = 'identity_create' AND status = 'unresolved' AND status_reason IS NULL)",
+            params![&wallet[..], &st_hash[..]],
+            |r| r.get(0),
+        )?;
+        if !create {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO shielded_create_consumed (wallet, st_hash, at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT (wallet, st_hash) DO NOTHING",
+            params![&wallet[..], &st_hash[..], now as i64],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Which of `wallet`'s creates `st_hashes` are marked consumed
+    /// ([`Self::mark_create_consumed`]).
+    pub fn consumed_creates(
+        &self,
+        wallet: &[u8; 32],
+        st_hashes: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>> {
+        consumed_creates_in(&self.conn(), wallet, st_hashes)
     }
 
     /// The shielded artifacts of `wallet` (schema 11) but the archived ones,
@@ -2757,6 +2954,15 @@ fn sweep(conn: &Connection) -> Result<()> {
     compact(conn, None).map(drop)
 }
 
+fn fork_hold_key(wallet: &[u8; 32], st_hash: &[u8; 32]) -> String {
+    let mut key = String::with_capacity(10 + 128);
+    key.push_str("fork_hold:");
+    for b in wallet.iter().chain(st_hash) {
+        key.push_str(&format!("{b:02x}"));
+    }
+    key
+}
+
 fn seeded_key(wallet: &[u8; 32]) -> String {
     let mut key = String::with_capacity(7 + 64);
     key.push_str("seeded:");
@@ -3018,8 +3224,8 @@ mod tests {
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            schema, 11,
-            "through versions 2, 3, 4, 5, 6, 7, 8, 9 and 10 to 11"
+            schema, 12,
+            "through versions 2, 3, 4, 5, 6, 7, 8, 9, 10 and 11 to 12"
         );
         let old: bool = j
             .conn()
@@ -3100,7 +3306,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         assert_eq!(j.load_calls().unwrap(), CallRows::default());
         // The new tables take writes; a reopen keeps them.
@@ -3150,7 +3356,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
@@ -3221,7 +3427,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         let rows = j.load_calls().unwrap();
         assert_eq!(
             (rows.funding.len(), rows.signed_locks.len()),
@@ -3262,7 +3468,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.funding.len(), 1);
@@ -3308,7 +3514,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert!(
@@ -3399,7 +3605,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(j.load_calls().unwrap().funding[0].seq, marker);
         assert!(j.top_ups_settled(&W).unwrap().is_empty());
         j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 4)
@@ -3430,7 +3636,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(j.top_ups_settled(&W).unwrap().len(), 1);
         assert!(j.shielded_redrives(&W).unwrap().is_empty());
 
@@ -3483,7 +3689,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(j.shielded_redrives(&W).unwrap().len(), 1);
         assert!(j.unrecorded_spends(&W).unwrap().is_empty());
         assert_eq!(j.pragmas().unwrap().synchronous, 2, "written FULL");
@@ -3556,6 +3762,110 @@ mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    /// A fork hold is marked once: imported again, its marker cleared by a
+    /// scan or not, it is skipped. One without nullifiers is refused and
+    /// nothing of the call is written.
+    #[test]
+    fn a_fork_hold_is_marked_once() {
+        let j = journal();
+        let hold = |st: u8, activity: u8, nullifiers: Vec<[u8; 32]>| ForkHold {
+            wallet: W,
+            st_hash: [st; 32],
+            activity: [activity; 32],
+            nullifiers,
+        };
+        let (a, b) = (
+            hold(1, 11, vec![[21; 32]]),
+            hold(2, 12, vec![[22; 32], [23; 32]]),
+        );
+        assert_eq!(j.import_fork_holds(&[a.clone(), b.clone()], 4).unwrap(), 2);
+        let marked = j.unrecorded_spends(&W).unwrap();
+        assert_eq!(
+            marked
+                .iter()
+                .map(|m| (m.activity, m.anchor))
+                .collect::<Vec<_>>(),
+            [([11; 32], [0; 32]), ([12; 32], [0; 32])]
+        );
+        assert_eq!(marked[1].nullifiers, [([22; 32], false), ([23; 32], false)]);
+        assert_eq!(j.import_fork_holds(&[a.clone(), b.clone()], 5).unwrap(), 0);
+        assert_eq!(
+            j.note_spent_nullifiers(&W, &[[21; 32]]).unwrap(),
+            [[11; 32]]
+        );
+        assert_eq!(j.import_fork_holds(&[a.clone(), b], 6).unwrap(), 0);
+        assert_eq!(
+            j.unrecorded_spends(&W).unwrap().len(),
+            1,
+            "cleared stays cleared"
+        );
+
+        let c = hold(3, 13, vec![[24; 32]]);
+        assert!(
+            j.import_fork_holds(&[c.clone(), hold(4, 14, vec![])], 7)
+                .is_err()
+        );
+        assert_eq!(j.import_fork_holds(&[c], 8).unwrap(), 1);
+
+        // A marker of the activity standing gains the hold's nullifiers.
+        assert!(
+            j.record_unrecorded_spend(&W, &[15; 32], &[50; 32], &[[25; 32]], 9)
+                .unwrap()
+        );
+        assert_eq!(
+            j.import_fork_holds(&[hold(5, 15, vec![[26; 32]])], 9)
+                .unwrap(),
+            1
+        );
+        let standing = (j.unrecorded_spends(&W).unwrap().into_iter())
+            .find(|m| m.activity == [15; 32])
+            .unwrap();
+        assert_eq!(
+            (standing.anchor, standing.nullifiers),
+            ([50; 32], vec![([25; 32], false), ([26; 32], false)])
+        );
+        assert!(j.note_spent_nullifiers(&W, &[[25; 32]]).unwrap().is_empty());
+
+        // Nullifiers an artifact's notes have seen spent: marked spent, and a
+        // hold of those alone marks nothing.
+        let artifact = NewShieldedArtifact {
+            activity: [16; 32],
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some([16; 32]),
+            kind: Some(ArtifactKind::Transfer),
+            anchor: Some([2; 32]),
+            identity_id: None,
+            selected: vec![[27; 32], [28; 32]],
+            published: vec![[27; 32], [28; 32]],
+        };
+        assert!(j.record_shielded_artifact(&W, &artifact, 10).unwrap());
+        assert!(
+            j.note_spent_nullifiers(&W, &[[27; 32], [28; 32]])
+                .unwrap()
+                .is_empty()
+        );
+        let before = j.unrecorded_spends(&W).unwrap().len();
+        assert_eq!(
+            j.import_fork_holds(&[hold(6, 16, vec![[27; 32], [28; 32]])], 11)
+                .unwrap(),
+            0
+        );
+        assert_eq!(j.unrecorded_spends(&W).unwrap().len(), before);
+        assert_eq!(
+            j.import_fork_holds(&[hold(7, 17, vec![[27; 32], [29; 32]])], 12)
+                .unwrap(),
+            1
+        );
+        let partial = (j.unrecorded_spends(&W).unwrap().into_iter())
+            .find(|m| m.activity == [17; 32])
+            .unwrap();
+        assert_eq!(partial.nullifiers, [([27; 32], true), ([29; 32], false)]);
+        assert_eq!(
+            j.note_spent_nullifiers(&W, &[[29; 32]]).unwrap(),
+            [[17; 32]]
+        );
     }
 
     /// A release (schema 7, review R6-01) is written only against a
@@ -4294,7 +4604,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(v10_rows(&j), before, "the 0.1 tables are unchanged");
         assert_eq!(
             j.load().unwrap().1.len(),
@@ -4552,10 +4862,10 @@ mod tests {
         );
     }
 
-    /// A build of schema 10 reads a schema 11 journal as newer and leaves
-    /// it as it was.
+    /// A build of schema 10 reads a newer journal as newer and leaves it
+    /// as it was.
     #[test]
-    fn a_v11_journal_reads_newer_schema_in_a_v10_reader() {
+    fn a_newer_journal_reads_newer_schema_in_a_v10_reader() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DISPATCH_DB_FILE);
         {
@@ -4569,8 +4879,8 @@ mod tests {
             (v10_rows(&j), all_artifact_rows(&j))
         };
         match DispatchJournal::open_as_schema(&path, 4, 10).unwrap() {
-            JournalOpen::NewerSchema(v) => assert_eq!(v, 11),
-            JournalOpen::Ready(_) => panic!("a schema 10 build opened schema 11"),
+            JournalOpen::NewerSchema(v) => assert_eq!(v, DISPATCH_SCHEMA),
+            JournalOpen::Ready(_) => panic!("a schema 10 build opened a newer journal"),
         }
         let j = ready(&path, 5);
         assert_eq!(artifact_count(&j), [1, 0, 0]);
@@ -5032,6 +5342,106 @@ mod tests {
             (Some(ArtifactKind::IdentityTopUp), Some([7; 32]))
         );
         assert!(!j.record_shielded_artifact(&W, &top_up, 2).unwrap());
+    }
+
+    /// A create keeps the identity its notes make (C-funding F11); a
+    /// dispatched one without it, and a transfer naming one, are refused.
+    #[test]
+    fn a_create_keeps_its_identity() {
+        let j = journal();
+        let create = NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityCreate),
+            identity_id: Some([8; 32]),
+            ..dispatched([2; 32], [6; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &create, 1).unwrap());
+        let a = &j.shielded_artifacts(&W).unwrap()[0];
+        assert_eq!(
+            (a.kind, a.identity_id),
+            (Some(ArtifactKind::IdentityCreate), Some([8; 32]))
+        );
+        let nameless = NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityCreate),
+            ..dispatched([3; 32], [7; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &nameless, 2).is_err());
+        let transfer = NewShieldedArtifact {
+            identity_id: Some([9; 32]),
+            ..dispatched([4; 32], [8; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &transfer, 3).is_err());
+    }
+
+    /// A create is marked consumed only while it is an unresolved create of
+    /// the wallet; the mark outlives the wallet's removal and stands at
+    /// every later open, and a journal of schema 12 from before the table
+    /// gains it at its open.
+    #[test]
+    fn a_consumed_create_mark_outlives_the_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+        let create = |activity, st_hash| NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityCreate),
+            identity_id: Some([8; 32]),
+            ..dispatched(activity, st_hash)
+        };
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_artifact(&W, &create([1; 32], [10; 32]), 1)
+                .unwrap();
+            j.record_shielded_artifact(&W, &dispatched([2; 32], [20; 32]), 1)
+                .unwrap();
+            assert!(
+                !j.mark_create_consumed(&W, &[10; 32], 2).unwrap(),
+                "registered"
+            );
+            for st_hash in [[10; 32], [20; 32]] {
+                j.settle_shielded_artifact(&W, &st_hash, unresolved, None, false)
+                    .unwrap();
+            }
+            assert!(
+                !j.mark_create_consumed(&W, &[20; 32], 2).unwrap(),
+                "a transfer"
+            );
+            assert!(
+                !j.mark_create_consumed(&[9; 32], &[10; 32], 2).unwrap(),
+                "another wallet"
+            );
+            assert!(j.consumed_creates(&W, &[[10; 32]]).unwrap().is_empty());
+            assert!(j.mark_create_consumed(&W, &[10; 32], 3).unwrap());
+            assert!(j.mark_create_consumed(&W, &[10; 32], 4).unwrap());
+            j.erase_wallet(&W, true).unwrap();
+            assert!(
+                !j.mark_create_consumed(&W, &[10; 32], 5).unwrap(),
+                "archived"
+            );
+        }
+        let j = ready(&path, 6);
+        assert_eq!(
+            j.consumed_creates(&W, &[[10; 32], [20; 32]]).unwrap(),
+            BTreeSet::from([[10; 32]])
+        );
+        assert!(
+            (j.consumed_creates(&[9; 32], &[[10; 32]]).unwrap()).is_empty(),
+            "another wallet's"
+        );
+        drop(j);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE shielded_create_consumed")
+            .unwrap();
+        let j = ready(&path, 7);
+        assert!(j.consumed_creates(&W, &[[10; 32]]).unwrap().is_empty());
+        j.record_shielded_artifact(&W, &create([3; 32], [30; 32]), 8)
+            .unwrap();
+        j.settle_shielded_artifact(&W, &[30; 32], unresolved, None, false)
+            .unwrap();
+        assert!(j.mark_create_consumed(&W, &[30; 32], 8).unwrap());
+        assert_eq!(
+            j.consumed_creates(&W, &[[30; 32]]).unwrap(),
+            BTreeSet::from([[30; 32]])
+        );
     }
 
     /// A registered artifact holds its wallet and reserves its notes.

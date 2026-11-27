@@ -8,8 +8,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use dashcore::blockdata::transaction::outpoint::OutPoint;
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSecretKey, EcdsaSignature};
 use dashcore::sighash::SighashCache;
 use dashcore::{Network, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_coinjoin::client::{
@@ -37,7 +36,7 @@ const LARGER: u64 = DENOMINATIONS[1];
 const REBALANCE_VERSION: u32 = 70241;
 
 struct TestWallet {
-    keys: Vec<SecretKey>,
+    keys: Vec<EcdsaSecretKey>,
     coins: Vec<MixCoin>,
     /// Unspent coins of the wallet that no session offers.
     others: Vec<OutPoint>,
@@ -57,11 +56,11 @@ impl TestWallet {
     fn new(n: u8) -> Self {
         // One key, and so one script, per coin: Dash Core refuses an entry
         // whose inputs pay one script twice.
-        let keys: Vec<SecretKey> = (0..n)
+        let keys: Vec<EcdsaSecretKey> = (0..n)
             .map(|i| {
                 let mut b = [0x11; 32];
                 b[31] = i.wrapping_add(1);
-                SecretKey::from_secret_bytes(b).unwrap()
+                EcdsaSecretKey::from_bytes(&b).unwrap()
             })
             .collect();
         let coins = (0..n)
@@ -104,15 +103,15 @@ impl TestWallet {
         }
     }
 
-    fn key_for(&self, script: &ScriptBuf) -> Result<&SecretKey, WalletError> {
+    fn key_for(&self, script: &ScriptBuf) -> Result<&EcdsaSecretKey, WalletError> {
         (self.keys.iter())
             .find(|k| script_of(k) == *script)
             .ok_or_else(|| WalletError("no key for the script".into()))
     }
 }
 
-fn script_of(key: &SecretKey) -> ScriptBuf {
-    let pk = PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(key));
+fn script_of(key: &EcdsaSecretKey) -> ScriptBuf {
+    let pk = PublicKey::new(key.public_key());
     ScriptBuf::new_p2pkh(&pk.pubkey_hash())
 }
 
@@ -198,12 +197,11 @@ impl MixingWallet for TestWallet {
                     .legacy_signature_hash(*i, script, MIXING_SIGHASH)
                     .map_err(|e| WalletError(e.to_string()))?;
                 let key = self.key_for(script)?;
-                let sig = ecdsa::sign(Message::from_digest(h.to_byte_array()), key);
-                let mut der = sig.serialize_der().to_vec();
+                let mut der = key.sign(&h.to_byte_array()).with_der(<[u8]>::to_vec);
                 der.push(MIXING_SIGHASH as u8);
                 let mut script_sig = vec![der.len() as u8];
                 script_sig.extend_from_slice(&der);
-                let pk = dashcore::secp256k1::PublicKey::from_secret_key(key).serialize();
+                let pk = key.public_key().to_compressed();
                 script_sig.push(pk.len() as u8);
                 script_sig.extend_from_slice(&pk);
                 let mut input = tx.input[*i].clone();
@@ -409,17 +407,13 @@ async fn test_qt_045_a_full_session_signs_with_anyonecanpay_and_succeeds() {
             let sig_len = bytes[0] as usize;
             let der = &bytes[1..sig_len];
             assert_eq!(bytes[sig_len], MIXING_SIGHASH as u8);
-            let pk = dashcore::secp256k1::PublicKey::from_slice(&bytes[sig_len + 2..]).unwrap();
+            let pk = EcdsaPublicKey::from_bytes(&bytes[sig_len + 2..]).unwrap();
             let script = ScriptBuf::new_p2pkh(&PublicKey::new(pk).pubkey_hash());
             let h = cache
                 .legacy_signature_hash(idx, &script, MIXING_SIGHASH)
                 .unwrap();
-            ecdsa::verify(
-                &ecdsa::Signature::from_der(der).unwrap(),
-                Message::from_digest(h.to_byte_array()),
-                &pk,
-            )
-            .unwrap();
+            pk.verify(&h.to_byte_array(), EcdsaSignature::from_der(der).unwrap())
+                .unwrap();
         }
         conn.send(
             "dsc",
@@ -684,17 +678,13 @@ fn assert_signed(tx: &Transaction, signed: &[TxIn]) {
         let sig_len = bytes[0] as usize;
         let der = &bytes[1..sig_len];
         assert_eq!(bytes[sig_len], MIXING_SIGHASH as u8);
-        let pk = dashcore::secp256k1::PublicKey::from_slice(&bytes[sig_len + 2..]).unwrap();
+        let pk = EcdsaPublicKey::from_bytes(&bytes[sig_len + 2..]).unwrap();
         let script = ScriptBuf::new_p2pkh(&PublicKey::new(pk).pubkey_hash());
         let h = cache
             .legacy_signature_hash(idx, &script, MIXING_SIGHASH)
             .unwrap();
-        ecdsa::verify(
-            &ecdsa::Signature::from_der(der).unwrap(),
-            Message::from_digest(h.to_byte_array()),
-            &pk,
-        )
-        .unwrap();
+        pk.verify(&h.to_byte_array(), EcdsaSignature::from_der(der).unwrap())
+            .unwrap();
     }
 }
 

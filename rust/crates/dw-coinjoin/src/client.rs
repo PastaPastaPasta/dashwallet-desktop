@@ -31,7 +31,6 @@ use std::future::Future;
 use std::time::Duration;
 
 use dashcore::blockdata::transaction::outpoint::OutPoint;
-use dashcore::hashes::Hash;
 use dashcore::{Network, ScriptBuf, Transaction, TxIn, TxOut};
 use dw_p2p::{Delivery, PeerEntry, Session, SessionConfig};
 use rand::Rng;

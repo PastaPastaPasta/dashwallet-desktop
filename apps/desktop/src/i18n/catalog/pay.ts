@@ -76,6 +76,15 @@ export const pay = {
     lockedBeforeSend: "The wallet locked before the payment was sent. Nothing was sent.",
     noRetryHere: "The payment may have been sent, and it can no longer be retried here.",
   },
+  /** Notices on the Pay form: the payment waits on the wallet, nothing went wrong. */
+  notice: {
+    /** A contact payment refused while the contact's payment details aren't checked yet: after a
+     * launch until the first DashPay pass, or while the check can't finish (H-09). Nothing is ever
+     * sent to an unchecked contact. */
+    contactsUpdating: "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.",
+    /** Runs the estimate again and reopens the review, where Send runs the check again. */
+    tryAgain: "Try again",
+  },
   incomplete: "Enter an address and an amount first.",
   /** The contact form has no address field: only the amount is missing. */
   incompleteContact: "Enter an amount first.",

@@ -25,6 +25,7 @@ export const tools = {
     signMessage: "Enter your passphrase to sign the message.",
     platformOp: "Enter your passphrase to authorize this Dash Platform operation.",
     platformSend: "Enter your passphrase to authorize this payment.",
+    appDisconnect: "Enter your passphrase to disconnect this app.",
     continue: "Enter your passphrase to continue.",
   },
   information: {
@@ -224,7 +225,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm.",
+    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
     dropAction: "Remove",
     removeUnconfirmed: {
       /** Remove unconfirmed refused with `rescan_in_progress`: after a chain fork the wallet catches up for about a block. */
@@ -258,6 +259,7 @@ export const tools = {
     resolvedTopUp: "All coins were sent to yourself (transaction {txid}). You can top up again once it is confirmed.",
     stuckShieldsTitle: "Stuck moves into Shielded",
     stuckShieldsHint: "Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    stuckShieldsHintSpendsOff: "Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
     sendCoinsBack: "Send the coins back…",
     sendBackAndPay: "Send back and pay {fee}",
     shieldMixed: "A move of mixed coins into Shielded may have been sent",
@@ -270,6 +272,15 @@ export const tools = {
       one: "Repair sends the one spendable coin of your main balance ({total}) back to your wallet, at a network fee of {fee}. You can move Dash into Shielded again once that payment is confirmed.",
       other: "Repair sends all {count} spendable coins of your main balance ({total}) back to your wallet, at a network fee of {fee}. You can move Dash into Shielded again once that payment is confirmed.",
     },
+    /** `shieldRepairMixed`/`shieldRepairMain` where this version cannot send from Shielded, so moves into it stay off. */
+    shieldRepairMixedSpendsOff: {
+      one: "Repair sends the move's mixed coin ({total}) back to your wallet's main balance, at a network fee of {fee}.",
+      other: "Repair sends the move's {count} mixed coins ({total}) back to your wallet's main balance, at a network fee of {fee}.",
+    },
+    shieldRepairMainSpendsOff: {
+      one: "Repair sends the one spendable coin of your main balance ({total}) back to your wallet, at a network fee of {fee}.",
+      other: "Repair sends all {count} spendable coins of your main balance ({total}) back to your wallet, at a network fee of {fee}.",
+    },
     resolveStuckShieldMixed: {
       one: "Send the move's mixed coin ({total}) back to your wallet's main balance? You pay a network fee of {fee}. Whether the move's payment reached the network is settled either way.",
       other: "Send the move's {count} mixed coins ({total}) back to your wallet's main balance? You pay a network fee of {fee}. Whether the move's payment reached the network is settled either way.",
@@ -279,10 +290,14 @@ export const tools = {
       other: "Send all {count} spendable coins of your main balance ({total}) back to your wallet? You pay a network fee of {fee}. Whether the move's payment reached the network is settled either way.",
     },
     resolvedShield: "The coins were sent back to your wallet (transaction {txid}). You can move Dash into Shielded again once it is confirmed.",
+    /** `resolvedShield` where this version cannot send from Shielded, so moves into it stay off. */
+    resolvedShieldSpendsOff: "The coins were sent back to your wallet (transaction {txid}).",
     shieldLine: "{what}. {detail}",
     stuckShieldsUnreadable: "This wallet's moves into Shielded could not be read, so their stuck funding cannot be checked here.",
     shieldBlockedRetry: "Repair can't send these coins back yet: {why} Check again later.",
     shieldBlockedPermanent: "Repair can't send these coins back: {why} New moves into Shielded stay paused while this move is open.",
+    /** `shieldBlockedPermanent` where this version cannot send from Shielded, so moves into it stay off anyway. */
+    shieldBlockedPermanentSpendsOff: "Repair can't send these coins back: {why}",
     shieldBlockedReason: {
       notReady: "The wallet is still reading this move's records.",
       spendUnsettled: "An earlier payment from this wallet is not confirmed yet.",

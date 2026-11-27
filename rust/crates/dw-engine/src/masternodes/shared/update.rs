@@ -6,7 +6,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, ScriptBuf, TxIn, TxOut, Txid};
 use dw_appdb::MasternodeOpRow;
 use dw_protx::shared::rawtx::SPECIAL_VERSION;

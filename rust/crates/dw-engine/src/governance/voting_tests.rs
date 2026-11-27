@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::hashes::hash160;
 use dashcore::{OutPoint, Txid};
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dw_governance::object::{GovernanceObject, display_hex};
 use dw_governance::store::ResolvedMasternode;
 use dw_governance::vote::GovernanceVote;

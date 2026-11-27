@@ -62,6 +62,21 @@ pub(crate) struct ContractFacts {
     pub(crate) has_tokens: bool,
     /// No update can change it, so it can never gain tokens.
     pub(crate) readonly: bool,
+    /// Serialized contract size in bytes at the network's protocol version,
+    /// used to bound the real contract lookup Drive meters when disabling a
+    /// contract-bound key.
+    pub(crate) serialized_bytes: usize,
+}
+
+/// A contract group's metadata only (`ContractGroupInfo`), fetched without
+/// enumerating its members (used to price group-bound key revocation).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GroupInfoFacts {
+    pub(crate) owner: Identifier,
+    pub(crate) admins: Vec<Identifier>,
+    /// Exact serialized byte length of `ContractGroupInfo` (owner, admins,
+    /// name and description) as stored by Drive.
+    pub(crate) serialized_bytes: usize,
 }
 
 /// A contract group as the proved reads found it: owner, admins and every
@@ -331,7 +346,7 @@ pub(crate) fn session_key(
     budget: u64,
     expires_at_ms: u64,
 ) -> Option<IdentityPublicKey> {
-    use dashcore::hashes::{Hash, hash160};
+    use dashcore::hashes::hash160;
     let binding = request.auth_bindings.get(usize::from(index))?;
     let security_level = match binding.level {
         Level::Critical => SecurityLevel::CRITICAL,
@@ -410,4 +425,14 @@ impl Commitment<'_> {
         h.update(&bytes);
         Some(h.finalize().into())
     }
+}
+
+/// The digest of the group facts one read found, so the sheet that shows
+/// them can tell a quote that read others.
+pub(crate) fn groups_digest(groups: &BTreeMap<Identifier, Option<GroupFacts>>) -> Option<[u8; 32]> {
+    let bytes = serde_json::to_vec(groups).ok()?;
+    let mut h = Sha256::new();
+    h.update(b"dashwallet-desktop app-connect groups v1\0");
+    h.update(&bytes);
+    Some(h.finalize().into())
 }

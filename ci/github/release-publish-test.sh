@@ -1857,10 +1857,10 @@ if [[ $wiring_rc -ne 0 ]]; then cat "$work/wiring.out" >&2; fi
 cd "$here/../.."
 v() { env -i PATH="$PATH" GITHUB_ENV="$work/env" "$@" ci/github/release-version.sh > /dev/null 2>&1 && tail -1 "$work/env"; }
 : > "$work/env"
-check "version: main push" '[[ $(v GITHUB_REF_TYPE=branch GITHUB_SHA=1234567890 GITHUB_RUN_NUMBER=5) == "VERSION=0.3.0-dev.5.g1234567" ]]'
-check "version: tag v0.3.0" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.3.0) == "VERSION=0.3.0" ]]'
+check "version: main push" '[[ $(v GITHUB_REF_TYPE=branch GITHUB_SHA=1234567890 GITHUB_RUN_NUMBER=5) == "VERSION=1.0.0-dev.5.g1234567" ]]'
+check "version: tag v1.0.0" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.0.0) == "VERSION=1.0.0" ]]'
 check "version: dry-run tag" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.0.0-rel8) == "VERSION=0.0.0-rel8" ]]'
-check "version: rc tag of the same version" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.3.0-rc.1) == "VERSION=0.3.0-rc.1" ]]'
+check "version: rc tag of the same version" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.0.0-rc.1) == "VERSION=1.0.0-rc.1" ]]'
 check "version: rc tag of another version fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.4.0-rc.1 >/dev/null'
 check "version: a tag that differs from tauri.conf.json fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 >/dev/null'
 

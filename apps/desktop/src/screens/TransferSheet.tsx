@@ -22,6 +22,7 @@ import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { heldExitOps, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
+import { shieldedSpendsOff } from "../shielded/spends";
 import { shieldedSyncing, shieldedWait } from "../shielded/syncing";
 import {
   canSwap,
@@ -52,6 +53,7 @@ import { FundBody } from "./PlatformFundSheet";
 import { MoveBody, usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedBody } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
+import { platformHoldText } from "../api/platformHold";
 
 /** The balances the sheet shows and checks, from the reads Home's cards use. */
 export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
@@ -72,7 +74,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
     core,
     coreCoins: coins.isError ? undefined : (coins.data?.filter((c) => !c.userLocked && !c.reserved).reduce((n, c) => n + c.amount, 0) ?? null),
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
-    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), wait: shieldedWait(status), duffs: shieldedDuffs(status) } : status,
+    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), wait: shieldedWait(status), duffs: shieldedDuffs(status), spendsOff: shieldedSpendsOff(status) } : status,
     platform:
       !known(pools.platform)
         ? pools.platform === "loading"
@@ -276,9 +278,10 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const refusal =
     line.state.kind !== "refused"
       ? null
-      : route === "coreToPlatform"
-        ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
-        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedWait(status), maxRefused);
+      : (platformHoldText(line.state.error, false) ??
+        (route === "coreToPlatform"
+          ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
+          : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedWait(status), maxRefused, shieldedSpendsOff(status))));
   const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
@@ -372,7 +375,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
   const q = quote.data;
   const credits = (c: string) => fmt(creditsToDuffs(c));
   const movable = pools.platform?.duffs ?? null;
-  const refusal = quote.isError ? moveErrorText(quote.error, credits, activity.data) : null;
+  const refusal = quote.isError ? (platformHoldText(quote.error, false) ?? moveErrorText(quote.error, credits, activity.data)) : null;
   const ready = !blocked && !!q && !quote.isError;
   const p = pools.platform;
   // A move Platform has not confirmed holds this route: Activity shows it.
@@ -514,7 +517,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
       {route === "unsupported" ? (
         <>
           <p className="field-hint" role="status" data-testid="transfer-unavailable">
-            {unsupportedText(t.from, t.to, t.mainnet)}
+            {unsupportedText(t.from, t.to, t.mainnet, pools.shielded?.spendsOff)}
           </p>
           {t.from === "core" && t.to === "platform" && <StuckAdds walletId={walletId} network={network} />}
         </>

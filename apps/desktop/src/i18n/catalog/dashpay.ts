@@ -94,6 +94,9 @@ export const dashpay = {
     unlock: "Unlock the wallet to continue.",
     authorize: "Waiting for your approval to continue.",
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
+    paymentUnknownShielded: "Checking whether the payment from your Shielded balance went through.",
+    /** Shown beside Continue, which checks again. */
+    paymentUnknownShieldedIdle: "Dash Wallet hasn't checked the payment from your Shielded balance since it reopened. Choose Continue to check it again. This doesn't spend anything.",
     paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
     /** Shown only beside both Continue and Move to Dash wallet, which it names. */
     paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
@@ -113,6 +116,19 @@ export const dashpay = {
      * reports no amount, so the line names none. */
     refundedPlatform:
       "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    /** A paid failure of a registration from the Shielded balance (C-funding F12): Platform sent
+     * the payment, less a penalty, to this wallet's Platform balance. */
+    refundedShielded:
+      "Dash Platform couldn't register the username. It kept part of the payment as a penalty and sent the rest to your Platform balance.",
+    /** A registration from the Shielded balance whose coins read spent with no identity made
+     * (C-funding F12): another device with the same recovery phrase may have spent them, so the
+     * line claims no refund. */
+    consumedShielded:
+      "Dash Wallet couldn't register the username. The Shielded funds chosen to pay for it have been spent, but no username was registered. Either this payment spent them, and Dash Platform kept a penalty and sent the rest to your Platform balance, or another device using this recovery phrase spent them. Check your Platform balance before you start a new registration.",
+    /** A Shielded-funded run whose readiness no longer held when it was about to pay. */
+    shieldedNotReady: "Your Shielded balance can't pay for the username right now, so nothing was spent. Try again in a moment.",
+    /** A Shielded payment that was refused before it was sent. */
+    shieldedRefused: "The payment from your Shielded balance didn't go through, so nothing was spent. You can try again.",
     /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
      * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
     quoteChanged:
@@ -140,6 +156,11 @@ export const dashpay = {
     cost: "A username costs about {amount}. Usernames the network votes on cost more; the exact cost is shown before you pay.",
     costUnknown: "Usernames the network votes on cost more than others. The exact cost is shown before you pay.",
     shortfall: "You need at least {amount} to create a username.",
+    /** Neither the Dash wallet nor the Shielded balance can pay. Every placeholder is an amount
+     * with its unit. */
+    shortfallBoth: "You need at least {amount} to create a username. Your Dash wallet has {core}. Your Shielded balance has {shielded}.",
+    /** As `shortfallBoth` in discreet mode, which shows the price but no balance. */
+    shortfallBothDiscreet: "You need at least {amount} to create a username. Neither your Dash wallet nor your Shielded balance has enough.",
     create: "Create username",
     watchOnly: "A watch-only wallet cannot join DashPay. Restore the wallet from its recovery phrase to join.",
     joinedAs: "You have joined DashPay as {username}.",
@@ -249,6 +270,35 @@ export const dashpay = {
       held: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
       syncing: "Your shielded balance is still syncing.",
     },
+    /** "Make your username private", the step before the name (C-funding F19; the iOS and Android
+     * wallets' copy, "Dash balance" read as "Dash wallet", and the Shielded note says what it hides:
+     * the link between the funds and the username, which itself is public). */
+    privacy: {
+      title: "Make your username private",
+      titleNoShielded: "Pay for your username",
+      body: "To help keep your payment activity private, we recommend paying for the username from your Shielded balance",
+      shieldedNote: "Helps hide the link between your funds and your username",
+      coreNote: "Funds will be traceable to your username",
+      advanced: "Advanced",
+      shieldFirst: "Shield your funds first",
+      withoutPrivacy: "Continue without privacy",
+      /** The card shown in place of the sources while the Shielded balance cannot pay. */
+      tip: {
+        restingTitle: "Funds are resting",
+        /** `time` is a clock time, HH:MM. */
+        resting: "Your shielded funds are resting. They will be ready around {time} — creating your username before then links it to where the funds came from.",
+        poolTitle: "Privacy pool too small",
+        /** `notes` and `required` are counts of notes. */
+        pool: "The shared privacy pool holds {notes} of the {required} notes a private registration needs. That count comes from everyone's shielded activity, so it grows on its own — try again later.",
+        partlyTitle: "Not enough shielded funds",
+        /** `have`, `need` and `more` are amounts with their unit. */
+        partly: "Your Shielded balance holds {have} of the {need} a private registration needs. Add {more} more, then let it rest a few hours.",
+        nothingTitle: "Privacy tip",
+        /** `need` is an amount with its unit. */
+        nothing: "Paying privately takes at least {need} in your Shielded balance. Funds move there in seconds, then rest a few hours before they can pay for a username.",
+        waitTitle: "Shielded balance",
+      },
+    },
     /** The name's checklist. */
     rule: {
       minLength: "At least 3 characters",
@@ -283,6 +333,17 @@ export const dashpay = {
       /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
        * `funding` what the identity receives, exactly; `fee` the Platform fee, about; `total` both. */
       fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a Platform fee of about {fee}. Your identity starts with a balance of {funding}.",
+      /** Paid from the Shielded balance (C-funding F20). Every placeholder is an amount with its
+       * unit. */
+      shielded: {
+        leaves: "{denomination} leaves your Shielded balance.",
+        fee: "Network fee: about {fee}.",
+        starts: "Your identity starts with {start} in credits. The username and profile are paid from it, and about {left} stays as credits for contacts and profile changes.",
+        /** `starts` when nothing is left after the username and profile. */
+        startsNoneLeft: "Your identity starts with {start} in credits. The username and profile are paid from it.",
+        change: "{change} returns to your Shielded balance after the next sync.",
+        whole: "This uses your whole Shielded balance.",
+      },
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",
@@ -767,6 +828,7 @@ export const dashpay = {
     loading: "Checking this request with Platform…",
     app: {
       claim: "“{label}” (name given by the app, not verified)",
+      unverified: "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
       id: "App ID",
       copyId: "Copy App ID",
     },
@@ -796,6 +858,9 @@ export const dashpay = {
     critical: "This key has critical access: it can do anything these contracts let your identity do, including sending the app's tokens your identity holds. The funding limit doesn't cap tokens.",
     /** Under a CRITICAL binding that can't reach tokens: a read-only contract without tokens, or one document type. */
     criticalNoTokens: "This key has critical access: within what it covers, it can do anything your identity can.",
+    /** Under a binding on the app's contracts, a document type or a group, unless the critical warning
+     * names tokens already: a document write can carry a token cost the identity pays. */
+    tokenCost: "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
     cannot: "It can't spend Dash from this wallet, withdraw credits, transfer credits to anyone or change your other keys. It can spend your identity's credits up to the funding limit.",
     limit: "Funding limit (Dash)",
     limitHint: "The most this app can spend from your identity's credits.",
@@ -815,10 +880,12 @@ export const dashpay = {
     done: "You're signed in to “{label}”.",
     denied: "You declined this sign-in request. Nothing was added to your identity.",
     /** Declined after an approval of this request stopped before its response was sent. */
-    deniedAfterApprove: "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+    deniedAfterApprove: "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
     return: "Return to {host}",
     retrySend: "Retry sending",
-    sendFailed: "The keys were added to your identity, but the app hasn't received them yet. Retry sending, or return to the app and start again.",
+    /** Under a quote that failed: quotes the same choice again. */
+    retryQuote: "Try again",
+    sendFailed: "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
     planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
     err: {
       network: "This request is for {requested}, but this wallet uses {current}.",
@@ -826,6 +893,8 @@ export const dashpay = {
       unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
       invalid: "This sign-in request can't be read. Ask the app for a new one.",
       newer: "This link needs a newer version of Dash Wallet.",
+      /** A new request while every request kept is on screen or being approved. */
+      busy: "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
       stale: "This sign-in request has expired. Ask the app for a new one.",
       protocol: "This network doesn't support app sign-in yet.",
       noIdentity: "You need a DashPay username to sign in to apps. Create one in DashPay first.",
@@ -848,7 +917,56 @@ export const dashpay = {
       noResponseKey: "your identity has no key that can sign the answer to the app.",
       nothingToSend: "Dash Wallet had nothing to send back to the app. Start again from the app; that adds new keys to your identity, for a small fee in credits.",
       scopeChanged: "the app changed its contracts or keys on Dash Platform after your keys were added.",
+      unverifiedKey: "Dash Wallet couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any.",
+      feeTooHigh: "the Dash Platform fee to disable these keys is higher than Dash Wallet's limit.",
+      disconnectConflict: "this identity changed on Dash Platform before the earlier disconnect finished.",
+      pendingFeeTooHigh: "the Dash Platform fee to resend this disconnect is above Dash Wallet's limit.",
+      pendingWrite: "another change on this identity hasn't settled on Dash Platform yet.",
       unknown: "something went wrong on the way.",
+    },
+    /** Settings ▸ Advanced ▸ Connected apps and the Disconnect confirmation sheet. */
+    connected: {
+      title: "Connected apps",
+      intro: "Apps you signed in to with {who} from this wallet. Disconnecting an app disables its keys on Dash Platform, so it can't sign for {who} with them anymore.",
+      introSelf: "Apps you signed in to with your identity from this wallet. Disconnecting an app disables its keys on Dash Platform, so it can't sign for your identity with them anymore.",
+      refresh: "Refresh",
+      checking: "Checking…",
+      loading: "Checking connected apps on Dash Platform…",
+      empty: "No connected apps.",
+      emptySub: "Apps you sign in to with DashPay Connect show here.",
+      loadError: "Dash Wallet couldn't load connected apps from Dash Platform.",
+      tryAgain: "Try again",
+      returnsTo: "Returns to",
+      keys: "Keys",
+      keyId: "Key {id}",
+      fundingLimit: "Funding limit",
+      approved: "Approved",
+      expiry: "Access ends",
+      expiryPast: "Access ended {date}",
+      disconnect: "Disconnect",
+      disconnected: "Disconnected “{label}”.",
+      disconnectedResponsePending: "Disconnected “{label}”. Its session keys are disabled, but a sign-in response was still in flight, so a key may already have reached the app.",
+      sheetTitle: "Disconnect this app?",
+      sheetBody: "Dash Wallet disables this app's keys on Dash Platform, so the app can no longer use them to sign for {who}. Anything it already did with them stays as it is.",
+      sheetBodySelf: "Dash Wallet disables this app's keys on Dash Platform, so the app can no longer use them to sign for your identity. Anything it already did with them stays as it is.",
+      keysLabel: "Keys to disable",
+      fee: "Disabling these keys costs about {amount} in credits.",
+      priorChargeKnown: "An earlier disconnect attempt couldn't finish after another change to this identity, and up to {amount} in credits were debited. Disconnecting again sends a new paid update.",
+      priorChargePossible: "An earlier disconnect attempt couldn't finish after another change to this identity and may already have been charged a Dash Platform fee. Disconnecting again sends a new paid update.",
+      lowCredits: "This identity needs {amount} more in credits to disable these keys. Top up its credits, then try again.",
+      busy: "Disabling keys on Dash Platform…",
+      cancel: "Cancel",
+      err: {
+        notConfirmed: "Dash Platform didn't confirm the change, so the keys may already be disabled. Try again: Dash Wallet checks first, so you don't pay twice.",
+        unverifiedKey: "Dash Wallet couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any. Nothing was changed, and the app can still use its keys. To get help, choose Report a problem in Settings ▸ About.",
+        feeTooHigh: "The Dash Platform fee to disable these keys is higher than Dash Wallet's limit, so nothing was changed. Try again later.",
+        grantExceeded: "The Dash Platform fee changed while disconnecting, so review the updated fee and try again.",
+        disconnectConflict: "This identity changed on Dash Platform before the earlier disconnect finished, so its keys are still active. Review the updated fee and disconnect again.",
+        pendingFeeTooHigh: "The Dash Platform fee to resend this disconnect is above Dash Wallet's limit, so it wasn't resent. The earlier attempt may still be in flight — refresh in a moment to check.",
+        pendingWrite: "Another change on this identity hasn't settled on Dash Platform yet. Wait for it to finish, then try again.",
+        generic: "Dash Wallet couldn't disconnect this app. Try again.",
+        genericUnsent: "Dash Wallet couldn't disconnect this app. Try again. Nothing was changed.",
+      },
     },
   },
 } as const satisfies Tree;

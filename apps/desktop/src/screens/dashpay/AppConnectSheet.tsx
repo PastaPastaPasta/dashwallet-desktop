@@ -11,7 +11,7 @@ import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { CopyIconButton } from "../../components/copy";
 import { Sheet } from "../../components/sheet";
-import { bindingText, ConnectFlow, connectErrorText, criticalText, expiryDays, limitText, quotedLimit } from "../../dashpay/connect";
+import { bindingText, ConnectFlow, connectErrorText, criticalText, expiryDays, limitText, quotedLimit, tokenCostText } from "../../dashpay/connect";
 import { creditCount } from "../../dashpay/profile";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
@@ -27,6 +27,11 @@ function AppHeader({ flow }: { flow: ConnectFlow }) {
           <p className="connect-claim" data-testid="connect-claim">
             {t("dashpay.connect.app.claim", { label: sheet.label })}
           </p>
+          {flow.phase === "sheet" && (
+            <p className="sheet-text" data-testid="connect-unverified">
+              {t("dashpay.connect.app.unverified")}
+            </p>
+          )}
           <div className="connect-app-id">
             <span className="detail-label">{t("dashpay.connect.app.id")}</span>
             <span className="connect-app-id-value">
@@ -47,7 +52,7 @@ function AppHeader({ flow }: { flow: ConnectFlow }) {
   );
 }
 
-function GroupDetails({ group }: { group: ConnectGroup }) {
+export function GroupDetails({ group }: { group: ConnectGroup }) {
   const t = useT();
   const rows: [string, string, string[]][] = [
     ["owner", t("dashpay.connect.group.owner"), [group.owner]],
@@ -79,6 +84,7 @@ function GroupDetails({ group }: { group: ConnectGroup }) {
 function BindingRow({ flow, binding }: { flow: ConnectFlow; binding: ConnectBinding }) {
   const { scope } = binding;
   const critical = criticalText(binding);
+  const tokenCost = tokenCostText(binding);
   const contract = scope.kind === "contract" || scope.kind === "documentType" ? scope.contract : null;
   return (
     <li className="connect-binding" data-testid="connect-binding" data-index={binding.index} data-primary={binding.primary || undefined}>
@@ -101,6 +107,11 @@ function BindingRow({ flow, binding }: { flow: ConnectFlow; binding: ConnectBind
       {critical !== null && (
         <p className="sheet-warning connect-critical" role="note" data-testid="connect-critical">
           {critical}
+        </p>
+      )}
+      {tokenCost !== null && (
+        <p className="sheet-warning connect-key-note" role="note" data-testid="connect-token-cost">
+          {tokenCost}
         </p>
       )}
     </li>
@@ -193,9 +204,16 @@ function SheetStep({ flow, network }: { flow: ConnectFlow; network: string }) {
         </div>
       </dl>
       {flow.quoteError !== null ? (
-        <p className="form-problem" role="alert" data-testid="connect-quote-error">
-          {connectErrorText(flow.quoteError, network)}
-        </p>
+        <div className="connect-quote-problem">
+          <p className="form-problem" role="alert" data-testid="connect-quote-error">
+            {connectErrorText(flow.quoteError, network)}
+          </p>
+          {flow.quote === null && (
+            <DashButton variant="tintedBlue" size="small" type="button" data-testid="connect-quote-retry" disabled={flow.busy} onClick={() => flow.retryQuote()}>
+              {t("dashpay.connect.retryQuote")}
+            </DashButton>
+          )}
+        </div>
       ) : (
         <p className="sheet-text" role="status" data-testid="connect-fee">
           {flow.quote ? t("dashpay.connect.fee", { amount: creditCount(flow.quote.fee) }) : flow.quoting && <span className="spinner" aria-hidden="true" />}

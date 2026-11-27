@@ -49,6 +49,14 @@ describe("fixture contact payment from a balance", () => {
     expect(await refusal(cmd.contactPayQuote(W, ME, BOB, "1000", "platform"))).toBe("credits.withdrawal_out_of_range");
   });
 
+  it("refuses Shielded as this build's engine does where spends from it are off: after the payee's checks", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "dashpay-registered-spends-off" });
+    expect(await refusal(cmd.contactPayQuote(W, ME, BOB, CREDITS, "shielded"))).toBe("platform.unavailable");
+    expect(await refusal(cmd.contactPayQuote(W, ME, BOB, "0", "shielded"))).toBe("invalid_argument");
+    expect(await refusal(cmd.contactPayQuote(W, ME, IDENTITY.alice, CREDITS, "shielded"))).not.toBe("platform.unavailable");
+  });
+
   it("pays: sent, the balance debited and a contact payment row naming the contact", async () => {
     const before = await cmd.platformAddresses(W);
     const out = await pay();

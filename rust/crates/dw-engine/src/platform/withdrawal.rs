@@ -280,7 +280,53 @@ pub(super) enum Signed {
     Transfer { st_hash: [u8; 32] },
 }
 
+/// Whether another identity write in this session owns an unresolved nonce on
+/// an identity, given Platform's proved nonce `state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NonceOwner {
+    /// No unresolved withdrawal or transfer holds an admissible nonce at `state`.
+    Free,
+    /// An unresolved withdrawal or transfer still holds an admissible nonce.
+    Pending,
+    /// `state` lags behind a nonce this session already signed or saw executed.
+    Behind,
+}
+
 impl WithdrawalNonces {
+    /// Whether this session's withdrawal/transfer nonce state blocks another
+    /// flow (such as DashPay Connect Disconnect) from taking `state + 1`.
+    pub(crate) fn ownership(&self, id: Identifier, state: u64) -> NonceOwner {
+        let n = self.get(id);
+        let tip = state & IDENTITY_NONCE_VALUE_FILTER;
+        if let Some((k, _)) = n.unconfirmed {
+            if takes(state, k, id) {
+                return NonceOwner::Pending;
+            }
+            if k > tip {
+                return NonceOwner::Behind;
+            }
+        }
+        if tip.saturating_add(1) < n.floor {
+            return NonceOwner::Behind;
+        }
+        NonceOwner::Free
+    }
+
+    /// Raises `id`'s nonce floor past `nonce` after another identity write
+    /// (such as Disconnect) executed on Platform, without clearing any
+    /// unrelated unconfirmed withdrawal/transfer record.
+    pub(crate) fn advance_floor(&self, id: Identifier, nonce: u64) {
+        self.update(id, |n| {
+            n.floor = n.floor.max(nonce.saturating_add(1));
+        });
+    }
+
+    /// Highest nonce floor recorded for `id` in this session (one past every
+    /// write seen executed or proven spent).
+    pub(crate) fn floor(&self, id: Identifier) -> u64 {
+        self.get(id).floor
+    }
+
     /// The nonce `id`'s next withdrawal signs at, given its proved nonce
     /// `state`: the unconfirmed one's while Drive's rule would still take
     /// it (unused, within 24 of the newest, and past the floor), so at most
@@ -429,11 +475,48 @@ pub(super) fn landed_error(s: Signed) -> CreditsError {
 /// signs at its nonce.
 pub(super) async fn nonce_for(
     net: &impl WithdrawNet,
-    nonces: &WithdrawalNonces,
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
     id: Identifier,
     transfer: bool,
 ) -> Result<(u64, u64), CreditsError> {
+    let nonces = &session.withdrawal_nonces;
     let (state, height) = net.nonce_state(id).await?;
+    let tip = state & IDENTITY_NONCE_VALUE_FILTER;
+    let mut had_spent_disconnect = false;
+    let mut reserved_floor = 0u64;
+    for (d_nonce, transition_hash, kind) in
+        super::app_connect::pending_disconnects_for_identity(session, wallet_id, id).await?
+    {
+        if takes(state, d_nonce, id) {
+            match kind {
+                super::app_connect::DisconnectNonceKind::Pending => {
+                    return Err(CreditsError::MovePending {
+                        id: transition_hash,
+                    });
+                }
+                super::app_connect::DisconnectNonceKind::Reserved {
+                    observed_tip,
+                    observed_height,
+                } => {
+                    if observed_tip.is_none_or(|obs| tip < obs)
+                        || observed_height.is_none_or(|obs_h| height < obs_h)
+                    {
+                        return Err(PlatformError::Unavailable.into());
+                    }
+                    reserved_floor = reserved_floor.max(d_nonce.saturating_add(1));
+                }
+            }
+            continue;
+        }
+        if d_nonce > tip {
+            return Err(PlatformError::Unavailable.into());
+        }
+        had_spent_disconnect = true;
+    }
+    if had_spent_disconnect {
+        super::app_connect::clear_spent_conflict_nonces(session, wallet_id, id, state).await;
+    }
     if let Some((k, signed)) = nonces.unconfirmed(id) {
         if let Some(s) = executed(net, &signed, (id, k), (state, height)).await? {
             nonces.executed(id, k);
@@ -448,7 +531,11 @@ pub(super) async fn nonce_for(
             });
         }
     }
-    Ok((nonces.next(id, state)?, height))
+    let next = nonces.next(id, state)?.max(reserved_floor);
+    if reserved_floor > 0 && !takes(state, next, id) {
+        return Err(PlatformError::Unavailable.into());
+    }
+    Ok((next, height))
 }
 
 /// The newest `limit` documents of pages read oldest first: `page(start)`
@@ -813,7 +900,7 @@ pub(crate) async fn withdraw(
     let expected = expected_duffs(credits, version)?;
     let quote = credits + rules.fee;
     let nonces = &session.withdrawal_nonces;
-    let (nonce, _) = nonce_for(net, nonces, id, false).await?;
+    let (nonce, _) = nonce_for(net, session, wallet_id, id, false).await?;
     let signs = (index, &me);
     let lease = write_lease(
         session,

@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dw_appdb::BookPurpose;
 use dw_compat::descriptor::{ImportRequest, PkhDescriptor, import_descriptors_json};
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole};
@@ -28,7 +27,7 @@ use dw_uri::keyio;
 use dw_vault::{GrantKind, SeedDerivation, WalletSecret, mnemonic};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::events::{EngineEvent, NoticeCode, unix_now};
 use crate::history::AddressChain;
@@ -357,7 +356,7 @@ impl MasterKey {
     }
 
     fn erase(&mut self) {
-        self.0.private_key.non_secure_erase();
+        self.0.private_key.zeroize();
     }
 }
 
@@ -376,7 +375,7 @@ impl Drop for MasterKey {
 
 fn master_pubkey(seed: &[u8; 64]) -> Option<[u8; 33]> {
     let master = MasterKey::new(dashcore::Network::Mainnet, seed).ok()?;
-    Some(master.private_key.public_key().serialize())
+    Some(master.private_key.public_key().to_compressed())
 }
 
 /// The lookahead of a Core import: Core's 1000 (QT-105) or more when the
@@ -480,11 +479,13 @@ impl NetworkSession {
     }
 
     /// dash-qt "Import dumpwallet" (QT-107). See the module doc.
+    /// `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_dump_wallet(
         self: &Arc<Self>,
         path: PathBuf,
         options: ImportOptions,
     ) -> Result<ImportReport, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let dump = self
             .on_runtime(async move {
@@ -534,7 +535,7 @@ impl NetworkSession {
             .map_err(|e| CompatFailure::Corrupt(format!("extended private masterkey: {e}")))?
             .private_key
             .public_key()
-            .serialize();
+            .to_compressed();
         if let (Some(seed), Some(_)) = (&seed, &phrase)
             && master_pubkey(seed) != Some(expected)
         {
@@ -578,13 +579,15 @@ impl NetworkSession {
     }
 
     /// dash-qt "Restore wallet" from a `wallet.dat` (QT-106): SQLite
-    /// descriptor wallets and legacy Berkeley DB wallets.
+    /// descriptor wallets and legacy Berkeley DB wallets. `RestoreOnly`
+    /// while the network's RESTORED mark is set.
     pub async fn import_wallet_dat(
         self: &Arc<Self>,
         path: PathBuf,
         wallet_passphrase: Option<Zeroizing<Vec<u8>>>,
         options: ImportOptions,
     ) -> Result<ImportReport, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let network_mainnet = self.network == DashNetwork::Mainnet;
         let WalletDatImport {
@@ -701,12 +704,13 @@ impl NetworkSession {
     }
 
     /// Imports a wallet from an HD seed, xprv or `listdescriptors true` JSON
-    /// (QT-108).
+    /// (QT-108). `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_key_material(
         self: &Arc<Self>,
         material: KeyMaterial,
         options: ImportOptions,
     ) -> Result<ImportReport, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let root = match material {
             KeyMaterial::HdSeed(seed) => {
@@ -769,7 +773,7 @@ impl NetworkSession {
                         Zeroizing::new(pass.as_bytes().to_vec()),
                     )),
                     seed: None,
-                    master_pubkey: Some(master.private_key.public_key().serialize()),
+                    master_pubkey: Some(master.private_key.public_key().to_compressed()),
                     used_per_chain: listed.next_index,
                     labels: Vec::new(),
                 }
@@ -954,7 +958,7 @@ impl NetworkSession {
         id: WalletId,
         (external, internal): (u32, u32),
     ) -> Result<(), EngineError> {
-        use key_wallet::managed_account::address_pool::{AddressPoolType, AddressState};
+        use key_wallet::managed_account::address_pool::AddressPoolType;
         let unsupported = || {
             EngineError::from(CompatFailure::UnsupportedFormat(
                 "HD account 0 cannot be restored".into(),
@@ -976,7 +980,7 @@ impl NetworkSession {
             .funds_account_mut(&account)
             .ok_or_else(unsupported)?;
         for pool in managed.managed_account_type_mut().address_pools_mut() {
-            let next = match pool.pool_type {
+            let next = match pool.pool_type() {
                 AddressPoolType::External => external,
                 AddressPoolType::Internal => internal,
                 _ => continue,
@@ -984,18 +988,17 @@ impl NetworkSession {
             let Some(last) = next.checked_sub(1) else {
                 continue;
             };
-            pool.generate_up_to(last, &key)
+            let reach = pool.highest_used().map_or(last, |h| h.max(last));
+            let target = reach.saturating_add(pool.gap_limit());
+            let from = pool.highest_generated().map_or(0, |h| h + 1);
+            pool.generate_addresses(target.saturating_add(1).saturating_sub(from), &key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
-            for info in pool.addresses.range_mut(..=last).map(|(_, info)| info) {
-                if info.is_available() {
-                    info.state = AddressState::Reserved { at: 0 };
+            for index in 0..=last {
+                if let Some(address) = pool.address_at_index(index) {
+                    pool.reserve(&address, 0);
                 }
             }
-            pool.highest_used = pool.highest_used.max(Some(last));
-            pool.maintain_gap_limit(&key)
-                .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
         }
-        managed.bump_monitor_revision();
         Ok(())
     }
 
@@ -1541,12 +1544,12 @@ fn dump_of(
             .map_err(|e| EngineError::Internal(format!("derive {path}: {e}")))?;
         let wif = keyio::encode_secret(
             &keyio::Secret {
-                key: Zeroizing::new(child.private_key.to_secret_bytes()),
+                key: child.private_key.to_bytes(),
                 compressed: true,
             },
             network,
         );
-        child.private_key.non_secure_erase();
+        child.private_key.zeroize();
         let role = match (a.chain, labels.get(&a.address)) {
             (_, Some(l)) => KeyRole::Label(l.clone()),
             (AddressChain::Change, None) => KeyRole::Change,
@@ -1776,6 +1779,30 @@ mod tests {
         engine.block_on(engine.shutdown()).unwrap();
     }
 
+    /// A lookahead raised after the import (the recovery scan's) watches
+    /// that gap past Core's counters, not just past the used addresses.
+    #[test]
+    fn a_raised_lookahead_reaches_past_cores_counters() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let options = ImportOptions {
+            lookahead: Some(100),
+            ..Default::default()
+        };
+        let id = (engine.block_on(s.import_wallet_dat(file, None, options)))
+            .unwrap()
+            .wallet_id;
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) < 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) <= CORE_COMPAT_LOOKAHEAD);
+        let manager = s.manager().unwrap();
+        (engine.block_on(s.raise_lookahead(&manager, id, CORE_COMPAT_LOOKAHEAD))).unwrap();
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) > CORE_COMPAT_LOOKAHEAD);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
     /// The id of `bdb_wide_range.dat`'s wallet (`abandon … about`).
     fn wide_range_id() -> WalletId {
         let phrase = b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -1957,13 +1984,172 @@ mod tests {
         engine.block_on(engine.shutdown()).unwrap();
     }
 
+    /// After a restart, a wallet imported from Core watches its whole stored
+    /// range, each counter plus the stored lookahead, not just the
+    /// library's default gap past the counter, and a payment to the last
+    /// address of that range counts.
+    #[test]
+    fn a_reloaded_core_wallet_watches_its_stored_range_and_counts_a_payment_in_it() {
+        use dash_spv::EventHandler;
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        const PAID: u64 = 3 * 100_000_000;
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        let last = |chain| match chain {
+            AddressChain::Receiving => 1000 + CORE_COMPAT_LOOKAHEAD,
+            _ => 1 + CORE_COMPAT_LOOKAHEAD,
+        };
+        let range: Vec<(AddressChain, u32, String)> = (addresses_of(&engine, &s, id).into_iter())
+            .filter(|a| a.index <= last(a.chain))
+            .map(|a| (a.chain, a.index, a.address))
+            .collect();
+        for chain in [AddressChain::Receiving, AddressChain::Change] {
+            let derived = range.iter().filter(|(c, ..)| *c == chain).count();
+            assert_eq!(
+                derived,
+                last(chain) as usize + 1,
+                "{chain:?} in the session"
+            );
+        }
+
+        let s = reopen(&engine, s);
+        let manager = s.manager().unwrap();
+        let watched = engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&id.0).unwrap().core_wallet)
+                .monitored_addresses()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<std::collections::HashSet<_>>()
+        });
+        let unwatched: Vec<_> = (range.iter())
+            .filter(|(.., a)| !watched.contains(a))
+            .map(|(c, i, _)| (*c, *i))
+            .collect();
+        assert!(
+            unwatched.is_empty(),
+            "not watched after the restart: {unwatched:?}"
+        );
+
+        let (_, _, to) = (range.iter())
+            .find(|(c, i, _)| *c == AddressChain::Receiving && *i == last(*c))
+            .unwrap();
+        let to = (to.parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>())
+            .unwrap()
+            .assume_checked();
+        let tx = dashcore::Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: dashcore::OutPoint::new(
+                    dashcore::Txid::from_byte_array([9; 32]),
+                    0,
+                ),
+                ..Default::default()
+            }],
+            output: vec![dashcore::TxOut {
+                value: PAID,
+                script_pubkey: to.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        let events: Vec<_> = engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let mut rx = wm.subscribe_events();
+            let result = wm.process_mempool_transaction(&tx, None).await;
+            assert!(result.is_relevant, "the payment is the wallet's");
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        });
+        for event in &events {
+            s.hub.on_wallet_event(event);
+        }
+        let balances = s.balances(&id).unwrap().unwrap();
+        assert_eq!(balances.total, PAID, "the payment counts");
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// A raise of a Core wallet's lookahead in the session (the recovery
+    /// scan's) widens the gap past Core's counters too, not just past the
+    /// last address used.
+    #[test]
+    fn a_raised_lookahead_widens_the_gap_past_cores_counters() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let options = ImportOptions {
+            lookahead: Some(50),
+            ..ImportOptions::default()
+        };
+        let id = (engine.block_on(s.import_wallet_dat(file, None, options)))
+            .unwrap()
+            .wallet_id;
+        let counters = [(AddressChain::Receiving, 1001), (AddressChain::Change, 2)];
+        let addresses = addresses_of(&engine, &s, id);
+        for (chain, counter) in counters {
+            let before = highest(&addresses, chain);
+            assert!(
+                before < counter - 1 + CORE_COMPAT_LOOKAHEAD,
+                "{chain:?}: {before}"
+            );
+        }
+
+        let manager = s.manager().unwrap();
+        (engine.block_on(s.raise_lookahead(&manager, id, CORE_COMPAT_LOOKAHEAD))).unwrap();
+        let addresses = addresses_of(&engine, &s, id);
+        for (chain, counter) in counters {
+            assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+        }
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Keys attached from a wallet.dat to a wallet with a narrower lookahead
+    /// raise its pools before Core's counters are covered, so the range past
+    /// each counter is the attach's lookahead even when the stored ranges
+    /// applied after the attach are not.
+    #[test]
+    fn an_attach_covers_cores_counters_with_its_raised_lookahead() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let narrow = ImportOptions {
+            lookahead: Some(50),
+            ..ImportOptions::default()
+        };
+        let id = (engine.block_on(s.import_wallet_dat(file, None, narrow)))
+            .unwrap()
+            .wallet_id;
+        let counters = [(AddressChain::Receiving, 1001), (AddressChain::Change, 2)];
+        let addresses = addresses_of(&engine, &s, id);
+        for (chain, counter) in counters {
+            let before = highest(&addresses, chain);
+            assert!(
+                before < counter - 1 + CORE_COMPAT_LOOKAHEAD,
+                "{chain:?}: {before}"
+            );
+        }
+
+        assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+        (crate::keys::FAIL_RANGES_IN.lock().unwrap()).push(s.data_dir().to_path_buf());
+        assert_eq!(import(&engine, &s, "bdb_wide_range.dat"), id);
+        assert!(
+            !(crate::keys::FAIL_RANGES_IN.lock().unwrap()).contains(&s.data_dir().to_path_buf()),
+            "the stored ranges after the attach were not applied"
+        );
+        let addresses = addresses_of(&engine, &s, id);
+        for (chain, counter) in counters {
+            assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+        }
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
     /// Review L4: what the guard's drop runs replaces the private key.
     #[test]
     fn master_key_guard_erases_the_private_key() {
         let mut m = MasterKey::new(dashcore::Network::Testnet, &[7; 64]).unwrap();
-        let before = m.private_key.to_secret_bytes();
+        let before = *m.private_key.to_bytes();
         m.erase();
-        assert_ne!(m.private_key.to_secret_bytes(), before);
+        assert_ne!(*m.private_key.to_bytes(), before);
     }
 
     #[test]

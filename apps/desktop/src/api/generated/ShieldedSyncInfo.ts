@@ -28,4 +28,9 @@ syncing: boolean, scan: ShieldedScanProgress | null,
 /**
  * The wallet's last pass this session failed, until one succeeds.
  */
-lastPassFailed: boolean, };
+lastPassFailed: boolean,
+/**
+ * As `ShieldedStatus.spendsAvailable`, and read on an inactive network
+ * too.
+ */
+spendsAvailable: boolean, };

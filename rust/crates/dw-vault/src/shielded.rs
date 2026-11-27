@@ -17,7 +17,7 @@
 //!   and no signer. The key set leaves the vault for that one spend; the
 //!   engine charges the spend to the grant before it asks.
 
-use platform_wallet::wallet::shielded::OrchardKeySet;
+use platform_wallet::wallet::shielded::{OrchardKeySet, is_shielded_identity_account};
 
 use crate::SignerError;
 use crate::signer::{SignerScope, VaultSigner, WalletSigner};
@@ -112,12 +112,36 @@ impl Vault {
     /// [`Vault::dashpay_crypto_signer`], it is read only while the full key
     /// needs no prompt; `Locked` or `MixingOnly` otherwise.
     pub fn shielded_viewing_key(&self, wallet: &WalletId) -> Result<[u8; 96], crate::VaultError> {
+        self.shielded_viewing_keys(wallet, &[SHIELDED_ACCOUNT])
+            .map(|keys| keys[0].1)
+    }
+
+    /// [`Vault::shielded_viewing_key`] for each of `accounts`: account 0 and
+    /// the identity tip accounts (`SHIELDED_IDENTITY_ACCOUNT_BASE` plus an
+    /// identity's index), whose viewing keys platform-wallet's seedless bind
+    /// also requires; any other account is refused. One seed read for all.
+    pub fn shielded_viewing_keys(
+        &self,
+        wallet: &WalletId,
+        accounts: &[u32],
+    ) -> Result<Vec<(u32, [u8; 96])>, crate::VaultError> {
+        if let Some(account) =
+            (accounts.iter()).find(|&&a| a != SHIELDED_ACCOUNT && !is_shielded_identity_account(a))
+        {
+            return Err(crate::VaultError::Internal(format!(
+                "no viewing key for Orchard account {account}"
+            )));
+        }
         let signer = self.prompt_free_signer(wallet, SignerScope::ShieldedView)?;
         let network = signer.network();
         signer
             .with_seed(|seed| {
-                orchard_keys(seed, network, SHIELDED_ACCOUNT)
-                    .map(|keys| keys.viewing_keys().to_fvk_bytes())
+                (accounts.iter())
+                    .map(|&account| {
+                        orchard_keys(seed, network, account)
+                            .map(|keys| (account, keys.viewing_keys().to_fvk_bytes()))
+                    })
+                    .collect()
             })
             .map_err(|e| match e {
                 SignerError::Locked => crate::VaultError::Locked,

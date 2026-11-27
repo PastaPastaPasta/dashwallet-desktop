@@ -28,8 +28,8 @@ use dpp::identity::{Identity, IdentityPublicKey};
 use dpp::platform_value::Value;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
-use platform_wallet::PlatformWallet;
-use platform_wallet::wallet::identity::DashPayProfile;
+use platform_wallet::wallet::identity::{DashPayProfile, normalize_persisted_profile};
+use platform_wallet::{PlatformWallet, ProfilePaymentAddressKind};
 
 use super::avatar::Published;
 use super::contacts_model::identifier;
@@ -226,7 +226,8 @@ fn library_profile(properties: &ProfileProperties) -> Option<DashPayProfile> {
     };
     let bytes = |key: &str| properties.get(key).and_then(|v| v.as_bytes_slice().ok());
     let public_message = text(PUBLIC_MESSAGE);
-    let profile = DashPayProfile {
+    let address = |kind: ProfilePaymentAddressKind| bytes(kind.property_name()).map(<[u8]>::to_vec);
+    let profile = normalize_persisted_profile(DashPayProfile {
         display_name: text(DISPLAY_NAME),
         bio: public_message.clone(),
         avatar_url: text(AVATAR_URL)
@@ -234,7 +235,10 @@ fn library_profile(properties: &ProfileProperties) -> Option<DashPayProfile> {
         avatar_hash: bytes(AVATAR_HASH).and_then(|b| b.try_into().ok()),
         avatar_fingerprint: bytes(AVATAR_FINGERPRINT).and_then(|b| b.try_into().ok()),
         public_message,
-    };
+        core_payment_address: address(ProfilePaymentAddressKind::Core),
+        platform_payment_address: address(ProfilePaymentAddressKind::Platform),
+        shielded_address: address(ProfilePaymentAddressKind::Shielded),
+    });
     (profile != DashPayProfile::default()).then_some(profile)
 }
 

@@ -24,7 +24,7 @@ import {
 } from "./registration";
 import { INSTANT_COPY } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
-import { COPY, heldWithBoth } from "./status";
+import { COPY, heldWithBoth, waitLine } from "./status";
 import { t } from "../i18n";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
@@ -61,6 +61,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   profileFailure: null,
   invitation: null,
   fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -134,6 +135,44 @@ describe("IOS-067 step 2: the cost (D2, D5)", () => {
   });
 });
 
+describe("C-funding F20: Confirm from the Shielded balance", () => {
+  const readiness = (change: string | null) => ({ denomination: "3000000000", checks: [], readyAt: null, poolNotes: null, poolRequired: 250, change });
+  // The denomination 0.03, the names and the profile 0.007, the fee 0.003: 0.02 left.
+  const shielded = (change: string | null, remainingCredits = "2000000000") =>
+    quote({ totalDuffs: 0, availableDuffs: 0, remainingCredits, grant: { maxDuffs: 0, maxCredits: "3700000000" }, readiness: readiness(change) });
+
+  it("the denomination leaves, the fee, the start and what stays, and the change returning to this wallet's Shielded balance", () => {
+    expect(confirmModel(shielded("7000000000"), amount)).toEqual({
+      cost: "0.03 tDASH",
+      lines: [
+        "0.03 tDASH leaves your Shielded balance.",
+        "Network fee: about 0.003 tDASH.",
+        "Your identity starts with 0.027 tDASH in credits. The username and profile are paid from it, and about 0.02 tDASH stays as credits for contacts and profile changes.",
+        "0.07 tDASH returns to your Shielded balance after the next sync.",
+      ],
+      shortfall: null,
+    });
+  });
+
+  it("no change line at zero change; the whole balance says so", () => {
+    expect(confirmModel(shielded("0"), amount, 5_000_000).lines).toHaveLength(3);
+    expect(confirmModel(shielded("0"), amount, 3_000_000).lines[3]).toBe("This uses your whole Shielded balance.");
+  });
+
+  it("discreet mode tells nothing of the Shielded balance: no change line, no whole-balance line", () => {
+    expect(confirmModel(shielded("7000000000"), amount, 10_000_000, true).lines).toHaveLength(3);
+    expect(confirmModel(shielded("0"), amount, 3_000_000, true).lines).toHaveLength(3);
+  });
+
+  it("drops the credits-left clause at or below zero", () => {
+    expect(confirmModel(shielded("0", "0"), amount).lines[2]).toBe("Your identity starts with 0.007 tDASH in credits. The username and profile are paid from it.");
+  });
+
+  it("a contested name adds the voting line", () => {
+    expect(confirmModel({ ...shielded("0"), contested: true }, amount).lines.at(-1)).toBe(REG_COPY.confirm.contested);
+  });
+});
+
 describe("IOS-068 the progress and result screens (R1–R11)", () => {
   it("R1: a running row: its step and wait, busy, Let me know when it's done", () => {
     const m = screenModel(row(), I);
@@ -158,6 +197,22 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
       { kind: "continue", label: "Continue" },
       { kind: "moveToCore", label: "Move to Dash wallet" },
     ]);
+  });
+
+  it("F12: a Shielded payment no run checks (after a relaunch) is paused, Continue; a run's is progress", () => {
+    const idle = row({ waiting: "paymentUnknown", running: false, fundsCommitted: true, fromShielded: true });
+    const m = screenModel(idle, I);
+    expect(m).toMatchObject({ kind: "paused", busy: false });
+    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), waitLine(idle)]);
+    expect(waitLine(idle)).toMatch(/Choose Continue to check it again/);
+    expect(m.actions).toEqual([{ kind: "continue", label: "Continue" }]);
+    expect(isRunning(idle)).toBe(false);
+    const running = { ...idle, running: true };
+    expect(kinds(running)).toEqual(["progress", "home"]);
+    expect(waitLine(running)).toBe("Checking whether the payment from your Shielded balance went through.");
+    expect(isRunning(running)).toBe(true);
+    // A Platform payment's unknown outcome is unchanged.
+    expect(kinds({ ...idle, fromShielded: false, fromPlatform: true })[0]).toBe("progress");
   });
 
   it("D21, D26: an idle row waiting for a proof (after a relaunch) is paused, Continue", () => {
@@ -215,6 +270,14 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     // Another failure keeps its label.
     const failed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("platform.timeout", { retryable: false }) }), I);
     expect(failed.actions.map((a) => `${a.kind}:${a.label}`)).toEqual(["another:Choose another username"]);
+  });
+
+  it("C-funding F12: a Shielded payment whose coins were spent with no identity claims no refund and offers a new registration", () => {
+    const consumed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromShielded: true, failure: failure("registration.payment_consumed", { retryable: false }) }), I);
+    expect([consumed.kind, consumed.title, ...consumed.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "another:Start a new registration"]);
+    expect(consumed.lines).toEqual([t("dashpay.failure.consumedShielded")]);
+    expect(consumed.lines[0]).toMatch(/another device using this recovery phrase spent them/);
+    expect(consumed.lines.join(" ")).not.toContain("registration.payment_consumed");
   });
 
   it("F22: a Platform run stopped by a changed plan says so in its own words and goes back to Confirm", () => {

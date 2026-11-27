@@ -15,6 +15,7 @@ import { creditCount } from "./profile";
 import { PAY_WITH_COPY, type PaySource } from "./payWith";
 import { withTable } from "./status";
 import { topUpErrorText } from "./topup";
+import { platformHoldText } from "../api/platformHold";
 
 export type { PaySource };
 
@@ -154,6 +155,8 @@ export function platformOutcomeText(o: TopUpFromPlatformOutcome, balance: (credi
 
 /** A top-up from Platform's refusal, by code; the rest as a top-up's. */
 export function fromPlatformErrorText(e: unknown, amount: (duffs: number) => string, discreet = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return topUpErrorText(e, amount, discreet);
   switch (e.code) {
     case "credits.move_pending":

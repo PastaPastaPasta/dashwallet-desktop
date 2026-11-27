@@ -19,12 +19,14 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
+import { SHIELDED_SPENDS_COPY, shieldedSpendsOff, spendsOffText } from "../shielded/spends";
 import { SHIELDED_SYNC_COPY, scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText } from "../shielded/syncing";
 import { coreMaxNotes, TRANSFER_COPY } from "../transfer/model";
 import { preparingText } from "../transfer/preparing";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
+import { platformHoldText } from "../api/platformHold";
 
 const MEMO_BYTES = 36;
 
@@ -66,10 +68,13 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const hold = shieldedHold(status);
   // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
   const syncing = shieldedSyncing(status);
+  const spendsOff = shieldedSpendsOff(status);
   const waitText = shieldedWaitText(status);
-  const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", shieldedWait(status)) : null;
-  const maxWhy = syncing ? waitText : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
-  const nextWhy = syncing
+  const maxRefusal = line.state.kind === "refused" ? (platformHoldText(line.state.error, false) ?? shieldedErrorText(line.state.error, credits, fmt, "send", shieldedWait(status), false, spendsOff)) : null;
+  const maxWhy = spendsOff ? spendsOffText(kind) : syncing ? waitText : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
+  const nextWhy = spendsOff
+    ? spendsOffText(kind)
+    : syncing
     ? waitText
     : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
   const amountField = (
@@ -96,7 +101,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
       className="topup-form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!ready || syncing) return;
+        if (!ready || syncing || spendsOff) return;
         if (kind === "add") flow.next({ kind: "add", duffs: amount });
         else {
           const credits = String(BigInt(amount) * CREDITS_PER_DUFF);
@@ -187,7 +192,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
         <DashButton variant="tintedGray" size="large" type="button" data-testid="shielded-cancel" onClick={() => flow.close()}>
           {C.form.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="shielded-next" disabled={!ready || syncing} why={nextWhy}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="shielded-next" disabled={!ready || syncing || spendsOff} why={nextWhy}>
           {C.form.next}
         </DashButton>
       </div>
@@ -215,6 +220,8 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
   const { duffs, credits } = fmt;
   const kind = flow.kind;
   const syncing = shieldedSyncing(status);
+  const spendsOff = shieldedSpendsOff(status);
+  const spendBlocked = spendsOff && kind !== "resume";
   // DEC-1057: a send or move from a wallet with an unrecorded spend needs the user's confirmation
   // first, and passes it to the engine; a shield does not.
   const unrecorded = kind !== "add" && (status?.unrecordedSpends.length ?? 0) > 0;
@@ -225,7 +232,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-quote-error">
-          {shieldedErrorText(quote.error, credits, duffs, kind, shieldedWait(status), coreMax)}
+          {platformHoldText(quote.error, false) ?? shieldedErrorText(quote.error, credits, duffs, kind, shieldedWait(status), coreMax, spendsOff)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -281,7 +288,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={syncing ? shieldedWaitText(status) : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={spendBlocked ? spendsOffText(kind) : syncing ? shieldedWaitText(status) : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing || spendBlocked} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -381,7 +388,7 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
       {step === "refused" && (
         <>
           <p className="form-problem" role="alert" data-testid="shielded-refusal">
-            {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedWait(status), flow.request?.kind === "add" && !!flow.request.all)}
+            {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedWait(status), flow.request?.kind === "add" && !!flow.request.all, shieldedSpendsOff(status))}
           </p>
           <div className="sheet-actions">
             {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (
@@ -426,9 +433,10 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   const infoRead = useShieldedSyncInfo(walletId, enabled);
   const status = infoRead.data ?? null;
   const gate = shieldedReceiveGate(status);
+  const spendsOff = shieldedSpendsOff(status);
   useShieldedBind(walletId, status, enabled);
   const settled = infoRead.data !== undefined || infoRead.isError;
-  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" });
+  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" && !spendsOff });
   useRereadWhenBound(status?.account === "bound", enabled, address.isError, address.refetch);
   const firstScan = !!status?.active && !status.established;
   const percent = firstScan ? scanShare(status?.scan) : null;
@@ -445,6 +453,12 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     </p>
   );
   const before = (() => {
+    if (spendsOff)
+      return (
+        <p className="field-hint" data-testid="shielded-receive-spends-off">
+          {SHIELDED_SPENDS_COPY.receive}
+        </p>
+      );
     if (gate === "unlock") {
       // Unlocked for mixing only: the same full unlock, named as Pay names it.
       const mixingOnly = status?.account === "mixingOnly";
@@ -467,13 +481,13 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     if (address.isError)
       return (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
-          {shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
+          {platformHoldText(address.error, false) ?? shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       );
     if (address.data) return <Qr text={address.data.address} label={tr("transfer.shielded.receive.qr", { address: address.data.address })} testId="shielded-receive-qr" />;
     return loading;
   })();
-  const shown = gate === "address" && !address.isError && address.data;
+  const shown = !spendsOff && gate === "address" && !address.isError && address.data;
   return {
     text: <p className="sheet-text">{C.receive.text}</p>,
     before,
@@ -541,9 +555,10 @@ export function ShieldedSendLink({ walletId, network }: { walletId: string; netw
   );
 }
 
-/** Why Send from Shielded waits: syncing, a call running, another kind's result not yet seen (a
+/** Why Send from Shielded waits: this build cannot spend from Shielded, syncing, a call running, another kind's result not yet seen (a
  * Transfer move, opened from Transfer), or nothing to send; `null` when it can open. */
 function sendWhy(flow: ShieldedFlow, status: ShieldedStatus): string | null {
+  if (shieldedSpendsOff(status) && !(flow.kind === "send" && (flow.running || flow.unseen))) return SHIELDED_SPENDS_COPY.unavailable;
   return shieldedWaitText(status) ?? (flow.running ? C.card.why.busy : flow.unseen && flow.kind !== "send" ? C.unseenSend : !shieldedDuffs(status) ? C.card.why.empty : null);
 }
 

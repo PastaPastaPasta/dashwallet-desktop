@@ -167,6 +167,7 @@ fn a_wallet_switch_during_a_scan_shows_each_wallets_own() {
                 .into_iter()
                 .collect(),
             sync_unix_seconds: 1_700_000_000,
+            evidence: None,
         });
 
     let _guard = hold_store(&engine, &session);

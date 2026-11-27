@@ -17,6 +17,9 @@ test("the sheet shows the App ID, the app's unverified name and where it returns
   const sheet = await openConnect(page, "ok");
   await expect(sheet.getByRole("heading", { name: "Sign in to an app" })).toBeVisible();
   await expect(page.getByTestId("connect-claim")).toHaveText("“Yappr” (name given by the app, not verified)");
+  await expect(page.getByTestId("connect-unverified")).toHaveText(
+    "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+  );
   await expect(page.getByTestId("connect-app-id")).toHaveText(APP_ID);
   await expect(page.getByTestId("connect-returns-to")).toHaveText("Returns you to yappr.example");
   await expect(page.getByTestId("connect-identity")).toHaveValue(/.+/);
@@ -31,6 +34,11 @@ test("the sheet shows the App ID, the app's unverified name and where it returns
   await expect(rows.nth(0).getByTestId("connect-critical")).toHaveCount(0);
   await expect(rows.nth(1).getByTestId("connect-critical")).toHaveText("This key has critical access: within what it covers, it can do anything your identity can.");
   await expect(rows.nth(2).getByTestId("connect-critical")).toContainText("The funding limit doesn't cap tokens.");
+  await expect(rows.nth(0).getByTestId("connect-token-cost")).toHaveText(
+    "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
+  );
+  await expect(rows.nth(1).getByTestId("connect-token-cost")).toHaveCount(0);
+  await expect(rows.nth(2).getByTestId("connect-token-cost")).toHaveCount(0);
   await expect(page.getByTestId("connect-encryption")).toContainText("An encryption key for the app");
   await expect(page.getByTestId("connect-limit")).toHaveValue("0.05");
   await expect(page.getByTestId("connect-expiry")).toHaveText("In 30 days");
@@ -100,6 +108,7 @@ test("a request typed into Open URI has no way back; closing the sheet forgets t
   await page.getByTestId("open-uri-input").fill("dashpay://connect?v=2&fixture=1");
   await page.getByTestId("open-uri-open").click();
   await page.locator("[data-testid=connect-body][data-phase=sheet]").waitFor();
+  await expect(page.getByTestId("connect-unverified")).toBeVisible();
   await expect(page.getByTestId("connect-returns-to")).toHaveCount(0);
   await page.getByTestId("connect-deny").click();
   await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
@@ -121,7 +130,7 @@ test("a send that failed says so; Retry sending signs in", async ({ page }) => {
   await page.getByTestId("connect-approve").click();
   await authorize(page);
   await expect(page.getByTestId("connect-send-failed")).toHaveText(
-    "The keys were added to your identity, but the app hasn't received them yet. Retry sending, or return to the app and start again.",
+    "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
   );
   await expect(page.getByTestId("connect-return")).toHaveCount(0);
   await page.getByTestId("connect-retry").click();
@@ -151,6 +160,16 @@ test("a request that changed on Platform is read again and the user is told", as
   await expect(page.getByTestId("connect-done")).toBeVisible();
 });
 
+test("a group that changed between the sheet's read and the quote's is read again before Approve", async ({ page }) => {
+  await openConnect(page, "groupChanged");
+  await quoted(page);
+  await expect(page.getByTestId("connect-plan-changed")).toBeVisible();
+  await expect(page.getByTestId("connect-binding").nth(2).getByTestId("connect-group-admins").locator("dd")).toHaveCount(2);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
 test("keys not confirmed in time leave the sheet open, and approving again finishes", async ({ page }) => {
   await openConnect(page, "notConfirmed");
   await quoted(page);
@@ -166,6 +185,31 @@ test("keys not confirmed in time leave the sheet open, and approving again finis
   await expect(page.getByTestId("connect-done")).toBeVisible();
 });
 
+test("a reopened sheet whose quote failed offers Try again, which quotes the same choice and turns Approve on", async ({ page }) => {
+  await openConnect(page, "quoteOffline");
+  await expect(page.getByTestId("connect-quote-error")).toHaveText("Couldn't check this request with Platform. Try again.");
+  await expect(page.getByTestId("connect-limit")).toBeDisabled();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await page.getByTestId("connect-quote-retry").click();
+  await quoted(page);
+  await expect(page.getByTestId("connect-quote-error")).toHaveCount(0);
+  await expect(page.getByTestId("connect-quote-retry")).toHaveCount(0);
+  await expect(page.getByTestId("connect-approve")).toBeEnabled();
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
+test("a credit shortfall offers Try again, which checks the balance again", async ({ page }) => {
+  await openConnect(page, "credits");
+  await expect(page.getByTestId("connect-quote-error")).toContainText("more in credits");
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await page.getByTestId("connect-quote-retry").click();
+  await expect(page.getByTestId("connect-quote-error")).toContainText("more in credits");
+  await expect(page.getByTestId("connect-quote-retry")).toBeVisible();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+});
+
 test("a Deny after keys not confirmed doesn't say nothing was added", async ({ page }) => {
   await openConnect(page, "notConfirmed");
   await quoted(page);
@@ -174,8 +218,23 @@ test("a Deny after keys not confirmed doesn't say nothing was added", async ({ p
   await expect(page.getByTestId("connect-quote-error")).toBeVisible();
   await page.getByTestId("connect-deny").click();
   await expect(page.getByTestId("connect-denied")).toHaveText(
-    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
   );
+});
+
+test("a Deny after keys not confirmed on a typed request shows the denied state instead of closing", async ({ page }) => {
+  await openConnect(page, "notConfirmed", "light", null);
+  await quoted(page);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-quote-error")).toBeVisible();
+  await page.getByTestId("connect-deny").click();
+  await expect(page.getByTestId("connect-denied")).toHaveText(
+    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
+  );
+  await expect(page.getByTestId("connect-return")).toHaveCount(0);
+  await page.getByTestId("connect-close").click();
+  await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
 });
 
 test("a request that arrives while locked opens once the wallet is unlocked", async ({ page }) => {
@@ -187,5 +246,12 @@ test("a request that arrives while locked opens once the wallet is unlocked", as
   await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
   await page.getByTestId("lock-field").fill("demo");
   await page.keyboard.press("Enter");
+  await expect(page.getByTestId("connect-claim")).toBeVisible();
+});
+
+test("a request refused because every kept request is open or being approved says so, and the open sheet stays", async ({ page }) => {
+  await openConnect(page, "ok");
+  await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "rejected", reason: { kind: "connect", reason: "busy" } }]));
+  await expect(page.getByText("Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.")).toBeVisible();
   await expect(page.getByTestId("connect-claim")).toBeVisible();
 });

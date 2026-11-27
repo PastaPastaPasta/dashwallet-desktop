@@ -32,6 +32,12 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     /// Close or unload refused while a shielded spend's result is unknown
     /// (0.1 E1, DEC-1046).
     public static let shieldedSpendUnresolved = Self(rawValue: "shielded_spend_unresolved")
+    /// An open the store upgrade refused before any store opened; every
+    /// existing file is unchanged (M3).
+    public static let storageRefused = Self(rawValue: "storage_refused")
+    /// An open refused because someone other than the user or root can change
+    /// the data folder or a directory above it.
+    public static let storageNotPrivate = Self(rawValue: "storage_not_private")
 
     // Vault.
     public static let vaultNoVault = Self(rawValue: "vault.no_vault")
@@ -258,6 +264,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let engineCodes: [ServiceErrorCode] = [
         .invalidArgument, .networkNotOpen, .walletNotFound, .storage, .notImplemented, .internal,
         .invalidConfig, .storageInUse, .wallet, .sdk, .spv, .io, .shieldedSpendUnresolved,
+        .storageRefused, .storageNotPrivate,
         .vaultNoVault, .vaultAlreadyExists, .vaultLocked, .vaultWrongPassphrase, .vaultThrottled,
         .vaultPassphraseRejected, .vaultNotEncrypted, .vaultAlreadyEncrypted, .vaultGrantInvalid,
         .vaultGrantPurposeMismatch, .vaultMixingOnly, .vaultCredentialRequired, .vaultNoSecret, .vaultQuickUnlockUnavailable,

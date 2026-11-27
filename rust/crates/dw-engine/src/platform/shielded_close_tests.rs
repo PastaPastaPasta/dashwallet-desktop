@@ -1,8 +1,8 @@
 //! DEC-1046 (E1 review r1, R1-1): no close, unload or quit deletes a
 //! shielded spend whose result is not known. At the pin, platform-wallet's
 //! `remove_wallet` always purges the wallet's shielded store, its stored
-//! transitions and reservations included (`wallet_lifecycle.rs:847-850` →
-//! `coordinator.rs:878-902` → `file_store.rs:880-901`), and it has no detach.
+//! transitions and reservations included (`wallet_lifecycle.rs:1011-1013` →
+//! `coordinator.rs:1041-1068` → `file_store.rs:1734-1761`), and it has no detach.
 //! So Close Wallet and an in-app network close or switch are refused while a
 //! wallet holds one, and the quit keeps that wallet loaded: its rows are on
 //! disk, and the next launch rehydrates them as pending.
@@ -13,14 +13,14 @@ use std::time::Duration;
 
 use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, ArtifactStatus, NewShieldedArtifact};
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
-use platform_wallet::wallet::shielded::store::{
-    NotExecutedReason, PendingRedrive, StalePendingSpend, UnresolvedReason,
+use platform_wallet::wallet::shielded::store::{PendingRedrive, StalePendingSpend};
+use platform_wallet::wallet::shielded::{
+    ShieldedActivityEntry, ShieldedActivityKind, ShieldedActivityStatus, ShieldedDirection,
+    ShieldedStore, SubwalletId,
 };
-use platform_wallet::wallet::shielded::{ShieldedSpendDisposition, ShieldedStore, SubwalletId};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::runtime::StoredSpends;
 use super::shielded::UnresolvedSpend;
 use super::shielded_pool::{self as pool, on_pool};
 use super::topup_tests::{PASS, PHRASE, options};
@@ -118,6 +118,10 @@ fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> boo
         .unwrap()
 }
 
+/// The proved height at which the test spends' anchors were in Platform's
+/// recorded set, as the library keeps it with each record and reservation.
+pub(super) const ANCHOR_HEIGHT: u64 = 1_000;
+
 /// Two spends of unknown result as the library stores them (operations.rs
 /// `arm_redrive_record`): a transfer's and an unshield's serialized
 /// transitions (dpp `ShieldedTransfer` and `ShieldedWithdrawal`, the
@@ -135,12 +139,13 @@ fn spends() -> Vec<PendingRedrive> {
                 attempts: 0,
                 identity_nonce_finalized: false,
                 identity_user_abandoned: false,
+                anchor_height: Some(ANCHOR_HEIGHT),
             }
         })
         .collect()
 }
 
-/// The serialized transition of spend `n`: 1 a shielded transfer, 2 an
+/// The serialized transition of spend `n`: odd a shielded transfer, even an
 /// unshield to a Core script, one action per nullifier.
 fn transition(n: u8, anchor: [u8; 32], nullifiers: &[[u8; 32]]) -> Vec<u8> {
     use dpp::identity::core_script::CoreScript;
@@ -161,7 +166,7 @@ fn transition(n: u8, anchor: [u8; 32], nullifiers: &[[u8; 32]]) -> Vec<u8> {
             spend_auth_sig: [0x60 + n; 64],
         })
         .collect();
-    let st = match n {
+    let st = match n % 2 {
         1 => StateTransition::ShieldedTransfer(ShieldedTransferTransition::V0(
             ShieldedTransferTransitionV0 {
                 actions,
@@ -226,17 +231,88 @@ async fn stash_spends(s: &Arc<NetworkSession>, wallet: WalletId) {
     let coordinator = pool::coordinator(s, &m, None).await.unwrap();
     let mut store = coordinator.store().write().await;
     for r in spends() {
-        for n in &r.nullifiers {
-            assert!(store.mark_pending(subwallet(wallet), n).unwrap());
-            (store.set_pending_spend(subwallet(wallet), n, r.anchor, r.activity_id)).unwrap();
-        }
-        store.arm_redrive(subwallet(wallet), r).unwrap();
+        reserve_and_record(&mut *store, subwallet(wallet), r);
     }
+}
+
+/// Reserves the notes of spend `r` against its anchor and saves its record,
+/// as the library does before it asks the hook.
+pub(super) fn reserve_and_record<S: ShieldedStore>(
+    store: &mut S,
+    id: SubwalletId,
+    r: PendingRedrive,
+) where
+    S::Error: std::fmt::Debug,
+{
+    for n in &r.nullifiers {
+        assert!(store.mark_pending(id, n).unwrap());
+        (store.set_pending_spend(id, n, r.anchor, r.activity_id, r.anchor_height)).unwrap();
+    }
+    store.arm_redrive(id, r).unwrap();
+}
+
+/// What the library does with spend `r` the hook refused before its first
+/// broadcast (operations.rs `settle_failed_spend`): its record retired and
+/// its notes released in the store, its history row failed.
+pub(super) fn refuse_undelivered<S: ShieldedStore>(
+    store: &mut S,
+    id: SubwalletId,
+    r: &PendingRedrive,
+) where
+    S::Error: std::fmt::Debug,
+{
+    assert!(
+        store
+            .retire_undelivered_spend(id, &r.activity_id, &[])
+            .unwrap()
+    );
+    for n in &r.nullifiers {
+        store.clear_pending(id, n).unwrap();
+    }
+    history_row(store, id, r, ShieldedActivityStatus::Failed);
+}
+
+/// Saves spend `r`'s history row with `status`, as the library reports its
+/// outcome.
+pub(super) fn history_row<S: ShieldedStore>(
+    store: &mut S,
+    id: SubwalletId,
+    r: &PendingRedrive,
+    status: ShieldedActivityStatus,
+) where
+    S::Error: std::fmt::Debug,
+{
+    let entry = ShieldedActivityEntry {
+        id: r.activity_id,
+        kind: ShieldedActivityKind::Sent,
+        direction: ShieldedDirection::Out,
+        amount: 1_000,
+        fee: None,
+        counterparty: None,
+        memo: None,
+        block_height: None,
+        status,
+        created_at_ms: 0,
+        min_note_position: None,
+        note_cmxs: Vec::new(),
+        spent_nullifiers: r.nullifiers.clone(),
+    };
+    store.save_activity(id, &entry).unwrap();
 }
 
 /// Stores [`spends`] for `wallet` and puts their dispatched artifacts in the
 /// journal before pass admission.
 fn store_spends(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
+    store_spends_as(engine, session, wallet, ArtifactKind::Transfer);
+}
+
+/// [`store_spends`] with each artifact of `kind`.
+fn store_spends_as(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    kind: ArtifactKind,
+) {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     engine.block_on(async move {
         stash_spends(&s, wallet).await;
@@ -248,9 +324,13 @@ fn store_spends(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId
                         activity: r.activity_id,
                         origin: ArtifactOrigin::Dispatched,
                         st_hash: Some(Sha256::digest(&r.st_bytes).into()),
-                        kind: Some(ArtifactKind::Transfer),
+                        kind: Some(kind),
                         anchor: Some(r.anchor),
-                        identity_id: None,
+                        identity_id: matches!(
+                            kind,
+                            ArtifactKind::IdentityTopUp | ArtifactKind::IdentityCreate
+                        )
+                        .then_some([0x42; 32]),
                         selected: r.nullifiers.clone(),
                         published: r.nullifiers.clone(),
                     },
@@ -321,7 +401,9 @@ fn kept(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Kep
 fn expected() -> Kept {
     let redrives = spends();
     let mut reserved: Vec<StalePendingSpend> = (redrives.iter())
-        .flat_map(|r| (r.nullifiers.iter()).map(|n| (*n, r.anchor, Some(r.activity_id))))
+        .flat_map(|r| {
+            (r.nullifiers.iter()).map(|n| (*n, r.anchor, Some(r.activity_id), r.anchor_height))
+        })
         .collect();
     reserved.sort();
     let hash = |st: &[u8]| -> [u8; 32] { Sha256::digest(st).into() };
@@ -344,11 +426,11 @@ fn expected() -> Kept {
 
 /// Close Wallet and an in-app close (the network switch's) are refused
 /// while a spend is unresolved, and leave everything of it as it was; so
-/// does any removal but the user's. Once the scan resolves the spends the
-/// library keeps their dispositions, which hold the notes until the engine
-/// acknowledges them, and both stay refused; acknowledged, nothing holds.
-/// A spend stored under the hook and not sent yet holds again; refused
-/// before its first broadcast (`NotExecuted`), it holds nothing.
+/// does any removal but the user's. Refused before their first broadcast
+/// (the library retires each record and frees its notes), they hold
+/// nothing of the library's. A spend stored under the hook and not sent
+/// yet holds again; refused before its first broadcast, the failed rows
+/// hold the wallet until a pass reads them into the journal.
 #[test]
 fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() {
     let dir = dw_testutil::private_tempdir();
@@ -383,25 +465,20 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     let s = Arc::clone(&session);
     let removed = engine.block_on(async move {
         (s.platform
-            .remove_from_manager(&s.leases, &manager, wallet, StoredSpends::Refuse))
+            .remove_from_manager(&s.leases, &manager, &s.live().unwrap().appdb, wallet))
         .await
     });
     assert!(matches!(removed, Err(EngineError::ShieldedSpendUnresolved)));
     assert_eq!(kept(&engine, &session, wallet), expected());
 
-    // The scan finds both spent: the library resolves them.
+    // The hook refuses both before their first broadcast.
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
     let coordinator = engine.block_on(pool::coordinator(&s, &m, None)).unwrap();
     let c = Arc::clone(&coordinator);
-    let settled = engine.block_on(async move {
+    engine.block_on(async move {
         let mut store = c.store().write().await;
         for r in spends() {
-            for n in &r.nullifiers {
-                store.mark_spent(subwallet(wallet), n).unwrap();
-            }
-            store
-                .clear_redrive(subwallet(wallet), &r.activity_id)
-                .unwrap();
+            refuse_undelivered(&mut *store, subwallet(wallet), &r);
         }
         assert!(
             store
@@ -409,37 +486,23 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
                 .unwrap()
                 .is_empty()
         );
-        store.dispositions(wallet.0).unwrap()
+        assert!(
+            store
+                .stale_pending_spends(subwallet(wallet))
+                .unwrap()
+                .is_empty()
+        );
     });
-    assert_eq!(settled.len(), 2, "{settled:?}");
-    assert!(
-        (settled.iter())
-            .all(|d| !matches!(d.disposition, ShieldedSpendDisposition::NotExecuted(_))),
-        "{settled:?}"
-    );
-    let unloaded = engine.block_on(session.unload_wallet(wallet));
-    assert!(
-        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
-        "{unloaded:?}"
-    );
-    let closed = engine.block_on(engine.close_network(DashNetwork::Regtest));
-    assert!(
-        matches!(closed, Err(EngineError::ShieldedSpendUnresolved)),
-        "{closed:?}"
-    );
 
-    // Acknowledged: nothing is held. Then a hooked spend, stored and not
-    // sent yet, holds until the hook's refusal resolves it.
+    // A hooked spend, stored and not sent yet, holds until the hook's
+    // refusal resolves it.
+    let mut unsent = spends().remove(0);
+    unsent.activity_id = [3; 32];
+    unsent.nullifiers = vec![[0x13; 32]];
     let c = Arc::clone(&coordinator);
+    let stored = unsent.clone();
     engine.block_on(async move {
-        let mut store = c.store().write().await;
-        for d in &settled {
-            assert!(store.ack_disposition(d.subwallet, &d.st_hash).unwrap());
-        }
-        let mut unsent = spends().remove(0);
-        unsent.activity_id = [3; 32];
-        unsent.nullifiers = vec![[0x13; 32]];
-        store.arm_unsent_redrive(subwallet(wallet), unsent).unwrap();
+        reserve_and_record(&mut *c.store().write().await, subwallet(wallet), stored);
     });
     let unloaded = engine.block_on(session.unload_wallet(wallet));
     assert!(
@@ -448,11 +511,17 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     );
     let c = Arc::clone(&coordinator);
     engine.block_on(async move {
-        (c.store().write().await)
-            .resolve_unsent_redrive(subwallet(wallet), &[3; 32], NotExecutedReason::Refused)
-            .unwrap();
+        refuse_undelivered(&mut *c.store().write().await, subwallet(wallet), &unsent);
     });
     drop(coordinator);
+    // The failed rows hold the wallet until a pass reads them.
+    let unloaded = engine.block_on(session.unload_wallet(wallet));
+    assert!(
+        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
+        "{unloaded:?}"
+    );
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    assert!(engine.block_on(async move { pool::guarded_pass(&s, &m, true).await }));
     engine.block_on(session.unload_wallet(wallet)).unwrap();
     assert!(
         engine
@@ -762,9 +831,9 @@ fn quit_with_unresolved_spends_child() {
 /// quitting process, which exited without dropping anything: the viewing
 /// key in wallet.sqlite (bound again with the vault locked), the address
 /// book in app.sqlite, the spends in the shielded store and their records
-/// in the dispatch journal. A second wallet whose only spend ended
-/// `Unresolved` and is not acknowledged is kept too: its hold still waits
-/// for an acknowledgement, not for the next scan as a removal leaves it.
+/// in the dispatch journal. A second wallet whose only spend's first send
+/// failed after its record was saved is kept too: its record is still on
+/// disk, not purged as a removal leaves it.
 #[test]
 fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
     let dir = dw_testutil::private_tempdir();
@@ -790,7 +859,7 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
 
     let engine = engine_at(dir.path());
     let session = open(&engine);
-    assert_eq!(released_by_scan(&session, other), [false]);
+    assert_eq!(stored_rows(&session, other), [[5; 32]]);
     let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
         .parse()
         .unwrap();
@@ -825,9 +894,9 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
     assert_eq!(kept(&engine, &session, wallet), expected());
 }
 
-/// Imports the second wallet and resolves a spend of it `Unresolved`, as a
-/// failed send of an armed record leaves it (`Cancelled`): the wallet holds
-/// only that disposition, not acknowledged.
+/// Imports the second wallet and stores a spend of it whose first send
+/// failed after its record was saved: the library keeps the record and its
+/// reservations (operations.rs `settle_failed_spend`, `ShieldedSpendUnconfirmed`).
 fn cancelled_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
     let other = engine
         .block_on(session.import_wallet(
@@ -846,33 +915,21 @@ fn cancelled_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId 
         let mut store = coordinator.store().write().await;
         let mut r = spends().remove(0);
         r.activity_id = [5; 32];
-        for n in &r.nullifiers {
-            assert!(store.mark_pending(subwallet(other), n).unwrap());
-            (store.set_pending_spend(subwallet(other), n, r.anchor, r.activity_id)).unwrap();
-        }
-        store.arm_redrive(subwallet(other), r).unwrap();
-        store
-            .resolve_redrive(
-                subwallet(other),
-                &[5; 32],
-                ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled),
-            )
-            .unwrap();
-        assert!(store.pending_redrives(subwallet(other)).unwrap().is_empty());
+        reserve_and_record(&mut *store, subwallet(other), r);
+        assert_eq!(store.pending_redrives(subwallet(other)).unwrap().len(), 1);
     });
     other
 }
 
-/// Whether each of `wallet`'s dispositions had its hold handed to the next
-/// scan, as the library's purge of a removed wallet does
-/// (`shielded_spend_dispositions.released_by_scan`).
-fn released_by_scan(session: &NetworkSession, wallet: WalletId) -> Vec<bool> {
+/// The activities of `wallet`'s spend records on disk
+/// (`shielded_pending_spends`), read raw.
+fn stored_rows(session: &NetworkSession, wallet: WalletId) -> Vec<[u8; 32]> {
     let path = session.data_dir().join(pool::SHIELDED_DB_FILE);
     let db = rusqlite::Connection::open(path).unwrap();
     let mut rows = db
-        .prepare("SELECT released_by_scan FROM shielded_spend_dispositions WHERE wallet_id = ?1")
+        .prepare("SELECT activity_id FROM shielded_pending_spends WHERE wallet_id = ?1")
         .unwrap();
-    rows.query_map([&wallet.0[..]], |r| r.get::<_, bool>(0))
+    rows.query_map([&wallet.0[..]], |r| r.get::<_, [u8; 32]>(0))
         .unwrap()
         .map(Result::unwrap)
         .collect()
@@ -880,12 +937,12 @@ fn released_by_scan(session: &NetworkSession, wallet: WalletId) -> Vec<bool> {
 
 /// DEC-1057: the marker of a spend whose record the library lost: its
 /// activity, anchor and two nullifiers.
-const MARKED: [u8; 32] = [9; 32];
-const MARKED_NULLIFIERS: [[u8; 32]; 2] = [[41; 32], [42; 32]];
+pub(super) const MARKED: [u8; 32] = [9; 32];
+pub(super) const MARKED_NULLIFIERS: [[u8; 32]; 2] = [[41; 32], [42; 32]];
 
 /// Writes [`MARKED`] for `wallet` as a spend whose library record failed
 /// does (`shielded_pool::mark_unrecorded`).
-fn mark(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
+pub(super) fn mark(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
     engine
         .block_on(session.leases.record_unrecorded_spend(
             wallet,
@@ -896,7 +953,11 @@ fn mark(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
         .unwrap();
 }
 
-fn markers(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Vec<[u8; 32]> {
+pub(super) fn markers(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+) -> Vec<[u8; 32]> {
     (engine
         .block_on(session.leases.unrecorded_spends(wallet))
         .unwrap())
@@ -908,7 +969,7 @@ fn markers(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> 
 /// What the library's persister receives from a proved scan (sync.rs:761-777)
 /// or a spend's proved result (operations.rs:2847-2854): `nullifiers` of
 /// `wallet`'s account seen spent, through the session's store, the tap.
-fn spent_seen(session: &Arc<NetworkSession>, wallet: WalletId, nullifiers: &[[u8; 32]]) {
+pub(super) fn spent_seen(session: &Arc<NetworkSession>, wallet: WalletId, nullifiers: &[[u8; 32]]) {
     use platform_wallet::changeset::{
         PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
     };
@@ -954,7 +1015,7 @@ fn a_marked_spend_refuses_the_close_until_a_scan_finds_all_its_notes_spent() {
     let s = Arc::clone(&session);
     let removed = engine.block_on(async move {
         (s.platform
-            .remove_from_manager(&s.leases, &manager, wallet, StoredSpends::Refuse))
+            .remove_from_manager(&s.leases, &manager, &s.live().unwrap().appdb, wallet))
         .await
     });
     assert!(
@@ -994,10 +1055,11 @@ fn a_marked_spend_refuses_the_close_until_a_scan_finds_all_its_notes_spent() {
     );
 }
 
-/// DEC-1057: the user's removal (under its wipe grant) deletes the
-/// wallet's markers with the wallet.
+/// DEC-1057 and Q86 Q-PURGE C2: the user's removal (under its wipe grant)
+/// of a wallet with a marked spend is refused as Close Wallet is, a hold a
+/// confirmation alone does not clear; the wallet and its marker stay.
 #[test]
-fn the_users_removal_purges_a_marked_spend() {
+fn the_users_removal_is_refused_while_a_spend_is_marked() {
     let dir = dw_testutil::private_tempdir();
     let engine = engine_at(dir.path());
     let (session, wallet) = first_launch(&engine);
@@ -1008,10 +1070,25 @@ fn the_users_removal_purges_a_marked_spend() {
         dw_vault::Credential::Passphrase(PASS),
     );
     let wipe = wipe.unwrap().id;
-    engine
-        .block_on(session.remove_wallet(wallet, wipe))
-        .unwrap();
-    assert!(markers(&engine, &session, wallet).is_empty());
+    let removed = engine.block_on(session.remove_wallet(wallet, wipe.clone()));
+    assert!(
+        matches!(
+            removed,
+            Err(EngineError::ShieldedSpendHeld(
+                crate::ShieldedHold::CarriedOver
+            ))
+        ),
+        "{removed:?}"
+    );
+    assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
+    assert!(
+        (session.vault)
+            .check_grant(&wipe, dw_vault::GrantKind::Wipe, Some(&wallet.0))
+            .is_ok(),
+        "the grant is not redeemed"
+    );
+    assert!(session.vault.has_wallet_secret(&wallet.0), "its seed stays");
+    assert_eq!(markers(&engine, &session, wallet), [MARKED]);
 }
 
 /// The quitting half of the next test, run in a child process: the first
@@ -1038,6 +1115,29 @@ fn quit_with_a_marked_spend_child() {
 /// it); a shield is not gated.
 #[test]
 fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
+    marked_spend_after_a_relaunch(true, |confirmed| {
+        if confirmed {
+            // The quotes' own refusals.
+            ("shielded.not_synced", "shielded.below_minimum")
+        } else {
+            ("shielded.unrecorded_spend", "shielded.unrecorded_spend")
+        }
+    });
+}
+
+/// [`a_marked_spend_needs_a_confirmation_after_a_relaunch`] while key set
+/// spends are off: the status names the marker and Close Wallet is refused;
+/// a send and an unshield are `platform.unavailable`, confirmed or not; a
+/// shield is not gated by the marker. The receive address is read with
+/// spends on, since with them off it is refused too.
+#[test]
+fn a_marked_spend_after_a_relaunch_holds_the_close_and_every_spend_is_unavailable() {
+    marked_spend_after_a_relaunch(false, |_| ("platform.unavailable", "platform.unavailable"));
+}
+
+/// The relaunch after [`quit_with_a_marked_spend_child`], with key set
+/// spends `on`, and what a send and an unshield answer, confirmed or not.
+fn marked_spend_after_a_relaunch(on: bool, want: impl Fn(bool) -> (&'static str, &'static str)) {
     let dir = dw_testutil::private_tempdir();
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
@@ -1056,6 +1156,7 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
     );
     let engine = engine_at(dir.path());
     let session = open(&engine);
+    pool::force_keyset_spends(&session, on);
     let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
         .parse()
         .unwrap();
@@ -1080,10 +1181,12 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
         "{unloaded:?}"
     );
 
+    pool::force_keyset_spends(&session, true);
     let to = engine
         .block_on(dp.shielded_receive_address())
         .unwrap()
         .address;
+    pool::force_keyset_spends(&session, on);
     let code = |r: Result<super::shielded::ShieldedSpendOutcome, super::ShieldedError>| {
         r.unwrap_err().code()
     };
@@ -1091,276 +1194,12 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
         let sent =
             engine.block_on(dp.shielded_send(to.clone(), 1_000, None, "g".into(), confirmed));
         let unshielded = engine.block_on(dp.unshield_to_core(1_000, None, "g".into(), confirmed));
-        let want = if confirmed {
-            // The quotes' own refusals.
-            ("shielded.not_synced", "shielded.below_minimum")
-        } else {
-            ("shielded.unrecorded_spend", "shielded.unrecorded_spend")
-        };
-        assert_eq!((code(sent), code(unshielded)), want);
+        assert_eq!((code(sent), code(unshielded)), want(confirmed));
     }
     let shield = engine
         .block_on(dp.shield_quote(crate::platform::FundAmount::Duffs { duffs: 100_000 }))
         .unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
-}
-
-/// The rows of `shielded_pending_spends` for `wallet`, read from the file.
-fn pending_rows(data_dir: &Path, wallet: WalletId) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let db = data_dir.join(pool::SHIELDED_DB_FILE);
-    let conn =
-        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .unwrap();
-    let mut stmt = conn
-        .prepare(
-            "SELECT activity_id, st_bytes FROM shielded_pending_spends \
-             WHERE wallet_id = ?1 ORDER BY activity_id",
-        )
-        .unwrap();
-    stmt.query_map([wallet.0.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-}
-
-/// [`pending_rows`] as [`stash_spends`] writes them.
-fn stashed_rows() -> Vec<(Vec<u8>, Vec<u8>)> {
-    (spends().into_iter())
-        .map(|r| (r.activity_id.to_vec(), r.st_bytes))
-        .collect()
-}
-
-/// A failed journal open unloads its wallets with no Refuse gate, safe only
-/// because shielded is not configured until the session exists. Were it
-/// configured first (built here: the session's own manager, its store
-/// open and the spends stored), the unload keeps every wallet and the
-/// stored spends' rows stay as they were.
-#[test]
-fn a_failed_open_with_the_shielded_store_configured_keeps_its_spends() {
-    let dir = dw_testutil::private_tempdir();
-    let engine = engine_at(dir.path());
-    let (session, wallet) = first_launch(&engine);
-    let s = Arc::clone(&session);
-    engine.block_on(async move { stash_spends(&s, wallet).await });
-    let before = pending_rows(session.data_dir(), wallet);
-    assert_eq!(before, stashed_rows());
-
-    let manager = session.manager().unwrap();
-    assert!(engine.block_on(manager.shielded_coordinator()).is_some());
-    engine.block_on(crate::session::unload_after_failed_open(&manager));
-
-    assert_eq!(pending_rows(session.data_dir(), wallet), before);
-    assert!(
-        manager.list_wallet_ids_blocking().contains(&wallet.0),
-        "still loaded"
-    );
-}
-
-/// Where the failed-open test's child processes keep their data root.
-const FAILED_OPEN_ROOT: &str = "DW_Q86_FAILED_OPEN_ROOT";
-
-/// Runs `test`, one of this file's ignored child tests, over `root`.
-fn run_child(test: &str, root: &Path) {
-    let child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            &format!("platform::shielded_close_tests::{test}"),
-            "--exact",
-            "--ignored",
-            "--test-threads=1",
-        ])
-        .env(FAILED_OPEN_ROOT, root)
-        .output()
-        .unwrap();
-    assert!(
-        child.status.success(),
-        "{test} failed: {}{}",
-        String::from_utf8_lossy(&child.stdout),
-        String::from_utf8_lossy(&child.stderr)
-    );
-}
-
-fn core_balance(session: &NetworkSession, wallet: WalletId) -> u64 {
-    (session.balances(&wallet).unwrap())
-        .expect("the wallet's state is read at its load")
-        .total
-}
-
-/// The first launch of the next test, in a child process: a paid wallet
-/// with [`spends`] stored, then a quit.
-#[test]
-#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
-fn failed_open_first_launch_child() {
-    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
-        return;
-    };
-    let root = Path::new(&root);
-    let engine = engine_at(root);
-    let (session, wallet) = first_launch(&engine);
-    let paid = crate::mempool_sync_tests::paid_and_stored(&engine, &session, wallet);
-    assert_eq!(core_balance(&session, wallet), paid);
-    let s = Arc::clone(&session);
-    engine.block_on(async move { stash_spends(&s, wallet).await });
-    std::fs::write(root.join("wallet"), wallet.to_string()).unwrap();
-    std::fs::write(root.join("balance"), paid.to_string()).unwrap();
-    std::fs::write(
-        root.join("data_dir"),
-        session.data_dir().as_os_str().as_encoded_bytes(),
-    )
-    .unwrap();
-    engine.block_on(engine.shutdown()).unwrap();
-    std::process::exit(0);
-}
-
-/// The relaunch of the next test, in a child process: the open succeeds,
-/// with the wallet loaded, its balance and its stored spends as they were.
-#[test]
-#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
-fn failed_open_relaunch_child() {
-    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
-        return;
-    };
-    let root = Path::new(&root);
-    let read = |name: &str| std::fs::read_to_string(root.join(name)).unwrap();
-    let wallet: WalletId = read("wallet").parse().unwrap();
-    let engine = engine_at(root);
-    let session = open(&engine);
-    assert!(session.require_wallet(&wallet).is_ok(), "loaded");
-    assert_eq!(core_balance(&session, wallet).to_string(), read("balance"));
-    engine
-        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
-        .unwrap();
-    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    let mut stored = engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
-        let store = coordinator.store().read().await;
-        store.pending_redrives(subwallet(wallet)).unwrap()
-    });
-    stored.sort_by_key(|r| r.activity_id);
-    assert_eq!(stored, spends());
-    std::fs::write(root.join("relaunched"), "ok").unwrap();
-    engine.block_on(engine.shutdown()).unwrap();
-    std::process::exit(0);
-}
-
-/// Every file under `dir`: its path, size and SHA-256. The `held` files,
-/// each of which must exist, give their size alone: a live holder's
-/// exclusive lock makes Windows refuse to read them (os error 33).
-fn files_under(dir: &Path, held: &[&Path]) -> Vec<(std::path::PathBuf, u64, [u8; 32])> {
-    for path in held {
-        assert!(path.is_file(), "{} is held", path.display());
-    }
-    let mut files = Vec::new();
-    let mut dirs = vec![dir.to_path_buf()];
-    while let Some(d) = dirs.pop() {
-        for entry in std::fs::read_dir(&d).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if held.contains(&path.as_path()) {
-                let len = std::fs::metadata(&path).unwrap().len();
-                files.push((path, len, [0; 32]));
-            } else {
-                let bytes = std::fs::read(&path).unwrap();
-                files.push((path, bytes.len() as u64, Sha256::digest(&bytes).into()));
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-/// The second launch of the next test, in a child process: shielded is
-/// configured before the journal is read (built here; no open does it) and
-/// the journal's read fails once. The open returns that error with every
-/// wallet kept loaded, and a retry in this process is refused with the
-/// restart message, not the persister's "already open" and not an empty or
-/// missing wallet, and writes nothing under the data root. Then the
-/// process exits.
-#[test]
-#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
-fn failed_open_and_retry_child() {
-    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
-        return;
-    };
-    let root = Path::new(&root);
-    let data_dir =
-        std::path::PathBuf::from(std::fs::read_to_string(root.join("data_dir")).unwrap());
-    // An imported row to classify, whose classification fails once.
-    let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
-    rusqlite::Connection::open(&journal)
-        .unwrap()
-        .execute(
-            "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, status, at) \
-             VALUES (?1, ?2, 'imported_redrive', ?3, 'unclassified', 1)",
-            rusqlite::params![[0x5a_u8; 32], [0x77_u8; 32], [0x88_u8; 32]],
-        )
-        .unwrap();
-    dw_appdb::fault::arm_fault(&journal, dw_appdb::fault::Fault::ClassifyWrite);
-    (crate::session::SHIELDED_BEFORE_JOURNAL.lock().unwrap()).push(data_dir.clone());
-
-    let engine = engine_at(root);
-    let failed = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
-    assert!(
-        matches!(&failed, Err(EngineError::Storage(e)) if e.contains("imported shielded spends")),
-        "{:?}",
-        failed.err()
-    );
-    std::fs::write(root.join("failed"), "ok").unwrap();
-
-    // The engine's instance lock and the shielded store's owner lock.
-    let instance_lock = root.join("data").join(dw_fs::instance::InstanceLock::FILE);
-    let store_lock = data_dir.join(format!("{}.lock", pool::SHIELDED_DB_FILE));
-    let held = [instance_lock.as_path(), store_lock.as_path()];
-    let before = files_under(&root.join("data"), &held);
-    let retry = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
-    let refused = retry.err().expect("the retry is refused");
-    assert!(
-        matches!(&refused, EngineError::StorageInUse(_)),
-        "{refused:?}"
-    );
-    assert_eq!(refused.code(), "storage_in_use");
-    assert_eq!(
-        refused.to_string(),
-        format!(
-            "wallet storage in use: {}",
-            crate::session::KEPT_AFTER_FAILED_OPEN_REFUSAL
-        )
-    );
-    assert_eq!(
-        files_under(&root.join("data"), &held),
-        before,
-        "the refusal writes nothing"
-    );
-    std::fs::write(root.join("retried"), "ok").unwrap();
-    std::process::exit(0);
-}
-
-/// The failed open's release skip, end to end, each launch its own process:
-/// the first stores a paid wallet's spends and quits; the second's open
-/// fails with shielded configured before the journal read, which keeps
-/// every wallet loaded, and its retry is refused until a restart; the
-/// third opens with the wallet, its balance and its stored spends intact.
-/// The stored spends' rows stay as they were throughout.
-#[test]
-fn a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact() {
-    let dir = dw_testutil::private_tempdir();
-    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
-    run_child("failed_open_first_launch_child", dir.path());
-    let wallet: WalletId = read("wallet").parse().unwrap();
-    let data_dir = std::path::PathBuf::from(read("data_dir"));
-    let before = pending_rows(&data_dir, wallet);
-    assert_eq!(before, stashed_rows());
-
-    run_child("failed_open_and_retry_child", dir.path());
-    assert_eq!(
-        (read("failed"), read("retried")),
-        ("ok".into(), "ok".into())
-    );
-    assert_eq!(pending_rows(&data_dir, wallet), before);
-
-    run_child("failed_open_relaunch_child", dir.path());
-    assert_eq!(read("relaunched"), "ok");
-    assert_eq!(pending_rows(&data_dir, wallet), before);
 }
 
 /// Row 74 r1: a network switch's close holds the load fence while it
@@ -1990,7 +1829,10 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
 }
 
 #[path = "shielded_disposition_tests.rs"]
-mod disposition_tests;
+pub(super) mod disposition_tests;
+
+#[path = "shielded_executed_tests.rs"]
+mod executed_tests;
 
 #[path = "shielded_status_lock_tests.rs"]
 mod status_lock_tests;
@@ -2147,6 +1989,7 @@ mod idle_tests {
         let outcome = |o: WalletShieldedOutcome| ShieldedSyncPassSummary {
             wallet_results: [(wallet.0, o)].into_iter().collect(),
             sync_unix_seconds: 1_700_000_000,
+            evidence: None,
         };
         (session.hub)
             .on_shielded_sync_completed(&outcome(WalletShieldedOutcome::Err("unreachable".into())));
@@ -2221,13 +2064,8 @@ mod idle_tests {
         engine.block_on(async move {
             let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
             let mut store = coordinator.store().write().await;
-            for n in 1..=2 {
-                (store.resolve_redrive(
-                    subwallet(wallet),
-                    &[n; 32],
-                    ShieldedSpendDisposition::NotExecuted(NotExecutedReason::Refused),
-                ))
-                .unwrap();
+            for r in spends() {
+                refuse_undelivered(&mut *store, subwallet(wallet), &r);
             }
         });
         assert!(
@@ -2496,15 +2334,15 @@ mod idle_tests {
     }
 
     /// A pass admitted while its loops ran, but which waited on the shielded
-    /// store behind another pass's scan until after an SPV stop and its
-    /// quiesce, starts nothing.
+    /// store behind another pass's scan (in its idle check: admission reads
+    /// no store) until after an SPV stop and its quiesce, starts nothing.
     #[test]
     fn a_pass_queued_behind_a_scan_starts_nothing_after_a_stop() {
         let dir = dw_testutil::private_tempdir();
         let engine = engine_at(dir.path());
         let (session, _) = first_launch(&engine);
         let epoch = loops_started(&session);
-        *session.platform.notes_count.lock().unwrap() = Some(None);
+        *session.platform.notes_count.lock().unwrap() = Some(Some(u64::MAX));
         let manager = session.manager().unwrap();
         let coordinator = engine.block_on(manager.shielded_coordinator()).unwrap();
         let (admitting_tx, admitting) = tokio::sync::oneshot::channel();
@@ -2524,4 +2362,333 @@ mod idle_tests {
         assert!(!engine.block_on(pass).unwrap(), "no pass after the stop");
         assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
     }
+}
+
+/// The rows of `shielded_pending_spends` for `wallet`, read from the file.
+fn pending_rows(data_dir: &Path, wallet: WalletId) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let db = data_dir.join(pool::SHIELDED_DB_FILE);
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT activity_id, st_bytes FROM shielded_pending_spends \
+             WHERE wallet_id = ?1 ORDER BY activity_id",
+        )
+        .unwrap();
+    stmt.query_map([wallet.0.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// [`pending_rows`] as [`stash_spends`] writes them.
+fn stashed_rows() -> Vec<(Vec<u8>, Vec<u8>)> {
+    (spends().into_iter())
+        .map(|r| (r.activity_id.to_vec(), r.st_bytes))
+        .collect()
+}
+
+/// Arms `data_dir`'s next open to configure shielded before it reads the
+/// journal, and the journal's read to fail once on an imported row.
+fn shielded_before_a_failing_journal(data_dir: &Path) {
+    let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    rusqlite::Connection::open(&journal)
+        .unwrap()
+        .execute(
+            "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, status, at) \
+             VALUES (?1, ?2, 'imported_redrive', ?3, 'unclassified', 1)",
+            rusqlite::params![[0x5a_u8; 32], [0x77_u8; 32], [0x88_u8; 32]],
+        )
+        .unwrap();
+    dw_appdb::fault::arm_fault(&journal, dw_appdb::fault::Fault::ClassifyWrite);
+    (crate::session::SHIELDED_BEFORE_JOURNAL.lock().unwrap()).push(data_dir.to_path_buf());
+}
+
+/// The open's error for the journal read that failed.
+fn assert_journal_failed(failed: Result<Arc<NetworkSession>, EngineError>) {
+    assert!(
+        matches!(&failed, Err(EngineError::Storage(e)) if e.contains("imported shielded spends")),
+        "{:?}",
+        failed.err()
+    );
+}
+
+/// The refusal of an open while a failed open keeps the database.
+fn assert_refused_until_restart(retry: Result<Arc<NetworkSession>, EngineError>) {
+    let refused = retry.err().expect("the retry is refused");
+    assert!(
+        matches!(
+            &refused,
+            EngineError::StorageInUse {
+                retryable: false,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(refused.code(), "storage_in_use");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "wallet storage in use: {}",
+            crate::session::KEPT_AFTER_FAILED_OPEN_REFUSAL
+        )
+    );
+}
+
+/// Q86 F1: shielded is configured only once a session exists. Were it
+/// configured before a failed journal read (armed here; no open does it),
+/// the open lets nothing go: its wallets stay loaded, the database stays
+/// held, the retry is refused until a restart, and the stored spends' rows
+/// stay as they were.
+#[test]
+fn a_failed_open_with_the_shielded_store_configured_keeps_its_spends() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { stash_spends(&s, wallet).await });
+    let data_dir = session.data_dir().to_path_buf();
+    let before = pending_rows(&data_dir, wallet);
+    assert_eq!(before, stashed_rows());
+    // A quit, since a close in the app is refused while a spend is stored.
+    drop(session);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    let engine = engine_at(dir.path());
+
+    shielded_before_a_failing_journal(&data_dir);
+    assert_journal_failed(engine.block_on(engine.open_network(DashNetwork::Regtest, options())));
+    assert_eq!(
+        crate::session::failed_open_probe::ended(&data_dir),
+        [(true, false)],
+        "the failed open kept its wallet loaded and its database held"
+    );
+    assert!(crate::session::held_after_failed_open(&data_dir));
+    assert_refused_until_restart(
+        engine.block_on(engine.open_network(DashNetwork::Regtest, options())),
+    );
+    assert_eq!(pending_rows(&data_dir, wallet), before);
+}
+
+/// Q86 F1, past the journal: an open whose shielded store was configured
+/// (armed here; no open does it) and whose history load then fails lets
+/// nothing go either. The close of its session keeps the wallets loaded and
+/// the database held, the retry is refused until a restart, and the stored
+/// spends' rows stay as they were.
+#[test]
+fn a_failed_history_load_with_the_shielded_store_configured_keeps_its_spends() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { stash_spends(&s, wallet).await });
+    let data_dir = session.data_dir().to_path_buf();
+    let before = pending_rows(&data_dir, wallet);
+    assert_eq!(before, stashed_rows());
+    // A quit, since a close in the app is refused while a spend is stored.
+    drop(session);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    let engine = engine_at(dir.path());
+
+    (crate::session::SHIELDED_BEFORE_JOURNAL.lock().unwrap()).push(data_dir.clone());
+    (crate::session::FAIL_HISTORY_LOAD_IN.lock().unwrap()).push(data_dir.clone());
+    let failed = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+    assert!(
+        matches!(&failed, Err(EngineError::Storage(e)) if e.contains("history load failed")),
+        "{:?}",
+        failed.err()
+    );
+    assert_eq!(
+        crate::session::failed_open_probe::ended(&data_dir),
+        [(true, false)],
+        "the failed open kept its wallet loaded and its database held"
+    );
+    assert!(crate::session::held_after_failed_open(&data_dir));
+    assert_refused_until_restart(
+        engine.block_on(engine.open_network(DashNetwork::Regtest, options())),
+    );
+    assert_eq!(pending_rows(&data_dir, wallet), before);
+}
+
+/// Where the failed-open test's child processes keep their data root.
+const FAILED_OPEN_ROOT: &str = "DW_Q86_FAILED_OPEN_ROOT";
+
+/// Runs `test`, one of this file's ignored child tests, over `root`.
+fn run_child(test: &str, root: &Path) {
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            &format!("platform::shielded_close_tests::{test}"),
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(FAILED_OPEN_ROOT, root)
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "{test} failed: {}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+}
+
+fn core_balance(session: &NetworkSession, wallet: WalletId) -> u64 {
+    (session.balances(&wallet).unwrap())
+        .expect("the wallet's state is read at its load")
+        .total
+}
+
+/// The first launch of the next test, in a child process: a paid wallet
+/// with [`spends`] stored, then a quit.
+#[test]
+#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
+fn failed_open_first_launch_child() {
+    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let engine = engine_at(root);
+    let (session, wallet) = first_launch(&engine);
+    let paid = crate::mempool_sync_tests::paid_and_stored(&engine, &session, wallet);
+    assert_eq!(core_balance(&session, wallet), paid);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { stash_spends(&s, wallet).await });
+    std::fs::write(root.join("wallet"), wallet.to_string()).unwrap();
+    std::fs::write(root.join("balance"), paid.to_string()).unwrap();
+    std::fs::write(
+        root.join("data_dir"),
+        session.data_dir().as_os_str().as_encoded_bytes(),
+    )
+    .unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+    std::process::exit(0);
+}
+
+/// The relaunch of the next test, in a child process: the open succeeds,
+/// with the wallet loaded, its balance and its stored spends as they were.
+#[test]
+#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
+fn failed_open_relaunch_child() {
+    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let read = |name: &str| std::fs::read_to_string(root.join(name)).unwrap();
+    let wallet: WalletId = read("wallet").parse().unwrap();
+    let engine = engine_at(root);
+    let session = open(&engine);
+    assert!(session.require_wallet(&wallet).is_ok(), "loaded");
+    assert_eq!(core_balance(&session, wallet).to_string(), read("balance"));
+    engine
+        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    let mut stored = engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let store = coordinator.store().read().await;
+        store.pending_redrives(subwallet(wallet)).unwrap()
+    });
+    stored.sort_by_key(|r| r.activity_id);
+    assert_eq!(stored, spends());
+    std::fs::write(root.join("relaunched"), "ok").unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+    std::process::exit(0);
+}
+
+/// Every file under `dir`: its path, size and SHA-256. The `held` files,
+/// each of which must exist, give their size alone: a live holder's
+/// exclusive lock makes Windows refuse to read them (os error 33).
+fn files_under(dir: &Path, held: &[&Path]) -> Vec<(std::path::PathBuf, u64, [u8; 32])> {
+    for path in held {
+        assert!(path.is_file(), "{} is held", path.display());
+    }
+    let mut files = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if held.contains(&path.as_path()) {
+                let len = std::fs::metadata(&path).unwrap().len();
+                files.push((path, len, [0; 32]));
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                files.push((path, bytes.len() as u64, Sha256::digest(&bytes).into()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// The second launch of the next test, in a child process: shielded is
+/// configured before the journal is read (armed here; no open does it) and
+/// the journal's read fails once. The open returns that error with every
+/// wallet kept loaded, and a retry in this process is refused with the
+/// restart message, not the persister's "already open" and not an empty or
+/// missing wallet, and writes nothing under the data root. Then the
+/// process exits.
+#[test]
+#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
+fn failed_open_and_retry_child() {
+    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let data_dir =
+        std::path::PathBuf::from(std::fs::read_to_string(root.join("data_dir")).unwrap());
+    shielded_before_a_failing_journal(&data_dir);
+
+    let engine = engine_at(root);
+    assert_journal_failed(engine.block_on(engine.open_network(DashNetwork::Regtest, options())));
+    std::fs::write(root.join("failed"), "ok").unwrap();
+
+    // The engine's instance lock and the shielded store's owner lock.
+    let instance_lock = root.join("data").join(dw_fs::instance::InstanceLock::FILE);
+    let store_lock = data_dir.join(format!("{}.lock", pool::SHIELDED_DB_FILE));
+    let held = [instance_lock.as_path(), store_lock.as_path()];
+    let before = files_under(&root.join("data"), &held);
+    assert_refused_until_restart(
+        engine.block_on(engine.open_network(DashNetwork::Regtest, options())),
+    );
+    assert_eq!(
+        files_under(&root.join("data"), &held),
+        before,
+        "the refusal writes nothing"
+    );
+    std::fs::write(root.join("retried"), "ok").unwrap();
+    std::process::exit(0);
+}
+
+/// The failed open's keep, end to end, each launch its own process: the
+/// first stores a paid wallet's spends and quits; the second's open fails
+/// with shielded configured before the journal read, which keeps every
+/// wallet loaded, and its retry is refused until a restart; the third
+/// opens with the wallet, its balance and its stored spends intact. The
+/// stored spends' rows stay as they were throughout.
+#[test]
+fn a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact() {
+    let dir = dw_testutil::private_tempdir();
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+    run_child("failed_open_first_launch_child", dir.path());
+    let wallet: WalletId = read("wallet").parse().unwrap();
+    let data_dir = std::path::PathBuf::from(read("data_dir"));
+    let before = pending_rows(&data_dir, wallet);
+    assert_eq!(before, stashed_rows());
+
+    run_child("failed_open_and_retry_child", dir.path());
+    assert_eq!(
+        (read("failed"), read("retried")),
+        ("ok".into(), "ok".into())
+    );
+    assert_eq!(pending_rows(&data_dir, wallet), before);
+
+    run_child("failed_open_relaunch_child", dir.path());
+    assert_eq!(read("relaunched"), "ok");
+    assert_eq!(pending_rows(&data_dir, wallet), before);
 }

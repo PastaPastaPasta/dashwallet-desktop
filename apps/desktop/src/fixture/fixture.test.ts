@@ -32,6 +32,33 @@ afterEach(() => {
 });
 
 describe("fixture backend", () => {
+  it("reports Shielded spends available, as main's engine does, and refuses them, their quotes, new shields and the receive address before anything moves where they are off", async () => {
+    const on = backend({ scenario: "funded" }).b;
+    expect((await on.shieldedStatus(FIXTURE_WALLET_ID))?.spendsAvailable).toBe(true);
+    const { b } = backend({ scenario: "shielded-spends-off" });
+    const before = await b.shieldedStatus(FIXTURE_WALLET_ID);
+    expect(before?.spendsAvailable).toBe(false);
+    const history = await b.shieldedHistory(FIXTURE_WALLET_ID, 0, 50);
+    for (const call of [
+      () => b.shieldedSendQuote(FIXTURE_WALLET_ID, "tdash1zq0k8y", "10000000000"),
+      () => b.unshieldQuote(FIXTURE_WALLET_ID, "10000000000", null),
+      () => b.unshieldToPlatformQuote(FIXTURE_WALLET_ID, "10000000000", null),
+      () => b.shieldedReceiveAddress(FIXTURE_WALLET_ID),
+      () => b.shieldedSend(FIXTURE_WALLET_ID, "tdash1zq0k8y", "10000000000", null, "g", false),
+      () => b.unshieldToCore(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+      () => b.unshieldToPlatform(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+      () => b.shieldQuote(FIXTURE_WALLET_ID, { kind: "duffs", duffs: 1_000_000 }),
+      () => b.shieldFromCore(FIXTURE_WALLET_ID, { kind: "duffs", duffs: 1_000_000 }, "g"),
+      () => b.shieldMixedQuote(FIXTURE_WALLET_ID),
+      () => b.shieldMixedCoins(FIXTURE_WALLET_ID, "g"),
+    ]) {
+      const e = await call().catch((x: unknown) => x);
+      expect(isAppError(e) && e.code).toBe("platform.unavailable");
+    }
+    expect(await b.shieldedStatus(FIXTURE_WALLET_ID)).toEqual(before);
+    expect(await b.shieldedHistory(FIXTURE_WALLET_ID, 0, 50)).toEqual(history);
+  });
+
   // vite.config.ts fails a production build holding a module with this marker, wherever it
   // lives: a fixture module copied or renamed out of src/fixture/ keeps it. One whose marker
   // was also removed is found by its literals (scripts/check-bundle.mjs, sentinels.test.ts),
@@ -90,6 +117,8 @@ describe("fixture backend", () => {
       "settings.ts",
       "shared.test.ts",
       "shared.ts",
+      "sharedDetail.test.ts",
+      "sharedMaintenance.test.ts",
       "shielded.ts",
       "tools.test.ts",
       "tools.ts",
@@ -260,6 +289,19 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
+    // From the Shielded balance: off on mainnet too (flag shielded_registration), before any read.
+    const fromShielded = { kind: "shielded", denomination: "0" } as const;
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    // While this build cannot spend from Shielded: platform.unavailable, before the grant (m4 item 114).
+    clearMocks();
+    backend({ scenario: "shielded-spends-off" });
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.unavailable" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.unavailable" });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {
@@ -333,6 +375,11 @@ describe("fixture backend", () => {
     expect(() => fixtureOptionsFromUrl("?scenario=nope")).toThrow("unknown fixture scenario");
     expect(() => fixtureOptionsFromUrl("?scenario=error-nope")).toThrow("unknown error class");
     expect(() => fixtureOptionsFromUrl("?fail=balance")).toThrow("expected <command>:<error class>");
+    expect(fixtureOptionsFromUrl("?openRestore=notStarted:fileVanished&restoreAvailable=no&restored=yes")).toMatchObject({ openRestore: "notStarted:fileVanished", restoreAvailable: false, restored: true });
+    expect(fixtureOptionsFromUrl("?openRefused=refusedRestore&restoreAvailable=yes")).toMatchObject({ openRefused: "refusedRestore", restoreAvailable: true, restored: undefined });
+    expect(() => fixtureOptionsFromUrl("?openRestore=refused:diskFull")).toThrow("unknown openRestore=refused:diskFull");
+    expect(fixtureOptionsFromUrl("?notPrivate=otherOwner")).toMatchObject({ notPrivate: "otherOwner" });
+    expect(() => fixtureOptionsFromUrl("?notPrivate=worldWritable")).toThrow("unknown notPrivate=worldWritable");
   });
 
   it("carries the sentinel the production bundle check looks for", () => {

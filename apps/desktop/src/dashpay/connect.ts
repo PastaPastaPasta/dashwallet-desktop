@@ -38,7 +38,18 @@ export type ConnectApi = Pick<
   | "unlockMixingOnly"
 >;
 
-const FAILURE_NAMES = ["keyConflict", "notConfirmed", "noResponseKey", "nothingToSend", "scopeChanged"] as const satisfies readonly ConnectFailureName[];
+const FAILURE_NAMES = [
+  "keyConflict",
+  "notConfirmed",
+  "noResponseKey",
+  "nothingToSend",
+  "scopeChanged",
+  "unverifiedKey",
+  "feeTooHigh",
+  "disconnectConflict",
+  "pendingFeeTooHigh",
+  "pendingWrite",
+] as const satisfies readonly ConnectFailureName[];
 
 /** `connect.failed`'s detail, by where the approval stopped; `unknown` for anything else. */
 const FAILURE: Readonly<Record<ConnectFailureName | "unknown", string>> = messageTable("dashpay.connect.failure", [...FAILURE_NAMES, "unknown"]);
@@ -53,6 +64,11 @@ export const FAILURE_KEYS: Readonly<Record<ConnectFailureName | "unknown", "adde
   noResponseKey: null,
   nothingToSend: null,
   scopeChanged: "added",
+  unverifiedKey: null,
+  feeTooHigh: null,
+  disconnectConflict: null,
+  pendingFeeTooHigh: null,
+  pendingWrite: null,
   unknown: null,
 };
 
@@ -172,10 +188,18 @@ export const quotedLimit = (quote: ConnectQuote) => creditsDash(quote.budgets.re
 
 /** Only a CRITICAL key can sign a token transition, and only one bound to a whole contract or a
  * group can reach tokens; a group always counts, since its owner can add contracts with tokens. */
+const signsTokens = (b: ConnectBinding) => b.level === "critical" && (b.scope.kind === "group" || (b.scope.kind === "contract" && b.scope.tokens));
+
 export function criticalText(b: ConnectBinding): string | null {
   if (b.level !== "critical") return null;
-  const tokens = b.scope.kind === "group" || (b.scope.kind === "contract" && b.scope.tokens);
-  return tokens ? t("dashpay.connect.critical") : t("dashpay.connect.criticalNoTokens");
+  return signsTokens(b) ? t("dashpay.connect.critical") : t("dashpay.connect.criticalNoTokens");
+}
+
+/** A document type can charge a token cost, even in another contract's token, which any key's
+ * document writes pay; the DashPay profile charges none, and the critical warning already names
+ * tokens where the key can sign token transitions. */
+export function tokenCostText(b: ConnectBinding): string | null {
+  return b.scope.kind !== "profile" && !signsTokens(b) ? t("dashpay.connect.tokenCost") : null;
 }
 
 export type ConnectPhase = "loading" | "sheet" | "approving" | "sendFailed" | "sending" | "done" | "denied" | "refused" | "mainnetOff";
@@ -209,6 +233,9 @@ export class ConnectFlow extends Model {
   #off = new Set<number>();
   #typing: ReturnType<typeof setTimeout> | undefined;
   #quotes = 0;
+  #loads = 0;
+  /** Quotes in a row that read other group facts than the sheet shows, since one that matched. */
+  #mismatches = 0;
   #closed = false;
 
   constructor(
@@ -229,13 +256,14 @@ export class ConnectFlow extends Model {
 
   /** Reads the sheet; a sheet read again keeps what the user picked where it still applies. */
   async load(): Promise<void> {
+    const n = ++this.#loads;
     const again = this.sheet !== null;
     this.phase = "loading";
     this.quote = null;
     this.changed();
     try {
       const sheet = await this.api.appConnectSheet(this.walletId, this.linkId);
-      if (this.#closed) return;
+      if (n !== this.#loads || this.#closed) return;
       this.sheet = sheet;
       if (!sheet.identities.some((i) => i.identity === this.identity)) this.identity = sheet.identities[0]?.identity ?? null;
       this.#off = new Set(sheet.bindings.filter((b) => !b.primary && this.#off.has(b.index)).map((b) => b.index));
@@ -251,7 +279,7 @@ export class ConnectFlow extends Model {
       this.changed();
       void this.requote();
     } catch (e) {
-      this.#fail(e);
+      if (n === this.#loads) this.#fail(e);
     }
   }
 
@@ -308,7 +336,9 @@ export class ConnectFlow extends Model {
     };
   }
 
-  /** Quotes the current choice; only the latest quote's answer counts. */
+  /** Quotes the current choice; only the latest quote's answer counts. A quote that read other group
+   * facts than the sheet shows reads the request again, once: if the next one disagrees too, the quote
+   * fails and the user's retry reads it again. */
   async requote(): Promise<void> {
     const n = ++this.#quotes;
     const choice = this.choice();
@@ -320,6 +350,12 @@ export class ConnectFlow extends Model {
     try {
       const quote = await this.api.appConnectQuote(this.walletId, this.linkId, choice);
       if (n !== this.#quotes || this.#closed) return;
+      if (quote.groups !== this.sheet?.groups) {
+        if (this.#mismatches++ === 0) return this.#reread();
+        this.quoteError = new Error("group facts changed");
+        return;
+      }
+      this.#mismatches = 0;
       this.quote = quote;
     } catch (e) {
       if (n !== this.#quotes || this.#closed) return;
@@ -334,8 +370,15 @@ export class ConnectFlow extends Model {
     }
   }
 
+  /** The quote's Try again: a quote whose group facts disagreed again reads the request first. */
+  retryQuote() {
+    if (this.#mismatches === 0) void this.requote();
+    else this.#reread();
+  }
+
   /** Approve: a fresh quote, its grant under the passphrase, then the approval. A fresh quote that
-   * read anything other than what the sheet showed reads the request again instead. */
+   * read anything other than what the sheet showed (its plan, or the group facts the sheet lists)
+   * reads the request again instead. */
   async approve(): Promise<void> {
     const choice = this.choice();
     if (this.phase !== "sheet" || this.busy || !choice) return;
@@ -346,7 +389,7 @@ export class ConnectFlow extends Model {
     try {
       const quote = await this.api.appConnectQuote(this.walletId, this.linkId, choice);
       if (this.#closed) return;
-      if (planOf(quote) !== planOf(this.quote)) {
+      if (planOf(quote) !== planOf(this.quote) || quote.groups !== this.sheet?.groups) {
         this.busy = false;
         return this.#reread();
       }
@@ -403,11 +446,12 @@ export class ConnectFlow extends Model {
   async deny(): Promise<void> {
     if (this.busy || (this.phase !== "sheet" && this.phase !== "loading")) return;
     this.busy = true;
+    this.#stop();
     this.grants.cancel();
     this.changed();
     try {
       await this.api.appConnectDeny(this.linkId);
-      if (this.returnsTo === null) return this.close();
+      if (this.returnsTo === null && this.attempted === null) return this.close();
       this.phase = "denied";
     } catch (e) {
       this.#fail(e);
@@ -443,11 +487,18 @@ export class ConnectFlow extends Model {
   close() {
     if (this.#closed || !this.closable) return;
     this.#closed = true;
-    clearTimeout(this.#typing);
-    this.#quotes++;
+    this.#stop();
     this.grants.cancel();
     void this.api.appConnectDismiss(this.linkId).catch(() => null);
     this.onClose();
+  }
+
+  /** No quote or read still outstanding answers. */
+  #stop() {
+    clearTimeout(this.#typing);
+    this.#quotes++;
+    this.#loads++;
+    this.quoting = false;
   }
 
   #reread() {

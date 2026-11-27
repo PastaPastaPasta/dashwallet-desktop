@@ -27,7 +27,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dpp::secp256k1::{PublicKey, SecretKey};
 use key_wallet::bip32::DerivationPath;
 use key_wallet::{Network, Signer};
 use zeroize::Zeroizing;
@@ -139,7 +139,7 @@ fn peer() -> PublicKey {
 fn identity_public_key(identity: &VaultSigner) -> [u8; 33] {
     identity
         .with_key(&path(IDENTITY_KEY), KeyUse::PublicKey, |x| {
-            PublicKey::from_secret_key(&x.private_key).serialize()
+            x.private_key.public_key().to_compressed()
         })
         .unwrap()
 }
@@ -788,7 +788,10 @@ fn a_result_is_not_released_in_a_later_epoch() {
     v.start_gate_log();
     let r = crypto.run(&[(KeyUse::Agreement, &key)], |op| {
         let secret = op.with_key(&key, KeyUse::Agreement, |x| {
-            crate::dip15::ecdh(&x.private_key, &peer())
+            crate::dip15::ecdh(
+                &SecretKey::from_secret_bytes(*x.private_key.to_bytes()).unwrap(),
+                &peer(),
+            )
         })?;
         v.bump_epoch_ungated();
         Ok(secret)
@@ -1385,7 +1388,7 @@ fn a_removal_waits_for_a_key_checked_redemption() {
         let waited = done_rx.recv_timeout(Duration::from_secs(2)).is_err();
         tx.send((removal, waited)).unwrap();
     });
-    let token = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    let token = v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &W, &keys);
     test_hook::set_checked(|| {});
     let (removal, waited) = rx.recv().unwrap();
     assert!(waited, "the removal finished inside the redemption");
@@ -1398,7 +1401,7 @@ fn a_removal_waits_for_a_key_checked_redemption() {
         .unwrap();
     let v2 = v.clone();
     test_hook::set_checked(move || lock(&v2));
-    let locked = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    let locked = v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &W, &keys);
     test_hook::set_checked(|| {});
     assert_eq!(locked.unwrap_err(), VaultError::GrantInvalid);
     v.unlock(PASS, UnlockScope::Full).unwrap();
@@ -1412,7 +1415,7 @@ fn a_removal_waits_for_a_key_checked_redemption() {
         .authorize(PLATFORM_OP, Some(&W), Credential::None)
         .unwrap();
     assert!(matches!(
-        v.redeem_grant_holding_key(&grant.id, &W, &keys),
+        v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &W, &keys),
         Ok(None)
     ));
     v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))

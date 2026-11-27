@@ -29,6 +29,7 @@ import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
+import { platformHoldText } from "../../api/platformHold";
 
 const C = WITHDRAW_COPY;
 
@@ -139,7 +140,7 @@ function ConfirmStep({ flow, walletId, credits, amount }: { flow: WithdrawFlow; 
       <p className="sheet-text">{C.confirm.message}</p>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="withdraw-quote-error">
-          {withdrawErrorText(quote.error, credits)}
+          {platformHoldText(quote.error, false) ?? withdrawErrorText(quote.error, credits)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">

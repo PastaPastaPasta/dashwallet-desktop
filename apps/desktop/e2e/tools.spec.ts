@@ -558,6 +558,36 @@ test.describe("Coin Selection", () => {
     await expect(page.getByTestId("coins-locked")).toHaveText("(1 locked)");
   });
 
+  test("Q92_H1: a coin a restored payment still holds says why, and Select all leaves it out", async ({ page }) => {
+    const errors = await open(page, "restore-holds");
+    await tools(page, "coinSelection");
+    const held = page.getByTestId(`coin-${"4e".repeat(4)}-1`);
+    const line = "Dash Wallet can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.";
+    await expect(held.getByTitle(line, { exact: true })).toHaveText("Pending");
+    await expect(held.locator("input[type=checkbox]")).toBeDisabled();
+    await expect(held.locator("input[type=checkbox]")).toHaveAccessibleDescription(line);
+    await page.getByTestId("coins-select-all").click();
+    await expect(page.getByTestId("coin-summary")).toContainText("Quantity3");
+    await expect(held.locator("input[type=checkbox]")).not.toBeChecked();
+    // Pay's coin control shows it the same way.
+    await page.getByTestId("coins-pay").click();
+    await expect(page.getByTestId("page-pay")).toBeVisible();
+    const inPay = page.getByTestId(`coin-${"4e".repeat(4)}-1`);
+    await expect(inPay.getByTitle(line, { exact: true })).toHaveText("Pending");
+    await expect(inPay.locator("input[type=checkbox]")).toBeDisabled();
+    await expect(inPay.locator("input[type=checkbox]")).toHaveAccessibleDescription(line);
+    expect(errors).toEqual([]);
+  });
+
+  test("Q92 money gate: Pay with these coins is paused while the restored wallet data is checked", async ({ page }) => {
+    const errors = await open(page, "restore-holds-restored");
+    await tools(page, "coinSelection");
+    await page.getByTestId("coin-table").locator("tbody input:enabled").first().check();
+    await expect(page.getByTestId("coins-pay")).toBeDisabled();
+    await expect(page.getByTestId("coins-restored-gate")).toHaveText("Anything that moves your funds is paused until syncing finishes.");
+    expect(errors).toEqual([]);
+  });
+
   test("QT068_D19: Pay with these coins opens Pay with Advanced on that selection", async ({ page }) => {
     await open(page);
     await tools(page, "coinSelection");

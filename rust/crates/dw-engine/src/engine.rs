@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -70,7 +70,9 @@ pub enum CloseRefused<B> {
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Root data directory; each network lives in `<data_root>/<network>/`.
+    /// Root data directory; each network lives in `<data_root>/<network>/`,
+    /// or in the folder `network-folders.json` names for it
+    /// ([`Engine::network_dir`]).
     pub data_root: PathBuf,
     /// tokio worker threads; `None` = tokio's default (one per core).
     pub worker_threads: Option<usize>,
@@ -88,10 +90,78 @@ struct Shared {
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
     sessions: Mutex<HashMap<DashNetwork, Arc<NetworkSession>>>,
+    /// How the store-upgrade check refused each network's last open in
+    /// this engine, where that way out allows starting over in a new folder
+    /// ([`Engine::recover_in_fresh_folder`]).
+    refused: std::sync::Mutex<HashMap<DashNetwork, Refused>>,
     /// The data root's instance lock (`dw_fs::instance`): another process's
     /// engine, dwcli's or an app's, is refused the root while this one has
     /// it.
     _instance: dw_fs::instance::InstanceLock,
+}
+
+/// A refused open's way out that [`Engine::recover_in_fresh_folder`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refused {
+    /// [`EngineError::StoreRefused`] with
+    /// [`WayOut::Damaged`](dw_store_upgrade::copy::WayOut::Damaged): may
+    /// start over.
+    Damaged,
+    /// [`EngineError::StoreRefused`] with
+    /// [`WayOut::Restore`](dw_store_upgrade::copy::WayOut::Restore), its
+    /// restore not refused for a shielded hold: may not start over.
+    Restore,
+    /// Restore earlier data refused for a shielded hold (R-1): the request
+    /// after a [`Self::Restore`] open, or the swap at the open. May start
+    /// over, and keeps through later opens refused with
+    /// [`WayOut::Restore`](dw_store_upgrade::copy::WayOut::Restore), whose
+    /// screens then offer it.
+    RestoreHeld,
+}
+
+impl Shared {
+    fn refused(&self, network: &DashNetwork) -> Option<Refused> {
+        let refused = self.refused.lock().unwrap_or_else(|p| p.into_inner());
+        refused.get(network).copied()
+    }
+
+    fn set_refused(&self, network: &DashNetwork, state: Option<Refused>) {
+        let mut refused = self.refused.lock().unwrap_or_else(|p| p.into_inner());
+        match state {
+            Some(state) => refused.insert(network.clone(), state),
+            None => refused.remove(network),
+        };
+    }
+
+    /// Records how `opened` was refused. A restore the swap refused for a
+    /// shielded hold, and a later [`WayOut::Restore`] refusal after one, keep
+    /// [`Refused::RestoreHeld`], whose screen then offers Set up from
+    /// recovery phrase; any other result, an open that is not refused among
+    /// them, withdraws it.
+    fn note_open<T>(&self, network: &DashNetwork, opened: &mut Result<T, EngineError>) {
+        use dw_store_upgrade::copy::WayOut;
+        let state = match opened {
+            Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Damaged => {
+                Some(Refused::Damaged)
+            }
+            Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Restore => {
+                if self.refused(network) == Some(Refused::RestoreHeld) {
+                    r.screen.offer_recover();
+                    Some(Refused::RestoreHeld)
+                } else {
+                    Some(Refused::Restore)
+                }
+            }
+            Err(EngineError::StoreRestore(r))
+                if r.state == crate::store_upgrade::RestoreState::NotStarted
+                    && crate::store_upgrade::is_hold_cause(r.cause) =>
+            {
+                Some(Refused::RestoreHeld)
+            }
+            _ => None,
+        };
+        self.set_refused(network, state);
+    }
 }
 
 /// Owns the tokio runtime and the open network sessions.
@@ -123,13 +193,18 @@ impl Engine {
         mark("data-root");
         let instance =
             dw_fs::instance::InstanceLock::share(&config.data_root).map_err(|e| match e {
-                dw_fs::instance::InstanceError::Busy => EngineError::StorageInUse(format!(
+                dw_fs::instance::InstanceError::Busy => EngineError::storage_in_use(format!(
                     "{} is in use by another process",
                     config.data_root.display()
                 )),
                 dw_fs::instance::InstanceError::Io(e) => EngineError::from(e),
             })?;
         mark("instance");
+        crate::store_upgrade::order::record(
+            &config.data_root,
+            crate::store_upgrade::order::Step::Instance,
+        );
+        crate::store_upgrade::sweep_once(&config.data_root);
         install_poison_hook();
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         // Applies to the async workers and the blocking pool alike.
@@ -164,6 +239,7 @@ impl Engine {
                 rates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
+                refused: std::sync::Mutex::new(HashMap::new()),
                 _instance: instance,
             }),
         })
@@ -177,9 +253,59 @@ impl Engine {
         &self.shared.config
     }
 
-    /// Directory used for `network`.
-    pub fn network_dir(&self, network: &DashNetwork) -> PathBuf {
-        self.shared.config.data_root.join(network.dir_name())
+    /// Directory used for `network`: `<data_root>/<network>`, or the folder
+    /// `<data_root>/network-folders.json` names for it once it started over
+    /// ([`Self::recover_in_fresh_folder`]). A record that can't be read or
+    /// names anything else is a `Storage` error, never the default folder.
+    pub fn network_dir(&self, network: &DashNetwork) -> Result<PathBuf, EngineError> {
+        crate::network_folders::resolve(&self.shared.config.data_root, network)
+    }
+
+    /// The way out of a refused open (Q107 C1): `network` starts over in a
+    /// new, empty, owner-only folder beside its own,
+    /// `<dir name>-recovered-<n>` with the lowest `n` free, which
+    /// `network-folders.json` records for every open after this one, this
+    /// engine's and the next. Nothing in the network's current folder is
+    /// written, and none of its stores is opened: the refused data stays as
+    /// it is. Returns the new folder. `InvalidArgument` while the network
+    /// is open, or unless its last open in this engine was refused by the
+    /// store-upgrade check as damaged (`SnapshotSourceDamaged`, the
+    /// `wayOut.damaged` screen), or Restore earlier data was refused for a
+    /// shielded hold since an open refused with `wayOut.restore` or at that
+    /// open's swap (R-1); every other refusal keeps its own way out.
+    pub async fn recover_in_fresh_folder(
+        &self,
+        network: DashNetwork,
+    ) -> Result<PathBuf, EngineError> {
+        network.validate()?;
+        let shared = Arc::clone(&self.shared);
+        self.handle
+            .spawn(async move {
+                let sessions = shared.sessions.lock().await;
+                if sessions.contains_key(&network) {
+                    return Err(EngineError::InvalidArgument(format!(
+                        "{network} is open; only a network whose open was refused starts over"
+                    )));
+                }
+                if !matches!(
+                    shared.refused(&network),
+                    Some(Refused::Damaged | Refused::RestoreHeld)
+                ) {
+                    return Err(EngineError::InvalidArgument(format!(
+                        "the last open of {network} was not refused as damaged, nor its restore for a shielded hold; nothing to start over from"
+                    )));
+                }
+                let (root, net) = (shared.config.data_root.clone(), network.clone());
+                let dir = tokio::task::spawn_blocking(move || {
+                    crate::network_folders::recover(&root, &net)
+                })
+                .await??;
+                shared.set_refused(&network, None);
+                drop(sessions);
+                tracing::info!(%network, folder = %dir.display(), "network starts over in a new folder");
+                Ok(dir)
+            })
+            .await?
     }
 
     /// Opens (or returns the already-open) session for `network`. `opts` only
@@ -191,21 +317,30 @@ impl Engine {
     ) -> Result<Arc<NetworkSession>, EngineError> {
         network.validate()?;
         let shared = Arc::clone(&self.shared);
-        let dir = self.network_dir(&network);
         self.handle
             .spawn(async move {
                 let mut sessions = shared.sessions.lock().await;
                 if let Some(existing) = sessions.get(&network) {
                     return Ok(Arc::clone(existing));
                 }
-                let session = NetworkSession::open(
+                let dir = match crate::network_folders::resolve(&shared.config.data_root, &network)
+                {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        shared.set_refused(&network, None);
+                        return Err(e);
+                    }
+                };
+                let mut opened = NetworkSession::open(
                     network.clone(),
                     dir,
                     Arc::clone(&shared.sink),
                     opts,
                     shared.config.vault.clone(),
                 )
-                .await?;
+                .await;
+                shared.note_open(&network, &mut opened);
+                let session = opened?;
                 sessions.insert(network.clone(), Arc::clone(&session));
                 if network == DashNetwork::Mainnet {
                     session.hub.set_rates(Arc::downgrade(&shared.rates));
@@ -215,6 +350,87 @@ impl Engine {
                 Ok(session)
             })
             .await?
+    }
+
+    /// Runs `f` on `network`'s directory on the blocking pool, while no
+    /// session of this engine opens or closes.
+    async fn with_network_dir<T: Send + 'static>(
+        &self,
+        network: &DashNetwork,
+        f: fn(&Path) -> Result<T, EngineError>,
+    ) -> Result<T, EngineError> {
+        network.validate()?;
+        let _sessions = self.shared.sessions.lock().await;
+        let dir = self.network_dir(network)?;
+        self.handle.spawn_blocking(move || f(&dir)).await?
+    }
+
+    /// Whether `network` has a verified before-upgrade snapshot to restore.
+    pub async fn restore_available(&self, network: &DashNetwork) -> Result<bool, EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::restore_available)
+            .await
+    }
+
+    /// Asks for the restore of `network`'s verified before-upgrade snapshot
+    /// at the next start of the app; nothing is restored in this process.
+    /// `InvalidArgument`, with nothing read or written, while `network` is
+    /// open, or unless its last open in this engine was refused by the
+    /// store-upgrade check with `wayOut.restore` (the screen that offers
+    /// Restore earlier data), Restore earlier data refused for a shielded
+    /// hold since then included. Without a verified snapshot it is refused
+    /// with `storage_restore` (`refused`, missingBackup). Refused with
+    /// `ShieldedSpendHeld` while a wallet of `network` holds a shielded
+    /// spend whose result is not known on disk
+    /// (`store_upgrade::request_restore`); the next start reads the stores
+    /// again before the restore moves anything. After an open refused with
+    /// `wayOut.restore`, that refusal lets `network` start over
+    /// ([`Self::recover_in_fresh_folder`]).
+    pub async fn request_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
+        network.validate()?;
+        let sessions = self.shared.sessions.lock().await;
+        if sessions.contains_key(network) {
+            return Err(EngineError::InvalidArgument(format!(
+                "{network} is open; only a network whose open was refused restores earlier data"
+            )));
+        }
+        if !matches!(
+            self.shared.refused(network),
+            Some(Refused::Restore | Refused::RestoreHeld)
+        ) {
+            return Err(EngineError::InvalidArgument(format!(
+                "the last open of {network} was not refused with Restore earlier data; nothing to restore from"
+            )));
+        }
+        let dir = self.network_dir(network)?;
+        if let Some(session) = sessions.get(network).cloned()
+            && let Some(hold) = session.restore_hold().await
+        {
+            return Err(EngineError::ShieldedSpendHeld(hold));
+        }
+        let requested = self
+            .handle
+            .spawn_blocking(move || crate::store_upgrade::request_restore(&dir))
+            .await?;
+        if matches!(requested, Err(EngineError::ShieldedSpendHeld(_)))
+            && self.shared.refused(network) == Some(Refused::Restore)
+        {
+            self.shared.set_refused(network, Some(Refused::RestoreHeld));
+        }
+        requested
+    }
+
+    /// The foreign-lineage screen's Keep: ends `network`'s part-done
+    /// restore keeping its live files as they are; then open it again.
+    pub async fn keep_current_files(&self, network: &DashNetwork) -> Result<(), EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::keep_current_files)
+            .await
+    }
+
+    /// Drops `network`'s restore request while it hasn't begun replacing
+    /// files; once it has, `storage_restore` (`incomplete`).
+    pub async fn cancel_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::cancel_restore)
+            .await
     }
 
     /// The open session for `network`, if any.

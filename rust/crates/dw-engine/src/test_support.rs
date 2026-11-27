@@ -63,13 +63,12 @@ pub async fn create_invitation(
     phrase: &[u8],
 ) -> Result<zeroize::Zeroizing<String>, crate::platform::PlatformError> {
     use crate::platform::PlatformError;
-    use dashcore::secp256k1::SecretKey;
+    use dash_sdk::platform::dashpay::{InviterInfo, encode_invitation_uri};
+    use dpp::secp256k1::SecretKey;
     use key_wallet::bip32::ExtendedPrivKey;
     use platform_wallet::AssetLockFundingType;
-    use platform_wallet::wallet::identity::crypto::invitation::{
-        InviterInfo, encode_invitation_uri,
-    };
     use platform_wallet::wallet::identity::network::{MAX_INVITATION_DUFFS, MIN_INVITATION_DUFFS};
+    use zeroize::Zeroize;
 
     if !(MIN_INVITATION_DUFFS..=MAX_INVITATION_DUFFS).contains(&duffs) {
         return Err(PlatformError::InvalidArgument {
@@ -111,12 +110,16 @@ pub async fn create_invitation(
         }
     })?;
     let child = master.derive_priv(&path);
-    master.private_key.non_secure_erase();
+    master.private_key.zeroize();
     let mut child = child.map_err(|e| PlatformError::Internal {
         detail: e.to_string(),
     })?;
-    let mut voucher: SecretKey = child.private_key;
-    child.private_key.non_secure_erase();
+    let mut voucher = SecretKey::from_secret_bytes(*child.private_key.to_bytes()).map_err(|e| {
+        PlatformError::Internal {
+            detail: e.to_string(),
+        }
+    })?;
+    child.private_key.zeroize();
     let inviter = inviter.map(|username| InviterInfo {
         username: Some(username),
         display_name: None,
@@ -124,7 +127,9 @@ pub async fn create_invitation(
     });
     let uri = encode_invitation_uri(&voucher, network, &proof, inviter.as_ref());
     voucher.non_secure_erase();
-    Ok(zeroize::Zeroizing::new(uri?))
+    Ok(zeroize::Zeroizing::new(
+        uri.map_err(platform_wallet::PlatformWalletError::from)?,
+    ))
 }
 
 /// What [`hold_close_fence`] holds.

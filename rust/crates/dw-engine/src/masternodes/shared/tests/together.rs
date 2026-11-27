@@ -827,9 +827,9 @@ fn test_QT_127_start_refuses_a_fee_below_the_relay_minimum() {
 /// skipped and the first kept.
 #[test]
 fn test_QT_127_a_second_signature_of_a_share_keeps_the_first() {
-    use dashcore::secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
+    use dpp::secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
     let secret = SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
-    let key = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let key = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let shares = [CollateralShare {
         amount: 100 * COIN,
         refund_script: dashcore::ScriptBuf::new(),

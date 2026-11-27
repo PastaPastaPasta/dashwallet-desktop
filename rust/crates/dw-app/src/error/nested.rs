@@ -56,6 +56,7 @@ codes! {
         TxTooLarge = "send.tx_too_large",
         InvalidChangeAddress = "send.invalid_change_address",
         WatchOnly = "send.watch_only",
+        Restored = "send.restored",
         VaultLocked = "send.vault_locked",
         GrantInvalid = "send.grant_invalid",
         GrantExceeded = "send.grant_exceeded",
@@ -136,6 +137,7 @@ codes! {
     /// `CoinJoinFailure`: a CoinJoin call failed.
     CoinJoinCode {
         Disabled = "coinjoin.disabled",
+        Restored = "coinjoin.restored",
         WatchOnly = "coinjoin.watch_only",
         InsufficientFunds = "coinjoin.insufficient_funds",
         VaultLocked = "coinjoin.vault_locked",
@@ -294,6 +296,7 @@ impl From<SendFailure> for AppError {
             F::TxTooLarge => (SendCode::TxTooLarge.into(), None),
             F::InvalidChangeAddress => (SendCode::InvalidChangeAddress.into(), None),
             F::WatchOnly => (SendCode::WatchOnly.into(), None),
+            F::Restored => (SendCode::Restored.into(), None),
             F::VaultLocked => (SendCode::VaultLocked.into(), None),
             F::GrantInvalid => (SendCode::GrantInvalid.into(), None),
             F::GrantExceeded { max_duffs, outflow } => (
@@ -433,6 +436,7 @@ impl From<CoinJoinFailure> for AppError {
         let message = f.to_string();
         let mapped: Mapped = match f {
             F::Disabled => (CoinJoinCode::Disabled.into(), None),
+            F::Restored => (CoinJoinCode::Restored.into(), None),
             F::WatchOnly => (CoinJoinCode::WatchOnly.into(), None),
             F::InsufficientFunds { min_duffs } => (
                 CoinJoinCode::InsufficientFunds.into(),
@@ -536,6 +540,7 @@ mod tests {
                 "send.invalid_change_address",
             ),
             (SendFailure::WatchOnly, "send.watch_only"),
+            (SendFailure::Restored, "send.restored"),
             (SendFailure::VaultLocked, "send.vault_locked"),
             (SendFailure::GrantInvalid, "send.grant_invalid"),
             (
@@ -693,6 +698,7 @@ mod tests {
 
         let coinjoin = [
             (CoinJoinFailure::Disabled, "coinjoin.disabled"),
+            (CoinJoinFailure::Restored, "coinjoin.restored"),
             (CoinJoinFailure::WatchOnly, "coinjoin.watch_only"),
             (
                 CoinJoinFailure::InsufficientFunds { min_duffs: 9 },

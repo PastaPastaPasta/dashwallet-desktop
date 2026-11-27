@@ -17,6 +17,7 @@ import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
 import type { FundAmount } from "./generated/FundAmount";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
+import type { PlatformCancelQuote } from "./generated/PlatformCancelQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { QuickUnlockPolicy } from "./generated/QuickUnlockPolicy";
@@ -64,6 +65,9 @@ import type { ConnectChoice } from "./generated/ConnectChoice";
 import type { ConnectDone } from "./generated/ConnectDone";
 import type { ConnectQuote } from "./generated/ConnectQuote";
 import type { ConnectSheet } from "./generated/ConnectSheet";
+import type { ConnectedApps } from "./generated/ConnectedApps";
+import type { DisconnectDone } from "./generated/DisconnectDone";
+import type { DisconnectQuote } from "./generated/DisconnectQuote";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -75,7 +79,9 @@ import type { Lease } from "./generated/Lease";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockStatus } from "./generated/LockStatus";
 import type { MnemonicCheck } from "./generated/MnemonicCheck";
+import type { NetworkInfo } from "./generated/NetworkInfo";
 import type { OpenedNetwork } from "./generated/OpenedNetwork";
+import type { RestoreStatus } from "./generated/RestoreStatus";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
@@ -154,12 +160,19 @@ import type { MasternodeListState } from "./generated/MasternodeListState";
 import type { MasternodeOverview } from "./generated/MasternodeOverview";
 import type { MasternodePayout } from "./generated/MasternodePayout";
 import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
+import type { DissolvePreview } from "./generated/DissolvePreview";
+import type { DissolveRequest } from "./generated/DissolveRequest";
 import type { JoinSharedRequest } from "./generated/JoinSharedRequest";
+import type { KeyChangeRequest } from "./generated/KeyChangeRequest";
+import type { MaintenanceSent } from "./generated/MaintenanceSent";
+import type { StandbyVariantName } from "./generated/StandbyVariantName";
 import type { SharedCapability } from "./generated/SharedCapability";
 import type { SharedImport } from "./generated/SharedImport";
 import type { SharedMessage } from "./generated/SharedMessage";
 import type { SharedOutcome } from "./generated/SharedOutcome";
 import type { SharedSession } from "./generated/SharedSession";
+import type { SharedShares } from "./generated/SharedShares";
+import type { Standby } from "./generated/Standby";
 import type { UnreadableSession } from "./generated/UnreadableSession";
 import type { StartSharedRequest } from "./generated/StartSharedRequest";
 import type { MnRegistrationPreview } from "./generated/MnRegistrationPreview";
@@ -234,6 +247,8 @@ export interface Backend {
   readonly kind: "tauri" | "fixture";
   /** Opens the launch network (or returns it when it is already the active one). */
   openNetwork(): Promise<OpenedNetwork>;
+  /** The active network, `null` before `openNetwork`; its `restored` is read again from it (storeOpen.ts). */
+  activeNetwork(): Promise<NetworkInfo | null>;
   listWallets(): Promise<WalletSummary[]>;
   lockStatus(): Promise<LockStatus>;
   /** The engine's latest notices, oldest first: those sent before the renderer listened too. */
@@ -321,7 +336,7 @@ export interface Backend {
   /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
   platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
   /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
-   * quote's), under `grant`; `exitOf` is the quote's, the held top-up this move is the exit of. */
+   * quote's), under `grant`; `exitOf` is the quote's, the held record this move is the exit of. */
   platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome>;
   /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
   platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
@@ -332,6 +347,12 @@ export interface Backend {
   platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
+  /** What cancelling the held move or contact payment `of` takes (`platform_cancel_quote`): its inputs,
+   * at its nonces and amount, to one of the wallet's own Platform addresses. */
+  platformCancelQuote(walletId: string, of: string): Promise<PlatformCancelQuote>;
+  /** Cancels the held move or contact payment `of` to `to` (the quote's own Platform address) under a
+   * `platformOp` `grant` (`platform_cancel`); only one of the two goes through. */
+  platformCancel(walletId: string, of: string, to: string, grant: string): Promise<PlatformSendOutcome>;
   /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
   platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote>;
   /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
@@ -422,6 +443,32 @@ export interface Backend {
   installUpdate(version: string): Promise<UpdateStatus>;
   /** Quits through the normal exit path and starts the installed update. */
   restartToUpdate(): Promise<null>;
+  /** Quits through the normal exit path (`quit_app`), from a screen shown instead of the wallet. */
+  quitApp(): Promise<null>;
+  /** Quits through the normal exit path and starts again (`restart_app`): the open runs anew. */
+  restartApp(): Promise<null>;
+  // The restore of the wallet data from before the upgrade (DTO contract v3), for the window's network.
+  // Each runs before the network opens; none restores in this process.
+  /** Whether a verified snapshot is there to restore (`restore_available`); `null` when dw-app has no such command. */
+  restoreAvailable(): Promise<boolean | null>;
+  /** Asks for the restore at the next start (`request_restore`); a restart runs it. */
+  requestRestore(): Promise<null>;
+  /** The foreign screen's Keep the current files (`keep_current_files`); the open is then tried again. */
+  keepCurrentFiles(): Promise<unknown>;
+  /** The couldn't-start screen's Cancel restore (`cancel_restore`): drops the request; the open is then tried again. */
+  cancelRestore(): Promise<null>;
+  /** What RESTORED still waits for (`restore_status`); `null` while it isn't set. */
+  restoreStatus(): Promise<RestoreStatus | null>;
+  /** Try again (`restore_retry`): the engine checks what RESTORED waits for again now. */
+  restoreRetry(): Promise<null>;
+  /** Finish without Dash Platform (`finish_without_platform`): closes the network unless busy
+   * (`app.network_busy`, nothing changed) and opens it without Platform for this session. If that open
+   * fails it opens as usual: `app.network_switch_failed` with `rolledBack`. Nothing unless Platform's
+   * first check is what RESTORED waits for. */
+  finishWithoutPlatform(): Promise<OpenedNetwork>;
+  /** A damaged store's Set up from recovery phrase (`recover_in_fresh_folder`): the window's network moves to a
+   * new folder, the refused one left as it is; a restart then opens it. */
+  recoverInFreshFolder(): Promise<null>;
   /** Opens the page of the release on offer, on this repository. */
   openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.
@@ -569,6 +616,9 @@ export interface Backend {
   appConnectDeny(linkId: string): Promise<null>;
   appConnectReturn(linkId: string): Promise<null>;
   appConnectDismiss(linkId: string): Promise<null>;
+  appConnectList(walletId: string, identity: string): Promise<ConnectedApps>;
+  appConnectDisconnectQuote(walletId: string, identity: string, request: string): Promise<DisconnectQuote>;
+  appConnectDisconnect(walletId: string, identity: string, request: string, grant: string): Promise<DisconnectDone>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.
@@ -757,6 +807,10 @@ export interface Backend {
   /** Sessions whose stored record no longer reads; Discard frees one while `discardable`. */
   mnSharedUnreadable(walletId: string): Promise<UnreadableSession[]>;
   mnSharedSession(walletId: string, session: string): Promise<SharedSession>;
+  /** A shared masternode's shares from history, with or without its session (MG-10 S6). */
+  mnSharedShares(walletId: string, proTxHash: string): Promise<SharedShares>;
+  /** Stored standbys, described; their signed bytes stay in Rust. */
+  mnSharedStandby(walletId: string, proTxHash: string): Promise<Standby[]>;
   /** Reserves the coordinator's share and the fee; signs nothing. */
   mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome>;
   mnSharedSetFee(walletId: string, session: string, fee: number): Promise<SharedOutcome>;
@@ -784,6 +838,23 @@ export interface Backend {
   mnSharedImport(walletId: string, text: string, target: string | null): Promise<SharedImport>;
   /** The open dialog runs in dw-app; the file's text never reaches the renderer. `null` on cancel. */
   mnSharedImportFile(walletId: string, target: string | null): Promise<SharedImport[] | null>;
+  // Shared masternode maintenance (MG-10 S6). Sends refuse on mainnet (`app.shared_send_off`).
+  /** What a dissolution alone would build; signs nothing. */
+  mnSharedPreviewDissolve(walletId: string, request: DissolveRequest): Promise<DissolvePreview>;
+  /** A `masternodeOp` grant covering the preview's `totalDebit`. */
+  mnSharedDissolve(walletId: string, request: DissolveRequest, grant: string): Promise<ProTxOperation>;
+  /** A `masternodeOp` grant covering each own share's penalty and fee; sends nothing. */
+  mnSharedCreateStandby(walletId: string, proTxHash: string, fee: number, grant: string): Promise<Standby[]>;
+  /** The save dialog runs in dw-app and writes the file; only its name comes back. `null` on cancel. */
+  mnSharedExportStandby(walletId: string, proTxHash: string, share: number, fee: number, grant: string): Promise<string | null>;
+  mnSharedSendStandby(walletId: string, proTxHash: string, share: number, fee: number, variant: StandbyVariantName, grant: string): Promise<ProTxOperation>;
+  /** A `masternodeOp` grant covering the fee. */
+  mnSharedStartDissolveTogether(walletId: string, request: DissolveRequest, grant: string): Promise<SharedOutcome>;
+  /** A `masternodeOp` grant of 0; reserves the fee coins. */
+  mnSharedStartKeyChange(walletId: string, request: KeyChangeRequest, grant: string): Promise<SharedOutcome>;
+  mnSharedApproveMaintenance(walletId: string, session: string, grant: string, acceptActorFee: boolean): Promise<SharedOutcome>;
+  /** A dissolution together only (`app.shared_send_unsupported` for a key change). */
+  mnSharedSendMaintenance(walletId: string, session: string, grant: string): Promise<MaintenanceSent>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */

@@ -64,6 +64,17 @@ if [[ -n "$cached" && "${DW_APT_LIVE_FIRST:-}" != 1 ]]; then
   from_cache
   exit 0
 fi
+# No package of these sets comes from packages.microsoft.com, a source the runner image adds. On
+# 2026-11-27 its noble index answered 403 Forbidden, and apt-get update fails on any source it cannot
+# read, before a download starts. So the live download reads the Ubuntu archive only.
+# DW_APT_SOURCE_PARTS: the directory of extra sources (default /etc/apt/sources.list.d).
+parts=${DW_APT_SOURCE_PARTS:-/etc/apt/sources.list.d}
+for part in "$parts"/*.list "$parts"/*.sources; do
+  if [ -f "$part" ] && grep -q 'packages[.]microsoft[.]com' "$part"; then
+    sudo rm -f "$part"
+    echo "apt: dropped $part, a packages.microsoft.com source" >&2
+  fi
+done
 attempts=3 update_deadline=120 download_deadline=${DW_APT_DOWNLOAD_DEADLINE:-360}
 if [[ -n "$cached" ]]; then
   attempts=1 update_deadline=60 download_deadline=180

@@ -80,11 +80,13 @@ fn address_went_elsewhere() -> ContactError {
 }
 
 /// `contact_pay_quote` from the Shielded balance past the payee and the
-/// pair's lock: the unshield's withdrawal range and fee (P13, P14).
+/// pair's lock: the unshield's withdrawal range and fee (P13, P14), refused
+/// first while the library cannot spend from the key set.
 pub(crate) async fn quote(
     lib: &impl ShieldedLib,
     credits: u64,
 ) -> Result<ContactPayQuote, ContactError> {
+    pool::keyset_closed(lib)?;
     let quote = pool::unshield_plan(lib, credits).await?;
     Ok(ContactPayQuote {
         source: PaymentSource::Shielded,
@@ -287,12 +289,44 @@ impl NetworkSession {
         ))
     }
 
+    /// Whether a re-send of transition `st_hash` keeps P6: every payout row
+    /// of `wallet` that names it holds its recorded dispatch
+    /// ([`Self::confirm_payout_dispatch`]). A read that fails refuses.
+    pub(crate) async fn payout_dispatch_recorded(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<(), String> {
+        let (w, named) = (wallet.to_string(), hex::encode(st_hash));
+        let scope = dw_appdb::local_scope(&w);
+        let unrecorded = self
+            .appdb_op(move |db| {
+                for row in db.dp_contact_payouts(&w)? {
+                    if row.st_hash.as_deref() != Some(named.as_str()) {
+                        continue;
+                    }
+                    let key = dw_appdb::dp_payout_dispatched(&row.reference);
+                    if db.setting(&scope, &key)?.is_none() {
+                        return Ok(Some(row.reference));
+                    }
+                }
+                Ok(None)
+            })
+            .await
+            .map_err(|e| format!("the contact payouts could not be read: {e}"))?;
+        match unrecorded {
+            None => Ok(()),
+            Some(reference) => Err(format!(
+                "the contact payout {reference}'s dispatch was not recorded"
+            )),
+        }
+    }
+
     /// What the journal proves of the shielded payout `reference` whose
     /// transition is `st_hash` (P6, P7, P9): no artifact, never sent, but
     /// only while the hook never recorded its dispatch (else the journal is
-    /// lost or older: unknown); executed by the library's own disposition,
-    /// or by the release's proof of a refused first send that published a
-    /// padding nullifier, sent; not executed, not sent with its address consumed (P5).
+    /// lost or older: unknown); settled executed from the library's reported
+    /// outcome, sent; not executed, not sent with its address consumed (P5).
     /// Anything else, a read failure and an execution the library could not
     /// attribute included, is unknown.
     pub(crate) async fn shielded_payout_evidence(

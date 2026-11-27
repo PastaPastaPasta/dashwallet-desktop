@@ -188,10 +188,10 @@ impl From<dw_engine::EngineError> for WalletError {
         match e {
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::AlreadyExists { detail },
-            E::InvalidConfig(_) | E::InvalidArgument(_) | E::LastStartupWallet => Self::InvalidArgument { detail },
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::LastStartupWallet | E::RestoreOnly => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {
+            E::StorageInUse { .. } | E::Storage(_) | E::StorageTooNew(_) | E::StoreRefused(_) | E::DataFolderNotPrivate { .. } | E::StoreRestore(_) | E::StoreRetry(_) | E::RetryableIo(_) | E::Io(_) => {
                 Self::Storage { detail }
             }
             E::NotImplemented(call) => Self::NotImplemented { call },
@@ -243,6 +243,8 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::StuckFunding(_)
             // The frozen Swift shells have no shielded funds (DEC-1046).
             | E::ShieldedSpendUnresolved
+            | E::Restored
+            | E::ShieldedSpendHeld(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

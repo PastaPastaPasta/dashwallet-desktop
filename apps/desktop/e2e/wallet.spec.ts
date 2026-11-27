@@ -819,7 +819,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
@@ -833,8 +833,33 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     );
+    expect(errors).toEqual([]);
+  });
+
+  test("Q92_H2: the abandon confirm of a payment from before a restore starts with MG's line, until it's abandoned", async ({ page }) => {
+    const errors = await open(page, "restore-holds");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-abandon-restored-hint")).toHaveText(
+      "This payment was still pending in your wallet data from before the upgrade, and it hasn't confirmed since. Anything you did with it after the upgrade, such as abandoning it, is no longer recorded here.",
+    );
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    expect(errors).toEqual([]);
+  });
+
+  test("Q92 money gate: while the restored wallet data is checked, its line stands in for Abandon", async ({ page }) => {
+    const errors = await open(page, "restore-holds-restored");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-restored-gate")).toHaveText(
+      "Dash Wallet is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
+    );
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 
@@ -928,7 +953,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
