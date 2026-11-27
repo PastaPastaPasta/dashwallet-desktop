@@ -259,6 +259,13 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     ) -> Result<bool, String> {
         Err("this journal keeps no drained holds".into())
     }
+    fn open_shielded_import_activity(&self, _wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+
+    fn shielded_dispatch_holds(&self, _wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
     /// Every shielded artifact of `wallet` (schema 11), archived ones
     /// included.
     fn shielded_artifacts(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
@@ -549,6 +556,16 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         artifact: &NewShieldedArtifact,
     ) -> Result<bool, String> {
         (self.record_shielded_artifact(wallet, artifact, crate::events::unix_now()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn open_shielded_import_activity(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        self.open_shielded_import_activity(wallet)
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_dispatch_holds(&self, wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>, String> {
+        self.shielded_dispatch_holds(wallet)
             .map_err(|e| e.to_string())
     }
 

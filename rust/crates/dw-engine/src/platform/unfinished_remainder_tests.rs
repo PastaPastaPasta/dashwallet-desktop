@@ -118,6 +118,7 @@ fn remaining(fx: &Fixture) -> std::collections::HashMap<OutPoint, u64> {
     let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
     fx.engine
         .block_on(async move { locks::remaining_of(&s, wallet, LockKindId::Shielded).await })
+        .unwrap()
 }
 
 /// The wallet's rows of `app.sqlite` a recover could write: the unfinished
@@ -524,4 +525,74 @@ fn a_recover_that_failed_after_signing_settles_on_the_next_proved_read() {
     assert_eq!(done.kind, PlatformActivityKind::Recovered);
     assert_eq!(done.state, PlatformActivityState::Done);
     assert_eq!((done.credits, done.estimated), (left - fee, true));
+}
+
+#[test]
+fn a_retried_recover_uses_the_fresh_remainder_through_settlement() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let at = shield_lock(&fx, &lib, 0x5C).out_point;
+    let (old, fresh) = (600_000_000, 500_000_000);
+    mark_remaining(&fx, at, old);
+    lib.proves(at, SpentRead::Remaining { credits: old });
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        recover(&fx, &lib, at, &grant(&fx, 1, old)).unwrap(),
+        LockFinish::Checking
+    );
+    let first = record(&fx, at).unwrap();
+
+    lib.proves(at, SpentRead::Remaining { credits: fresh });
+    assert!(
+        matches!(quote(&fx, &lib, at), RecoverQuote::Ready { credits, .. } if credits == fresh)
+    );
+    assert_eq!(record(&fx, at).unwrap(), first);
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        recover(&fx, &lib, at, &grant(&fx, 1, fresh)).unwrap(),
+        LockFinish::Checking
+    );
+    let refreshed = record(&fx, at).unwrap();
+    assert_eq!(refreshed.duffs, fresh / 1000);
+    assert_eq!(refreshed.credits, fresh - floor(&lib));
+    assert_eq!(
+        (&refreshed.claims, refreshed.absorbed),
+        (&first.claims, first.absorbed)
+    );
+
+    lib.proves(at, SpentRead::Consumed);
+    assert_eq!(quote(&fx, &lib, at), RecoverQuote::Finished);
+    let done = record(&fx, at).unwrap().activity();
+    assert_eq!(done.state, PlatformActivityState::Done);
+    assert_eq!(done.credits, fresh - floor(&lib));
+    assert_eq!(lib.recovered.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_recover_offered_again_after_an_uncertain_attempt_lands_once() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let at = shield_lock(&fx, &lib, 0x5D).out_point;
+    let left = 600_000_000;
+    mark_remaining(&fx, at, left);
+    lib.proves(at, SpentRead::Remaining { credits: left });
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        recover(&fx, &lib, at, &grant(&fx, 1, left)).unwrap(),
+        LockFinish::Checking
+    );
+    let armed = record(&fx, at).unwrap();
+    assert!(matches!(quote(&fx, &lib, at), RecoverQuote::Ready { credits, .. } if credits == left));
+    assert_eq!(record(&fx, at).unwrap(), armed);
+    lib.answer(Answer::Done(Some(left - floor(&lib))));
+    assert_eq!(
+        recover(&fx, &lib, at, &grant(&fx, 1, left)).unwrap(),
+        LockFinish::Applied
+    );
+    assert_eq!(
+        record(&fx, at).unwrap().activity().state,
+        PlatformActivityState::Done
+    );
+    assert_eq!(quote(&fx, &lib, at), RecoverQuote::Finished);
+    assert_eq!(lib.recovered.lock().unwrap().len(), 2);
 }

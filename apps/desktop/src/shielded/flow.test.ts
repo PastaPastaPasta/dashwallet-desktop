@@ -293,7 +293,7 @@ describe("shielded refusal copy", () => {
     expect(text("rescan_interrupted")).toBe("The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.");
     expect(text("shielded.not_active", { kind: "protocol", protocolVersion: 11, activationVersion: 12 })).toBe("Shielded is not active on this network yet.");
     expect(text("shielded.pool_too_small", { kind: "poolNotes", notes: 120, required: 250 })).toBe(
-      "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",
+      "Shielded withdrawals open once the network's shielded pool has enough activity. Any held funds return once Dash Wallet proves the move can no longer go through. Check Activity before trying again.",
     );
   });
 

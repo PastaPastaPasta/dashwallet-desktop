@@ -1606,6 +1606,28 @@ impl LeaseTable {
         Ok(artifacts.into_iter().find(|a| a.activity == activity))
     }
 
+    pub(crate) async fn open_shielded_import_activity(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<[u8; 32]>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        self.rt
+            .spawn_blocking(move || backend.open_shielded_import_activity(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    pub(crate) async fn shielded_dispatch_holds(
+        &self,
+        wallet: WalletId,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        self.rt
+            .spawn_blocking(move || backend.shielded_dispatch_holds(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// Every shielded artifact of `wallet` (schema 11), archived ones
     /// included. On the blocking pool.
     pub(crate) async fn shielded_artifacts(

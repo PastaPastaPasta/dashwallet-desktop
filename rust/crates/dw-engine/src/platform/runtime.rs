@@ -161,6 +161,7 @@ pub(crate) struct PlatformRuntime {
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
+    pub(crate) shielded_bind_warnings: Mutex<HashSet<&'static str>>,
     /// App Connect responses sealed and not yet published.
     pub(crate) app_connect: super::app_connect::PendingSends,
     /// A test's pause of the next shielded pass, after its admission and
@@ -591,6 +592,7 @@ impl PlatformRuntime {
             shielded_drain: std::sync::OnceLock::new(),
             drained_held: Mutex::default(),
             shielded_checked_at: AtomicU64::new(0),
+            shielded_bind_warnings: Mutex::default(),
             app_connect: Default::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),

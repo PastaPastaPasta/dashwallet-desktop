@@ -283,6 +283,23 @@ fn bundle(kind: &ShieldedDispatchKind, st_bytes: &[u8]) -> Option<([u8; 32], Vec
     }
 }
 
+/// Commitments tied to the imported transition itself. A scan can confirm
+/// the imported row from one of these outputs.
+pub(super) fn spend_output_commitments(st_bytes: &[u8]) -> Vec<[u8; 32]> {
+    let Ok(st) = StateTransition::deserialize_from_bytes_trusted(st_bytes) else {
+        return Vec::new();
+    };
+    let actions = match &st {
+        StateTransition::ShieldedTransfer(t) => t.actions(),
+        StateTransition::Unshield(t) => t.actions(),
+        StateTransition::ShieldedWithdrawal(t) => t.actions(),
+        StateTransition::IdentityTopUpFromShieldedPool(t) => t.actions(),
+        StateTransition::IdentityCreateFromShieldedPool(t) => t.actions(),
+        _ => return Vec::new(),
+    };
+    actions.iter().map(|a| a.cmx).collect()
+}
+
 /// Whether the signed bytes of `payload` carry the anchor and the
 /// nullifiers the library hands the hook with them, and are of its kind:
 /// the journal keeps both in the artifact, so a spend whose bytes say

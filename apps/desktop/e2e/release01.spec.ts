@@ -1060,7 +1060,7 @@ test.describe("Shielded", () => {
     await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
-    await expect(page.getByTestId("shielded-refusal")).toHaveText("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.");
+    await expect(page.getByTestId("shielded-refusal")).toHaveText("Shielded withdrawals open once the network's shielded pool has enough activity. Any held funds return once Dash Wallet proves the move can no longer go through. Check Activity before trying again.");
     await shot(page, "light-shielded-pool-small");
   });
 

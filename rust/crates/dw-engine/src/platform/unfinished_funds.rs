@@ -34,8 +34,8 @@ use dpp::version::PlatformVersion;
 use dw_appdb::dispatch::TopUpSettled;
 use dw_vault::{SignerError, VaultError};
 use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
-use platform_wallet::PlatformWallet;
 use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+use platform_wallet::{AssetLockFundingType, PlatformWallet};
 
 use super::errors::{CreditsError, PlatformError};
 use super::flows::FlowKind;
@@ -350,13 +350,16 @@ pub(crate) async fn fund_evidence(
     pw: &PlatformWallet,
     pending: impl IntoIterator<Item = OutPoint>,
 ) -> FundEvidence {
-    let rows = fund::fund_rows(&pw.asset_locks().list_tracked_locks().await);
+    let locks = pw.asset_locks().list_tracked_locks().await;
+    let rows = fund::fund_rows(&locks);
     let consumed = (rows.iter())
         .filter(|l| l.info.status == LockStatus::Consumed)
         .map(|l| l.info.outpoint);
     let persisted = persisted_consumed(session, wallet, pending);
     let settled =
         locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
+    let shielded_settled =
+        locks::marks_of(session, wallet, LockKindId::Shielded, Mark::Settled).await;
     let by_txid = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled funds");
         HashSet::new()
@@ -368,10 +371,16 @@ pub(crate) async fn fund_evidence(
         done: consumed
             .chain(persisted)
             .chain(settled)
+            .chain(shielded_settled)
             .chain(alone)
             .collect(),
         reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Used).await,
         tracked: rows.iter().map(|l| l.info.outpoint).collect(),
+        tracked_shields: locks
+            .iter()
+            .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
+            .map(|l| l.out_point)
+            .collect(),
         caught_up: super::registration_flow::wallet_synced(session, wallet),
     }
 }
@@ -413,7 +422,7 @@ pub(crate) struct ArmingSigner<'s, 'a> {
     /// The address the apply pays and the fund's estimate.
     fund: (&'s str, u64),
     /// A recover's record, not a fund's.
-    recovered: bool,
+    remainder_credits: Option<u64>,
     /// What arming did, once it ran.
     pub(crate) arming: tokio::sync::OnceCell<platform_moves::Arming>,
 }
@@ -434,15 +443,15 @@ impl<'s, 'a> ArmingSigner<'s, 'a> {
             wallet,
             lock,
             fund,
-            recovered: false,
+            remainder_credits: None,
             arming: tokio::sync::OnceCell::new(),
         }
     }
 
     /// The record is a recover's (`unfinished_remainder`).
-    pub(crate) fn recovering(self) -> Self {
+    pub(crate) fn recovering(self, credits: u64) -> Self {
         Self {
-            recovered: true,
+            remainder_credits: Some(credits),
             ..self
         }
     }
@@ -473,10 +482,16 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
             let (address, credits) = self.fund;
             let arm = || async {
                 let (session, wallet, lock) = (self.session, self.wallet, self.lock);
-                let recovered = self.recovered;
-                platform_moves::arm_fund(session, wallet, lock, address.into(), credits, recovered)
-                    .await
-                    .map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
+                platform_moves::arm_fund(
+                    session,
+                    wallet,
+                    lock,
+                    address.into(),
+                    credits,
+                    self.remainder_credits,
+                )
+                .await
+                .map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
             };
             self.arming.get_or_try_init(arm).await?;
         }

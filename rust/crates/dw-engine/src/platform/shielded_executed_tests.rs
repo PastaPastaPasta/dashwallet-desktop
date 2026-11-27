@@ -316,10 +316,25 @@ fn launch_with_an_executed_spend_child() {
     let (session, wallet) = first_launch(&engine);
     save_notes(&engine, &session, wallet);
     executed_unmarked(&engine, &session, wallet);
-    assert_eq!(held_state(&engine, &session, wallet), unmarked());
+    if mode == "finalized" {
+        let s = Arc::clone(&session);
+        engine.block_on(async move {
+            let m = s.manager().unwrap();
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            {
+                let mut store = coordinator.store().write().await;
+                for nullifier in spend().nullifiers {
+                    assert!(store.mark_spent(subwallet(wallet), &nullifier).unwrap());
+                }
+            }
+            assert!(stored_rows(&s, wallet).is_empty());
+        });
+    } else {
+        assert_eq!(held_state(&engine, &session, wallet), unmarked());
+    }
     std::fs::write(Path::new(&root).join("wallet"), wallet.to_string()).unwrap();
     match mode.as_str() {
-        "exit" => {}
+        "exit" | "finalized" => {}
         "quit" => engine.block_on(engine.shutdown()).unwrap(),
         "close" => {
             refused(engine.block_on(session.unload_wallet(wallet)));
@@ -428,4 +443,77 @@ fn the_shown_balance_leaves_out_reserved_notes() {
     assert_eq!(shown(), 3 * VALUE, "nothing reserved");
     executed_unmarked(&engine, &session, wallet);
     assert_eq!(shown(), VALUE, "the spend's notes are reserved");
+}
+
+#[test]
+fn a_finalized_spend_stays_unselectable_after_a_behind_rescan() {
+    let dir = dw_testutil::private_tempdir();
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "platform::shielded_close_tests::executed_tests::launch_with_an_executed_spend_child",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(CHILD_ROOT, dir.path())
+        .env(CHILD_MODE, "finalized")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let engine = engine_at(dir.path());
+    let (session, wallet) = relaunch(&engine, dir.path(), scan_sdk(&[[0x55; 32]]));
+    assert!(stored_rows(&session, wallet).is_empty());
+    forced_pass(&engine, &session);
+
+    let dp = session.dashpay(wallet);
+    let balance = engine.block_on(dp.shielded_status()).unwrap().balance;
+    assert_eq!(balance, VALUE);
+    let to = engine
+        .block_on(dp.shielded_receive_address())
+        .unwrap()
+        .address;
+    assert_eq!(
+        engine
+            .block_on(dp.shielded_send_quote(to, 2 * VALUE))
+            .unwrap_err()
+            .code(),
+        "shielded.insufficient_funds"
+    );
+    assert_eq!(held_state(&engine, &session, wallet).selectable, [nf(LEFT)]);
+
+    let path = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    let journal = rusqlite::Connection::open(path).unwrap();
+    journal.busy_timeout(Duration::from_secs(1)).unwrap();
+    journal
+        .execute_batch("PRAGMA ignore_check_constraints = ON")
+        .unwrap();
+    let activity = spend().activity_id;
+    let invalid = [9u8; 31];
+    journal
+        .execute(
+            "INSERT INTO shielded_artifact_note (wallet, activity, nullifier) VALUES (?1, ?2, ?3)",
+            rusqlite::params![&wallet.0[..], &activity[..], &invalid[..]],
+        )
+        .unwrap();
+    assert!(engine.block_on(dp.shielded_status()).is_err());
+    assert_eq!(held_state(&engine, &session, wallet).selectable, [nf(LEFT)]);
+    journal
+        .execute(
+            "DELETE FROM shielded_artifact_note WHERE length(nullifier) <> 32",
+            [],
+        )
+        .unwrap();
+
+    let s = Arc::clone(&session);
+    engine.block_on(async move {
+        let m = s.manager().unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        for nullifier in spend().nullifiers {
+            assert!(store.mark_spent(subwallet(wallet), &nullifier).unwrap());
+        }
+    });
+    assert_eq!(held_state(&engine, &session, wallet), marked());
 }

@@ -2254,6 +2254,36 @@ impl DispatchJournal {
             .collect())
     }
 
+    /// Activity IDs to check when dispatching a spend alongside open imports.
+    pub fn open_shielded_import_activity(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT activity FROM shielded_artifact
+             WHERE wallet = ?1 AND origin = 'imported_redrive'
+               AND status IN ('registered', 'unresolved')
+               AND st_hash IS NOT NULL AND disposition_kind IS NULL",
+        )?;
+        stmt.query_map(params![&wallet[..]], |r| r.get::<_, Vec<u8>>(0))?
+            .map(|row| fixed(row?, "shielded_artifact.activity"))
+            .collect()
+    }
+
+    /// Selected notes that may have been spent by a local dispatch.
+    /// Keep the evidence across scans because the note store is rebuilt
+    /// after a restart and a lagging node may omit a known spend.
+    pub fn shielded_dispatch_holds(&self, wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT n.nullifier FROM shielded_artifact a
+             JOIN shielded_artifact_note n USING (wallet, activity)
+             WHERE a.wallet = ?1 AND a.origin = 'dispatched' AND a.status <> 'archived'
+               AND (a.status <> 'not_executed' OR n.spent = 1)",
+        )?;
+        stmt.query_map(params![&wallet[..]], |r| r.get::<_, Vec<u8>>(0))?
+            .map(|row| fixed(row?, "shielded_artifact_note.nullifier"))
+            .collect()
+    }
+
     /// Every shielded artifact of `wallet`, archived ones included, by
     /// activity.
     pub fn all_shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {

@@ -173,8 +173,8 @@ pub(crate) async fn recover(
         .scope(async {
             let permit = lease.call_permit(LABEL, None)?;
             let signer = LockKeySigner::new(&funding, script, permit.signatures());
-            let arming =
-                ArmingSigner::new(&signer, session, wallet, row, (&address, estimate)).recovering();
+            let arming = ArmingSigner::new(&signer, session, wallet, row, (&address, estimate))
+                .recovering(credits);
             let applied = lib.apply_remainder(outpoint, to, &arming).await;
             let signed = signer.signed();
             permit.finish(applied.is_ok());
@@ -252,7 +252,10 @@ async fn standing(
         txids: (session.leases.top_ups_settled(wallet).await).unwrap_or_default(),
     };
     let used = locks::marks_of(session, wallet, kind, Mark::Used).await;
-    let remaining = locks::remaining_of(session, wallet, kind).await;
+    let remaining = locks::remaining_of(session, wallet, kind).await?;
+    if remaining.get(&outpoint) == Some(&0) {
+        return Ok(Standing::Finished(used_up(session, wallet, &lock).await));
+    }
     let ev = Evidence {
         own: &own,
         settled: &settled,

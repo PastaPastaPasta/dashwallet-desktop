@@ -44,7 +44,7 @@
 //! restored lock's record (only a proved apply completes one: no row, no
 //! allowance), a record closed or removed giving what it absorbed back as
 //! `incoming`; and a lock the library no
-//! longer tracks once SPV and the scan caught up closes an unarmed fund (a
+//! longer tracks once SPV and the scan caught up closes a recover or an unarmed fund (a
 //! lock swept by a conflicting transaction, or untracked as never sent:
 //! platform-wallet's `sync/reconstruction.rs` and `sync/tracking.rs`). An
 //! armed fund whose lock is neither tracked nor stored `Consumed` stays
@@ -458,6 +458,8 @@ pub(crate) struct FundRecord {
     /// (`unfinished_remainder`), not an "Add from Dash wallet".
     #[serde(default)]
     pub(crate) recovered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) remainder_credits: Option<u64>,
     /// When each part of `absorbed` was read: a give-back offers each part
     /// to the `FromShielded` records armed before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -492,7 +494,9 @@ impl FundRecord {
     /// the fund's.
     fn expects(&self) -> u64 {
         if self.state == PlatformActivityState::Pending && self.armed {
-            (self.duffs.saturating_mul(CREDITS_PER_DUFF)).saturating_sub(self.absorbed)
+            self.remainder_credits
+                .unwrap_or_else(|| self.duffs.saturating_mul(CREDITS_PER_DUFF))
+                .saturating_sub(self.absorbed)
         } else {
             0
         }
@@ -525,6 +529,7 @@ impl FundRecord {
             armed: false,
             restored: false,
             recovered: false,
+            remainder_credits: None,
             claims: Vec::new(),
             at: unix_now(),
         }
@@ -1064,6 +1069,7 @@ pub(crate) struct FundEvidence {
     pub(crate) reported: HashSet<OutPoint>,
     /// Every fund lock the library tracks, any status.
     pub(crate) tracked: HashSet<OutPoint>,
+    pub(crate) tracked_shields: HashSet<OutPoint>,
     /// SPV and the wallet's scan caught up: a lock not tracked now is gone.
     pub(crate) caught_up: bool,
 }
@@ -1169,7 +1175,7 @@ pub(crate) enum Arming {
     /// Its record armed now: pending unarmed, or closed (the lock came
     /// back), pending again.
     Armed,
-    /// Already armed, or done: nothing written.
+    /// Arming status unchanged. A recover's estimate may have been refreshed.
     Unchanged,
 }
 
@@ -1183,29 +1189,41 @@ pub(crate) async fn arm_fund(
     lock: (OutPoint, u64),
     address: String,
     credits: u64,
-    recovered: bool,
+    remainder_credits: Option<u64>,
 ) -> Result<Arming, PlatformError> {
     let one = wallet_lock(wallet);
     let _one = one.lock().await;
     let store = Store::of(session, wallet)?;
     let (record, arming) = match store.fund(&lock.0.txid.to_string()).await? {
-        Some(r)
-            if r.state == PlatformActivityState::Failed
-                || (r.state == PlatformActivityState::Pending && !r.armed) =>
+        Some(mut r)
+            if matches!(
+                r.state,
+                PlatformActivityState::Pending | PlatformActivityState::Failed
+            ) =>
         {
-            let r = FundRecord {
-                state: PlatformActivityState::Pending,
-                armed: true,
-                ..r
+            let arming = if r.state == PlatformActivityState::Failed || !r.armed {
+                r.state = PlatformActivityState::Pending;
+                r.armed = true;
+                Arming::Armed
+            } else {
+                Arming::Unchanged
             };
-            (r, Arming::Armed)
+            if remainder_credits.is_some() && r.recovered {
+                r.duffs = lock.1;
+                r.credits = credits;
+                r.remainder_credits = remainder_credits;
+            } else if arming == Arming::Unchanged {
+                return Ok(arming);
+            }
+            (r, arming)
         }
         Some(_) => return Ok(Arming::Unchanged),
         None => {
             let r = FundRecord {
                 armed: true,
                 restored: true,
-                recovered,
+                recovered: remainder_credits.is_some(),
+                remainder_credits,
                 ..FundRecord::pending(lock, address, credits)
             };
             (r, Arming::Made)
@@ -1330,7 +1348,13 @@ async fn reconcile(
             if !kept {
                 removed.insert(fund.txid.clone());
             }
-        } else if !fund.armed && ev.caught_up && !ev.tracked.contains(&at) {
+        } else if ev.caught_up
+            && if fund.recovered {
+                !ev.tracked_shields.contains(&at)
+            } else {
+                !fund.armed && !ev.tracked.contains(&at)
+            }
+        {
             writes.extend(fund.close(&mut shielded)?);
         }
     }
