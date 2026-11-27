@@ -1097,6 +1097,7 @@ impl NetworkSession {
         );
         let (mut snapshot, lock_inputs, unseen, applied, excluded) = {
             let state = crate::wallet_read::info_of(wallet).await?;
+            self.hub.detect_truncation(wallet_id, &state.core_wallet);
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
             (

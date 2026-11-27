@@ -138,20 +138,27 @@ impl Scenario {
         );
     }
 
-    fn detect_fork(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+    fn truncate_silently(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
         use platform_wallet::key_wallet_manager::WalletInterface;
         let manager = self.session.manager().unwrap();
-        let events = self.engine.block_on(async {
+        let reconciles = std::mem::take(&mut *self.session.hub.reconciles.lock().unwrap());
+        self.engine.block_on(async {
+            for reconcile in reconciles {
+                reconcile.await.unwrap();
+            }
             let wm = manager.wallet_manager_arc();
-            let mut events = {
-                let mut wm = wm.write().await;
-                let events = wm.subscribe_events();
-                wm.truncate_above(TIP).unwrap();
-                events
-            };
-            self.session.refresh_wallet_state(&manager, self.id).await;
+            let mut wm = wm.write().await;
+            let mut events = wm.subscribe_events();
+            wm.truncate_above(TIP).unwrap();
             std::iter::from_fn(|| events.try_recv().ok()).collect()
-        });
+        })
+    }
+
+    fn detect_fork(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        let events = self.truncate_silently();
+        let manager = self.session.manager().unwrap();
+        self.engine
+            .block_on(self.session.refresh_wallet_state(&manager, self.id));
         self.session.hub.settle_rereads();
         events
     }
@@ -400,6 +407,32 @@ fn a_fork_detected_without_an_event_holds_the_unrecorded_locked_spenders_input()
     let s = unrecorded_spender(true);
     s.detect_fork();
     assert_restored_input(&s, true);
+}
+
+#[test]
+fn max_reconciles_a_silent_fork_before_offering_coins() {
+    let s = unrecorded_spender(true);
+    s.truncate_silently();
+    let count = s.session.hub.truncations();
+    let max = s
+        .engine
+        .block_on(s.session.max_spendable(
+            s.id,
+            CoinSource::Any,
+            crate::send::FeeMode::PerKb(1_000),
+        ))
+        .unwrap();
+    assert_eq!(max, 11 * COIN);
+    assert!(s.session.hub.truncations() > count);
+}
+
+#[test]
+fn coin_control_reconciles_a_silent_fork_before_listing_coins() {
+    let s = unrecorded_spender(true);
+    s.truncate_silently();
+    let count = s.session.hub.truncations();
+    assert!(!s.a_listed());
+    assert!(s.session.hub.truncations() > count);
 }
 
 #[test]
