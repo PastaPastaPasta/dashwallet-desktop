@@ -2,8 +2,12 @@
 //! before key-wallet's record of it was stored, whether or not it left. The
 //! next start shows the payment pending, keeps the coins it signed out of
 //! the balance and coin control, and offers Resend and Abandon.
+//!
+//! The cases run in a separate process (#690). To run an individual case,
+//! pass its name to Cargo and add `-- --ignored`.
 
 use std::collections::BTreeSet;
+use std::process::Command;
 use std::sync::Arc;
 
 use dashcore::{OutPoint, Transaction, Txid};
@@ -16,6 +20,24 @@ use super::{instant_lock, mempool, mined, reopen, rows, wait_stored_locked};
 use crate::send::CoinSource;
 use crate::session::NetworkSession;
 use crate::{Engine, WalletId};
+
+#[test]
+fn all_cases_in_a_subprocess() {
+    let (_, module) = module_path!().split_once("::").unwrap();
+    let filter = format!("{module}::");
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--test-threads=1", &filter])
+        .output()
+        .expect("start the crash-send tests");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && !stdout.contains("test result: ok. 0 passed;"),
+        "crash-send subprocess exited with {}:\n{stdout}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{stdout}");
+}
 
 fn held(engine: &Engine, session: &NetworkSession, id: WalletId) -> BTreeSet<OutPoint> {
     coins(engine, session, id)
@@ -72,6 +94,7 @@ fn sent_unrecorded() -> (
 /// neither counted nor offered, and Abandon and Resend are offered; the
 /// same after another restart.
 #[test]
+#[ignore]
 fn a_payment_sent_before_a_crash_stays_pending_and_keeps_its_coin_out() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
     let a = OutPoint::new(paid.txid(), 0);
@@ -104,6 +127,7 @@ fn a_payment_sent_before_a_crash_stays_pending_and_keeps_its_coin_out() {
 /// stays (an abandoned payment's does until it is ChainLocked) and claims
 /// nothing.
 #[test]
+#[ignore]
 fn a_payment_marked_before_a_crash_can_be_abandoned() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
     let extras = engine
@@ -140,6 +164,7 @@ fn a_payment_marked_before_a_crash_can_be_abandoned() {
 /// InstantSend-locked and stays unmined. Its mark stays, so after another
 /// restart its coin stays out even when its funding block is scanned again.
 #[test]
+#[ignore]
 fn a_payment_restored_after_a_crash_and_then_locked_keeps_its_coin_out() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
     let a = OutPoint::new(paid.txid(), 0);
@@ -162,6 +187,7 @@ fn a_payment_restored_after_a_crash_and_then_locked_keeps_its_coin_out() {
 /// A peer relays the payment after the restart: it is listed once, A stays
 /// out, and its change counts.
 #[test]
+#[ignore]
 fn a_payment_sent_before_a_crash_and_relayed_later_counts_once() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
     let a = OutPoint::new(paid.txid(), 0);
@@ -184,6 +210,7 @@ fn a_payment_sent_before_a_crash_and_relayed_later_counts_once() {
 /// counts. Its mark stays until the payment is ChainLocked, and claims
 /// nothing meanwhile.
 #[test]
+#[ignore]
 fn a_payment_sent_before_a_crash_and_mined_later_settles() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
     let a = OutPoint::new(paid.txid(), 0);
@@ -211,6 +238,7 @@ fn a_payment_sent_before_a_crash_and_mined_later_settles() {
 /// A mark an earlier build wrote names the coins alone. With no record of
 /// its payment it claims nothing and goes at the load, as before.
 #[test]
+#[ignore]
 fn an_old_mark_without_its_transaction_and_no_record_goes_at_the_load() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -233,6 +261,7 @@ fn an_old_mark_without_its_transaction_and_no_record_goes_at_the_load() {
 /// device beats, paying only someone else: key-wallet sweeps it, and the
 /// next launch neither lists it nor keeps its mark.
 #[test]
+#[ignore]
 fn a_swept_payment_stays_gone_after_a_restart() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -278,6 +307,7 @@ fn a_swept_payment_stays_gone_after_a_restart() {
 /// doesn't hold: abandoning it rescans from the birth height, as nothing
 /// says where that coin was funded.
 #[test]
+#[ignore]
 fn abandoning_a_marked_payment_of_an_unknown_coin_rescans_from_the_birth() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     mined(&engine, &session, id, TIP, vec![paid]);
@@ -337,6 +367,7 @@ fn coin_funded_without_a_record(
 /// quit, with no change: the next start lists it as a payment, offers
 /// Abandon, and the abandon brings the coin back.
 #[test]
+#[ignore]
 fn a_payment_of_a_coin_funded_without_a_record_is_listed_and_can_be_abandoned() {
     let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
     let (session, coin) = coin_funded_without_a_record(&engine, session, id, 8);
@@ -375,6 +406,7 @@ fn a_payment_of_a_coin_funded_without_a_record_is_listed_and_can_be_abandoned() 
 /// As above with change: listed as the payment it is, not as a receipt of
 /// its change.
 #[test]
+#[ignore]
 fn a_payment_with_change_of_a_coin_funded_without_a_record_is_listed_as_a_payment() {
     let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
     let (session, coin) = coin_funded_without_a_record(&engine, session, id, 9);
@@ -405,6 +437,7 @@ fn a_payment_with_change_of_a_coin_funded_without_a_record_is_listed_as_a_paymen
 /// An abandon of the draft while its sent mark is being written is
 /// refused: the broadcast goes on, and the mark matches it.
 #[test]
+#[ignore]
 fn a_draft_abandoned_while_its_mark_is_written_is_refused() {
     use crate::held_writes::{ReleaseOnDrop, hold_first_job};
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -452,6 +485,7 @@ fn a_draft_abandoned_while_its_mark_is_written_is_refused() {
 /// A sent mark that cannot be written leaves the draft pending and no
 /// mark: it can still be abandoned.
 #[test]
+#[ignore]
 fn a_failed_mark_write_leaves_the_draft_pending_and_no_mark() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -485,6 +519,7 @@ fn a_failed_mark_write_leaves_the_draft_pending_and_no_mark() {
 /// relayed back after the restart (its record names no input): abandoning
 /// it rescans from the birth height.
 #[test]
+#[ignore]
 fn abandoning_a_relayed_marked_payment_of_an_unknown_coin_rescans_from_the_birth() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     mined(&engine, &session, id, TIP, vec![paid]);
@@ -523,6 +558,7 @@ fn abandoning_a_relayed_marked_payment_of_an_unknown_coin_rescans_from_the_birth
 /// text, leave an intact payment restored: each damaged payment's coins
 /// stay out, unlisted, with nothing to resend.
 #[test]
+#[ignore]
 fn damaged_copies_keep_their_coins_out_and_leave_the_others_restored() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let coin = |v| OutPoint::new(paid.txid(), v);
@@ -573,6 +609,7 @@ fn damaged_copies_keep_their_coins_out_and_leave_the_others_restored() {
 /// whose saved copy is damaged: its coin comes back, also after a restart.
 /// A readable mark stays, and a coin another payment spends stays out.
 #[test]
+#[ignore]
 fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
@@ -644,6 +681,7 @@ fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
 /// Unconfirmed keeps its mark and its coin out, and fails with
 /// `RecordUnreadable` naming the wallet (#611).
 #[test]
+#[ignore]
 fn remove_unconfirmed_keeps_a_damaged_payment_while_a_record_does_not_read() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
@@ -704,6 +742,7 @@ fn remove_unconfirmed_keeps_a_damaged_payment_while_a_record_does_not_read() {
 /// (its record names no input), in the next session: listed as the
 /// payment it is, and abandoning it rescans from the birth height.
 #[test]
+#[ignore]
 fn a_relayed_restored_payment_keeps_its_inputs_in_the_next_session() {
     let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
     let (session, coin) = coin_funded_without_a_record(&engine, session, id, 10);
@@ -741,6 +780,7 @@ fn a_relayed_restored_payment_keeps_its_inputs_in_the_next_session() {
 /// stored), and neither a retry nor an Abandon of the draft hands it off
 /// or frees its coin.
 #[test]
+#[ignore]
 fn a_mark_that_cannot_be_written_or_dropped_refuses_a_retry_with_the_storage_error() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -783,6 +823,7 @@ fn a_mark_that_cannot_be_written_or_dropped_refuses_a_retry_with_the_storage_err
 /// as maybe sent: Abandon is refused and its coin stays out, so the copy
 /// left behind cannot be resent for coins already freed.
 #[test]
+#[ignore]
 fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
     struct RefuseAndBreakTheMarks(std::path::PathBuf);
     impl crate::send::TestBroadcaster for RefuseAndBreakTheMarks {
@@ -885,6 +926,7 @@ fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
 /// record: the next start keeps it abandoned, not pending from its saved
 /// copy, and A comes back once its funding is scanned.
 #[test]
+#[ignore]
 fn an_abandon_stopped_after_its_sweep_stays_abandoned_after_a_restart() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -925,6 +967,7 @@ fn an_abandon_stopped_after_its_sweep_stays_abandoned_after_a_restart() {
 /// coin's owner and gave the coin back: a sent mark of that spend neither
 /// lists it nor keeps the coin out after the restart.
 #[test]
+#[ignore]
 fn a_spend_the_store_dropped_as_unsigned_is_not_restored_from_its_mark() {
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{
@@ -1057,6 +1100,7 @@ fn child_recorded_before_its_event() -> (
 /// isn't restored pending from its saved copy, and its other coin is free
 /// once its funding is scanned.
 #[test]
+#[ignore]
 fn an_abandon_marks_a_child_key_wallet_recorded_before_the_history_did() {
     let (_dir, engine, session, id, paid, parent, child, _queued) =
         child_recorded_before_its_event();
@@ -1115,6 +1159,7 @@ fn assert_child_gone(
 /// outputs are neither counted nor offered, and its inputs aren't claimed
 /// again. The same holds after a restart.
 #[test]
+#[ignore]
 fn a_queued_event_of_an_abandoned_child_does_not_bring_it_back() {
     use dash_spv::EventHandler;
     let (_dir, engine, session, id, paid, parent, child, queued) =
@@ -1153,6 +1198,7 @@ fn a_queued_event_of_an_abandoned_child_does_not_bring_it_back() {
 /// and key-wallet counts it again: that event's balance is applied, as on
 /// main.
 #[test]
+#[ignore]
 fn an_abandoned_payment_seen_again_after_a_restart_applies_its_balance() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1182,6 +1228,7 @@ fn an_abandoned_payment_seen_again_after_a_restart_applies_its_balance() {
 /// saved payment is no evidence it settled: after the restart the payment
 /// is still listed pending and its coin stays out.
 #[test]
+#[ignore]
 fn an_unconfirmed_height_only_row_does_not_settle_a_saved_payment() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1221,6 +1268,7 @@ fn an_unconfirmed_height_only_row_does_not_settle_a_saved_payment() {
 /// input details after its sent mark goes: two starts after the Abandon it
 /// is still listed as a payment, not as a receipt of its change.
 #[test]
+#[ignore]
 fn an_abandoned_payment_of_a_coin_funded_without_a_record_stays_a_payment_two_starts_later() {
     let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
     let (session, coin) = coin_funded_without_a_record(&engine, session, id, 10);
@@ -1260,6 +1308,7 @@ fn an_abandoned_payment_of_a_coin_funded_without_a_record_stays_a_payment_two_st
 /// block (the damaged-copy fallback did nothing when no readable payment
 /// was pending).
 #[test]
+#[ignore]
 fn a_lone_damaged_copy_keeps_its_coin_out() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1288,6 +1337,7 @@ fn a_lone_damaged_copy_keeps_its_coin_out() {
 /// counted, and its mark stays. Once the copies read again, the payment is
 /// listed pending from its copy as usual.
 #[test]
+#[ignore]
 fn a_failed_read_of_the_saved_copies_keeps_a_sent_payments_coin_out() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1324,6 +1374,7 @@ fn a_failed_read_of_the_saved_copies_keeps_a_sent_payments_coin_out() {
 /// payment's input details, or else its saved copy. After a restart and a
 /// scan of the funding block, A is neither offered nor counted.
 #[test]
+#[ignore]
 fn a_sent_mark_whose_coins_do_not_read_keeps_its_coin_out() {
     for (damage, lose_inputs) in [
         ("CAST(X'ff' AS TEXT)", false),
@@ -1377,6 +1428,7 @@ fn a_sent_mark_whose_coins_do_not_read_keeps_its_coin_out() {
 /// marks fails says so and doesn't count it: the marks stay, so after a
 /// restart its coin is still held, as the payment is still recorded.
 #[test]
+#[ignore]
 fn remove_unconfirmed_counts_a_damaged_payment_only_once_its_marks_are_gone() {
     let (_dir, engine, session, id, paid, _damaged) = damaged_payment_whose_marks_did_not_delete();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1393,6 +1445,7 @@ fn remove_unconfirmed_counts_a_damaged_payment_only_once_its_marks_are_gone() {
 /// the payment is already abandoned: after a restart, A is free once its
 /// funding is scanned.
 #[test]
+#[ignore]
 fn remove_unconfirmed_run_again_in_the_session_deletes_the_marks() {
     let (_dir, engine, session, id, paid, damaged) = damaged_payment_whose_marks_did_not_delete();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1412,6 +1465,7 @@ fn remove_unconfirmed_run_again_in_the_session_deletes_the_marks() {
 /// returns the storage error and the marks stay; running it again deletes
 /// them, and after a restart A is free once its funding is scanned.
 #[test]
+#[ignore]
 fn remove_unconfirmed_whose_sweep_fails_keeps_the_marks_until_run_again() {
     let (_dir, engine, session, id, paid, damaged) = damaged_payment_whose_marks_did_not_delete();
     let a = OutPoint::new(paid.txid(), 0);
@@ -1439,6 +1493,7 @@ fn remove_unconfirmed_whose_sweep_fails_keeps_the_marks_until_run_again() {
 
 /// The same, run again after a restart.
 #[test]
+#[ignore]
 fn remove_unconfirmed_run_again_after_a_restart_deletes_the_marks() {
     let (_dir, engine, session, id, paid, damaged) = damaged_payment_whose_marks_did_not_delete();
     let a = OutPoint::new(paid.txid(), 0);
