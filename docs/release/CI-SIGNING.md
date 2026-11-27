@@ -54,6 +54,15 @@ Or on github.com: **Settings ▸ Environments ▸ New environment**, name `relea
 reviewers** and add yourself; under **Deployment branches and tags** choose **Selected branches and tags** and add
 the tag rule `v*`. The existing `release` environment stays as it is, with no secrets.
 
+The checks inside `release-sign.yml` (a candidate tag, on `main`) are read from the tagged commit, so they bind
+only a tag made from `main`. Whoever can push a `v*` tag can push one with another workflow that names this
+environment, and the reviewer's approval is then the only gate. Two things close that:
+
+- a tag ruleset that lets only you create, move or delete `v*` tags: **Settings ▸ Rules ▸ Rulesets ▸ New tag
+  ruleset**, target `v*`, restrict creations, updates and deletions, bypass list: yourself;
+- before each **Approve and deploy**, check that the run is `Sign release in CI` on the tag you pushed, at the
+  commit you tagged.
+
 ### 2. Apple: the certificate and the notary key (15 minutes)
 
 The certificate must be a **Developer ID Application** certificate of the team pinned as `apple_team_id`.
@@ -199,11 +208,19 @@ may hold one of the two, never both.
    gh workflow run release-sign.yml --repo "$R" --ref "$TAG" -f tag="$TAG" -f release_run_id="$RUN_ID" -f dry_run=true
    ```
 
-   Open the run and choose **Review deployments ▸ release-signing ▸ Approve and deploy**. Most of the `sign` job's
-   time is Apple's notary service, usually a few minutes for each of its two submissions. A green rehearsal ends with the notice `dry_run=true on
+   Open the run, check it is on your tag and commit, and choose **Review deployments ▸ release-signing ▸ Approve
+   and deploy**. Most of the `sign` job's time is Apple's notary service, usually a few minutes for each of its two
+   submissions. If the `release` environment has a required reviewer too, the `publish` job asks once more. A green rehearsal ends with the notice `dry_run=true on
    v1.0.0-rc.2 …`.
 3. Publish: the same command without `-f dry_run=true`, and the same approval.
-4. Verify the published candidate as in [`RC-SIGNING.md`](RC-SIGNING.md) section 7.
+4. Verify the published candidate as in [`RC-SIGNING.md`](RC-SIGNING.md) section 7. With a `windows_signer` pin
+   there is no leaf hash to require; the Windows check is the publisher and the pinned root:
+
+   ```sh
+   osslsigncode verify -in dash-wallet-1.0.0-rc.2-windows-x64-setup.exe \
+     -CAfile docs/release/windows-ca.pem -TSA-CAfile docs/release/windows-ca.pem
+   # expect the pinned organization in "Subject:", a "Timestamp time:" line and "Succeeded"
+   ```
 
 With the Windows signature from the YubiKey, add `-f windows_sig_ref=<commit in dashwallet-detached-sigs>` to both
 commands.
@@ -211,6 +228,9 @@ commands.
 If a run fails, nothing is published. A wrong secret or variable is fixed in the environment and the same command
 is run again. A fault in a script or in a pin needs a fix on `main` and the next candidate, because both are read
 from the tagged commit.
+
+The `sign` job installs `osslsigncode` and `gnupg` from Homebrew at their current versions, as the signer's Mac
+does; `jsign` is fetched at a pinned version and checked against a pinned SHA-256.
 
 ## Rotating and revoking
 

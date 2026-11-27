@@ -144,8 +144,10 @@ if [[ -n "$win_signer_org$win_signer_eku" ]]; then
     die "pin the Windows signer by windows_leaf_sha256 or by windows_signer, not both (docs/release/signing-identities.json)"
   [[ -n "$win_signer_org" && "$win_signer_org" != *REPLACE_* && "$win_signer_org" != *$'\n'* ]] ||
     die "pinned windows_signer.organization must be the signer's organization name (got '${win_signer_org:-<empty>}'; populate docs/release/signing-identities.json)"
-  [[ "$win_signer_eku" =~ ^[0-9]+(\.[0-9]+){5,}$ ]] ||
-    die "pinned windows_signer.eku must be a dotted OID (got '${win_signer_eku:-<empty>}'; populate docs/release/signing-identities.json)"
+  # The EKU of one validated identity (four arcs under 1.3.6.1.4.1.311.97), never one every customer's
+  # certificate carries (1.3.6.1.4.1.311.97.1.0) and never Code Signing itself.
+  [[ "$win_signer_eku" =~ ^1\.3\.6\.1\.4\.1\.311\.97\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "pinned windows_signer.eku must be the identity's own EKU, 1.3.6.1.4.1.311.97.<a>.<b>.<c>.<d> (got '${win_signer_eku:-<empty>}'; populate docs/release/signing-identities.json)"
   [[ -n "$win_ca_file" ]] ||
     die "windows_signer needs --win-ca-file: an organization and an EKU identify the signer only under a pinned root (populate docs/release/windows-ca.pem)"
   win_leaf_hash=

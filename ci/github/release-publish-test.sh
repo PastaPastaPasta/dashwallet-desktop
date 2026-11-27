@@ -1081,6 +1081,20 @@ subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(planted_
                 "-out", str(wk / "planted.exe.pem")], check=True, capture_output=True)
 (wk / "win-and-evil.pem").write_text((wk / "win.crt").read_text() + (wk / "evil.crt").read_text())
 
+# windows_signer: an impostor, a certificate of another key with the pinned organization and EKU that no pinned root issued
+impostor_cnf = wk / "impostor.cnf"
+impostor_cnf.write_text(win_cnf.read_text())
+subprocess.run([
+    "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", str(wk / "impostor.key"), "-out", str(wk / "impostor.crt"), "-days", "2",
+    "-config", str(impostor_cnf), "-extensions", "ext",
+], check=True, capture_output=True)
+impostor_signed = wk / "impostor-signed.exe"
+subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "impostor.crt"), "-key", str(wk / "impostor.key"),
+                "-h", "sha256", "-in", str(unsigned / win_name), "-out", str(impostor_signed)], check=True, capture_output=True)
+subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(impostor_signed),
+                "-out", str(wk / "impostor.exe.pem")], check=True, capture_output=True)
+
 # Wrong-version and wrong-key minisign latest.json fixtures
 latest_badver = json.loads(latest_path.read_text())
 latest_badver["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_file(unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", "0.0.9")
@@ -1417,7 +1431,7 @@ PY
     --identities-file "$e2e/work/identities-placeholder.json" \
     --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
     --allow-non-darwin
-  ids_ok='.schema == 1 and ((.pgp_fingerprint | startswith("REPLACE_")) or (.pgp_fingerprint | test("^[0-9a-fA-F]{40}$"))) and ((.apple_team_id | startswith("REPLACE_")) or (.apple_team_id | test("^[A-Z0-9]{10}$"))) and (if has("windows_signer") then ((.windows_leaf_sha256 // "REPLACE_") | contains("REPLACE_")) and (.windows_signer | (.organization | type == "string" and length > 0) and (.eku | test("^[0-9]+([.][0-9]+){5,}$"))) else ((.windows_leaf_sha256 | contains("REPLACE_")) or (.windows_leaf_sha256 | test("^sha256:[0-9a-fA-F]{64}$"))) end)'
+  ids_ok='.schema == 1 and ((.pgp_fingerprint | startswith("REPLACE_")) or (.pgp_fingerprint | test("^[0-9a-fA-F]{40}$"))) and ((.apple_team_id | startswith("REPLACE_")) or (.apple_team_id | test("^[A-Z0-9]{10}$"))) and (if has("windows_signer") then ((.windows_leaf_sha256 // "REPLACE_") | contains("REPLACE_")) and (.windows_signer | (.organization | type == "string" and length > 0) and (.eku | test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) else ((.windows_leaf_sha256 | contains("REPLACE_")) or (.windows_leaf_sha256 | test("^sha256:[0-9a-fA-F]{64}$"))) end)'
   check "signing-identities.json: production repo file is valid schema 1 (placeholder or properly formatted real identities)" \
     'jq -e "$ids_ok" "$here/../../docs/release/signing-identities.json" >/dev/null'
   check "signing-identities.json: the shape check takes a windows_signer pin without a leaf hash, and refuses both together" \
@@ -1621,8 +1635,28 @@ PY
     "${attach_base[@]}" --win-signer-org "Dash Core Test Org, Inc." --win-signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --out-dir "$e2e/attached-signer-both"
   expect_attach_fail \
     "windows_signer: release-attach refuses a windows_signer whose EKU is a placeholder" \
-    "windows_signer.eku must be a dotted OID" "$e2e/attach-signer-placeholder.out" \
+    "windows_signer.eku must be the identity's own EKU" "$e2e/attach-signer-placeholder.out" \
     "${attach_base[@]}" "${signer_ids[@]}" --win-signer-eku REPLACE_WITH_EKU --out-dir "$e2e/attached-signer-placeholder"
+  # the fixture certificate carries both of these, so only the pin's own check refuses them
+  for shared_eku in 1.3.6.1.4.1.311.97.1.0 1.3.6.1.5.5.7.3.3; do
+    expect_attach_fail \
+      "windows_signer: release-attach refuses the EKU $shared_eku, which other signers carry too" \
+      "windows_signer.eku must be the identity's own EKU" "$e2e/attach-signer-shared.out" \
+      "${attach_base[@]}" "${signer_ids[@]}" --win-signer-eku "$shared_eku" --out-dir "$e2e/attached-signer-shared"
+  done
+  cp -R "$e2e/sigs" "$e2e/sigs-impostor"
+  cp "$e2e/work/impostor.exe.pem" "$e2e/sigs-impostor/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem"
+  impostor_leaf=$(python3 "$here/windows-signer-leaf.py" "$e2e/work/impostor.exe.pem" "Dash Core Test Org, Inc." 1.3.6.1.4.1.311.97.11.22.33.44 2>/dev/null || true)
+  check "windows_signer: an impostor's certificate carries the pinned organization and EKU (the case the next check refuses)" \
+    '[[ "$impostor_leaf" =~ ^sha256:[0-9a-f]{64}$ && "$impostor_leaf" != "$e2e_leaf" ]]'
+  expect_attach_fail \
+    "windows_signer: release-attach refuses a signer with the pinned organization and EKU that no pinned root issued" \
+    "self[- ]signed|unable to get local issuer|verify error" "$e2e/attach-signer-impostor.out" \
+    "${attach_base[@]}" "${signer_ids[@]}" --sigs-dir "$e2e/sigs-impostor" --out-dir "$e2e/attached-signer-impostor"
+  printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$e2e/work/garbage.pem"
+  leaf_rc=0
+  python3 "$here/windows-signer-leaf.py" "$e2e/work/garbage.pem" "Dash Core Test Org, Inc." 1.3.6.1.4.1.311.97.11.22.33.44 > "$e2e/leaf-garbage.out" 2>&1 || leaf_rc=$?
+  check "windows-signer-leaf: refuses a signature that is not DER" '[[ $leaf_rc -ne 0 ]] && grep -q "refusing" "$e2e/leaf-garbage.out"'
   signer_noca=()
   drop=0
   for a in "${attach_base[@]}"; do
@@ -1669,7 +1703,15 @@ with tarfile.open(sys.argv[1], "w") as tar:
     info.size = 1
     tar.addfile(info, io.BytesIO(b"x"))
 PY
-  for bad in link outside dotdot; do
+  python3 - "$up/absolute.tar" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w") as tar:
+    info = tarfile.TarInfo("/sigs/absolute")
+    info.size = 1
+    tar.addfile(info, io.BytesIO(b"x"))
+PY
+  mkdir -p "$up/out-absolute"
+  for bad in link outside dotdot absolute; do
     up_rc=0
     python3 "$here/unpack-signatures.py" "$up/$bad.tar" "$up/out-$bad" > "$up/$bad.out" 2>&1 || up_rc=$?
     check "unpack-signatures: refuses an archive with a member that is $bad, writing nothing" \
@@ -1976,7 +2018,8 @@ JV
     '[[ $js_rc -ne 0 && ! -e "$js/sigs/win" ]] && grep -q "two different key holders" "$js/mixed.log"'
   js_rc=0
   PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/evil.crt" > "$js/badca.log" 2>&1 || js_rc=$?
-  check "sign-windows --jsign-jar: fails when the signer does not chain to --ca-file" '[[ $js_rc -ne 0 ]]'
+  check "sign-windows --jsign-jar: fails when the signer does not chain to --ca-file" \
+    '[[ $js_rc -ne 0 ]] && grep -qE "self[- ]signed|unable to get local issuer|verify error" "$js/badca.log"'
 
   su_rc=0
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" "$here/../release/sign-updater.sh" --version 0.1.0 --dist-dir "$l3/dist" \
