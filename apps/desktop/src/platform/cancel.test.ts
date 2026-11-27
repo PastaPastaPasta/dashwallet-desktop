@@ -10,7 +10,7 @@ import { platformRow, sourceRowTitle } from "../history/sourceRows";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { cancelFor, cancelResult, CANCEL_COPY, PlatformCancelFlow, recipientOf, resetPlatformCancels } from "./cancel";
-import { cancelOf, isHeldSend, MOVE_COPY, moveOutcomeCopy } from "./move";
+import { cancelOf, isHeldSend, MOVE_COPY, moveErrorText, moveOutcomeCopy } from "./move";
 
 const PAYEE = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 const OWN = "tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0";
@@ -142,6 +142,26 @@ describe("the cancel flow", () => {
     flow.dismiss();
     expect(flow.of).toBeNull();
     expect(api.platformCancel).not.toHaveBeenCalled();
+  });
+
+  it("the restore's Platform hold: its refusal says nothing was sent and what it waits for; once it clears the same cancel goes through", async () => {
+    const { flow, api, answer } = setup();
+    api.platformCancel.mockRejectedValueOnce(appError("platform.restored"));
+    await flow.begin("pm-1");
+    await flow.confirm();
+    expect(flow.step).toBe("refused");
+    expect(moveErrorText(flow.error, credits, [held("pm-1", "moveToCore")])).toBe(
+      "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
+    );
+    expect(cancelOf(held("pm-1", "moveToCore"), [held("pm-1", "moveToCore")])).toBe("move");
+    flow.close();
+    await flow.begin("pm-1");
+    const running = flow.confirm();
+    await vi.waitFor(() => expect(flow.step).toBe("running"));
+    answer(OUT);
+    await running;
+    expect(api.platformCancel).toHaveBeenCalledTimes(2);
+    expect([flow.step, flow.outcome?.id]).toEqual(["done", "pc-2"]);
   });
 
   it("is one per wallet, kept while the app runs", () => {

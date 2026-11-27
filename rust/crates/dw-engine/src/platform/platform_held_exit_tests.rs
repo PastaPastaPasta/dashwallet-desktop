@@ -50,6 +50,30 @@ impl World {
         })
     }
 
+    /// `DashPay::platform_cancel` on this world's net: the restore's
+    /// Platform gate, then the cancel.
+    fn gated_cancel(
+        &self,
+        of: &str,
+        to: &str,
+        grant: &str,
+    ) -> Result<PlatformSendOutcome, CreditsError> {
+        let (of, to, grant) = (of.to_owned(), to.to_owned(), grant.to_owned());
+        self.call(move |net, s, w, id| async move {
+            s.refuse_platform_funds(id)?;
+            cancel(&*net, &s, &w, id, (of.as_str(), to.as_str()), &grant).await
+        })
+    }
+
+    /// The wallet's Platform row, as a restore writes it and the restore's
+    /// Platform check clears it.
+    fn restore_row(&self, present: bool) {
+        let row = crate::restore_gate::RESTORE_PLATFORM_PENDING;
+        (self.f.s.live().unwrap().appdb)
+            .set_setting(&self.f.wallet.to_string(), row, present.then_some(""))
+            .unwrap();
+    }
+
     /// The cancel of `of`, quoted and confirmed.
     fn cancel_held(&self, of: &str) -> Result<PlatformSendOutcome, CreditsError> {
         let q = self.cancel_quote_of(of)?;
@@ -1200,6 +1224,50 @@ fn the_exit_and_a_held_cancel_pass_the_mainnet_flag() {
     let out = w.cancel_held("move-1-0").unwrap();
     assert_eq!(out.state, PlatformActivityState::Done);
     assert!(w.moves().iter().all(|m| !m.holds()));
+}
+
+/// The restore's Platform hold refuses a cancel unsigned and keeps the
+/// record held; once the restore's check clears the wallet's row the same
+/// cancel is Done, and on mainnet with sends off a new cancel still meets
+/// residual 5's refusal.
+#[test]
+fn a_cancel_the_restore_hold_refused_goes_through_once_the_hold_clears() {
+    for mainnet in [false, true] {
+        let w = match mainnet {
+            true => World::on(DashNetwork::Mainnet),
+            false => World::new(),
+        };
+        held_withdrawal(&w);
+        let own = bech32m(&w.address(3), w.network());
+        w.restore_row(true);
+        match w.gated_cancel("move-1-0", &own, &w.f.grant(DASH)) {
+            Err(CreditsError::Platform(PlatformError::Restored)) => {}
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(w.sent_count(), 0);
+        assert_eq!(w.moves().len(), 1);
+        assert!(w.record("move-1-0").holds());
+        w.restore_row(false);
+        let out = match mainnet {
+            true => w.gated_cancel("move-1-0", &own, &w.f.grant(DASH)),
+            false => {
+                let q = w.cancel_quote_of("move-1-0").unwrap();
+                w.gated_cancel("move-1-0", &q.to, &w.f.grant(q.credits))
+            }
+        };
+        match (mainnet, out) {
+            (false, Ok(out)) => {
+                assert_eq!(out.state, PlatformActivityState::Done);
+                assert!(w.moves().iter().all(|m| !m.holds()));
+            }
+            (true, Err(CreditsError::Platform(PlatformError::FeatureOff { feature }))) => {
+                assert_eq!(feature, PLATFORM_ADDRESS_SENDS);
+                assert_eq!(w.sent_count(), 0);
+                assert!(w.record("move-1-0").holds());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 /// A withdrawal `move-1-0` of `DASH` from `w.address(0)` that Platform
