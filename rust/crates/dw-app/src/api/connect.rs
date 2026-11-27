@@ -204,6 +204,7 @@ pub struct DisconnectQuote {
     pub grant: crate::api::vault::GrantPurposeSpec,
     pub identity: String,
     pub keys: Vec<u32>,
+    pub needs_legacy_key_confirmation: bool,
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub fee: u64,
@@ -574,10 +575,12 @@ commands! {
                 identity: q.identity_id,
                 request: q.request,
                 revision: q.revision,
+                confirmed_legacy_keys: false,
                 prior_conflict: q.prior_conflict,
             },
             identity: q.identity,
             keys: q.keys,
+            needs_legacy_key_confirmation: q.needs_legacy_key_confirmation,
             fee: q.fee,
             balance: q.balance,
             prior_attempt_conflict: q.prior_attempt_conflict,

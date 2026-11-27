@@ -21,6 +21,7 @@ export type DisconnectFixtureOutcome =
   | "ok"
   | "partial"
   | "unresolvedKey"
+  | "legacyConfirmation"
   | "checkAttempt"
   | "responseInFlight"
   | "notConfirmed"
@@ -367,9 +368,13 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
       const priorAttemptConflict = outcome === "priorChargeKnown" || outcome === "priorChargePossible";
       return {
-        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request, revision: "1", priorConflict: priorAttemptConflict ? "c1".repeat(16) : null },
+        grant: {
+          kind: "appDisconnect", maxCredits: String(fee), identity, request, revision: "1",
+          confirmedLegacyKeys: false, priorConflict: priorAttemptConflict ? "c1".repeat(16) : null,
+        },
         identity,
         keys: (outcome === "partial" ? app.keys.slice(0, 1) : app.keys).map((k) => k.keyId),
+        needsLegacyKeyConfirmation: outcome === "legacyConfirmation",
         fee: String(fee),
         balance: String(balance),
         priorAttemptConflict,
@@ -388,6 +393,9 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       if (!g || g.grant.purpose.kind !== "appDisconnect" || g.grant.purpose.identity !== identity || g.grant.purpose.request !== request)
         throw fail("platform.grant_invalid", "grant invalid");
       const outcome = world.disconnectOutcome ?? "ok";
+      if (outcome === "legacyConfirmation" && !g.grant.purpose.confirmedLegacyKeys) {
+        throw fail("platform.grant_invalid", "grant invalid");
+      }
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
       if (outcome === "pendingFeeTooHigh" && g.grant.purpose.maxCredits !== "0") {

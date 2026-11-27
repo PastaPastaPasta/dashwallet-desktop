@@ -167,6 +167,7 @@ pub enum GrantPurpose {
         identity: [u8; 32],
         request: [u8; 20],
         revision: u64,
+        confirmed_legacy_keys: bool,
         prior_conflict: Option<[u8; 16]>,
     },
 }

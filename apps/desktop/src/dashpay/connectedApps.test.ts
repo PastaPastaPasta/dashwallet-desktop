@@ -87,7 +87,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
       retryAfterSecs: null,
       walletsWithSecrets: [FIXTURE_WALLET_ID],
     };
-    const purpose = { kind: "appDisconnect", maxCredits: "22000000", identity: "22".repeat(32), request: "1a2b".repeat(10), revision: "1", priorConflict: null } as const;
+    const purpose = { kind: "appDisconnect", maxCredits: "22000000", identity: "22".repeat(32), request: "1a2b".repeat(10), revision: "1", confirmedLegacyKeys: false, priorConflict: null } as const;
     expect(needsPassphrase(purpose, unlocked, false)).toBe(true);
     expect(needsPassphrase(purpose, { ...unlocked, encrypted: false }, false)).toBe(false);
   });

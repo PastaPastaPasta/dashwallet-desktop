@@ -602,12 +602,14 @@ pub struct DisconnectQuote {
     pub revision: u64,
     /// The verified session key ids that will be disabled.
     pub keys: Vec<KeyID>,
+    /// The wallet recorded only key IDs for an older Published approval.
+    pub needs_legacy_key_confirmation: bool,
     /// The grant's credit bound, equal to `fee` (never clamped).
     pub max_credits: u64,
     /// Live Platform credit fee upper bound to disable `keys`.
     pub fee: u64,
     pub balance: u64,
-    /// The 128-bit prefix of the retired attempt's hash disclosed by this quote.
+    /// An opaque marker for the retired attempt disclosed by this quote.
     pub prior_conflict: Option<[u8; 16]>,
     /// `true` when an earlier Disconnect attempt for this app was retired after
     /// a revision or nonce conflict and may already have incurred a Dash
@@ -839,6 +841,16 @@ pub(crate) struct ConnectRecord {
     /// possible earlier fee charge before signing anew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_conflict: Option<DisconnectConflictInfo>,
+}
+
+impl ConnectRecord {
+    fn needs_legacy_key_confirmation(&self) -> bool {
+        self.state == RecordState::Published && self.session_key_data.is_empty()
+    }
+
+    fn disconnect_complete(&self) -> bool {
+        self.state == RecordState::Disconnected && self.pending_disconnect.is_none()
+    }
 }
 
 /// Recorded outcome of a retired conflicting Disconnect attempt, used to
@@ -1671,6 +1683,7 @@ fn superseded(
                 && r.connection_id.as_deref() == Some(&connection)
                 && r.request != this
                 && matches!(r.state, RecordState::Confirmed | RecordState::Published)
+                && !r.needs_legacy_key_confirmation()
         })
         .flat_map(|r| {
             (r.session_keys.iter())
@@ -2519,7 +2532,9 @@ fn check_disconnect_key(
                 record.state,
                 RecordState::Confirmed | RecordState::Published
             ) || (record.state == RecordState::Disconnected && key.is_disabled()))
-                && key.expires_at() == Some(record.expires_at_ms)
+                && key
+                    .expires_at()
+                    .is_some_and(|time| time >= record.expires_at_ms)
                 && key.total_budget().is_some()
         }
         None => false,
@@ -2557,8 +2572,7 @@ struct VerifiedDisconnectKeys {
 }
 
 /// An absent key may appear on a later read. A mismatching key at an ID
-/// predicted by a Submitted record belongs to a different grant. In either
-/// case leave the record unsettled while allowing its verified keys to be revoked.
+/// predicted by a Submitted record proves that app key did not land at that ID.
 fn verified_disconnect_keys(
     record: &ConnectRecord,
     identity: &Identity,
@@ -2570,7 +2584,6 @@ fn verified_disconnect_keys(
     }
     let mut to_disable = Vec::new();
     let mut has_absent = false;
-    let mut has_foreign = false;
     let mut seen = BTreeSet::new();
     for &key_id in &record.session_keys {
         if !seen.insert(key_id) {
@@ -2586,7 +2599,6 @@ fn verified_disconnect_keys(
                     .is_ok_and(|data| data.len() == 20 && data != key.data().as_slice())
             })
         {
-            has_foreign = true;
             continue;
         }
         check_disconnect_key(record, key)?;
@@ -2603,7 +2615,7 @@ fn verified_disconnect_keys(
     }
     Ok(VerifiedDisconnectKeys {
         to_disable,
-        has_unresolved: has_absent || has_foreign,
+        has_unresolved: has_absent,
     })
 }
 
@@ -2749,18 +2761,20 @@ fn all_present_and_disabled(identity: &Identity, record: &ConnectRecord, keys: &
 }
 
 fn disconnect_conflict_marker(record: &ConnectRecord) -> Result<Option<[u8; 16]>, PlatformError> {
+    static DISCLOSURE_KEY: std::sync::LazyLock<[u8; 32]> = std::sync::LazyLock::new(rand::random);
     record
         .last_conflict
         .as_ref()
         .map(|conflict| {
-            let mut hash = [0; 32];
-            hex::decode_to_slice(&conflict.transition_hash, &mut hash).map_err(|_| {
+            let mut input = [0; 64];
+            input[..32].copy_from_slice(&*DISCLOSURE_KEY);
+            hex::decode_to_slice(&conflict.transition_hash, &mut input[32..]).map_err(|_| {
                 PlatformError::Internal {
                     detail: "invalid disconnect conflict hash".into(),
                 }
             })?;
             let mut marker = [0; 16];
-            marker.copy_from_slice(&hash[..16]);
+            marker.copy_from_slice(&hash_double(&input)[..16]);
             Ok(marker)
         })
         .transpose()
@@ -2773,7 +2787,7 @@ async fn check_disconnect_grant(
     grant: &str,
     identity: Identifier,
     request: [u8; 20],
-) -> Result<(u64, u64, Option<[u8; 16]>), ConnectError> {
+) -> Result<(u64, u64, bool, Option<[u8; 16]>), ConnectError> {
     let (vault, g) = (session.vault.clone(), grant.to_owned());
     let purpose = tokio::task::spawn_blocking(move || {
         vault.grant_purpose(&g, GrantKind::AppDisconnect, Some(&wallet.0))
@@ -2786,6 +2800,7 @@ async fn check_disconnect_grant(
         identity: granted_identity,
         request: granted_request,
         revision,
+        confirmed_legacy_keys,
         prior_conflict,
     } = purpose
     else {
@@ -2794,7 +2809,7 @@ async fn check_disconnect_grant(
     if granted_identity != identity.to_buffer() || granted_request != request {
         return Err(PlatformError::GrantInvalid.into());
     }
-    Ok((max_credits, revision, prior_conflict))
+    Ok((max_credits, revision, confirmed_legacy_keys, prior_conflict))
 }
 
 async fn resolve_key_scope(
@@ -3024,20 +3039,24 @@ pub(crate) async fn disconnect_quote(
     let (on_chain, _, _) = net.identity(id).await?;
     let on_chain =
         on_chain.ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound))?;
-    let verified = verified_disconnect_keys(&record, &on_chain)?;
-    let (keys, fee) = if let Some(pending) = &record.pending_disconnect {
-        let fee = if pending.keys.iter().all(|k| verified.to_disable.contains(k)) {
-            live_disconnect_fee_raw(net, &on_chain, &pending.keys)
-                .await
-                .ok()
-                .filter(|&fee| fee <= DISCONNECT_FEE_BOUND && fee <= on_chain.balance())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        (pending.keys.clone(), fee)
+    let (keys, fee) = if record.disconnect_complete() {
+        (Vec::new(), 0)
     } else {
-        select_disconnect_batch(net, &on_chain, &verified.to_disable).await?
+        let verified = verified_disconnect_keys(&record, &on_chain)?;
+        if let Some(pending) = &record.pending_disconnect {
+            let fee = if pending.keys.iter().all(|k| verified.to_disable.contains(k)) {
+                live_disconnect_fee_raw(net, &on_chain, &pending.keys)
+                    .await
+                    .ok()
+                    .filter(|&fee| fee <= DISCONNECT_FEE_BOUND && fee <= on_chain.balance())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            (pending.keys.clone(), fee)
+        } else {
+            select_disconnect_batch(net, &on_chain, &verified.to_disable).await?
+        }
     };
     if on_chain.balance() < fee {
         return Err(ConnectError::Credits {
@@ -3050,6 +3069,7 @@ pub(crate) async fn disconnect_quote(
         identity_id: id.to_buffer(),
         identity: owner,
         revision: on_chain.revision(),
+        needs_legacy_key_confirmation: fee > 0 && record.needs_legacy_key_confirmation(),
         keys,
         max_credits: fee,
         fee,
@@ -3085,6 +3105,18 @@ pub(crate) async fn disconnect(
         .ok_or_else(|| PlatformError::InvalidArgument {
             detail: "unknown app connection".into(),
         })?;
+    let (granted_max_credits, granted_revision, confirmed_legacy_keys, granted_conflict) =
+        check_disconnect_grant(session, wallet_id, &grant, id, request_hash).await?;
+    if record.disconnect_complete() {
+        return Ok(DisconnectDone {
+            identity: record.identity,
+            keys_disabled: Vec::new(),
+            keys_remaining: 0,
+            has_unresolved_keys: false,
+            response_may_have_landed: record.response_delivery
+                == ResponseDelivery::BroadcastUnknown,
+        });
+    }
     let mut other_live_pendings: Vec<u64> = Vec::new();
     let mut other_reserved_nonces: Vec<(u64, Option<u64>, Option<u64>)> = Vec::new();
     for r in all_records
@@ -3103,8 +3135,6 @@ pub(crate) async fn disconnect(
             other_reserved_nonces.push((n, c.observed_tip, c.observed_height));
         }
     }
-    let (granted_max_credits, granted_revision, granted_conflict) =
-        check_disconnect_grant(session, wallet_id, &grant, id, request_hash).await?;
     // Hold (do not cancel yet) any parked login response for THIS identity
     // under its write lock once Disconnect is authorized: any automatic retry
     // is blocked immediately, while a refused Disconnect keeps the response
@@ -3319,6 +3349,9 @@ pub(crate) async fn disconnect(
                     needed: fee,
                     available: fresh.balance(),
                 }),
+                Ok(_) if record.needs_legacy_key_confirmation() && !confirmed_legacy_keys => {
+                    Some(PlatformError::GrantInvalid.into())
+                }
                 Ok(_) => session
                     .check_funds_gate(wallet_id, FlowKind::AppDisconnect)
                     .err()
@@ -3416,6 +3449,7 @@ pub(crate) async fn disconnect(
 
     if granted_revision != fresh.revision()
         || granted_conflict != disconnect_conflict_marker(&record)?
+        || (record.needs_legacy_key_confirmation() && !confirmed_legacy_keys)
     {
         return Err(PlatformError::GrantInvalid.into());
     }

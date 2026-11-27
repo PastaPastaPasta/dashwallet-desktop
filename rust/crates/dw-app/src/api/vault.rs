@@ -398,6 +398,8 @@ pub enum GrantPurposeSpec {
         #[ts(type = "string")]
         #[serde(with = "crate::dto::credits")]
         revision: u64,
+        #[serde(default)]
+        confirmed_legacy_keys: bool,
         #[ts(type = "string | null")]
         #[serde(default, with = "crate::dto::hex_array::option")]
         prior_conflict: Option<[u8; 16]>,
@@ -437,12 +439,14 @@ impl From<GrantPurposeSpec> for GrantPurpose {
                 identity,
                 request,
                 revision,
+                confirmed_legacy_keys,
                 prior_conflict,
             } => GrantPurpose::AppDisconnect {
                 max_credits,
                 identity,
                 request,
                 revision,
+                confirmed_legacy_keys,
                 prior_conflict,
             },
         }
@@ -482,12 +486,14 @@ impl From<GrantPurpose> for GrantPurposeSpec {
                 identity,
                 request,
                 revision,
+                confirmed_legacy_keys,
                 prior_conflict,
             } => Self::AppDisconnect {
                 max_credits,
                 identity,
                 request,
                 revision,
+                confirmed_legacy_keys,
                 prior_conflict,
             },
             // The host cannot request a masternode withdrawal yet (MG-13 is

@@ -202,6 +202,22 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
             </ul>
           </div>
         )}
+        {model.quote?.needsLegacyKeyConfirmation && (
+          <div className="connected-app-keys-block" role="group" aria-label={t("dashpay.connect.connected.legacyKeysLabel")}>
+            <p className="sheet-text">{t("dashpay.connect.connected.legacyKeysBody")}</p>
+            {model.quote.keys.map((keyId) => (
+              <label key={keyId} className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={model.confirmedLegacyKeys.has(keyId)}
+                  onChange={(event) => model.confirmLegacyKey(keyId, event.currentTarget.checked)}
+                  disabled={model.disconnecting}
+                />
+                {t("dashpay.connect.connected.legacyKeyConfirm", { id: keyId })}
+              </label>
+            ))}
+          </div>
+        )}
         {model.disconnecting ? (
           <div className="connect-loading" role="status" data-testid="disconnect-busy">
             <span className="spinner" aria-hidden="true" />
@@ -248,7 +264,7 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
             variant="filledBlue"
             size="large"
             data-testid="disconnect-confirm"
-            disabled={model.disconnecting || model.quoting || model.quote === null}
+            disabled={model.disconnecting || model.quoting || model.quote === null || !model.legacyKeysConfirmed}
             onClick={() => void model.confirmDisconnect()}
           >
             {t(confirmationOnly ? "dashpay.connect.connected.checkAttempt" : "dashpay.connect.connected.disconnect")}

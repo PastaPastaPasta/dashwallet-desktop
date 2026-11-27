@@ -156,6 +156,25 @@ test("Disconnect reports pending confirmation when a recorded key is unresolved"
   );
 });
 
+test("older keys require individual confirmation before Disconnect", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "legacyConfirmation";
+  });
+  await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+  const group = page.getByRole("group", { name: "Confirm older app keys" });
+  await expect(group).toBeVisible();
+  const confirm = page.getByTestId("disconnect-confirm");
+  await expect(confirm).toBeDisabled();
+  await group.getByRole("checkbox", { name: "Key 6 belongs to this app" }).check();
+  await expect(confirm).toBeDisabled();
+  await group.getByRole("checkbox", { name: "Key 7 belongs to this app" }).check();
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
+});
+
 test("a fee increase refreshes the open Disconnect sheet to a no-fee check", async ({ page }) => {
   await openConnectedApps(page, "dashpay-connected-apps");
   const app = page.getByTestId("connected-app-row").first();
