@@ -95,6 +95,23 @@ impl Scenario {
             });
     }
 
+    fn overflow_early_locks(&self) {
+        use dash_spv::EventHandler;
+        for n in 0..=crate::history::EARLY_LOCK_LIMIT {
+            let mut id = [0xa5; 32];
+            id[..4].copy_from_slice(&(n as u32).to_le_bytes());
+            self.session
+                .hub
+                .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+                    instant_lock: InstantLock {
+                        txid: Txid::from_byte_array(id),
+                        ..InstantLock::default()
+                    },
+                    validated: true,
+                });
+        }
+    }
+
     /// P is mined at `TIP + 1`.
     fn mined(&self) {
         mined(
@@ -119,6 +136,24 @@ impl Scenario {
             self.session.hub.truncations() > heard,
             "the hub heard the fork"
         );
+    }
+
+    fn detect_fork(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let manager = self.session.manager().unwrap();
+        let events = self.engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let mut events = {
+                let mut wm = wm.write().await;
+                let events = wm.subscribe_events();
+                wm.truncate_above(TIP).unwrap();
+                events
+            };
+            self.session.refresh_wallet_state(&manager, self.id).await;
+            std::iter::from_fn(|| events.try_recv().ok()).collect()
+        });
+        self.session.hub.settle_rereads();
+        events
     }
 
     fn reopen(self) -> Self {
@@ -276,22 +311,9 @@ fn a_lock_heard_before_scanning_its_funding_parent_keeps_the_payment_across_a_fo
 
 #[test]
 fn an_evicted_lock_still_holds_its_input_when_the_wallet_later_forks() {
-    use dash_spv::EventHandler;
     let (s, funding) = before_funding();
     s.hear_lock();
-    for n in 0..crate::history::EARLY_LOCK_LIMIT {
-        let mut id = [0xa5; 32];
-        id[..4].copy_from_slice(&(n as u32).to_le_bytes());
-        s.session
-            .hub
-            .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
-                instant_lock: InstantLock {
-                    txid: Txid::from_byte_array(id),
-                    ..InstantLock::default()
-                },
-                validated: true,
-            });
-    }
+    s.overflow_early_locks();
     s.fund(funding);
     s.mined();
     s.fork();
@@ -333,19 +355,79 @@ fn loading_a_wallet_matches_buffered_locks_to_its_stored_outputs() {
     );
 }
 
+fn unrecorded_spender(hear_lock: bool) -> Scenario {
+    let (mut s, funding) = before_funding();
+    s.p.output.truncate(1);
+    if hear_lock {
+        s.hear_lock();
+    }
+    s.mined();
+    s.fund(funding);
+    // The spend was observed before funding, and its block never replayed.
+    assert_eq!(s.row(), None);
+    assert!(!s.a_held());
+    assert_eq!(balances(&s.session, s.id).confirmed, 11 * COIN);
+    s
+}
+
+fn assert_restored_input(s: &Scenario, held: bool) {
+    assert!(s.a_held(), "key-wallet restored the input");
+    assert_eq!(s.row(), None);
+    let (available, inputs) = s.max();
+    let expected = if held { 11 * COIN } else { 12 * COIN };
+    assert_eq!(
+        (
+            balances(&s.session, s.id).confirmed,
+            available,
+            inputs.contains(&s.a),
+            s.a_listed(),
+            spendable(&s.engine, &s.session, s.id, s.a),
+        ),
+        (expected, expected, !held, !held, !held),
+    );
+}
+
+#[test]
+fn a_fork_holds_the_coin_restored_for_an_unrecorded_locked_spender() {
+    let s = unrecorded_spender(true);
+    s.fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_fork_detected_without_an_event_holds_the_unrecorded_locked_spenders_input() {
+    let s = unrecorded_spender(true);
+    s.detect_fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
+    let s = unrecorded_spender(false);
+    s.overflow_early_locks();
+    let events = s.detect_fork();
+    let seen = s.session.hub.truncations();
+    for event in &events {
+        s.session.hub.apply_wallet_event(event);
+    }
+    s.session.hub.settle_rereads();
+    assert_eq!(s.session.hub.truncations(), seen);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_fork_restores_an_unrecorded_spenders_input_without_a_lock_or_overflow() {
+    let s = unrecorded_spender(false);
+    s.fork();
+    assert_restored_input(&s, false);
+}
+
 #[test]
 fn a_truncation_without_a_wallet_event_keeps_the_locked_payment() {
-    use platform_wallet::key_wallet_manager::WalletInterface;
     let s = scenario();
     s.hear_lock();
     s.mined();
-    let manager = s.session.manager().unwrap();
-    s.engine.block_on(async {
-        let wm = manager.wallet_manager_arc();
-        wm.write().await.truncate_above(TIP).unwrap();
-        s.session.refresh_wallet_state(&manager, s.id).await;
-    });
-    s.session.hub.settle_rereads();
+    s.detect_fork();
     s.assert_kept(true, TxActionRefusal::InstantLocked);
 }
 

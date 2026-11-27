@@ -489,6 +489,8 @@ pub(crate) struct Truncated<'a> {
     /// InstantSend-locked transactions recorded in blocks above the
     /// height, out of a block now.
     pub unconfirmed: &'a [Txid],
+    /// Coins key-wallet returned, including those it held spent without a record.
+    pub restored: &'a [dashcore::OutPoint],
     /// Found in key-wallet ([`SessionHub::detect_truncation`]), not
     /// announced by its event.
     pub detected: bool,
@@ -2252,6 +2254,11 @@ impl SessionHub {
             })
         };
         let Some((from, flipped, checkpoint_lowered)) = lowered else {
+            if self.history.hold_fork_restorations(id, found.restored)
+                && self.update_balance(id, balance, accounts)
+            {
+                self.pump.mark_balances(id);
+            }
             return false;
         };
         (self.truncations).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2262,7 +2269,9 @@ impl SessionHub {
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         self.note_held_fork(id, height);
-        let changed = self.history.truncate(id, found.removed, found.unconfirmed);
+        let changed = self
+            .history
+            .truncate(id, found.removed, found.unconfirmed, found.restored);
         self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
@@ -2357,6 +2366,13 @@ impl SessionHub {
                     .filter(|t| h.session_held.contains(t) && !still_recorded(t) && !finalized(t)),
             );
         });
+        let funding = core.accounts.all_funding_accounts();
+        let restored: Vec<_> = self
+            .history
+            .locked_inputs_without_record(&id)
+            .into_iter()
+            .filter(|o| funding.iter().any(|account| account.utxos.contains_key(o)))
+            .collect();
         self.apply_truncation(
             &truncating,
             id,
@@ -2364,6 +2380,7 @@ impl SessionHub {
             Truncated {
                 removed: &removed,
                 unconfirmed: &unconfirmed,
+                restored: &restored,
                 detected: true,
             },
             &core.balance(),
@@ -2678,6 +2695,7 @@ impl SessionHub {
                 height,
                 txids,
                 unconfirmed_txids,
+                restored_outpoints,
                 balance,
                 account_balances,
                 ..
@@ -2690,6 +2708,7 @@ impl SessionHub {
                     Truncated {
                         removed: txids,
                         unconfirmed: unconfirmed_txids,
+                        restored: restored_outpoints,
                         detected: false,
                     },
                     balance,

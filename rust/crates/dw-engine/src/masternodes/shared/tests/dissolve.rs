@@ -633,7 +633,7 @@ fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
     assert_eq!(f.net.sent().len(), 2);
 
     // A reorg takes the reward change's block.
-    (f.session.hub.history).truncate(f.wallets[0], &[u.txid()], &[]);
+    (f.session.hub.history).truncate(f.wallets[0], &[u.txid()], &[], &[]);
     f.tip(105);
     assert_eq!(op_state_of(&f, &update.id), ProTxOperationState::Sent);
     let resend = |id: &str, max: u64| {

@@ -1530,6 +1530,8 @@ pub(crate) struct WalletHistory {
     /// evidence. Their inputs stay held for this session irrespective of
     /// later changes to the history entry.
     pub(crate) uncertain_fork_spends: HashMap<Txid, BTreeSet<OutPoint>>,
+    /// Inputs restored by a fork whose hold cannot rely on a spender row.
+    pub(crate) restored_fork_inputs: BTreeSet<OutPoint>,
     /// The last load of the history missed a stored record or mark.
     pub load_incomplete: bool,
     /// The claims the store's repair put back pending, as the last load
@@ -1946,6 +1948,23 @@ pub(crate) struct EarlyInstantLocks {
 }
 
 impl EarlyInstantLocks {
+    fn hold_restorations(&self, history: &mut WalletHistory, restored: &[OutPoint]) -> bool {
+        let before = history.restored_fork_inputs.len();
+        for coin in restored {
+            let mut matched = self
+                .spends
+                .get(coin)
+                .into_iter()
+                .flatten()
+                .filter(|t| history.session_locks.contains(*t));
+            let covered = matched.clone().any(|t| history.fork_kept_locks.contains(t));
+            if !covered && (self.overflow || matched.next().is_some()) {
+                history.restored_fork_inputs.insert(*coin);
+            }
+        }
+        history.restored_fork_inputs.len() != before
+    }
+
     fn remember(&mut self, txid: Txid, inputs: &[OutPoint]) {
         if self.inputs.contains_key(&txid) {
             return;
@@ -2017,9 +2036,38 @@ impl HistoryStore {
         wallet: WalletId,
         removed: &[Txid],
         unconfirmed: &[Txid],
+        restored: &[OutPoint],
     ) -> Vec<Txid> {
         self.with_wallet_records(wallet, |history, locks| {
-            history.truncate(removed, unconfirmed, locks.overflow)
+            let changed = history.truncate(removed, unconfirmed, locks.overflow);
+            locks.hold_restorations(history, restored);
+            changed
+        })
+    }
+
+    pub(crate) fn hold_fork_restorations(&self, wallet: WalletId, restored: &[OutPoint]) -> bool {
+        !restored.is_empty()
+            && self.with_wallet_records(wallet, |h, locks| locks.hold_restorations(h, restored))
+    }
+
+    /// For a truncation detected without an event, a matched verified lock
+    /// can identify its input even when the wallet never recorded the spend.
+    pub(crate) fn locked_inputs_without_record(&self, wallet: &WalletId) -> Vec<OutPoint> {
+        self.read_wallet(wallet, |h| {
+            if h.session_locks.is_empty() {
+                return Vec::new();
+            }
+            let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+            locks
+                .spends
+                .iter()
+                .filter_map(|(outpoint, spenders)| {
+                    spenders
+                        .iter()
+                        .any(|txid| h.session_locks.contains(txid) && !h.txs.contains_key(txid))
+                        .then_some(*outpoint)
+                })
+                .collect()
         })
     }
 
@@ -3399,7 +3447,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 3);
         store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
-        store.truncate(wallet, &[removed.txid()], &[kept.txid()]);
+        store.truncate(wallet, &[removed.txid()], &[kept.txid()], &[]);
         assert_eq!(
             store.registration_collaterals(&wallet),
             vec![kept_collateral],

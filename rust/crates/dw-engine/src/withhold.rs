@@ -230,6 +230,7 @@ impl SessionHub {
                 !h.rescan_holds.is_empty()
                     || !h.fork_kept_locks.is_empty()
                     || !h.uncertain_fork_spends.is_empty()
+                    || !h.restored_fork_inputs.is_empty()
                     || (h.txs.iter())
                         .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
             })
@@ -259,15 +260,14 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
     })
 }
 
-/// The coins of `core` that a payment of [`WalletHistory::fork_kept_locks`]
-/// spends, which key-wallet holds unspent: a fork gave them back when it
-/// removed that payment. Held while the history keeps the payment out of a
-/// block and key-wallet holds no record of it. Its block, or its record seen
-/// again, ends the hold: key-wallet then spends them itself. So does a
-/// winner's block that spends them (key-wallet no longer holds them), an
-/// abandon the ChainLock exception lets through, and the end of the session.
+/// Unspent inputs of forked-out payments. A retained history entry holds its
+/// inputs until key-wallet records the spend again or Abandon clears the lock.
+/// The overflow and unrecorded-spender holds last for the session.
 fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
-    if h.fork_kept_locks.is_empty() && h.uncertain_fork_spends.is_empty() {
+    if h.fork_kept_locks.is_empty()
+        && h.uncertain_fork_spends.is_empty()
+        && h.restored_fork_inputs.is_empty()
+    {
         return BTreeSet::new();
     }
     let accounts = core.accounts.all_accounts();
@@ -287,6 +287,7 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
         .filter(|e| e.context.block_info().is_none() && !e.is_abandoned())
         .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
         .chain(h.uncertain_fork_spends.values().flatten().copied())
+        .chain(h.restored_fork_inputs.iter().copied())
         .filter(unspent)
         .collect()
 }

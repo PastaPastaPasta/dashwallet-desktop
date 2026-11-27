@@ -146,6 +146,10 @@ fallback lasts until the session ends. Desktop buffers up to 4,096 verified lock
 per session, matching each lock when the wallet learns its transaction or an output it spends. After any
 eviction or a lock too large for the buffer, a forked-out payment spending the wallet's own coins whose lock
 status is unknown stays pending. Its inputs stay excluded for the session, and Abandon and Resend refuse it.
+When a truncation returns a coin whose spender was never recorded, Desktop keeps it excluded for the session
+if a wallet-matched verified lock names it or the buffer has overflowed. A detected truncation without an event
+can use the verified lock while its input is still buffered. Without the event or that lock evidence, it cannot
+identify the restored outpoint.
 
 ### 2.3 Fees and coin control (`fees.rs`) — owner R1
 
