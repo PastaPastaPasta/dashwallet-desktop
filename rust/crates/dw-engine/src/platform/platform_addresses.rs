@@ -191,10 +191,13 @@ pub struct MoveToCoreQuote {
     pub to: String,
     /// What to authorize: no duffs, `credits` credits.
     pub grant: GrantRequest,
-    /// The held top-up or send from Platform this move is the exit of: the
-    /// quote is planned on its inputs only. Pass it to `move_to_core`,
-    /// which then moves only while that record still holds; the exit's
-    /// withdrawal document says which of the two executed (#762).
+    /// The held record from Platform this move is the exit of (a top-up, a
+    /// send, a cancel, or a move or contact payment too small to cancel):
+    /// the quote is planned on its inputs only. Pass it to `move_to_core`,
+    /// which then moves only while that record still holds and is still
+    /// such an exit's, at its exact inputs and nonces; beside a top-up, a
+    /// send or a cancel, the exit's withdrawal document says which executed
+    /// (#762, #1006).
     #[serde(default)]
     pub exit_of: Option<String>,
 }
@@ -507,7 +510,7 @@ impl DashPay {
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`
     /// (a `PlatformOp` grant or a `PlatformAddressMove` lease). `exit_of`:
-    /// the quote's, the held top-up this move is the exit of.
+    /// the quote's, the held record this move is the exit of.
     pub async fn move_to_core(
         &self,
         amount: WithdrawAmount,

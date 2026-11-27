@@ -7,7 +7,7 @@
 //! payment request: those are stored in dw-appdb's address book with purpose
 //! `receive`, so issuance survives restarts and never repeats an address.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use dashcore::Address;
@@ -114,11 +114,16 @@ struct PoolView {
 
 /// The first receiving address free to hand out: no transaction paid it
 /// and it is not held reserved.
-fn current_receiving(view: &PoolView) -> Result<&PoolAddress, EngineError> {
+fn current_receiving<'v>(
+    view: &'v PoolView,
+    except: &BTreeSet<String>,
+) -> Result<&'v PoolAddress, EngineError> {
     view.addresses
         .iter()
         .filter(|a| {
-            a.chain == AddressChain::Receiving && matches!(a.state, AddressState::Available)
+            a.chain == AddressChain::Receiving
+                && matches!(a.state, AddressState::Available)
+                && !except.contains(&a.address.to_string())
         })
         .min_by_key(|a| a.index)
         .ok_or(EngineError::GapLimit)
@@ -277,7 +282,7 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let view = this.pool_view(wallet).await?;
-            let current = current_receiving(&view)?;
+            let current = current_receiving(&view, &BTreeSet::new())?;
             let labels = this.address_labels(wallet).await?;
             Ok(this.address_info(current, &view, &labels, &this.tx_counts(&wallet)))
         })
@@ -286,13 +291,15 @@ impl NetworkSession {
 
     /// [`Self::current_receive_address`]'s address alone, for a caller
     /// already inside the session (release 0.1: "Move to Dash wallet" pays
-    /// it).
+    /// it), passing over the addresses `except` names (#1006: the exit of a
+    /// held cancel pays one no withdrawal at its inputs pays).
     pub(crate) async fn current_receiving_address(
         &self,
         wallet: WalletId,
+        except: &BTreeSet<String>,
     ) -> Result<Address, EngineError> {
         let view = self.pool_view(wallet).await?;
-        Ok(current_receiving(&view)?.address.clone())
+        Ok(current_receiving(&view, except)?.address.clone())
     }
 
     /// Whether `address` is one of the wallet's BIP44 account 0 receiving

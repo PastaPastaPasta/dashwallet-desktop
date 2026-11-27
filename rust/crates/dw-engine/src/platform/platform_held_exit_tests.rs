@@ -562,12 +562,11 @@ fn a_cancel_whose_inputs_carry_less_than_the_held_amount_is_refused() {
     assert_eq!(w.sent_count(), sent, "nothing signed");
 }
 
-/// A held cancel has no exit of its own: a move beside it waits, and a
-/// move naming it as its exit is refused unsigned, so no group holds a
-/// withdrawal, its cancel and an exit of the cancel. A cancel of other
-/// terms waits for it too.
+/// A held cancel is exited only by the move its quote names (#1006): a
+/// move that names nothing waits for it, as a cancel of other terms does,
+/// and none of them is signed.
 #[test]
-fn a_held_cancel_is_no_exit_target() {
+fn a_held_cancel_is_exited_only_by_its_named_exit() {
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
     let held = w.held_move(one());
@@ -582,23 +581,11 @@ fn a_held_cancel_is_no_exit_target() {
     w.net.tick();
     w.activity();
     assert!(w.record(&out.id).holds());
-    let quoted = w.quote(WithdrawAmount::All);
-    assert!(
-        matches!(&quoted, Err(CreditsError::MovePending { id }) if *id == out.id),
-        "{quoted:?}"
-    );
+    let quoted = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(quoted.exit_of.as_deref(), Some(out.id.as_str()));
     let sent = w.sent_count();
-    let (to, id, grant) = (w.to.clone(), out.id.clone(), w.f.grant(5 * DASH));
-    let named = w.call(move |net, s, wl, wid| async move {
-        let ask = (WithdrawAmount::All, to.as_str(), Some(id.as_str()));
-        move_to_core(&*net, &s, &wl, wid, ask, &grant).await
-    });
-    assert!(
-        matches!(named, Err(CreditsError::QuoteChanged)),
-        "{named:?}"
-    );
-    // A move that names nothing waits for it, as its quote does.
-    let plain = w.move_to(WithdrawAmount::All, &w.to.clone(), &w.f.grant(5 * DASH));
+    // A move that names nothing waits for it.
+    let plain = w.move_to(WithdrawAmount::All, &quoted.to, &w.f.grant(5 * DASH));
     assert!(
         matches!(&plain, Err(CreditsError::MovePending { id }) if *id == out.id),
         "{plain:?}"
@@ -1291,3 +1278,6 @@ fn held_withdrawal(w: &World) -> MoveRecord {
     w.store(&[moved.clone()]);
     moved
 }
+
+#[path = "platform_held_cancel_exit_tests.rs"]
+mod cancel_exit;

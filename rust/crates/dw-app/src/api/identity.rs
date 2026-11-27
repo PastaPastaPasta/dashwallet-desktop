@@ -550,7 +550,7 @@ commands! {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`.
-    /// `exit_of`: the quote's, the held top-up this move is the exit of.
+    /// `exit_of`: the quote's, the held record this move is the exit of.
     #[facade("DashPay::move_to_core")]
     fn platform_move_to_core(
         state,
