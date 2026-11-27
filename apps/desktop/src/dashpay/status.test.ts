@@ -396,6 +396,11 @@ describe("the voting card's instant username (D4 reversed)", () => {
   const on: InstantInputs = { offered: true, nameCredits: "2000000000", asked: null };
   const base = [COPY.voting.deciding, "Results on day 1900000000."];
 
+  it("hides a cached temporary name when current ownership is unconfirmed", () => {
+    const instant = { ...on, asked: { label: "alice2", outcome: null, recorded: true } };
+    expect(homeCard(inputs(CONTEST, { main: named("alice2"), instant }))).toMatchObject({ lines: base });
+  });
+
   it("no temporary name: the hint and Create instant username, voting info beside it", () => {
     expect(homeCard(inputs(CONTEST, { main: named(null), instant: on }))).toMatchObject({
       state: "voting",

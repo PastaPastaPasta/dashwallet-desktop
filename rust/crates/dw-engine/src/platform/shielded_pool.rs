@@ -5092,8 +5092,8 @@ fn spent_create(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
 }
 
 /// Whether the registration proof ([`dw_appdb::dp_registration_proved`]) of
-/// every create in `st_hashes` reads consumed: its notes spent with no
-/// identity, nothing owed. No proof, or any other, is `false`; a proof that
+/// every create in `st_hashes` reads consumed: its notes are spent, and
+/// its execution is unattributed. No proof, or any other, is `false`; a proof that
 /// cannot be read is `None`.
 async fn spent_create_consumed(
     appdb: &Arc<dw_appdb::AppDb>,

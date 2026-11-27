@@ -159,6 +159,10 @@ function availability(dp: DashPayWorld, label: string): NameAvailability {
   return { kind: "available", contested: check.contested };
 }
 
+function rememberRegisteredName(dp: DashPayWorld, identity: string, username: string) {
+  dp.directory.push({ identity, username, displayName: null, avatarUrl: null, relation: "isSelf", unverified: false });
+}
+
 const finished = (r: RegistrationStatus) => r.phase === "done" || r.phase === "failed";
 
 /** The live lease of the wallet's registration run. */
@@ -830,6 +834,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const dp = d.dashpay(ctx.world, walletId, identity);
       const check = validLabel(label);
       const known = availability(dp, label);
+      if (known.kind === "taken" && known.owner === identity) return { kind: "registered" };
       if (known.kind === "taken") throw fail("name.taken", "another identity holds the label");
       if (known.kind === "contestOpen") throw fail("name.contest_open", "a contest for the name is open");
       if (known.kind === "locked") throw fail("name.locked", "name locked");
@@ -845,6 +850,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         return { kind: "contestStarted", endsAt };
       }
       dp.identities = dp.identities.map((i) => (i.identity === identity ? { ...i, names: [...i.names, label], mainName: i.mainName ?? label, namesCheck: null } : i));
+      rememberRegisteredName(dp, identity, label);
       for (const row of dp.registrations) {
         if (row.identity === identity && row.temporaryLabel !== null
             && (row.phase === "contested" || row.phase === "done")
@@ -975,8 +981,9 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
         Object.assign(row, { phase: "contested", contestEndsAt: now + CONTEST_SECS });
         const temp = row.temporaryLabel;
         if (temp !== null) row.temporaryNameOutcome = dp.temporaryRefused ? "name.taken" : "registered";
-        if (temp !== null && !dp.temporaryRefused) {
+        if (temp !== null && !dp.temporaryRefused && row.identity !== null) {
           dp.identities = dp.identities.map((i) => (i.identity === row.identity ? { ...i, names: [...i.names, temp], mainName: temp } : i));
+          rememberRegisteredName(dp, row.identity, temp);
           ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });
         }
       } else {

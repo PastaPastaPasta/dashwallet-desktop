@@ -25,7 +25,7 @@ use super::errors::{PlatformError, ShieldedError};
 use super::lease::Lease;
 use super::registration::{ShieldedCheck, ShieldedFacts, shielded_readiness};
 use super::registration_flow::{b58, parse_identity};
-use super::registration_rows::{Decoded, Funding, Phase};
+use super::registration_rows::{Decoded, Funding};
 use super::requests::{leased, write_permit};
 use super::runtime::guard;
 use super::shielded_pool::{self as pool, ShieldedCreate, ShieldedLib, SpendError};
@@ -422,10 +422,6 @@ fn create_keys_key(draft: i64, identity: &str) -> String {
     format!("dp_registration_create_keys/{draft}/{identity}")
 }
 
-fn restored_create_registered_key(draft: i64, identity: &str) -> String {
-    format!("dp_registration_restored_create_registered/{draft}/{identity}")
-}
-
 fn registration_key_data<'a>(
     keys: impl IntoIterator<Item = &'a IdentityPublicKey>,
 ) -> Option<Vec<[u8; 20]>> {
@@ -712,7 +708,7 @@ pub(crate) async fn fund(
         }
         let proved = match session.leases.shielded_artifacts(wallet).await {
             Ok(artifacts) => match create_artifact(&artifacts, &id) {
-                Some(artifact) => proved_executed(session, wallet, artifact).await,
+                Some(artifact) => settle_registered(session, wallet, net, artifact).await,
                 None => true,
             },
             Err(_) => false,
@@ -771,11 +767,6 @@ async fn evidence(
                         .identity_matches_index((session, wallet), ask, identity, lease)
                         .await? =>
                 {
-                    let key = restored_create_registered_key(ask.draft, identity);
-                    let scope = dw_appdb::local_scope(&wallet.to_string());
-                    session
-                        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
-                        .await?;
                     ShieldedOutcome::Registered(identity.to_owned())
                 }
                 _ => ShieldedOutcome::Unknown,
@@ -803,11 +794,12 @@ async fn evidence(
     {
         return Ok(ShieldedOutcome::Unknown);
     }
-    let executed = matches!(
-        outcome,
-        ShieldedOutcome::Registered(_) | ShieldedOutcome::Fallback(_)
-    );
-    if executed && !proved_executed(session, wallet, artifact).await {
+    let settled = match outcome {
+        ShieldedOutcome::Registered(_) => settle_registered(session, wallet, net, artifact).await,
+        ShieldedOutcome::Fallback(_) => proved_executed(session, wallet, artifact).await,
+        _ => true,
+    };
+    if !settled {
         return Ok(ShieldedOutcome::Unknown);
     }
     Ok(outcome)
@@ -833,76 +825,29 @@ fn create_artifact<'a>(
     (artifacts.iter().find(held)).or_else(|| artifacts.iter().find(ours))
 }
 
-/// Fallbacks whose named creates could still owe an unrecorded refund.
-/// The caller holds the Platform moves lock, shared by naming and arming.
-pub(super) async fn pending_fallbacks(
+/// Matching keys prove which identity to adopt. Only padding or proof of
+/// the exact transition lets that identity settle a local payment as executed.
+async fn settle_registered(
     session: &NetworkSession,
     wallet: WalletId,
-    armed: std::collections::HashSet<i64>,
-) -> Result<Vec<String>, PlatformError> {
-    let owner = wallet.to_string();
-    let candidates: Vec<_> = session
-        .appdb_op(move |db| {
-            Ok(db
-                .registration_rows(&owner)?
-                .into_iter()
-                .filter(|row| {
-                    Phase::parse(&row.phase) == Some(Phase::KeysPrepared)
-                        && !armed.contains(&row.id)
-                })
-                .filter_map(|row| match Funding::decode(&row.funding) {
-                    Decoded::Known(Funding::Shielded {
-                        fallback,
-                        identity: Some(identity),
-                        ..
-                    }) => Some((row.id, fallback, identity)),
-                    _ => None,
-                })
-                .collect())
-        })
-        .await?;
-    if candidates.is_empty() {
-        return Ok(Vec::new());
+    net: &impl CreateEvidence,
+    artifact: &ShieldedArtifact,
+) -> bool {
+    if !unpadded(artifact) || super::shielded_release::proves_execution(artifact) {
+        return proved_executed(session, wallet, artifact).await;
     }
-    let artifacts = session
-        .leases
-        .shielded_artifacts(wallet)
-        .await
-        .unwrap_or_default();
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    Ok(session
-        .appdb_op(move |db| {
-            let mut pending = Vec::new();
-            for (draft, fallback, identity) in candidates {
-                if db
-                    .setting(&scope, &restored_create_registered_key(draft, &identity))?
-                    .as_deref()
-                    == Some("1")
-                {
-                    continue;
-                }
-                if let Some(artifact) = parse_identity(&identity)
-                    .ok()
-                    .and_then(|id| create_artifact(&artifacts, &id))
-                {
-                    if artifact.status == ArtifactStatus::NotExecuted {
-                        continue;
-                    }
-                    if let Some(hash) = artifact.st_hash
-                        && let Some(proof) = db.setting(
-                            &scope,
-                            &dw_appdb::dp_registration_proved(&hex::encode(hash)),
-                        )?
-                        && PROVED.iter().any(|(_, value)| *value == proof)
-                    {
-                        continue;
-                    }
-                }
-                pending.push(fallback);
-            }
-            Ok(pending)
-        })
-        .await?)
+    let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+    if artifact.status == unresolved
+        && !artifact.acked
+        && let Some(hash) = artifact.st_hash
+        && matches!(
+            net.nullifiers(&artifact.published).await,
+            Ok(NullifierRead::Spent(_))
+        )
+    {
+        return settle_proved(session, wallet, hash, unresolved, false).await;
+    }
+    true
 }
 
 /// Records the proof that `artifact`'s create executed ([`settle_proved`])
@@ -1153,7 +1098,7 @@ pub(crate) async fn preserve_consumed_proofs(
 
 /// The engine's proof of a create the library left unresolved, as the
 /// value of [`dw_appdb::dp_registration_proved`]: executed, never executes,
-/// or its notes spent with no identity (it stays unresolved).
+/// or its notes spent without proof of the exact transition (it stays unresolved).
 const PROVED: [(ArtifactStatus, &str); 3] = [
     (ArtifactStatus::Executed, "executed"),
     (ArtifactStatus::NotExecuted, "pruned"),

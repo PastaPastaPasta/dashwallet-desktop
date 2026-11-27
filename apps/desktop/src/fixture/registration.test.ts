@@ -553,6 +553,7 @@ describe("a temporary name beside a contested label (DP1-09 D4 reversed)", () =>
     expect(await rowOf(draft)).toMatchObject({ phase: "done", temporaryLabel: "alice2" });
     expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending", label: "alice" });
     expect((await cmd.identities(W))[0]).toMatchObject({ names: ["alice2"], mainName: "alice2" });
+    expect(await cmd.nameAvailability(W, "alice2")).toEqual({ kind: "taken", owner: NEW_IDENTITY });
     expect((await cmd.contestStatus(W, NEW_IDENTITY, "alice")).temporaryName).toBe("alice2");
   });
 

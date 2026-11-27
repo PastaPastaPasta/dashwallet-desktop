@@ -1573,7 +1573,7 @@ impl DashPay {
 
     /// The identity's contest for `label` as Platform's vote state shows it
     /// now (DP1-04, `contest_watch.rs`): its state, end, contenders with
-    /// their votes, and the temporary name. An outcome found for a watched
+    /// their votes, and the temporary name if the identity still owns it. An outcome found for a watched
     /// contest is applied as the watch applies it. A label the identity
     /// does not contend for, and does not watch, is `invalid_argument`.
     pub async fn contest_status(
@@ -1589,9 +1589,18 @@ impl DashPay {
             let at = (wallet_id, identity_id);
             let mut status =
                 (session.contest_status_of(&net, &wallet, at, &label, &check.normalized)).await?;
-            status.temporary_name = Self::main_name_prefs(&session, wallet_id, &identity_id)
+            let temporary = Self::main_name_prefs(&session, wallet_id, &identity_id)
                 .await?
                 .temporary;
+            if let Some(label) = temporary {
+                let normalized = convert_to_homograph_safe_chars(&label);
+                if matches!(
+                    manager.sdk_arc().resolve_dpns_name(&normalized).await,
+                    Ok(Some(owner)) if owner == identity_id
+                ) {
+                    status.temporary_name = Some(label);
+                }
+            }
             Ok(status)
         })
         .await

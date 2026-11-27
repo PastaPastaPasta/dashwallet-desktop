@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
-import { contestRow, INSTANT_COPY, instantOffer, lacksTemporary, registrationOffered, temporaryOutcome, VOTE_COPY, VOTE_POLL_MS, voteDuration, type InstantInputs, type NamesRead } from "./instantOffer";
+import { contestRow, INSTANT_COPY, instantOffer, needsTemporaryLookup, registrationOffered, temporaryOutcome, VOTE_COPY, VOTE_POLL_MS, voteDuration, type InstantInputs, type NamesRead } from "./instantOffer";
 
 const ROW_AT = 1_800_000_000;
 
@@ -52,6 +52,7 @@ const summary = (s: Partial<IdentitySummary> = {}): IdentitySummary => ({
 });
 
 const FREE: NameAvailability = { kind: "available", contested: false };
+const OWNED: NameAvailability = { kind: "taken", owner: "A" };
 
 /** A read that started `afterSecs` after the row last changed, answering `s`; DPNS says the
  * temporary label is free unless `temporary` says otherwise. */
@@ -98,13 +99,22 @@ describe("voteDuration: Platform's vote poll per network (dpp_voting_versions v2
 it("uses the recorded temporary name result before a names read succeeds", () => {
   const failed = row({ temporaryNameOutcome: "name.taken" });
   expect(temporaryOutcome(failed, read(5, { namesCheck: "failed" }))).toBe("failed");
-  expect(lacksTemporary(failed, read(5))).toBe(false);
+  expect(needsTemporaryLookup(failed, read(5))).toBe(false);
   expect(instantOffer(summary({ namesCheck: "failed" }), null, {
     offered: true,
     nameCredits: "1000",
     asked: { label: "alice2", outcome: "failed", recorded: true },
   })).toEqual({ kind: "failed", label: "alice2", short: false });
-  expect(temporaryOutcome(row({ temporaryNameOutcome: "registered" }), undefined)).toBe("owned");
+  expect(temporaryOutcome(row({ temporaryNameOutcome: "registered" }), undefined)).toBeNull();
+});
+
+it("drops a previously registered temporary name after its ownership transfers", () => {
+  const registered = row({ temporaryNameOutcome: "registered" });
+  expect(temporaryOutcome(registered, read(5, { names: ["alice2"] }, { kind: "taken", owner: "A" }))).toBe("owned");
+  const transferred = read(6, { names: ["alice2"] }, { kind: "taken", owner: "B" });
+  expect(temporaryOutcome(registered, transferred)).toBeNull();
+  expect(temporaryOutcome(row(), transferred)).toBeNull();
+  expect(needsTemporaryLookup(registered, read(6))).toBe(true);
 });
 
 describe("temporaryOutcome: only a names read started after the row reached Contested", () => {
@@ -116,7 +126,7 @@ describe("temporaryOutcome: only a names read started after the row reached Cont
   it("propagation lag: the first read (in flight at the change) lacks the name, the next has it; no failure ever", () => {
     expect(temporaryOutcome(row(), read(-2))).toBeNull();
     expect(temporaryOutcome(row(), read(0))).toBeNull();
-    expect(temporaryOutcome(row(), read(3, { names: ["alice2"], mainName: "alice2" }))).toBe("owned");
+    expect(temporaryOutcome(row(), read(3, { names: ["alice2"], mainName: "alice2" }, OWNED))).toBe("owned");
   });
 
   it("a read started in the same second as the change says nothing (the row's time is whole seconds)", () => {
@@ -129,7 +139,7 @@ describe("temporaryOutcome: only a names read started after the row reached Cont
   });
 
   it("a write the engine still holds as pending is no failure: DPNS must say the label is free or another's", () => {
-    expect(lacksTemporary(row(), { ...read(5), temporary: undefined })).toBe(true);
+    expect(needsTemporaryLookup(row(), { ...read(5), temporary: undefined })).toBe(true);
     // The identities lack it, but DPNS was not asked or could not say: nothing.
     expect(temporaryOutcome(row(), { ...read(5), temporary: undefined })).toBeNull();
     expect(temporaryOutcome(row(), read(5, {}, { kind: "unknown" }))).toBeNull();
@@ -140,8 +150,8 @@ describe("temporaryOutcome: only a names read started after the row reached Cont
     expect(temporaryOutcome(row(), read(5, {}, FREE))).toBe("failed");
     expect(temporaryOutcome(row(), read(5, {}, { kind: "taken", owner: "B" }))).toBe("failed");
     // A read that holds the name, or says nothing yet, needs no lookup.
-    expect(lacksTemporary(row(), read(5, { names: ["alice2"] }))).toBe(false);
-    expect(lacksTemporary(row(), read(0))).toBe(false);
+    expect(needsTemporaryLookup(row(), read(5, { names: ["alice2"] }))).toBe(true);
+    expect(needsTemporaryLookup(row(), read(0))).toBe(false);
   });
 
   it("names not settled say nothing", () => {
@@ -152,7 +162,7 @@ describe("temporaryOutcome: only a names read started after the row reached Cont
   });
 
   it("owned under DPNS's homograph folding, even from a stale read", () => {
-    expect(temporaryOutcome(row(), read(-10, { names: ["AL1CE2"] }))).toBe("owned");
+    expect(temporaryOutcome(row(), read(-10, { names: ["AL1CE2"] }, OWNED))).toBe("owned");
   });
 
   it("nothing for a row that asked for none or has not reached its contest", () => {

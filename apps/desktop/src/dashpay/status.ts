@@ -19,7 +19,7 @@ import type { StartupStatus } from "../api/generated/StartupStatus";
 import { RESCAN_TEXT } from "../app/rescan";
 import { oneDecimal } from "../format/sync";
 import { messageTable, t } from "../i18n";
-import { INSTANT_COPY, instantOffer, VOTE_COPY, type AskedTemporary, type InstantInputs } from "./instantOffer";
+import { INSTANT_COPY, instantOffer, temporaryForDisplay, VOTE_COPY, type AskedTemporary, type InstantInputs } from "./instantOffer";
 
 
 /** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
@@ -432,7 +432,8 @@ export function homeCard(i: StatusInputs): CardModel | null {
     case "contestPending": {
       const lines: string[] = [COPY.voting.deciding, s.endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(i.date(s.endsAt))];
       // The temporary name shows on a live read only (DASHPAY F5).
-      const temporary = i.main && !i.main.namesUpdating && i.main.mainName !== s.label ? i.main.mainName : null;
+      const candidate = i.main && !i.main.namesUpdating && i.main.mainName !== s.label ? i.main.mainName : null;
+      const temporary = temporaryForDisplay(candidate, i.instant);
       if (temporary) lines.push(temporaryLine(temporary, s.label, i.instant?.asked));
       const title = COPY.voting.title(s.label);
       const info = action("votingInfo", COPY.voting.action);

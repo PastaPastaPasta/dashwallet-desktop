@@ -2238,6 +2238,28 @@ fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
 }
 
 #[test]
+fn activity_keeps_a_fallback_receipt_spent_while_registration_is_pending() {
+    let w = World::new();
+    let fallback = published_fallback(&w);
+    let address = parse(&fallback).unwrap();
+    insert_shielded_row(&w, &fallback, "keys_prepared", true);
+    assert!(w.activity().is_empty());
+
+    w.net.fund(address, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH);
+
+    w.net.state.lock().unwrap().insert(address, (1, 0));
+    w.net.tick();
+    let rows = w.activity();
+    assert_eq!(incoming_total(&rows), DASH);
+    assert!(rows.iter().any(|row| {
+        row.kind == PlatformActivityKind::Outgoing
+            && row.address.as_deref() == Some(fallback.as_str())
+            && row.credits == DASH
+    }));
+}
+
+#[test]
 fn activity_reads_a_fallback_after_the_registration_completes() {
     let w = World::new();
     let fallback = published_fallback(&w);
@@ -2247,7 +2269,7 @@ fn activity_reads_a_fallback_after_the_registration_completes() {
     assert_eq!(index_of(&w, fallback.clone()), None);
     assert!(w.activity().is_empty());
     assert!(
-        !w.net
+        w.net
             .read_sets
             .lock()
             .unwrap()

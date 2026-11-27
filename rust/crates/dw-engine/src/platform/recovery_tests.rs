@@ -3770,6 +3770,7 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
              ALTER TABLE dp_registration DROP COLUMN owner;
              ALTER TABLE dp_registration DROP COLUMN name_error;
              ALTER TABLE dp_registration DROP COLUMN profile_error;
+             ALTER TABLE dp_registration DROP COLUMN temporary_name_outcome;
              DROP TABLE dp_contact_info;
              DROP TABLE dp_contact_payout;
              ALTER TABLE dp_payment_lock DROP COLUMN inputs;

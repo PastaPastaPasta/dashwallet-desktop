@@ -3552,33 +3552,7 @@ pub(crate) async fn activity(
     let completed = reconcile(&store, &mut funds, &ev, &held).await?;
     let (mut shielded, settled) = from_shielded(session, wallet_id, &store).await?;
     let pool = pool(wallet).await?;
-    let armed_refunds = shielded
-        .iter()
-        .filter_map(|record| match record.source {
-            FromShieldedSource::Registration { draft } if record.armed => Some(draft),
-            _ => None,
-        })
-        .collect();
-    let pending_fallbacks =
-        super::registration_shielded::pending_fallbacks(session, wallet_id, armed_refunds).await?;
-    let mut addresses = covered(&pool, &moves);
-    for text in pending_fallbacks {
-        let refund_due = shielded
-            .iter()
-            .any(|record| record.to == text && (record.expects() > 0 || record.unseen > 0));
-        let recorded_payment = moves.iter().any(|record| {
-            record.holds() && record.inputs.iter().any(|input| input.address == text)
-        }) || funds
-            .iter()
-            .any(|record| record.address == text && (record.expects() > 0 || record.unseen > 0));
-        if !refund_due
-            && !recorded_payment
-            && let Some(address) = parse(&text)
-        {
-            addresses.remove(&address);
-        }
-    }
-    let observed = match read(session, net, addresses, false).await {
+    let observed = match read(session, net, covered(&pool, &moves), false).await {
         Ok(seen) => {
             let exits = exits(session, net, &moves, &seen).await;
             let docs = documents(session, net, &moves, &seen).await;

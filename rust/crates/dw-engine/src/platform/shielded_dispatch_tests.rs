@@ -3250,12 +3250,23 @@ fn a_proved_identity_at_another_index_does_not_settle_the_create() {
     assert!(h.refunds().is_empty());
 }
 
-/// F12: a create of two or more notes read spent registers when its
-/// identity reads present, whatever it was proved before.
 #[test]
-fn an_unpadded_create_spent_with_its_identity_registers() {
+fn a_same_index_winner_does_not_settle_the_losing_transition_as_executed() {
     let h = Hooked::new();
     let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    let (winner, winner_id) = create_bytes(
+        13,
+        &[12, 13],
+        (
+            DENOMINATION,
+            dpp::address_funds::PlatformAddress::P2pkh([41; 20]),
+        ),
+        None,
+    );
+    let (_, local_id) = create_bytes(12, &[12, 13], (DENOMINATION, own_platform()), None);
+    assert_eq!(winner_id, local_id);
+    let winner_hash: [u8; 32] = Sha256::digest(&winner).into();
+    assert_ne!(winner_hash, h.artifact(12).unwrap().st_hash.unwrap());
     h.rewrite(
         12,
         "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
@@ -3269,7 +3280,37 @@ fn an_unpadded_create_spent_with_its_identity_registers() {
         ShieldedOutcome::Registered(id)
     );
     assert!(h.refunds().is_empty());
-    assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Executed);
+    let artifact = h.artifact(12).unwrap();
+    assert_eq!(
+        artifact.status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    assert!(!artifact.acked);
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(
+            artifact.st_hash.unwrap()
+        )))
+        .as_deref(),
+        Some("consumed")
+    );
+}
+
+#[test]
+fn a_fresh_unpadded_create_uses_the_index_without_inferring_execution() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(12, &[12, 13], (DENOMINATION, own_platform()), None);
+    let lib = paying(Some(hook_of(&h, h.staged_create(12, &[12, 13], bytes, id))));
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 101);
+    *ev.spent.lock().unwrap() = Some(100);
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Registered(name))
+    );
+    assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Registered);
 }
 
 #[test]

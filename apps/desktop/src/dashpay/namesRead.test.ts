@@ -163,4 +163,18 @@ describe("useNamesRead: the read in the row's own second, then one more", () => 
     expect(m.now()).toBeNull();
     m.stop();
   });
+
+  it("checks the current DPNS owner of a recorded success despite a stale identity summary", async () => {
+    const registered = { ...row, temporaryNameOutcome: "registered" };
+    let owner = "A";
+    const b = {
+      identities: vi.fn(async () => [{ ...nameless, names: ["alice2"], mainName: "alice2" }]),
+      nameAvailability: vi.fn(async (): Promise<NameAvailability> => ({ kind: "taken", owner })),
+    };
+    const query = namesReadQuery(b as unknown as Backend, W, registered);
+    expect(temporaryOutcome(registered, await query.queryFn())).toBe("owned");
+    owner = "B";
+    expect(temporaryOutcome(registered, await query.queryFn())).toBeNull();
+    expect(b.nameAvailability).toHaveBeenCalledTimes(2);
+  });
 });

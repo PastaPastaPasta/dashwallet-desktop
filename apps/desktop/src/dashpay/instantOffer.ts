@@ -79,7 +79,9 @@ export type TemporaryOutcome = "owned" | "failed" | null;
 export function temporaryOutcome(row: RegistrationStatus | undefined, read: NamesRead | undefined): TemporaryOutcome {
   if (!row?.temporaryLabel || !row.identity || (row.phase !== "contested" && row.phase !== "done")) return null;
   const names = namesOutcome(row, read);
-  if (names === "owned" || row.temporaryNameOutcome === "registered") return "owned";
+  if (row.temporaryNameOutcome === "registered" || names === "owned") {
+    return read?.temporary?.kind === "taken" && read.temporary.owner === row.identity ? "owned" : null;
+  }
   if (row.temporaryNameOutcome !== undefined) return "failed";
   if (names !== "failed") return names;
   // The names lack it: failed only once DPNS says the label is free or another identity's.
@@ -87,9 +89,11 @@ export function temporaryOutcome(row: RegistrationStatus | undefined, read: Name
   return t?.kind === "available" || (t?.kind === "taken" && t.owner !== null && t.owner !== row?.identity) ? "failed" : null;
 }
 
-/** The names read alone: whether it lacks the temporary name, so DPNS should be asked. */
-export function lacksTemporary(row: RegistrationStatus | undefined, read: NamesRead | undefined): boolean {
-  return row?.temporaryNameOutcome === undefined && namesOutcome(row, read) === "failed";
+/** Check current ownership before showing a cached name, and after a fresh read that lacks it. */
+export function needsTemporaryLookup(row: RegistrationStatus | undefined, read: NamesRead | undefined): boolean {
+  const names = namesOutcome(row, read);
+  return row?.temporaryNameOutcome === "registered" || names === "owned" ||
+    (row?.temporaryNameOutcome === undefined && names === "failed");
 }
 
 function namesOutcome(row: RegistrationStatus | undefined, read: NamesRead | undefined): TemporaryOutcome {
@@ -105,7 +109,8 @@ function namesOutcome(row: RegistrationStatus | undefined, read: NamesRead | und
 /** The row's second, once it reached its contest with a temporary name: a names read started in
  * it says nothing, so the caller reads again once it is over (`rereadAfterSecond`). */
 export function rowSecond(row: RegistrationStatus | undefined): number | null {
-  return row?.temporaryNameOutcome === undefined && row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") ? row.updatedAt : null;
+  return row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") &&
+    (row.temporaryNameOutcome === undefined || row.temporaryNameOutcome === "registered") ? row.updatedAt : null;
 }
 
 /** Schedules one more read when the last one (started at `startedAt`, ms) began in or before
@@ -144,6 +149,17 @@ export interface InstantInputs {
   /** The temporary name the contest's registration asked for, and what became of it; `undefined`
    * while the registrations are not read (nothing is offered until they are). */
   asked: AskedTemporary | null | undefined;
+}
+
+export function canShowName(name: string, instant: InstantInputs | undefined): boolean {
+  if (!instant) return true;
+  const asked = instant.asked;
+  return asked === null || (asked !== undefined && (asked.outcome === "owned" || homographSafe(asked.label) !== homographSafe(name)));
+}
+
+export function temporaryForDisplay(candidate: string | null, instant: InstantInputs | undefined): string | null {
+  if (instant?.asked?.outcome === "owned") return instant.asked.label;
+  return candidate && canShowName(candidate, instant) ? candidate : null;
 }
 
 /** The card's instant offer for an open contest whose identity holds no other name. */
