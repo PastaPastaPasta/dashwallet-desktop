@@ -152,7 +152,8 @@ can match the live wallet's unspent coins against buffered verified locks in the
 inputs. A verified lock received afterward can still name an input from that read. After overflow, Desktop
 compares its last unspent-coin read with the post-fork read and holds the restored inputs. When a pre-fork
 read is unavailable, the wallet shows its coins as unverified and refuses spending with `rescanFirst`.
-A completed Rescan from below the truncation clears the inferred hold. For a recorded own spend removed
+A completed Rescan clears the inferred hold if it starts below the detected height and covers the
+earliest known removed spend. With no spend evidence, Desktop uses the wallet's birth for the rescan. For a recorded own spend removed
 before its lock verified, the
 removed record stays in memory for the session. A subsequent verified lock restores the pending row and
 excludes its inputs that are still unspent.

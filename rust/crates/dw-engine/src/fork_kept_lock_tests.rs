@@ -616,8 +616,8 @@ fn public_rescan(s: &Scenario, from: u32) {
         .unwrap();
 }
 
-fn finish_rescan(s: &Scenario) {
-    mined(&s.engine, &s.session, s.id, TIP, vec![foreign()]);
+fn finish_rescan(s: &Scenario, height: u32) {
+    mined(&s.engine, &s.session, s.id, height, vec![foreign()]);
     let manager = s.session.manager().unwrap();
     s.engine
         .block_on(s.session.refresh_wallet_state(&manager, s.id));
@@ -634,12 +634,51 @@ fn an_eventless_fork_after_overflow_holds_the_unrecorded_spenders_input() {
 
     start_offline_spv(&s.engine, &s.session);
     public_rescan(&s, TIP);
-    finish_rescan(&s);
+    finish_rescan(&s, TIP);
     assert_restored_input(&s, true);
 
     public_rescan(&s, FUNDED_AT);
     assert_eq!(balances(&s.session, s.id).confirmed, 11 * COIN);
-    finish_rescan(&s);
+    finish_rescan(&s, TIP);
+    assert_restored_input(&s, false);
+}
+
+#[test]
+fn an_eventless_fork_found_after_replay_still_requires_a_rescan_below_the_spend() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+
+    let s = unrecorded_spender(true);
+    mined(&s.engine, &s.session, s.id, TIP + 2, vec![foreign()]);
+    assert_eq!(s.max().0, 11 * COIN);
+    s.overflow_early_locks();
+    s.truncate_silently();
+
+    let manager = s.session.manager().unwrap();
+    s.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let block = super::block_with(vec![foreign()]);
+        wm.process_block_for_wallets(
+            &block,
+            block.block_hash(),
+            TIP + 1,
+            &BTreeSet::from([s.id.0]),
+        )
+        .await;
+        wm.update_wallet_synced_height(&s.id.0, TIP + 1);
+    });
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, TIP);
+    finish_rescan(&s, TIP + 1);
+    assert_restored_input(&s, true);
+
+    public_rescan(&s, FUNDED_AT);
+    finish_rescan(&s, TIP + 1);
     assert_restored_input(&s, false);
 }
 
@@ -653,6 +692,8 @@ fn an_eventless_fork_without_a_coin_read_waits_for_a_deep_rescan() {
             .history
             .with_wallet(s.id, |h| h.fork_restores = Default::default());
     });
+    let birth = s.session.hub.wallet_state(&s.id).unwrap().birth_height;
+    assert!(birth < TIP);
     let balance = balances(&s.session, s.id);
     assert_eq!((balance.confirmed, balance.withheld), (0, 12 * COIN));
     assert!(matches!(
@@ -661,12 +702,12 @@ fn an_eventless_fork_without_a_coin_read_waits_for_a_deep_rescan() {
             CoinSource::Any,
             crate::send::FeeMode::PerKb(1_000)
         )),
-        Err(EngineError::RescanFirst(TIP))
+        Err(EngineError::RescanFirst(from)) if from == birth
     ));
     assert!(matches!(
         s.engine
             .block_on(s.session.utxos(s.id, CoinFilter::default())),
-        Err(EngineError::RescanFirst(TIP))
+        Err(EngineError::RescanFirst(from)) if from == birth
     ));
     let (_, prepared) = prepare(
         &s.engine,
@@ -677,17 +718,21 @@ fn an_eventless_fork_without_a_coin_read_waits_for_a_deep_rescan() {
         false,
         &Arc::new(Accept::default()),
     );
-    assert!(matches!(prepared, Err(EngineError::RescanFirst(TIP))));
+    assert!(matches!(prepared, Err(EngineError::RescanFirst(from)) if from == birth));
 
     start_offline_spv(&s.engine, &s.session);
-    public_rescan(&s, FUNDED_AT);
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
     assert!(s.engine.block_on(s.session.cancel_rescan()).unwrap());
     let manager = s.session.manager().unwrap();
     s.engine
         .block_on(s.session.refresh_wallet_state(&manager, s.id));
     assert_eq!(balances(&s.session, s.id).confirmed, 0);
 
-    public_rescan(&s, FUNDED_AT);
-    finish_rescan(&s);
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    finish_rescan(&s, TIP);
     assert_restored_input(&s, false);
 }

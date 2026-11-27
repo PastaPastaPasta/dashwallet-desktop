@@ -101,7 +101,7 @@ pub enum EngineError {
     #[error("a rescan is in progress")]
     RescanInProgress,
     /// The wallet could not identify coins a fork restored.
-    #[error("Run Rescan from below block {0} before spending.")]
+    #[error("Run Rescan from block {0} or earlier before spending.")]
     RescanFirst(u32),
     /// A rescan the user stopped part way must run again before a spend.
     #[error("a rescan was interrupted")]

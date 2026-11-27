@@ -24,6 +24,7 @@ use dw_protx::payloads::resolve_collateral;
 use key_wallet::managed_account::transaction_record::{OutputRole, TransactionRecord};
 use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
 use crate::platform::Counterparty;
 use crate::platform::attribution::Payees;
@@ -2111,9 +2112,12 @@ impl HistoryStore {
                 ForkRestorations::Detected { core, prior } => {
                     history.detected_fork_coins = crate::fork_restore::unspent_outpoints(core);
                     if locks.overflow {
-                        history
-                            .fork_restores
-                            .infer(prior, height, &history.detected_fork_coins);
+                        history.fork_restores.infer(
+                            prior,
+                            height,
+                            core.birth_height(),
+                            &history.detected_fork_coins,
+                        );
                     }
                     history.restored_fork_inputs.extend(
                         locks

@@ -196,8 +196,8 @@ impl SessionHub {
     pub(crate) fn check_fork_spend(&self, wallet: WalletId) -> Result<(), EngineError> {
         let unknown = self
             .history
-            .read_wallet(&wallet, |h| h.fork_restores.unknown_height());
-        unknown.map_or(Ok(()), |height| Err(EngineError::RescanFirst(height)))
+            .read_wallet(&wallet, |h| h.fork_restores.rescan_start_for_unknown());
+        unknown.map_or(Ok(()), |start| Err(EngineError::RescanFirst(start)))
     }
 
     pub(crate) fn spend_exclusions(
@@ -206,7 +206,7 @@ impl SessionHub {
         core: &ManagedWalletInfo,
     ) -> Result<Exclusions, EngineError> {
         let (coins, unknown) = self.coin_exclusions(wallet, core);
-        unknown.map_or(Ok(coins), |height| Err(EngineError::RescanFirst(height)))
+        unknown.map_or(Ok(coins), |start| Err(EngineError::RescanFirst(start)))
     }
 
     fn coin_exclusions(
@@ -228,7 +228,7 @@ impl SessionHub {
             (
                 withheld,
                 fork_kept_inputs(core, h),
-                h.fork_restores.unknown_height(),
+                h.fork_restores.rescan_start_for_unknown(),
             )
         });
         let mut out: Exclusions = (withheld.into_iter())

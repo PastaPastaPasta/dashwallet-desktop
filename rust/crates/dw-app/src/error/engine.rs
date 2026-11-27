@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(fork["data"], rescan["data"]);
         assert_eq!(
             fork["message"],
-            "Run Rescan from below block 100 before spending."
+            "Run Rescan from block 100 or earlier before spending."
         );
         let wallet = dw_engine::WalletId([7; 32]);
         assert_eq!(

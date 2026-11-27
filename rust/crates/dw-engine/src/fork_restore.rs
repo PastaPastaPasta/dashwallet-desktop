@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use dashcore::OutPoint;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -18,12 +18,13 @@ pub(crate) fn unspent_outpoints(core: &ManagedWalletInfo) -> HashSet<OutPoint> {
 struct CoinRead {
     height: u32,
     unspent: HashSet<OutPoint>,
-    observed_spent: Option<HashSet<OutPoint>>,
+    observed_spent: Option<BTreeMap<OutPoint, u32>>,
 }
 
 #[derive(Debug)]
 struct Hold {
     height: u32,
+    max_rescan_start: u32,
     coins: BTreeSet<OutPoint>,
     unknown: bool,
 }
@@ -50,16 +51,22 @@ impl ForkRestores {
         self.last_read = None;
         self.new_outputs.clear();
         if let Some(hold) = &mut self.hold {
-            hold.height = hold.height.min(height);
+            hold.max_rescan_start = hold.max_rescan_start.min(height.saturating_sub(1));
         }
     }
 
-    pub(crate) fn infer(&mut self, previous: u32, height: u32, unspent: &HashSet<OutPoint>) {
+    pub(crate) fn infer(
+        &mut self,
+        previous: u32,
+        height: u32,
+        wallet_birth: u32,
+        unspent: &HashSet<OutPoint>,
+    ) {
         self.fork_revision += 1;
         self.rescan_target = None;
         let baseline = self.last_read.as_ref().filter(|r| r.height == previous);
         let Some(baseline) = baseline else {
-            self.hold_at(height).unknown = true;
+            self.hold_at(height, wallet_birth).unknown = true;
             return;
         };
         let restored: BTreeSet<_> = unspent
@@ -72,22 +79,38 @@ impl ForkRestores {
                     && baseline
                         .observed_spent
                         .as_ref()
-                        .is_some_and(|spent| !spent.contains(coin));
+                        .is_some_and(|spent| !spent.contains_key(coin));
                 !baseline.unspent.contains(coin) && !new_output
             })
             .collect();
         if !restored.is_empty() {
-            self.hold_at(height).coins.extend(restored);
+            // Detection can run after part of the new chain was scanned.
+            // Use the older spend evidence to bound where its replay starts.
+            let replay_limit = restored
+                .iter()
+                .map(|coin| {
+                    baseline
+                        .observed_spent
+                        .as_ref()
+                        .and_then(|spent| spent.get(coin))
+                        .map_or(wallet_birth, |spent_at| spent_at.saturating_sub(2))
+                })
+                .min()
+                .unwrap_or(wallet_birth);
+            self.hold_at(height, replay_limit).coins.extend(restored);
         }
     }
 
-    fn hold_at(&mut self, height: u32) -> &mut Hold {
+    fn hold_at(&mut self, height: u32, max_rescan_start: u32) -> &mut Hold {
+        let max_rescan_start = max_rescan_start.min(height.saturating_sub(1));
         let hold = self.hold.get_or_insert_with(|| Hold {
             height,
+            max_rescan_start,
             coins: BTreeSet::new(),
             unknown: false,
         });
-        hold.height = hold.height.min(height);
+        hold.height = hold.height.max(height);
+        hold.max_rescan_start = hold.max_rescan_start.min(max_rescan_start);
         hold
     }
 
@@ -101,8 +124,11 @@ impl ForkRestores {
             .is_some_and(|h| h.unknown || h.coins.contains(coin))
     }
 
-    pub(crate) fn unknown_height(&self) -> Option<u32> {
-        self.hold.as_ref().filter(|h| h.unknown).map(|h| h.height)
+    pub(crate) fn rescan_start_for_unknown(&self) -> Option<u32> {
+        self.hold
+            .as_ref()
+            .filter(|h| h.unknown)
+            .map(|h| h.max_rescan_start)
     }
 
     pub(crate) fn holding(&self) -> bool {
@@ -112,7 +138,7 @@ impl ForkRestores {
     pub(crate) fn rescan_revision(&self, from: u32) -> Option<u64> {
         self.hold
             .as_ref()
-            .filter(|hold| from < hold.height || from == 0)
+            .filter(|hold| from <= hold.max_rescan_start)
             .map(|_| self.fork_revision)
     }
 
@@ -131,8 +157,7 @@ impl ForkRestores {
     pub(crate) fn record_read(&mut self, core: &ManagedWalletInfo) -> bool {
         let unspent = unspent_outpoints(core);
         let observed = core.observed_spent_outpoints();
-        let observed_spent =
-            (observed.len() <= SPEND_OBSERVATION_LIMIT).then(|| observed.keys().copied().collect());
+        let observed_spent = (observed.len() <= SPEND_OBSERVATION_LIMIT).then(|| observed.clone());
         self.last_read = Some(CoinRead {
             height: core.last_processed_height(),
             unspent,
