@@ -485,7 +485,7 @@ commands! {
         }
         let url = data.cards.get(card as usize).and_then(|card| card.claim_link.as_deref())
             .and_then(claim_url).filter(|url| url.domain() == Some(host.as_str()))
-            .ok_or_else(|| fail("The redemption link changed or is unavailable. Refresh the order."));
+            .ok_or_else(|| fail("The redemption link changed or is unavailable. Refresh the order."))?;
         check_active(&state, &ctx.session)?;
         let open_failed = || fail("Could not open the gift card redemption link.");
         tauri::async_runtime::spawn_blocking(move || open::that_detached(url.as_str()))
