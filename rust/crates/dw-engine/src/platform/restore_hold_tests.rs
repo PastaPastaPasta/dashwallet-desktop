@@ -4,7 +4,9 @@
 
 use std::path::Path;
 
-use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, JournalOpen};
+use dw_appdb::dispatch::{
+    DISPATCH_DB_FILE, DispatchJournal, JournalOpen, Resolution, StoredFundingKey, StoredOutPoint,
+};
 use platform_wallet::wallet::shielded::ShieldedStore;
 
 use super::close_unload_gate_tests::{ANCHOR, NULLIFIER, engine_at, launch, subwallet, with_store};
@@ -73,7 +75,7 @@ fn requested(dir: &Path) -> Result<(), EngineError> {
 }
 
 fn refused_with(dir: &Path, want: ShieldedHold, what: &str) {
-    assert_eq!(restore_hold(dir), Some(want), "{what}");
+    assert_eq!(restore_hold(dir, None), Some(want), "{what}");
     let got = requested(dir);
     assert!(
         matches!(&got, Err(EngineError::ShieldedSpendHeld(h)) if *h == want),
@@ -84,7 +86,7 @@ fn refused_with(dir: &Path, want: ShieldedHold, what: &str) {
 
 /// Past the hold check: with no snapshot, the snapshot's own refusal.
 fn passes(dir: &Path, what: &str) {
-    assert_eq!(restore_hold(dir), None, "{what}");
+    assert_eq!(restore_hold(dir, None), None, "{what}");
     match requested(dir) {
         Err(EngineError::StoreRestore(r)) => {
             assert_eq!(
@@ -141,6 +143,84 @@ fn a_pending_row_refuses_the_request() {
         ShieldedHold::InFlight,
         "a stored spend",
     );
+}
+
+fn asset_lock(dir: &Path, state: i64) {
+    journal(
+        dir,
+        &format!(
+            "INSERT INTO dispatch (wallet, txid, state, payload, registered_at) \
+             VALUES ({WALLET}, {KEY}, {state}, X'00', 1)"
+        ),
+    );
+}
+
+#[test]
+fn a_possibly_sent_asset_lock_refuses_restore() {
+    for state in [1, 2] {
+        let got = requested(case(|d| asset_lock(d, state)).path());
+        assert!(
+            matches!(got, Err(EngineError::StoreRestore(r)) if r.state == RestoreState::NotStarted),
+            "asset lock in state {state} let the request through"
+        );
+    }
+    passes(case(|d| asset_lock(d, 0)).path(), "an unsent asset lock");
+}
+
+fn mode_b_asset_lock(dir: &Path, resolution: Option<Resolution>) {
+    let JournalOpen::Ready(journal) =
+        DispatchJournal::open(&dir.join(DISPATCH_DB_FILE), 1).unwrap()
+    else {
+        panic!("dispatch journal did not open");
+    };
+    let wallet = wallet_bytes();
+    let step = "registration/1/funding";
+    let artifact = [21; 32];
+    let key = StoredFundingKey {
+        funding_type: 0,
+        identity_index: 0,
+        account: 0,
+    };
+    journal
+        .insert_funding_step(&wallet, step, &artifact, &key, 1)
+        .unwrap();
+    assert!(
+        journal
+            .insert_signed_lock(
+                &wallet,
+                step,
+                &artifact,
+                &[22; 32],
+                &[StoredOutPoint {
+                    txid: [23; 32],
+                    vout: 0
+                }],
+                2,
+            )
+            .unwrap()
+    );
+    if let Some(resolution) = resolution {
+        journal.resolve(&wallet, &artifact, resolution, 3).unwrap();
+    }
+}
+
+#[test]
+fn a_signed_mode_b_asset_lock_ahead_of_core_history_refuses_restore() {
+    let dir = case(|d| mode_b_asset_lock(d, None));
+    assert!(matches!(
+        requested(dir.path()),
+        Err(EngineError::StoreRestore(r)) if r.state == RestoreState::NotStarted
+    ));
+}
+
+#[test]
+fn a_settled_mode_b_asset_lock_does_not_refuse_restore() {
+    for resolution in [Resolution::Sent, Resolution::NotSent] {
+        passes(
+            case(|d| mode_b_asset_lock(d, Some(resolution))).path(),
+            "settled funding",
+        );
+    }
 }
 
 #[test]
@@ -408,7 +488,10 @@ fn an_unreadable_store_or_journal_refuses_the_request() {
     let fail =
         || (super::shielded_pool::FAIL_DISK_READ_IN.lock().unwrap()).push(dir.path().to_path_buf());
     fail();
-    assert_eq!(restore_hold(dir.path()), Some(ShieldedHold::CarriedOver));
+    assert_eq!(
+        restore_hold(dir.path(), None),
+        Some(ShieldedHold::CarriedOver)
+    );
     fail();
     assert!(matches!(
         requested(dir.path()),
