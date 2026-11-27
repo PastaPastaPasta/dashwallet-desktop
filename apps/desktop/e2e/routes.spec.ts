@@ -31,9 +31,9 @@ const ROUTES: Route[] = [
 /** DW_ROUTE_SHOTS=<dir>: each route's screenshot is also written there. */
 const SHOTS = process.env.DW_ROUTE_SHOTS;
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", extra = "") {
   const errors = trackPageErrors(page);
-  await page.goto(fixtureUrl(scenario, theme));
+  await page.goto(fixtureUrl(scenario, theme, extra));
   // A locked window shows the lock screen in place of the shell.
   await page.locator("[data-testid=toolbar], [data-testid=lock-screen]").first().waitFor();
   return errors;
@@ -49,7 +49,13 @@ for (const theme of THEMES) {
   for (const route of ROUTES) {
     test(`route ${route} ${theme}: renders, 0 serious axe issues`, async ({ page }, info) => {
       // Masternodes is hidden until Show Masternodes is on: `governance` has it on.
-      const errors = await open(page, route === "masternodes" ? "governance" : "dashpay-registered", theme);
+      const errors = await open(page, route === "masternodes" ? "governance" : "dashpay-registered", theme,
+        route === "explore" ? "&network=mainnet" : "");
+      if (route === "explore") {
+        await page.getByTestId("sidebar-settings").click();
+        await page.getByRole("checkbox", { name: "Enable experimental gift cards" }).check();
+        await expect(page.getByTestId("sidebar-explore")).toBeVisible();
+      }
       await command(page, { kind: "navigate", route });
       await expect(page.getByTestId(`page-${route}`)).toBeVisible();
       await fontsReady(page);
@@ -68,6 +74,9 @@ for (const theme of THEMES) {
 
 test("the sidebar opens the DASHPAY sections in order, Explore hidden, Settings last", async ({ page }) => {
   await open(page, "dashpay-registered");
+  await command(page, { kind: "navigate", route: "explore" });
+  await expect(page.getByTestId("sidebar-home")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("page-explore")).toHaveCount(0);
   const ids = await page.getByTestId("sidebar").locator("button").evaluateAll((els) => els.map((e) => e.getAttribute("data-testid")));
   expect(ids).toEqual(["sidebar-home", "sidebar-pay", "sidebar-receive", "sidebar-contacts", "sidebar-activity", "sidebar-coinJoin", "sidebar-settings"]);
   for (const id of ids) {
