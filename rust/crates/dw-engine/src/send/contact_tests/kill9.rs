@@ -18,7 +18,10 @@ const CHILD: &str = "send::contact_tests::kill9::payment_child";
 
 /// [`fixture`]'s wallet on `root`, made and stored on the first launch (our
 /// identity, Bob's paying account and contact, his verified record), opened
-/// as stored on the relaunch; one confirmed coin in memory either way.
+/// as stored on the relaunch; one confirmed coin in memory either way. The
+/// store keeps no paying-account stamp (D28), and this session runs no
+/// DashPay pass, so the relaunch stamps Bob's account as the first pass
+/// after a start leaves it.
 fn fixture_at(dir: tempfile::TempDir, root: &std::path::Path, first: bool) -> Fixture {
     let (engine, session) = kill9::engine_at(root, PASS, true);
     let wallet = if first {
@@ -54,6 +57,8 @@ fn fixture_at(dir: tempfile::TempDir, root: &std::path::Path, first: bool) -> Fi
         f.store(f.bobs_account(contact_xpub(BOB)));
         f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
         f.verify_contacts();
+    } else {
+        f.bobs_account_built_from(Some(0));
     }
     f.credit(1, COIN);
     f
