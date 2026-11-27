@@ -702,7 +702,11 @@ fn child_steps() {
                 Err(EngineError::StoreRestore(r)) => format!("restore {:?} {}", r.state, r.cause),
                 Err(EngineError::StoreRefused(r)) => {
                     let keys: Vec<&str> = r.screen.buttons.iter().map(|b| b.key).collect();
-                    format!("refused {:?} {}", r.screen.way_out, keys.join(" "))
+                    if r.screen.way_out == WayOut::Unverified {
+                        format!("refused Unverified {} {}", r.screen.way_out_line.key, keys.join(" "))
+                    } else {
+                        format!("refused {:?} {}", r.screen.way_out, keys.join(" "))
+                    }
                 }
                 Err(e) => err(e),
             },
@@ -792,7 +796,8 @@ fn steps_in_child(root: &Path, steps: &[&str]) -> Vec<String> {
 const RESTORE_SCREEN: &str = "refused Restore storeUpgrade.refused.restore storeUpgrade.refused.report storeUpgrade.refused.quit";
 const RESTORE_HELD_SCREEN: &str = "refused Restore storeUpgrade.refused.restore \
      storeUpgrade.refused.recover storeUpgrade.refused.report storeUpgrade.refused.quit";
-const RETIRED_SCREEN: &str = "refused Unverified storeUpgrade.refused.recover \
+const RETIRED_SCREEN: &str = "refused Unverified storeUpgrade.refused.wayOut.retired \
+     storeUpgrade.refused.recover \
      storeUpgrade.refused.report storeUpgrade.refused.quit";
 
 /// An upgraded fixture whose open is refused with Restore earlier data (its

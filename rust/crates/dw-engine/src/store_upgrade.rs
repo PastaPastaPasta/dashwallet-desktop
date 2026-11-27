@@ -473,7 +473,7 @@ pub(crate) fn map_error(
                 if screen.way_out == copy::WayOut::Unverified
                     && dw_store_upgrade::snapshot_retired_for_wallet_removal(network_dir)
                 {
-                    screen.offer_recover();
+                    screen.offer_recover_after_wallet_removal();
                 }
                 EngineError::StoreRefused(Box::new(StoreRefusal {
                     screen,
