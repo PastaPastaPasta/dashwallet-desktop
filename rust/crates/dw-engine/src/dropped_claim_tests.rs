@@ -818,6 +818,8 @@ fn a_failed_drop_write_keeps_the_claims_change_excluded() {
     let change = OutPoint::new(claim.txid(), 1);
     assert!(spendable(&engine, &session, id, change));
     let session = reopen(&engine, session);
+    session.hub.skip_withhold.store(true, SeqCst);
+    assert!(spendable(&engine, &session, id, change));
     let pause = Arc::new(crate::coins::TestPause::default());
     let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
     *session.hub.pause_abandon.lock().unwrap() = Some(Arc::clone(&pause));
@@ -829,6 +831,16 @@ fn a_failed_drop_write_keeps_the_claims_change_excluded() {
     engine.block_on(async { drop(session.wallet_lifecycle.hold().await) });
     assert!(!session.hub.fail_abandon_mark.load(SeqCst));
     assert!(!engine.block_on(session.abandon_marked(id, claim.txid())));
+    let manager = session.manager().unwrap();
+    engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        assert_eq!(
+            session.hub.excluded_coins(id, core).get(&change),
+            Some(&crate::ExclusionReason::PendingUnproven)
+        );
+    });
     assert!(!spendable(&engine, &session, id, change));
 }
 
