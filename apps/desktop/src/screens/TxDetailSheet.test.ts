@@ -50,10 +50,10 @@ describe("transaction detail status", () => {
 });
 
 describe("the abandon confirmation", () => {
-  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.";
+  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.";
   const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
   const UNKNOWN_INPUTS =
-    "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.";
+    "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.";
 
   it("warns about paying twice when the wallet spent inputs", () => {
     expect(abandonQuestion({ totalDebit: 50_000_226, inputsUnresolved: false })).toBe(OUTGOING);
