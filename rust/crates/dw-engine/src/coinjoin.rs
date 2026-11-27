@@ -963,29 +963,17 @@ impl MixView {
     }
 }
 
-/// Core's balances over `coins` (wallet/coinjoin.cpp:500-580). An
-/// excluded coin (`crate::withhold`) counts in none.
-fn compute_balances(
+fn anonymizable_balance(
     coins: &[MixViewCoin],
     network: dashcore::Network,
-    rounds_target: u32,
-) -> (CoinJoinBalances, f32) {
-    let view = MixView {
-        height: u32::MAX,
-        coins: (coins.iter())
-            .filter(|c| c.coin.excluded.is_none())
-            .cloned()
-            .collect(),
-        balances: CoinJoinBalances::default(),
-        total: 0,
-        average_rounds: 0.0,
-    };
-    // GetAnonymizableBalance(false, false): every trusted-or-not coin.
+    include_mixing_held: bool,
+) -> u64 {
     let mut anonymizable = 0u64;
     let mut by_address: BTreeMap<String, (u64, bool)> = BTreeMap::new();
-    for c in &view.coins {
+    for c in coins {
         let usable = c.bip44(network) || c.coin.coinjoin_account;
-        if !usable || c.coin.user_locked || c.coin.reserved {
+        let held = c.coin.reserved && !(include_mixing_held && c.coin.mixing_held);
+        if c.coin.excluded.is_some() || !usable || c.coin.user_locked || held {
             continue;
         }
         if is_collateral_amount(c.value())
@@ -1009,6 +997,27 @@ fn compute_balances(
             anonymizable += amount;
         }
     }
+    anonymizable
+}
+
+/// Core's balances over `coins` (wallet/coinjoin.cpp:500-580). An
+/// excluded coin (`crate::withhold`) counts in none.
+fn compute_balances(
+    coins: &[MixViewCoin],
+    network: dashcore::Network,
+    rounds_target: u32,
+) -> (CoinJoinBalances, f32) {
+    let view = MixView {
+        height: u32::MAX,
+        coins: (coins.iter())
+            .filter(|c| c.coin.excluded.is_none())
+            .cloned()
+            .collect(),
+        balances: CoinJoinBalances::default(),
+        total: 0,
+        average_rounds: 0.0,
+    };
+    let anonymizable = anonymizable_balance(&view.coins, network, true);
     let denoms: Vec<&MixViewCoin> = view.coins.iter().filter(|c| c.denominated()).collect();
     let denominated = denoms.iter().map(|c| c.value()).sum();
     let capped: Vec<(u64, i32)> = denoms
@@ -2265,7 +2274,9 @@ impl NetworkSession {
             return Ok(());
         }
         let value_min = planner::min_value_to_mix(view.has_collateral_inputs(true));
-        if b.anonymizable < value_min && rebalances.is_empty() {
+        let free_anonymizable =
+            anonymizable_balance(&view.coins, self.network.core_network(), false);
+        if free_anonymizable < value_min && rebalances.is_empty() {
             self.set_mix_status(wallet_id, StatusCode::NotEnoughFunds);
             return Ok(());
         }
@@ -4837,6 +4848,7 @@ mod tests {
                 user_locked: false,
                 dust_locked: false,
                 reserved: false,
+                mixing_held: false,
                 lock_input: false,
                 unresolved_lock: false,
                 awaiting_history: false,
@@ -4882,6 +4894,34 @@ mod tests {
         assert_eq!(average, 2.0);
         // Every free coin of the CoinJoin account, the collateral too.
         assert_eq!(b.coinjoin_account, 3 * d + 40_000);
+    }
+
+    #[test]
+    fn mixing_held_coins_stay_in_anonymizable_display_only() {
+        let d = DENOMINATIONS[1];
+        let free = coin(1, d, true, 1, false, A);
+        let mut session_held = coin(2, d, true, 1, false, B);
+        session_held.coin.reserved = true;
+        session_held.coin.mixing_held = true;
+        let mut payment_held = coin(3, d, true, 1, false, C);
+        payment_held.coin.reserved = true;
+        let mut user_locked = coin(4, d, true, 1, false, C);
+        user_locked.coin.user_locked = true;
+        let mixed = coin(5, d, true, 4, true, A);
+        let coins = vec![free, session_held, payment_held, user_locked, mixed];
+
+        let (b, _) = compute_balances(&coins, dashcore::Network::Testnet, 4);
+        assert_eq!(b.anonymizable, 2 * d);
+        assert_eq!(b.fully_mixed, d);
+        assert_eq!(
+            progress::max_to_anonymize(b.anonymizable, b.fully_mixed, 1000),
+            3 * d
+        );
+        assert_eq!(b.coinjoin_account, 2 * d);
+        assert_eq!(
+            anonymizable_balance(&coins, dashcore::Network::Testnet, false),
+            d
+        );
     }
 
     #[test]
