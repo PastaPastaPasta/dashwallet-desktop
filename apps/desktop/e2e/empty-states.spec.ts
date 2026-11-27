@@ -245,8 +245,7 @@ for (const theme of THEMES) {
     await page.getByTestId("pay-contacts").click();
     const empty = page.getByTestId("pay-picker-empty");
     await expect(empty).toContainText("No contacts yet");
-    await expect(empty).toContainText("Type a username above to find someone on DashPay.");
-    await expect(empty.locator("[data-art=contacts]")).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Pay to" })).toBeEditable();
     await expect(page.getByTestId("pay-picker-add")).toHaveCount(0);
     await checked(page, errors);
   });
