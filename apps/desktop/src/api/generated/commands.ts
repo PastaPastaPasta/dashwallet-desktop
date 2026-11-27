@@ -35,6 +35,7 @@ import type { ConnectChoice } from "./ConnectChoice";
 import type { ConnectDone } from "./ConnectDone";
 import type { ConnectQuote } from "./ConnectQuote";
 import type { ConnectSheet } from "./ConnectSheet";
+import type { ConnectedApps } from "./ConnectedApps";
 import type { ConsoleCommand } from "./ConsoleCommand";
 import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
@@ -65,6 +66,8 @@ import type { DashPayProfileLimits } from "./DashPayProfileLimits";
 import type { DashPayStartupInfo } from "./DashPayStartupInfo";
 import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
+import type { DisconnectDone } from "./DisconnectDone";
+import type { DisconnectQuote } from "./DisconnectQuote";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
 import type { DissolvePreview } from "./DissolvePreview";
@@ -152,6 +155,7 @@ import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
 import type { PlatformAddressRow } from "./PlatformAddressRow";
+import type { PlatformCancelQuote } from "./PlatformCancelQuote";
 import type { PlatformFundOutcome } from "./PlatformFundOutcome";
 import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
@@ -2120,10 +2124,26 @@ export function platformShieldQuote(walletId: string, amount: WithdrawAmount): P
 /**
  * Moves `amount` of the Platform addresses' credits to `to` (the
  * quote's: one of the wallet's Core receiving addresses) under `grant`.
- * `exit_of`: the quote's, the held top-up this move is the exit of.
+ * `exit_of`: the quote's, the held record this move is the exit of.
  */
 export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome> {
   return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, exitOf, grant });
+}
+
+/**
+ * What cancelling the held move or contact payment `of` takes: its
+ * inputs at its nonces to one of the wallet's own Platform addresses.
+ */
+export function platformCancelQuote(walletId: string, of: string): Promise<PlatformCancelQuote> {
+  return invoke<PlatformCancelQuote>("platform_cancel_quote", { walletId, of });
+}
+
+/**
+ * Cancels the held move or contact payment `of` to `to` (the quote's,
+ * one of the wallet's own Platform addresses) under `grant`.
+ */
+export function platformCancel(walletId: string, of: string, to: string, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_cancel", { walletId, of, to, grant });
 }
 
 /**
@@ -2771,6 +2791,30 @@ export function appConnectReturn(linkId: string): Promise<null> {
  */
 export function appConnectDismiss(linkId: string): Promise<null> {
   return invoke<null>("app_connect_dismiss", { linkId });
+}
+
+/**
+ * Lists each app this wallet approved for `identity` that still has
+ * enabled session keys on Platform. Refused on mainnet.
+ */
+export function appConnectList(walletId: string, identity: string): Promise<ConnectedApps> {
+  return invoke<ConnectedApps>("app_connect_list", { walletId, identity });
+}
+
+/**
+ * What disconnecting `request` on `identity` costs and the
+ * `appDisconnect` grant to ask for. Refused on mainnet.
+ */
+export function appConnectDisconnectQuote(walletId: string, identity: string, request: string): Promise<DisconnectQuote> {
+  return invoke<DisconnectQuote>("app_connect_disconnect_quote", { walletId, identity, request });
+}
+
+/**
+ * Disables the verified AUTHENTICATION session keys of `request` on
+ * `identity` under `grant` (an `appDisconnect` grant). Refused on mainnet.
+ */
+export function appConnectDisconnect(walletId: string, identity: string, request: string, grant: string): Promise<DisconnectDone> {
+  return invoke<DisconnectDone>("app_connect_disconnect", { walletId, identity, request, grant });
 }
 
 /**
@@ -3938,6 +3982,8 @@ export type CommandArgs = {
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_shield_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string };
+  platform_cancel_quote: { walletId: string; of: string };
+  platform_cancel: { walletId: string; of: string; to: string; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
@@ -4020,6 +4066,9 @@ export type CommandArgs = {
   app_connect_deny: { linkId: string };
   app_connect_return: { linkId: string };
   app_connect_dismiss: { linkId: string };
+  app_connect_list: { walletId: string; identity: string };
+  app_connect_disconnect_quote: { walletId: string; identity: string; request: string };
+  app_connect_disconnect: { walletId: string; identity: string; request: string; grant: string };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -4350,6 +4399,8 @@ export type CommandResults = {
   platform_move_to_core_quote: MoveToCoreQuote;
   platform_shield_quote: PlatformShieldQuote;
   platform_move_to_core: MoveToCoreOutcome;
+  platform_cancel_quote: PlatformCancelQuote;
+  platform_cancel: PlatformSendOutcome;
   platform_receive_address: PlatformReceiveAddress;
   platform_send_quote: PlatformSendQuote;
   platform_send: PlatformSendOutcome;
@@ -4432,6 +4483,9 @@ export type CommandResults = {
   app_connect_deny: null;
   app_connect_return: null;
   app_connect_dismiss: null;
+  app_connect_list: ConnectedApps;
+  app_connect_disconnect_quote: DisconnectQuote;
+  app_connect_disconnect: DisconnectDone;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -4764,6 +4818,8 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_move_to_core_quote: "identity",
   platform_shield_quote: "identity",
   platform_move_to_core: "identity",
+  platform_cancel_quote: "identity",
+  platform_cancel: "identity",
   platform_receive_address: "identity",
   platform_send_quote: "identity",
   platform_send: "identity",
@@ -4846,6 +4902,9 @@ export const COMMANDS: Record<CommandName, string> = {
   app_connect_deny: "connect",
   app_connect_return: "connect",
   app_connect_dismiss: "connect",
+  app_connect_list: "connect",
+  app_connect_disconnect_quote: "connect",
+  app_connect_disconnect: "connect",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",

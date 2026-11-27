@@ -1,9 +1,10 @@
 //! App Connect v2 (DashPay Connect) login keys: the DIP-13 application keys
 //! of one request and their seal to the app (dips#181, dips#191).
 //!
-//! Only an [`SignerScope::AppConnect`] signer reaches them, and only for the
-//! request its grant names: a session key's path is built here from the
-//! request's ephemeral key, which must hash to the scope's `request`. The
+//! Only an [`SignerScope::AppConnect`] signer reaches them, only through the
+//! methods here, and only for the request its grant names: every key's path
+//! is built here, once the request's ephemeral key hashes to the scope's
+//! `request`; a session key's path is derived from that key. The
 //! private keys leave the vault once, inside the AES-256-GCM payload the app
 //! decrypts with its ephemeral key; public keys and signatures are all the
 //! caller sees otherwise.
@@ -186,7 +187,7 @@ impl VaultSigner {
         key: &AppKey,
     ) -> Result<[u8; 33], SignerError> {
         let path = self.app_key_path(identity, app_eph_pub, key)?;
-        self.with_key(&path, KeyUse::PublicKey, |x| {
+        self.with_key(&path, KeyUse::AppConnectPublicKey, |x| {
             x.private_key.public_key().to_compressed()
         })
     }
@@ -207,7 +208,7 @@ impl VaultSigner {
         let digest: [u8; 32] = double_sha(data)
             .try_into()
             .map_err(|_| SignerError::Derivation("digest length".into()))?;
-        self.with_key(&path, KeyUse::Sign, |x| {
+        self.with_key(&path, KeyUse::AppConnectSign, |x| {
             let public = x.private_key.public_key().to_compressed();
             if public[..] != *key_data {
                 return Err(SignerError::KeyMismatch(path.to_string()));

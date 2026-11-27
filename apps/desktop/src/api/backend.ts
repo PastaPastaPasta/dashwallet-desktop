@@ -17,6 +17,7 @@ import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
 import type { FundAmount } from "./generated/FundAmount";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
+import type { PlatformCancelQuote } from "./generated/PlatformCancelQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { QuickUnlockPolicy } from "./generated/QuickUnlockPolicy";
@@ -64,6 +65,9 @@ import type { ConnectChoice } from "./generated/ConnectChoice";
 import type { ConnectDone } from "./generated/ConnectDone";
 import type { ConnectQuote } from "./generated/ConnectQuote";
 import type { ConnectSheet } from "./generated/ConnectSheet";
+import type { ConnectedApps } from "./generated/ConnectedApps";
+import type { DisconnectDone } from "./generated/DisconnectDone";
+import type { DisconnectQuote } from "./generated/DisconnectQuote";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -332,7 +336,7 @@ export interface Backend {
   /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
   platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
   /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
-   * quote's), under `grant`; `exitOf` is the quote's, the held top-up this move is the exit of. */
+   * quote's), under `grant`; `exitOf` is the quote's, the held record this move is the exit of. */
   platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome>;
   /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
   platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
@@ -343,6 +347,12 @@ export interface Backend {
   platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
+  /** What cancelling the held move or contact payment `of` takes (`platform_cancel_quote`): its inputs,
+   * at its nonces and amount, to one of the wallet's own Platform addresses. */
+  platformCancelQuote(walletId: string, of: string): Promise<PlatformCancelQuote>;
+  /** Cancels the held move or contact payment `of` to `to` (the quote's own Platform address) under a
+   * `platformOp` `grant` (`platform_cancel`); only one of the two goes through. */
+  platformCancel(walletId: string, of: string, to: string, grant: string): Promise<PlatformSendOutcome>;
   /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
   platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote>;
   /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
@@ -606,6 +616,9 @@ export interface Backend {
   appConnectDeny(linkId: string): Promise<null>;
   appConnectReturn(linkId: string): Promise<null>;
   appConnectDismiss(linkId: string): Promise<null>;
+  appConnectList(walletId: string, identity: string): Promise<ConnectedApps>;
+  appConnectDisconnectQuote(walletId: string, identity: string, request: string): Promise<DisconnectQuote>;
+  appConnectDisconnect(walletId: string, identity: string, request: string, grant: string): Promise<DisconnectDone>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.

@@ -459,6 +459,7 @@ for (const theme of THEMES) {
     test(`visual identities-${view} ${theme}`, async ({ page }) => {
       await openIdentities(page, "dashpay-identities", theme);
       await page.getByTestId("identity-row").first().waitFor();
+      await page.getByTestId("connected-apps-empty").waitFor();
       await go(page);
       await page.mouse.move(0, 0);
       await shoot(page, `identities-${view}`, theme);
@@ -1456,6 +1457,211 @@ for (const theme of THEMES) {
       await reach(page);
       await page.mouse.move(0, 0);
       await shoot(page, `connect-${name}`, theme);
+    });
+  }
+}
+
+// Settings ▸ Advanced ▸ Connected apps & Disconnect: list, empty, confirm with fee,
+// passphrase prompt, error, and after disconnect.
+const CONNECTED_APPS: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  list: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().waitFor();
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+  empty: {
+    scenario: "dashpay-connected-apps-empty",
+    reach: async (page) => {
+      await page.getByTestId("connected-apps-empty").waitFor();
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+  confirm: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+    },
+  },
+  passphrase: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.getByTestId("disconnect-confirm").click();
+      await page.getByTestId("grant-sheet-field").waitFor();
+    },
+  },
+  error: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.evaluate(() => {
+        window.__dwFixture!.world.disconnectOutcome = "notConfirmed";
+      });
+      await page.getByTestId("disconnect-confirm").click();
+      await authorize(page);
+      await page.getByTestId("disconnect-error").waitFor();
+    },
+  },
+  after: {
+    scenario: "dashpay-connected-apps",
+    reach: async (page) => {
+      await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+      await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
+      await page.getByTestId("disconnect-confirm").click();
+      await authorize(page);
+      await page.getByTestId("connected-apps-done").waitFor();
+      await expect(page.getByTestId("connected-app-row")).toHaveCount(1);
+      await expect(page.getByTestId("connected-apps-refresh")).toHaveText("Refresh");
+      await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(CONNECTED_APPS)) {
+    test(`visual connected-apps-${name} ${theme}`, async ({ page }) => {
+      await openIdentities(page, scenario, theme);
+      await page.getByTestId("connected-apps-card").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `connected-apps-${name}`, theme);
+    });
+  }
+}
+
+// The way out of a held Platform item: Move to Dash wallet on a held payment's details and its
+// Confirm line, and the cancel of a held move or contact payment, from Confirm to its outcome.
+const openDetails = async (page: Page, txid: string) => {
+  await page.getByTestId("sidebar-activity").click();
+  await page.getByTestId("tx-list").waitFor();
+  await page.locator(`button[data-txid="${txid}"]`).click();
+  await page.getByTestId("source-detail").waitFor();
+};
+const HELD_EXIT: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  "send-details": { scenario: "platform-send-failed-may-land", reach: (page) => openDetails(page, "platform:send:ps-held:mayland") },
+  "send-move-confirm": {
+    scenario: "platform-send-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:send:ps-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "move-details": { scenario: "platform-move-failed-may-land", reach: (page) => openDetails(page, "platform:moveToCore:pm-held:mayland") },
+  "move-cancel-confirm": {
+    scenario: "platform-move-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-body").waitFor();
+    },
+  },
+  "move-cancel-done": {
+    scenario: "platform-move-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-cancel-outcome").waitFor();
+    },
+  },
+  "payout-cancel-confirm": {
+    scenario: "platform-payout-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:contactPayment:cp-held:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-body").waitFor();
+    },
+  },
+  "cancel-details": { scenario: "platform-cancel-failed-may-land", reach: (page) => openDetails(page, "platform:cancelMove:pc-held:mayland") },
+  "cancel-move-confirm": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelMove:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "cancel-move-done": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelMove:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-move-outcome-text").waitFor();
+    },
+  },
+  "payout-cancel-move-confirm": {
+    scenario: "platform-payout-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelPayment:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "move-resend-refused": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.cancelPreCheck = "rulesUnsupported"));
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-cancel-refused").waitFor();
+    },
+  },
+  "move-too-small-cancel": {
+    scenario: "platform-move-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+    },
+  },
+  "move-too-small-move-confirm": {
+    scenario: "platform-move-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "payout-too-small-cancel": {
+    scenario: "platform-payout-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:contactPayment:cp-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+    },
+  },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { scenario, reach }] of Object.entries(HELD_EXIT)) {
+    test(`visual held-exit-${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("hero").waitFor();
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `held-exit-${name}`, theme);
     });
   }
 }

@@ -126,6 +126,8 @@ export class IpcBackend implements Backend {
   platformReceiveAddress = (...a: Parameters<typeof cmd.platformReceiveAddress>) => orUnavailable(cmd.platformReceiveAddress(...a));
   platformSendQuote = (...a: Parameters<typeof cmd.platformSendQuote>) => orUnavailable(cmd.platformSendQuote(...a));
   platformSend = (...a: Parameters<typeof cmd.platformSend>) => orUnavailable(cmd.platformSend(...a));
+  platformCancelQuote = (...a: Parameters<typeof cmd.platformCancelQuote>) => orUnavailable(cmd.platformCancelQuote(...a));
+  platformCancel = (...a: Parameters<typeof cmd.platformCancel>) => orUnavailable(cmd.platformCancel(...a));
   platformFundQuote = (...a: Parameters<typeof cmd.platformFundQuote>) => orUnavailable(cmd.platformFundQuote(...a));
   platformFund = (...a: Parameters<typeof cmd.platformFund>) => orUnavailable(cmd.platformFund(...a));
   pendingPlatformFunds = (walletId: string) => orAbsent(cmd.pendingPlatformFunds(walletId));
@@ -283,6 +285,9 @@ export class IpcBackend implements Backend {
   appConnectDeny = cmd.appConnectDeny;
   appConnectReturn = cmd.appConnectReturn;
   appConnectDismiss = cmd.appConnectDismiss;
+  appConnectList = cmd.appConnectList;
+  appConnectDisconnectQuote = cmd.appConnectDisconnectQuote;
+  appConnectDisconnect = cmd.appConnectDisconnect;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();

@@ -20,6 +20,7 @@ import type { NetworkSwitch } from "../api/generated/NetworkSwitch";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBalance";
 import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
+import type { PlatformCancelQuote } from "../api/generated/PlatformCancelQuote";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
@@ -29,7 +30,7 @@ import type { ContactPayQuoteInfo } from "../api/generated/ContactPayQuoteInfo";
 import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
-import { heldExitOp, isHeldOp } from "../platform/move";
+import { heldExitOp, isHeldCancel, isHeldOp, isHeldSend } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, restoredNetwork, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
@@ -48,6 +49,9 @@ const MOVE_FEE_CREDITS = 2_000_000n;
  * a send pays (dpp's minimum output). The fee is taken from its source address, whatever it holds then. */
 const SEND_FEE_CREDITS = 6_500_000n;
 const SEND_MIN_CREDITS = 500_000n;
+/** The least a held move or contact payment has a cancel at: the cancel's output, less three times its
+ * fee estimate, must reach a send's least (the engine's `cancel_plan`). */
+const CANCEL_MIN_CREDITS = SEND_MIN_CREDITS + 3n * SEND_FEE_CREDITS;
 /** A contact payout's fee estimate, and Platform's withdrawal range (fixture/topup.ts's). */
 const PAYOUT_FEE_CREDITS = 2_000_000n;
 const PAYOUT_MIN_CREDITS = 1_190_000n;
@@ -58,8 +62,10 @@ const UNLOCK_FEE_DUFFS = 226;
 /** What the next `platform_move_to_core` comes to: Platform's proved answer, an answer that says
  * nothing (the move stays `pending`), a refusal, a move whose debit is proved but not what
  * arrives (`unproved`: `expectedDuffs` is null), the refusal of too many separate coins, or the exit of a
- * held top-up that executed in its place (`lost`: the move is `failed` and moves nothing). */
-export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins" | "lost";
+ * held top-up, send, move or payment that executed in its place (`lost`: the move is `failed` and moves
+ * nothing). Beside a held cancel, `lost` is the cancelled move or payment going through, `lostToCancel`
+ * the cancel. */
+export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins" | "lost" | "lostToCancel";
 
 /** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
  * possibly already applied (`checking`), locked and refused by Platform (`notApplied`), or locked
@@ -159,13 +165,15 @@ export interface PlatformWorld {
   /** Platform's structure pre-check refuses every move, send and top-up from these addresses before
    * anything is signed: `rulesUnsupported` while the network runs a newer protocol version. */
   preCheck?: "refused" | "rulesUnsupported";
+  /** The same refusal of cancels only: a held cancel's exact re-send under rules that refuse its terms. */
+  cancelPreCheck?: "refused" | "rulesUnsupported";
 }
 
 /** As the engine, after the holds and before the grant: the pre-check's refusal, its consensus error in
  * the message (the log), never in the data. */
-export function preCheck(p: PlatformWorld) {
-  if (!p.preCheck) return;
-  const code = p.preCheck === "rulesUnsupported" ? "credits.rules_unsupported" : "credits.preflight_refused";
+export function preCheck(p: PlatformWorld, refusal = p.preCheck) {
+  if (!refusal) return;
+  const code = refusal === "rulesUnsupported" ? "credits.rules_unsupported" : "credits.preflight_refused";
   throw fail(code, "FeeStrategyTooManyStepsError: Fee strategy has 1 steps, maximum allowed is 0");
 }
 
@@ -297,9 +305,39 @@ function heldTopUp(p: PlatformWorld): PlatformActivity | null {
   return held && p.heldInputs?.[held.id] ? held : null;
 }
 
-/** The inputs of a held move, contact payment or top-up from Platform, where the world names them: its
- * exit (C3-9) moves those only. `null`: no such hold. */
+/** A held send (failed by height, may still land): "Move to Dash wallet" at its inputs is its exit. */
+const heldSendOf = (p: PlatformWorld): PlatformActivity | null => p.activity.find(isHeldSend) ?? null;
+
+/** The oldest held cancel Platform answered, as the engine's quote picks it: "Move to Dash wallet" at its inputs
+ * is its exit, beside its re-sends. */
+const heldCancelOf = (p: PlatformWorld): PlatformActivity | null => p.activity.filter(isHeldCancel).at(-1) ?? null;
+
+/** A held move or contact payment Platform answered that is too small to cancel and has no cancel:
+ * "Move to Dash wallet" at its inputs is its exit. */
+const tooSmallOf = (p: PlatformWorld): PlatformActivity | null =>
+  p.activity.find((a) => (a.kind === "moveToCore" || a.kind === "contactPayment") && a.state === "failed" && a.mayLand && BigInt(a.credits) < CANCEL_MIN_CREDITS && !p.activity.some((c) => c.cancels === a.id && isHeldOp(c))) ?? null;
+
+/** What a move is the named exit of, as the engine's quote names it: a held top-up, send or cancel, or a
+ * held move or payment too small to cancel. */
+const namedExitOf = (p: PlatformWorld): PlatformActivity | null => heldTopUp(p) ?? heldSendOf(p) ?? heldCancelOf(p) ?? tooSmallOf(p);
+
+/** Whether `a` is the held cancel `cancel` sent again on its own terms: of the same item, the same amount, fee
+ * and address (the engine's `resends`). */
+const resendOf = (cancel: PlatformActivity, a: PlatformActivity): boolean =>
+  a.id !== cancel.id && a.kind === "send" && !!cancel.cancels && a.cancels === cancel.cancels && a.credits === cancel.credits && a.feeCredits === cancel.feeCredits && a.to === cancel.to;
+
+/** The inputs a send signed: where the world names them, else its fee source (the fixture's quote plans
+ * one input), else every address (a Max). */
+function sendInputs(p: PlatformWorld, send: PlatformActivity): string[] {
+  const source = p.terms[send.id]?.quote.feeSource;
+  return p.heldInputs?.[send.id] ?? (source ? [source] : p.addresses.map((a) => a.address));
+}
+
+/** The inputs of a held send, move, contact payment or top-up from Platform, where the world names them:
+ * its exit (C3-9) moves those only. `null`: no such hold. */
 function exitInputs(p: PlatformWorld): string[] | null {
+  const send = heldSendOf(p);
+  if (send) return sendInputs(p, send);
   const held = heldExitOp(p.activity);
   return held ? (p.heldInputs?.[held.id] ?? null) : null;
 }
@@ -410,9 +448,14 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
   const p = platformOf(ctx.world, "platform_move_to_core_quote");
   // On mainnet only a held move's exit passes.
   if (!p.activity.some(isHeldOp)) refuseSendsOff(ctx.world);
-  // As the engine's quote: a send that may still land holds the next move, refused before any passphrase.
-  const sending = p.activity.find((a) => a.kind === "send" && isHeldOp(a));
+  // As the engine's quote: a send or cancel Platform has not answered holds the next move, refused before
+  // any passphrase. A held send's or cancel's exit is this move.
+  const sending = p.activity.find((a) => a.kind === "send" && a.state === "pending");
   if (sending) throw moveHeld(sending.id);
+  // Any other held cancel than the named one and its identical re-sends holds it too.
+  const named = namedExitOf(p);
+  const otherCancel = p.activity.find((a) => !!a.cancels && isHeldOp(a) && a.id !== named?.id && !(named && resendOf(named, a)));
+  if (otherCancel) throw moveHeld(otherCancel.id);
   const credits = moveCredits(p, amount);
   // An exit signs exactly its held record's inputs: an amount the largest of fewer of them carry is refused
   // (on mainnet, the flag's refusal).
@@ -426,7 +469,27 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
     }
   }
   const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
-  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: heldTopUp(p)?.id ?? null };
+  return { credits: String(credits), feeCredits: String(MOVE_FEE_CREDITS), expectedDuffs: Number((credits - MOVE_FEE_CREDITS) / CREDITS_PER_DUFF), to, grant: { maxDuffs: 0, maxCredits: String(credits) }, exitOf: namedExitOf(p)?.id ?? null };
+}
+
+/** `platform_cancel_quote`, as the engine's: the held move or contact payment `of`, answered, beside no
+ * other hold that its document could not tell apart; its amount, to the wallet's own receive address. */
+function cancelQuote(ctx: Ctx, walletId: string, of: string): PlatformCancelQuote {
+  wallet(ctx.world, walletId);
+  const p = platformOf(ctx.world, "platform_cancel_quote");
+  // On mainnet only a held cancel of `of` is quoted again; a new one is off.
+  if (!p.activity.some((a) => a.cancels === of && isHeldOp(a))) refuseSendsOff(ctx.world);
+  const held = p.activity.find((a) => a.id === of && (a.kind === "moveToCore" || a.kind === "contactPayment") && isHeldOp(a));
+  if (!held) throw fail("credits.quote_changed", "that move or payment no longer holds");
+  if (held.state === "pending") throw moveHeld(held.id);
+  // Its own held cancel is quoted again on that cancel's terms.
+  const resend = p.activity.find((a) => a.cancels === of && isHeldOp(a) && a.state !== "pending");
+  const other = p.activity.find((a) => a.id !== of && a !== resend && isHeldOp(a) && (a.state === "pending" || !!a.cancels || (a.kind !== "moveToCore" && a.kind !== "contactPayment")));
+  if (other) throw moveHeld(other.id);
+  if (total(p) < BigInt(held.credits)) throw fail("credits.quote_changed", "the held inputs no longer carry its amount");
+  if (resend) return { of, credits: resend.credits, feeCredits: resend.feeCredits ?? String(SEND_FEE_CREDITS), to: resend.to ?? p.receive.address, grant: { maxDuffs: 0, maxCredits: resend.credits } };
+  if (BigInt(held.credits) < CANCEL_MIN_CREDITS) throw fail("credits.send_out_of_range", "below the minimum", { kind: "creditMinimum", min: String(SEND_MIN_CREDITS) });
+  return { of, credits: held.credits, feeCredits: String(SEND_FEE_CREDITS), to: p.receive.address, grant: { maxDuffs: 0, maxCredits: held.credits } };
 }
 
 /** The engine's recipient check (m4 §2.12): a Platform address of this network that is not one of
@@ -920,8 +983,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   platform_move_to_core_quote: ({ walletId, amount }: { walletId: string; amount: WithdrawAmount }, ctx: Ctx) => quote(ctx, walletId, amount),
   platform_move_to_core: ({ walletId, amount, to, exitOf, grant }: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string }, ctx: Ctx): MoveToCoreOutcome => {
     const { world } = ctx;
-    // As the engine, first: the exit of a top-up that no longer holds is not the move Confirm showed.
-    if (exitOf != null && heldTopUp(platformOf(world, "platform_move_to_core"))?.id !== exitOf) {
+    // As the engine, first: the exit of a top-up, send, cancel or too small move or payment that no longer
+    // holds is not the move Confirm showed.
+    const exited = namedExitOf(platformOf(world, "platform_move_to_core"));
+    if (exitOf != null && exited?.id !== exitOf) {
       refuseSendsOff(world);
       throw fail("credits.quote_changed", "the held top-up settled since this move was quoted");
     }
@@ -937,12 +1002,18 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // Only to one of the wallet's own receiving addresses (the quote's).
     if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
     const p = platformOf(world, "platform_move_to_core");
+    // The named cancel's identical re-sends that hold beside it: its exit runs beside them and settles them with it.
+    const resends = exitOf != null && exited ? p.activity.filter((a) => isHeldOp(a) && resendOf(exited, a)).map((a) => a.id) : [];
     // A send that may still land, or a move Platform has not answered, holds the next move (it waits until it
     // settles). A move that failed by height does not: the next one signs at the same inputs and frees it.
-    const holding = p.activity.find((a) => isHeldOp(a) && (a.kind === "send" || a.state === "pending"));
+    const holding = p.activity.find((a) => isHeldOp(a) && ((a.kind === "send" && a.id !== exitOf && !resends.includes(a.id)) || a.state === "pending"));
     if (holding) throw moveHeld(holding.id);
     preCheck(p);
-    const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a)).map((a) => a.id);
+    // The move or payment a held cancel cancels, which the exit's document settles with it.
+    const cancelled = exitOf != null ? (exited?.cancels ?? null) : null;
+    // A held move or payment too small to cancel that the move is the exit of: their documents say which went through.
+    const direct = exitOf != null && (exited?.kind === "moveToCore" || exited?.kind === "contactPayment") ? exited.id : null;
+    const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a) && a.id !== cancelled && a.id !== direct).map((a) => a.id);
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.credits))
@@ -951,12 +1022,23 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the move");
     if (p.nextMove === "tooManyCoins") throw fail("invalid_argument", "more than 50 separate balances", { kind: "reason", reason: "Your Platform addresses hold too many separate balances to move at once. Consolidate coins first" });
     // `lost`: the held top-up it exits executed in its place, so the move fails and moves nothing.
-    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" ? "failed" : "done";
+    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" || p.nextMove === "lostToCancel" ? "failed" : "done";
     const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
-    const id = `pm-${p.activity.length + 1}`;
+    // As the engine, the exit of a held send or cancel carries its link in its id.
+    const id = exitOf != null && exited?.kind === "send" ? `exit-of-${exited.id}-at-1-${p.activity.length + 1}` : `pm-${p.activity.length + 1}`;
+    // The named cancel and its identical re-sends: of them the newest carries a cancel's win, the others
+    // replaced beside a move and failed beside a payment.
+    const cancels = cancelled !== null && exited ? [exited.id, ...resends] : [];
+    const newestCancel = p.activity.filter((a) => cancels.includes(a.id)).reduce<PlatformActivity | null>((n, a) => (n && n.at >= a.at ? n : a), null)?.id;
+    const ofPayment = p.activity.find((a) => a.id === cancelled)?.kind === "contactPayment";
+    // Beside a held cancel, which of the three went through: the move, the cancel, or what it cancels. Beside a
+    // held item too small to cancel, the move or that item.
+    const winner = state === "done" ? id : state === "failed" ? (p.nextMove === "lostToCancel" ? newestCancel : (cancelled ?? direct)) : null;
     const feeCredits = state === "done" ? q.feeCredits : null;
     const exit = exitInputs(p);
     const lost = state === "failed" ? heldTopUp(p)?.id : undefined;
+    // The exit of a held send: its document says which of the two went through; neither is replaced.
+    const send = exitOf != null && exited?.kind === "send" ? exited.id : null;
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
       { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
@@ -965,7 +1047,9 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       ...p.activity.map((a) =>
         supersedes.includes(a.id)
           ? { ...a, state: "replaced" as const, mayLand: false }
-          : state === "done" && a.kind === "toIdentity" && isHeldOp(a)
+          : (cancelled !== null || direct !== null) && winner && (a.id === send || a.id === cancelled || a.id === direct || resends.includes(a.id))
+            ? { ...a, state: a.id === winner ? ("done" as const) : !ofPayment && cancels.includes(a.id) && cancels.includes(winner) ? ("replaced" as const) : ("failed" as const), mayLand: false }
+            : state === "done" && (a.kind === "toIdentity" || a.id === send) && isHeldOp(a)
             ? { ...a, state: "failed" as const, mayLand: false }
             : state === "failed" && a.kind === "toIdentity" && isHeldOp(a)
               ? { ...a, state: "done" as const, mayLand: false }
@@ -976,6 +1060,61 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // one does; a `pending` one has not been seen yet.
     if (state === "done") p.addresses = exit ? p.addresses.filter((a) => !exit.includes(a.address)) : [];
     if (lost) landHeldTopUp(ctx, lost);
+    // A lost exit of a send: the send went through, its recipient paid. Of a cancel: the cancel went
+    // through (the amount less its fee back on its own address), or what it cancels did. Of an item too
+    // small to cancel: that item went through.
+    if (state === "failed" && (cancelled !== null || direct !== null) && exited) {
+      spend(p, BigInt(exited.credits));
+      if (winner === exited.id && cancelled !== null && exited.to) p.addresses = [...p.addresses, { address: exited.to, credits: String(BigInt(exited.credits) - SEND_FEE_CREDITS) }];
+    } else if (state === "failed" && send) landSend(p, send);
     return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
+  },
+  platform_cancel_quote: ({ walletId, of }: { walletId: string; of: string }, ctx: Ctx) => cancelQuote(ctx, walletId, of),
+  // As the engine: the cancel signs the held item's inputs at its nonces to the quote's own address. As
+  // `nextMove` says, it goes through (the held item fails, the amount less the fee arrives at that
+  // address), stays unanswered, or loses (`lost`: the held item went through, the cancel failed unpaid).
+  platform_cancel: ({ walletId, of, to, grant }: { walletId: string; of: string; to: string; grant: string }, ctx: Ctx): PlatformSendOutcome => {
+    const { world } = ctx;
+    const q = cancelQuote(ctx, walletId, of);
+    if (to !== q.to) throw fail("invalid_argument", "not an address of this wallet", { kind: "reason", reason: "not an address of this wallet" });
+    const p = platformOf(world, "platform_cancel");
+    preCheck(p);
+    preCheck(p, p.cancelPreCheck);
+    const g = checkGrant(world, grant, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
+    if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.credits))
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.credits, remaining: g.grant.purpose.maxCredits });
+    useGrant(world, grant);
+    if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the cancel");
+    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" ? "failed" : "done";
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const id = `pc-${p.activity.length + 1}`;
+    const credits = BigInt(q.credits);
+    const arrives = credits - SEND_FEE_CREDITS;
+    const row: PlatformActivity = { id, kind: "send", state, credits: q.credits, address: null, to: q.to, expectedDuffs: null, feeCredits: state === "done" ? q.feeCredits : null, at, mayLand: state === "pending", estimated: false, cancels: of };
+    // A held cancel of the same item is the one sent again: once the re-send settles, it no longer holds
+    // (replaced by a re-send that went through beside a move, failed beside a payment).
+    const earlier = (a: PlatformActivity) => a.cancels === of && isHeldOp(a) && state !== "pending";
+    const replaced = state === "done" && p.activity.find((a) => a.id === of)?.kind !== "contactPayment";
+    p.activity = [
+      row,
+      ...p.activity.map((a) =>
+        earlier(a)
+          ? { ...a, state: replaced ? ("replaced" as const) : ("failed" as const), mayLand: false }
+          : a.id !== of
+            ? a
+            : state === "done"
+              ? { ...a, state: "failed" as const, mayLand: false }
+              : state === "failed"
+                ? { ...a, state: "done" as const, mayLand: false }
+                : a,
+      ),
+    ];
+    if (state !== "pending") spend(p, credits);
+    if (state === "done") {
+      p.addresses = [...p.addresses, { address: q.to, credits: String(arrives) }];
+      p.activity = [{ id: `pa-${p.activity.length + 1}`, kind: "incoming", state: "done", credits: String(arrives), address: q.to, to: null, expectedDuffs: null, feeCredits: null, at, mayLand: false, estimated: false }, ...p.activity];
+    }
+    return { id, credits: q.credits, amountCredits: q.credits, feeFromAmount: true, to: q.to, state, mayLand: state === "pending", feeCredits: row.feeCredits, estimated: false };
   },
 };

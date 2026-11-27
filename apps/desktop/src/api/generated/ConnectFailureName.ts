@@ -4,4 +4,4 @@
  * Why an approved App Connect login stopped (`connect.failed`), from the
  * engine's fixed list.
  */
-export type ConnectFailureName = "keyConflict" | "notConfirmed" | "noResponseKey" | "nothingToSend" | "scopeChanged";
+export type ConnectFailureName = "keyConflict" | "notConfirmed" | "noResponseKey" | "nothingToSend" | "scopeChanged" | "unverifiedKey" | "feeTooHigh" | "disconnectConflict" | "pendingFeeTooHigh" | "pendingWrite";

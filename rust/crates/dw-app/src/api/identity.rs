@@ -31,8 +31,9 @@ use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
-    PlatformAddressBalance, PlatformAddressRow, PlatformFundOutcome, PlatformFundQuote,
-    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+    PlatformAddressBalance, PlatformAddressRow, PlatformCancelQuote, PlatformFundOutcome,
+    PlatformFundQuote, PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote,
+    PlatformShieldQuote,
 };
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
@@ -549,7 +550,7 @@ commands! {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`.
-    /// `exit_of`: the quote's, the held top-up this move is the exit of.
+    /// `exit_of`: the quote's, the held record this move is the exit of.
     #[facade("DashPay::move_to_core")]
     fn platform_move_to_core(
         state,
@@ -561,6 +562,29 @@ commands! {
     ) -> MoveToCoreOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.move_to_core(amount.into(), to, exit_of, grant).await?.into())
+    }
+
+    /// What cancelling the held move or contact payment `of` takes: its
+    /// inputs at its nonces to one of the wallet's own Platform addresses.
+    #[facade("DashPay::platform_cancel_quote")]
+    fn platform_cancel_quote(state, wallet_id: String, of: String) -> PlatformCancelQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_cancel_quote(of).await?.into())
+    }
+
+    /// Cancels the held move or contact payment `of` to `to` (the quote's,
+    /// one of the wallet's own Platform addresses) under `grant`.
+    #[facade("DashPay::platform_cancel")]
+    fn platform_cancel(
+        state,
+        wallet_id: String,
+        of: String,
+        to: String,
+        grant: String,
+    ) -> PlatformSendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let _in_flight = state.broadcasting();
+        Ok(dashpay.platform_cancel(of, to, grant).await?.into())
     }
 
     /// The wallet's Platform receive address: the lowest unused one.

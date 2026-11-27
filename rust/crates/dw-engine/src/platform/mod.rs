@@ -142,7 +142,7 @@ pub(crate) mod withdrawal;
 pub use app_connect::{
     ConnectBinding, ConnectChoice, ConnectDocumentType, ConnectDone, ConnectFailure, ConnectGroup,
     ConnectIdentity, ConnectLevel, ConnectQuote, ConnectScope, ConnectSheet, ConnectTerms,
-    ConnectToken,
+    ConnectToken, ConnectedApp, ConnectedAppKey, ConnectedApps, DisconnectDone, DisconnectQuote,
 };
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
@@ -186,8 +186,9 @@ pub use payments::{
 pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
     PlatformActivityKind, PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
-    PlatformFundOutcome, PlatformFundQuote, PlatformFundState, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
+    PlatformCancelQuote, PlatformFundOutcome, PlatformFundQuote, PlatformFundState,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+    RecipientProblem,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,

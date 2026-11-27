@@ -818,6 +818,88 @@ fn a_coin_a_payment_on_a_claim_the_store_dropped_spent_is_offered_again() {
     assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
 }
 
+/// [`payment_on_a_stored_claims_change`] with S on the claim's change
+/// alone, then the wallet pays someone (G) from S's change and its mined
+/// coin b. Returns the session, S, G and b's funding.
+fn payment_on_a_payment_on_a_stored_claims_change(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+) -> (Arc<NetworkSession>, Transaction, Transaction, Transaction) {
+    let b_to = super::own_spend_disk_tests::fresh_address(engine, &session, id);
+    let b_funding = super::own_spend_disk_tests::funding(3, &[b_to], PAID);
+    mined(engine, &session, id, BIRTH - 40, vec![b_funding.clone()]);
+    let (session, _claim, payment) = payment_on_a_stored_claims_change(engine, session, id, None);
+    let coins = vec![
+        change_of(&payment, &own_scripts(engine, &session, id)),
+        OutPoint::new(b_funding.txid(), 0),
+    ];
+    let grandchild = send(
+        engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins.clone()),
+        CHANGE / 2 + PAID / 2,
+        false,
+    );
+    assert_eq!(grandchild.input.len(), 2, "G spends {coins:?}");
+    mempool(engine, &session, id, &grandchild);
+    let ids: Vec<String> = (rows(engine, &session, id).into_iter())
+        .map(|r| r.0)
+        .collect();
+    assert!(ids.contains(&grandchild.txid().to_string()), "G is listed");
+    (session, payment, grandchild, b_funding)
+}
+
+/// The store drops the claim at the next start, and the load drops S on
+/// its change and G on S's change (depth 2): neither is pending, nothing
+/// they made is offered, and b, which G also spent, counts once and is
+/// offered when scanned again. The same after a second restart.
+#[test]
+fn a_payment_on_a_payment_on_a_claim_the_store_dropped_goes_with_it() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (mut session, payment, grandchild, b_funding) =
+        payment_on_a_payment_on_a_stored_claims_change(&engine, session, id);
+    assert!(
+        !dropped(&engine, &session, id, grandchild.txid()),
+        "not dropped in the session"
+    );
+
+    for _ in 0..2 {
+        session = reopen(&engine, session);
+        assert!(
+            dropped(&engine, &session, id, payment.txid()),
+            "S is dropped"
+        );
+        assert!(
+            dropped(&engine, &session, id, grandchild.txid()),
+            "G is dropped"
+        );
+        b_scanned_again(&engine, &session, id, &b_funding);
+        let own = own_scripts(&engine, &session, id);
+        for (what, tx) in [("S", &payment), ("G", &grandchild)] {
+            assert!(
+                !spendable(&engine, &session, id, change_of(tx, &own)),
+                "{what}'s change isn't offered"
+            );
+        }
+    }
+}
+
+/// As above, but G is InstantSend-locked: the claim's tree has a settled
+/// transaction, so the load keeps S and G, and G's change is offered.
+#[test]
+fn a_locked_payment_on_a_payment_on_a_claim_the_store_dropped_keeps_both() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, payment, grandchild, _) =
+        payment_on_a_payment_on_a_stored_claims_change(&engine, session, id);
+    instant_lock(&engine, &session, id, &grandchild);
+
+    let session = reopen(&engine, session);
+    assert!(!dropped(&engine, &session, id, payment.txid()), "S is kept");
+    assert_payment_kept(&engine, &session, id, &grandchild);
+}
+
 /// The claim pays two change outputs; S1 from one is InstantSend-locked,
 /// S2 from the other is pending. Nothing of the claim's tree is dropped:
 /// not when the engine finds the claim unsigned, nor when the store drops

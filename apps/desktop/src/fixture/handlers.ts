@@ -269,7 +269,14 @@ function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurpo
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
   const sensitive = purposes.some(
-    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp" || p.kind === "appConnect",
+    (p) =>
+      p.kind === "revealSecret" ||
+      p.kind === "wipe" ||
+      p.kind === "changeCredential" ||
+      p.kind === "governance" ||
+      p.kind === "masternodeOp" ||
+      p.kind === "appConnect" ||
+      p.kind === "appDisconnect",
   );
   if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
     throw fail("vault.credential_required", "the passphrase is required");

@@ -3035,6 +3035,21 @@ fn platform_address_sends_are_off_on_mainnet_as_their_own_feature() {
         "platform.feature_off",
     );
     assert_eq!(e["data"], off, "{e}");
+    // A cancel pays only the wallet, so it passes the flag beside a held
+    // record only: with nothing held its quote is off too. The cancel
+    // itself, as a move or a send, meets this session's lack of Platform
+    // first (C7).
+    let e = demo.err(
+        "platform_cancel_quote",
+        json!({ "walletId": wallet, "of": "no-such-move" }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+    demo.err(
+        "platform_cancel",
+        json!({ "walletId": wallet, "of": "no-such-move", "to": "checked after the flag", "grant": "g" }),
+        "platform.unavailable",
+    );
 
     let demo = Demo::new();
     demo.open();

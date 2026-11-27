@@ -7,6 +7,7 @@ import { absentAsUnavailable } from "../api/pending";
 import { IpcBackend } from "../api/tauri";
 import { OpenFailureActions } from "../screens/StoreRefusal";
 import { installFixture, type FixtureHandle } from "./index";
+import { plannedWithdrawalCredits } from "../platform/move";
 import { landSend, PLATFORM_PAYEE } from "./pending";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
 
@@ -400,14 +401,174 @@ describe("fixture pending commands", () => {
     expect((await backend.platformActivity(W))?.[0]).toMatchObject({ estimated: true, mayLand: false });
   });
 
-  it("holds a move beside a send that may still land, at the quote (before any passphrase) and at the move", async () => {
-    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+  it("holds a plain move beside a send that may still land; the move quoted beside it is its exit, at its inputs", async () => {
+    const plain = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     platform().nextSend = "failed";
     const { outcome } = await pay(credits("1000000000"));
     const held = { code: "credits.move_pending", data: { artifact: outcome.id } };
-    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(held);
-    const grant = await opGrant(quote.grant.maxCredits);
-    await expect(backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, grant.id)).rejects.toMatchObject(held);
+    await expect(backend.platformMoveToCore(W, { kind: "all" }, plain.to, null, (await opGrant(plain.grant.maxCredits)).id)).rejects.toMatchObject(held);
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    expect(exit.exitOf).toBe(outcome.id);
+    // Only the send's input, the largest address: the rest stays.
+    expect(exit.credits).toBe("30000000000");
+  });
+
+  it("the exit of a held send that goes through fails the send: its recipient isn't paid, neither is replaced", async () => {
+    platform().nextSend = "failed";
+    const { outcome } = await pay(credits("1000000000"));
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id);
+    expect(moved.state).toBe("done");
+    const rows = (await backend.platformActivity(W)) ?? [];
+    expect(rows.find((a) => a.id === outcome.id)).toMatchObject({ state: "failed", mayLand: false });
+    expect(rows.some((a) => a.state === "replaced")).toBe(false);
+    expect(platform().addresses.map((a) => a.credits)).toEqual(["10000000000"]);
+  });
+
+  it("the exit of a held send that loses: the send went through and paid its recipient, the move failed", async () => {
+    platform().nextSend = "failed";
+    const { outcome } = await pay(credits("1000000000"));
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    platform().nextMove = "lost";
+    const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id);
+    expect(moved.state).toBe("failed");
+    expect((await backend.platformActivity(W))?.find((a) => a.id === outcome.id)).toMatchObject({ state: "done", mayLand: false });
+  });
+
+  it("cancels a held move to its own address: the move fails, the amount less the fee arrives, and the row names what it cancels", async () => {
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    const q = await backend.platformCancelQuote(W, "pm-held");
+    expect(q).toMatchObject({ of: "pm-held", credits: "40000000000", feeCredits: "6500000" });
+    expect(platform().addresses.map((a) => a.address)).not.toContain(q.to);
+    await expect(backend.platformCancel(W, "pm-held", PLATFORM_PAYEE, (await opGrant(q.grant.maxCredits)).id)).rejects.toMatchObject({ code: "invalid_argument" });
+    const out = await backend.platformCancel(W, "pm-held", q.to, (await opGrant(q.grant.maxCredits)).id);
+    expect(out).toMatchObject({ state: "done", to: q.to });
+    const rows = (await backend.platformActivity(W)) ?? [];
+    expect(rows.find((a) => a.id === out.id)).toMatchObject({ kind: "send", cancels: "pm-held", state: "done" });
+    expect(rows.find((a) => a.id === "pm-held")).toMatchObject({ state: "failed", mayLand: false });
+    expect(platform().addresses).toEqual([{ address: q.to, credits: "39993500000" }]);
+  });
+
+  it("the move beside a held cancel is its exit: one of the three goes through, and none is replaced", async () => {
+    for (const next of ["done", "lost", "lostToCancel"] as const) {
+      fixture = installFixture({ scenario: "platform-cancel-failed-may-land" });
+      backend = new IpcBackend("fixture");
+      const q = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+      expect(q.exitOf).toBe("pc-held");
+      // A move that names nothing waits for the cancel.
+      await expect(backend.platformMoveToCore(W, { kind: "all" }, q.to, null, (await opGrant(q.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "pc-held" } });
+      platform().nextMove = next;
+      const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(q) }, q.to, q.exitOf, (await opGrant(q.grant.maxCredits)).id);
+      expect(moved.state).toBe(next === "done" ? "done" : "failed");
+      const rows = (await backend.platformActivity(W)) ?? [];
+      const winner = { done: moved.id, lost: "pm-held", lostToCancel: "pc-held" }[next];
+      for (const id of [moved.id, "pm-held", "pc-held"]) expect(rows.find((a) => a.id === id), `${next} ${id}`).toMatchObject({ state: id === winner ? "done" : "failed", mayLand: false });
+      expect(rows.some((a) => a.state === "replaced")).toBe(false);
+    }
+  });
+
+  it("re-sends a held cancel on its own terms; refused, its exit still goes through", async () => {
+    fixture = installFixture({ scenario: "platform-cancel-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    const cancel = platform().activity.find((a) => a.id === "pc-held")!;
+    const q = await backend.platformCancelQuote(W, "pm-held");
+    expect(q).toMatchObject({ of: "pm-held", to: cancel.to, credits: cancel.credits });
+    platform().cancelPreCheck = "rulesUnsupported";
+    await expect(backend.platformCancel(W, "pm-held", q.to, (await opGrant(q.grant.maxCredits)).id)).rejects.toMatchObject({ code: "credits.rules_unsupported" });
+    const exit = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    expect(exit.exitOf).toBe("pc-held");
+    expect(await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(exit) }, exit.to, exit.exitOf, (await opGrant(exit.grant.maxCredits)).id)).toMatchObject({ state: "done" });
+  });
+
+  it("a held move or payment too small to cancel: no cancel, and the move quoted beside it is its exit", async () => {
+    for (const [scenario, id] of [["platform-move-too-small-may-land", "pm-small"], ["platform-payout-too-small-may-land", "cp-small"]] as const) {
+      fixture = installFixture({ scenario });
+      backend = new IpcBackend("fixture");
+      await expect(backend.platformCancelQuote(W, id)).rejects.toMatchObject({ code: "credits.send_out_of_range" });
+      const q = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+      expect(q.exitOf).toBe(id);
+      expect(await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(q) }, q.to, q.exitOf, (await opGrant(q.grant.maxCredits)).id)).toMatchObject({ state: "done" });
+    }
+    // One with a cancel is quoted unnamed, as before.
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    expect((await backend.platformMoveToCoreQuote(W, { kind: "all" })).exitOf).toBeNull();
+  });
+
+  it("the exit of a held item too small to cancel settles it: the move done, the item failed; lost, the item done and debited", async () => {
+    for (const [scenario, id] of [["platform-move-too-small-may-land", "pm-small"], ["platform-payout-too-small-may-land", "cp-small"]] as const) {
+      for (const next of ["done", "lost"] as const) {
+        fixture = installFixture({ scenario });
+        backend = new IpcBackend("fixture");
+        const before = platform().addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
+        const q = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+        expect(q.exitOf).toBe(id);
+        platform().nextMove = next;
+        const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(q) }, q.to, q.exitOf, (await opGrant(q.grant.maxCredits)).id);
+        const rows = (await backend.platformActivity(W)) ?? [];
+        const item = rows.find((a) => a.id === id)!;
+        expect(moved.state, `${scenario} ${next}`).toBe(next === "done" ? "done" : "failed");
+        expect(item, `${scenario} ${next}`).toMatchObject({ state: next === "done" ? "failed" : "done", mayLand: false });
+        expect(rows.some((a) => a.state === "replaced")).toBe(false);
+        const after = platform().addresses.reduce((n, a) => n + BigInt(a.credits), 0n);
+        if (next === "lost") expect(after, scenario).toBe(before - BigInt(item.credits));
+      }
+    }
+    // The payment no longer holds the next one.
+    fixture = installFixture({ scenario: "platform-payout-too-small-may-land" });
+    backend = new IpcBackend("fixture");
+    const q = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(q) }, q.to, q.exitOf, (await opGrant(q.grant.maxCredits)).id);
+    expect((await backend.platformActivity(W))?.some((a) => a.mayLand)).toBe(false);
+  });
+
+  it("a held cancel's re-send that settles settles the earlier cancel too; one still pending leaves it held", async () => {
+    for (const [scenario, of, replaced] of [["platform-cancel-failed-may-land", "pm-held", "replaced"], ["platform-payout-cancel-failed-may-land", "cp-held", "failed"]] as const) {
+      for (const next of ["done", "lost", "pending"] as const) {
+        fixture = installFixture({ scenario });
+        backend = new IpcBackend("fixture");
+        const q = await backend.platformCancelQuote(W, of);
+        platform().nextMove = next;
+        const out = await backend.platformCancel(W, of, q.to, (await opGrant(q.grant.maxCredits)).id);
+        const rows = (await backend.platformActivity(W)) ?? [];
+        const earlier = rows.find((a) => a.id === "pc-held");
+        if (next === "pending") expect(earlier).toMatchObject({ state: "failed", mayLand: true });
+        else expect(earlier, `${scenario} ${next}`).toMatchObject({ state: next === "done" ? replaced : "failed", mayLand: false });
+        expect(rows.find((a) => a.id === out.id)?.cancels).toBe(of);
+      }
+    }
+  });
+
+  it("the move beside a held cancel and its identical re-send is their exit: it runs beside both and settles both", async () => {
+    for (const next of ["done", "lost", "lostToCancel"] as const) {
+      fixture = installFixture({ scenario: "platform-cancel-failed-may-land" });
+      backend = new IpcBackend("fixture");
+      const first = platform().activity.find((a) => a.id === "pc-held")!;
+      platform().activity = [{ ...first, id: "pc-again", at: first.at + 60 }, ...platform().activity];
+      const q = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+      expect(q.exitOf).toBe("pc-held");
+      platform().nextMove = next;
+      const moved = await backend.platformMoveToCore(W, { kind: "credits", credits: plannedWithdrawalCredits(q) }, q.to, q.exitOf, (await opGrant(q.grant.maxCredits)).id);
+      const rows = (await backend.platformActivity(W)) ?? [];
+      const won = { done: moved.id, lost: "pm-held", lostToCancel: "pc-again" }[next];
+      for (const id of [moved.id, "pm-held", "pc-again"]) expect(rows.find((a) => a.id === id), `${next} ${id}`).toMatchObject({ state: id === won ? "done" : "failed", mayLand: false });
+      expect(rows.find((a) => a.id === "pc-held"), next).toMatchObject({ state: next === "lostToCancel" ? "replaced" : "failed", mayLand: false });
+    }
+    // A held cancel of other terms still holds the move, at its quote.
+    fixture = installFixture({ scenario: "platform-cancel-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    const first = platform().activity.find((a) => a.id === "pc-held")!;
+    platform().activity = [{ ...first, id: "pc-other", credits: "1000000000", at: first.at + 60 }, ...platform().activity];
+    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "pc-other" } });
+  });
+
+  it("refuses a cancel beside a held send, and of a move that no longer holds", async () => {
+    fixture = installFixture({ scenario: "platform-move-failed-may-land" });
+    backend = new IpcBackend("fixture");
+    platform().activity = [{ ...platform().activity.find((a) => a.id === "pm-held")!, id: "ps-x", kind: "send", to: PLATFORM_PAYEE }, ...platform().activity];
+    await expect(backend.platformCancelQuote(W, "pm-held")).rejects.toMatchObject({ code: "credits.move_pending", data: { artifact: "ps-x" } });
+    await expect(backend.platformCancelQuote(W, "pa-1")).rejects.toMatchObject({ code: "credits.quote_changed" });
   });
 
   it("seeds a send that may land for the scenario: its row carries mayLand and its exact retry is quoted", async () => {

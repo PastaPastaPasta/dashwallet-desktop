@@ -358,8 +358,8 @@ impl FakeWithdrawals {
         *self.version.lock().unwrap() = self.proved;
     }
 
-    /// The SDK back at its regtest seed, protocol 13, as a fresh process
-    /// starts.
+    /// The SDK back at a seed below the network's, protocol 13 (the
+    /// regtest seed before platform 5.1; 14 since), as a fresh process starts.
     fn reseed(&self) {
         *self.version.lock().unwrap() = PlatformVersion::get(13).unwrap();
     }
@@ -708,7 +708,7 @@ fn the_quote_is_the_plan_and_its_grant() {
 }
 
 /// T2 D17: until a proved read ratchets it, the SDK answers its seed
-/// (protocol 13 on regtest), whose range and payout are not the network's:
+/// (here protocol 13), whose range and payout are not the network's:
 /// the rules, the payout and a document's are read after the proved read.
 #[test]
 fn the_rules_are_the_proved_versions_not_the_seed() {

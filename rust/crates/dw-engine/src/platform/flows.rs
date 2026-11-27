@@ -94,6 +94,10 @@ pub enum FlowKind {
     /// each under its own call permit. Its signers are `PlatformIdentity`
     /// and an `AppConnect` one bound to the grant's request.
     AppConnect,
+    /// Disconnecting one App Connect login under an `AppDisconnect` grant:
+    /// the MASTER-signed IdentityUpdate disabling the app's session keys.
+    /// Its only signer is `PlatformIdentity`.
+    AppDisconnect,
 }
 
 impl FlowKind {
@@ -299,9 +303,11 @@ impl NetworkSession {
         crate::coinjoin::test_pause(crate::coinjoin::sweep_hooks(self).flow_admitted).await;
         self.require_wallet(&wallet_id).map_err(engine)?;
         match (flow, source) {
-            // An approval begins its own lease, under the grant its quote
-            // bound (app_connect.rs): never a host's.
-            (FlowKind::AppConnect, _) => return Err(PlatformError::GrantInvalid),
+            // An approval or disconnect begins its own lease, under the grant
+            // its quote bound (app_connect.rs): never a host's.
+            (FlowKind::AppConnect | FlowKind::AppDisconnect, _) => {
+                return Err(PlatformError::GrantInvalid);
+            }
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
             (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded))
                 if super::shielded_payout::enabled_on(&self.network) => {}

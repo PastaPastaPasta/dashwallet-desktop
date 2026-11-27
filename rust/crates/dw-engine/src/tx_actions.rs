@@ -3573,6 +3573,11 @@ impl NetworkSession {
                         || locked_unread.contains(o)
                 },
                 dead_for_good: &dead_for_good,
+                drop_dead: &|t| {
+                    let ancestor =
+                        |p: &Txid| drops.contains_key(p) || deaths.swept_by.contains_key(p);
+                    crate::history::chain_dead_for_good(t, &deaths, ancestor, dead_for_good)
+                },
             };
             // A coin out of `held` for a spend in a block not yet final
             // awaits that block (#749).

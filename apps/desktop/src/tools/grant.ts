@@ -23,7 +23,7 @@ export type GrantAsk = GrantPurposeSpec | { kind: "platformSend"; operation: str
  * need the passphrase only while the vault is not fully unlocked. */
 export function needsPassphrase(purpose: GrantAsk, lock: LockStatus, paymentAuth: boolean): boolean {
   if (!lock.encrypted) return false;
-  if (purpose.kind === "appConnect") return true;
+  if (purpose.kind === "appConnect" || purpose.kind === "appDisconnect") return true;
   if (purpose.kind === "spend" || purpose.kind === "platformOp" || purpose.kind === "platformSend") return paymentAuth || lock.state !== "unlocked";
   return lock.state !== "unlocked";
 }

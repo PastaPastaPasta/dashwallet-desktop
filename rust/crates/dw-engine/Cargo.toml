@@ -113,7 +113,7 @@ dw-message = { workspace = true }
 serde_json = "1"
 # The Orchard note an unshield test spends through dpp's own builder (the
 # pinned platform's grovedb, the crate the graph already uses).
-grovedb-commitment-tree = { git = "https://github.com/dashpay/grovedb", rev = "89dc7351f09f5e5425025861fdc1892473569917" }
+grovedb-commitment-tree = { git = "https://github.com/dashpay/grovedb", tag = "v7.0.0" }
 tempfile = { workspace = true }
 # A chosen P9a outcome on the real open path, one test binary each.
 dw-store-upgrade = { workspace = true, features = ["test-support"] }
