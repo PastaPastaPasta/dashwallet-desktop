@@ -3720,6 +3720,34 @@ fn test_a_discard_after_a_fee_change_frees_every_fee_coin() {
     assert_eq!(f.locked(0), HashSet::from([share, extra]));
 }
 
+#[test]
+fn a_shared_sessions_own_reservation_cannot_override_a_coin_exclusion() {
+    let f = fx(1, true);
+    let coin = f.credit(0, 1, 501 * COIN);
+    let wallet = f.wallets[0];
+    let outcome = start(&f, 0, request(&[("A", 500), ("B", 500)], FEE)).unwrap();
+    let id = outcome.session.id;
+    let row = f
+        .db()
+        .shared_session(&wallet.to_string(), &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.locked(0), HashSet::from([coin]));
+    assert!(
+        f.run(f.session.reserved_inputs(wallet, &row, &[coin]))
+            .is_ok()
+    );
+
+    f.session.hub.history.with_wallet(wallet, |h| {
+        h.rescan_holds
+            .insert(coin, crate::rescan_hold::RescanHold::new(0, 100));
+    });
+    let signing = f.run(f.session.reserved_inputs(wallet, &row, &[coin]));
+    let new_fee = f.run(f.mn().set_shared_fee(wallet, id, 2 * FEE));
+    assert_eq!((signing.is_ok(), new_fee.is_ok()), (false, false));
+    assert_eq!(f.locked(0), HashSet::from([coin]));
+}
+
 /// The unreadable abandon spends every reserved coin, two here, at the
 /// coin test's charge for both. While that spend's outcome is unknown the
 /// listing offers no second abandon, and the call refuses `abandoning`

@@ -1414,7 +1414,7 @@ pub(crate) struct WalletHistory {
     pub session_held: HashSet<Txid>,
     /// Transactions a verified InstantSend lock named this session that
     /// were the wallet's when it was heard: the history held them, or the
-    /// lock spends an output of one it held. In memory only.
+    /// lock spends an output the wallet owned. In memory only.
     pub(crate) session_locks: HashSet<Txid>,
     /// Of [`Self::session_locks`], those a fork took out of their block
     /// that key-wallet removed: the history keeps them out of a block,
@@ -1476,6 +1476,10 @@ pub(crate) struct WalletHistory {
 }
 
 impl WalletHistory {
+    pub(crate) fn knows_instant_lock(&self, txid: &Txid, entry: &TxEntry) -> bool {
+        instant_locked(entry) || (!entry.abandoned && self.session_locks.contains(txid))
+    }
+
     /// Sets the coins the wallet held at a load (empty when the load failed
     /// to read a record, or read one missing or another's).
     pub fn set_loaded_coins(&mut self, txids: HashSet<Txid>) {
@@ -1688,19 +1692,24 @@ impl WalletHistory {
     /// a verified lock named this session is kept as unconfirmed too
     /// ([`Self::fork_kept_locks`]). Returns the transactions that changed.
     pub fn truncate(&mut self, removed: &[Txid], unconfirmed: &[Txid]) -> Vec<Txid> {
-        let (kept, removed): (Vec<Txid>, Vec<Txid>) = (removed.iter().copied())
-            .partition(|t| self.session_locks.contains(t) && self.txs.contains_key(t));
-        self.fork_kept_locks.extend(&kept);
-        for txid in &removed {
+        let mut changed = Vec::new();
+        for txid in removed {
+            if self.session_locks.contains(txid)
+                && let Some(entry) = self.txs.get_mut(txid)
+            {
+                entry.context = TransactionContext::Mempool;
+                entry.instant_locked = true;
+                self.fork_kept_locks.insert(*txid);
+                changed.push(*txid);
+                continue;
+            }
             self.hidden_registrations.remove(txid);
             self.own_outputs.remove(txid);
+            if self.txs.remove(txid).is_some() {
+                changed.push(*txid);
+            }
         }
-        let mut changed: Vec<Txid> = removed
-            .iter()
-            .filter(|t| self.txs.remove(*t).is_some())
-            .copied()
-            .collect();
-        for txid in unconfirmed.iter().chain(&kept) {
+        for txid in unconfirmed {
             if let Some(e) = self.txs.get_mut(txid) {
                 e.context = TransactionContext::Mempool;
                 e.instant_locked = true;
@@ -1863,30 +1872,37 @@ impl HistoryStore {
     /// Marks `txid` InstantSend-locked in each loaded history but those of
     /// `skip` that holds it out of a block without a known lock: key-wallet
     /// tells only the wallets holding its record or coins (#828). The
-    /// wallets marked. Each history but those of `skip` that holds `txid`,
-    /// or a transaction the lock's `inputs` spend, keeps it among its
-    /// [`WalletHistory::session_locks`].
+    /// wallets marked. `verified_inputs` is present only for a verified
+    /// lock. Each history that holds `txid` or owns one of those inputs
+    /// keeps it among its [`WalletHistory::session_locks`].
     pub(crate) fn note_instant_lock(
         &self,
         txid: &Txid,
-        inputs: &[OutPoint],
+        verified_inputs: Option<&[OutPoint]>,
         skip: &HashSet<WalletId>,
     ) -> Vec<WalletId> {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        for (_, h) in (map.iter_mut()).filter(|(id, _)| !skip.contains(*id)) {
-            if h.txs.contains_key(txid) || inputs.iter().any(|o| h.txs.contains_key(&o.txid)) {
+        let mut marked = Vec::new();
+        for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
+            let entry = h.txs.get(txid);
+            if verified_inputs.is_some_and(|inputs| {
+                entry.is_some()
+                    || inputs.iter().any(|o| {
+                        h.own_outputs
+                            .get(&o.txid)
+                            .is_some_and(|out| out.contains_key(&o.vout))
+                    })
+            }) {
                 h.session_locks.insert(*txid);
             }
+            if h.loaded
+                && entry.is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
+                && h.set_instant_locked(txid)
+            {
+                marked.push(*id);
+            }
         }
-        (map.iter_mut())
-            .filter(|(id, h)| {
-                !skip.contains(*id)
-                    && h.loaded
-                    && (h.txs.get(txid))
-                        .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
-            })
-            .filter_map(|(id, h)| h.set_instant_locked(txid).then_some(*id))
-            .collect()
+        marked
     }
 
     /// Forgets a load's claims of `txids` once their marks are gone or

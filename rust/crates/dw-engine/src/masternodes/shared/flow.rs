@@ -299,8 +299,8 @@ impl NetworkSession {
 
     /// The coins a contribution may take: the automatic-selection
     /// candidates the owner signer signs for, plus `also` (session `id`'s
-    /// own reserved coins, for `set_shared_fee`) while unspent and no other
-    /// row holds them (BL-346).
+    /// own reserved coins, for `set_shared_fee`) while unspent, unexcluded
+    /// and held by no other row (BL-346).
     async fn shared_candidates(
         &self,
         fence: &CoinFence,
@@ -312,11 +312,14 @@ impl NetworkSession {
             .protx_candidates(fence, w, &HashSet::new(), None)
             .await?;
         if !also.is_empty() {
-            let others = self.held_by_others(fence.wallet_id(), id).await?;
+            let wallet = fence.wallet_id();
+            let others = self.held_by_others(wallet, id).await?;
             let state = crate::wallet_read::info_of(w).await?;
+            let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
             for c in read_coins(&state.core_wallet).coins {
                 if also.contains(&c.utxo.outpoint)
                     && !others.contains(&c.utxo.outpoint)
+                    && !excluded.contains_key(&c.utxo.outpoint)
                     && !coins.iter().any(|(u, _)| u.outpoint == c.utxo.outpoint)
                     && let Some(info) = own_address_info(&state.core_wallet, &c.utxo.address)
                 {
@@ -377,8 +380,8 @@ impl NetworkSession {
     }
 
     /// This wallet's coins of `outpoints` with their scripts and key paths,
-    /// each still an unspent wallet coin (D17: `shared_stage{dead}`
-    /// otherwise).
+    /// each still an unspent, unexcluded wallet coin (D17:
+    /// `shared_stage{dead}` otherwise).
     pub(crate) async fn reserved_inputs(
         &self,
         wallet: WalletId,
@@ -411,6 +414,10 @@ impl NetworkSession {
         }
         let w = self.wallet(&wallet).await?;
         let state = crate::wallet_read::info_of(&w).await?;
+        let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
+        if outpoints.iter().any(|o| excluded.contains_key(o)) {
+            return Err(dead());
+        }
         let coins = read_coins(&state.core_wallet).coins;
         outpoints
             .iter()

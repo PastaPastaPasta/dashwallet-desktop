@@ -2751,6 +2751,7 @@ impl NetworkSession {
                     e.abandoned = true;
                     if overridden && *t == root {
                         e.instant_locked = false;
+                        h.fork_kept_locks.remove(t);
                         if matches!(e.context, TransactionContext::InstantSend(_)) {
                             e.context = TransactionContext::Mempool;
                         }
@@ -4059,14 +4060,18 @@ impl NetworkSession {
         // not the wallet's to abandon.
         // A verified lock heard this session counts though the history
         // holds none: a fork can take its transaction out of a block.
-        let (mined, held_locked) = (self.hub.history).read_wallet(&wallet, |h| {
-            let settled = |f: &dyn Fn(&Txid, &TxEntry) -> bool| {
-                (planned.iter()).any(|t| !exempt(t) && h.txs.get(t).is_some_and(|e| f(t, e)))
-            };
-            (
-                settled(&|_, e| e.context.block_info().is_some()),
-                settled(&|t, e| locked(e) || (h.session_locks.contains(t) && !e.abandoned)),
-            )
+        let (mined, held_locked) = self.hub.history.read_wallet(&wallet, |h| {
+            let mut mined = false;
+            let mut held_locked = false;
+            for (txid, entry) in planned
+                .iter()
+                .filter(|t| !exempt(t))
+                .filter_map(|t| h.txs.get(t).map(|entry| (t, entry)))
+            {
+                mined |= entry.context.block_info().is_some();
+                held_locked |= h.knows_instant_lock(txid, entry);
+            }
+            (mined, held_locked)
         });
         if mined {
             return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
@@ -4099,14 +4104,12 @@ impl NetworkSession {
     }
 
     /// [`Self::chain_proof`] when `root` is InstantSend-locked, in the
-    /// history or by key-wallet's locks: only then does the exception read
-    /// it.
+    /// history, the session's verified locks or by key-wallet's locks:
+    /// only then does the exception read it.
     async fn root_proof(&self, manager: &Manager, wallet: WalletId, root: Txid) -> ChainProof {
-        let locked = match self
-            .hub
-            .history
-            .read(&wallet, |txs| txs.get(&root).map(locked))
-        {
+        let locked = match self.hub.history.read_wallet(&wallet, |h| {
+            h.txs.get(&root).map(|e| h.knows_instant_lock(&root, e))
+        }) {
             None => false,
             Some(true) => true,
             Some(false) => {
@@ -4179,16 +4182,12 @@ impl NetworkSession {
         under: &HashSet<Txid>,
     ) -> Result<Option<Vec<OutPoint>>, EngineError> {
         let refused = Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
-        let (incomplete, claimed, session_locked) = (self.hub.history).with_wallet(wallet, |h| {
-            let session_locked = h.session_locks.contains(root);
-            (h.load_incomplete, h.claimed.clone(), session_locked)
-        });
-        self.hub.history.read(&wallet, |txs| {
+        self.hub.history.read_wallet(&wallet, |h| {
+            let txs = &h.txs;
             let Some(e) = txs.get(root) else {
                 return Ok(None);
             };
-            let session_locked = session_locked && !e.abandoned;
-            if !locked(e) && !core.instant_send_locks().contains(root) && !session_locked {
+            if !h.knows_instant_lock(root, e) && !core.instant_send_locks().contains(root) {
                 return Ok(None);
             }
             let synced = core.synced_height();
@@ -4201,7 +4200,7 @@ impl NetworkSession {
             if !chainlock_beaten(txs, root, proof.chainlock, &proof.active)
                 || !live.iter().all(|t| planned.contains(t))
                 || override_blocked(under, core)(root)
-                || incomplete
+                || h.load_incomplete
                 || synced < chainlock
                 || state.replaying_at(synced)
                 || !planned.iter().all(|t| txs.contains_key(t))
@@ -4235,7 +4234,7 @@ impl NetworkSession {
                     Some(true) => {}
                     Some(false) => return refused,
                     None if held.contains(&o) => free.push(o),
-                    None if claimed.get(&o) == Some(root) => claim_held = true,
+                    None if h.claimed.get(&o) == Some(root) => claim_held = true,
                     None => return refused,
                 }
             }
@@ -4300,9 +4299,10 @@ impl NetworkSession {
             let Some(chainlock) = chainlock.filter(|c| scanned && synced >= c.block_height) else {
                 return ChainProof::default();
             };
-            let roots: Vec<Txid> = self.hub.history.read(&wallet, |txs| {
-                (txs.iter())
-                    .filter(|(_, e)| locked(e) && e.context.block_info().is_none())
+            let roots: Vec<Txid> = self.hub.history.read_wallet(&wallet, |h| {
+                h.txs
+                    .iter()
+                    .filter(|(t, e)| e.context.block_info().is_none() && h.knows_instant_lock(t, e))
                     .map(|(t, _)| *t)
                     .collect()
             });

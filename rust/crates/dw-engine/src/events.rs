@@ -1295,14 +1295,16 @@ impl SessionHub {
         std::mem::take(&mut *self.unstored_locks())
     }
 
-    /// A verified InstantSend lock of `txid`: each loaded wallet but those
+    /// An InstantSend lock: each loaded wallet but those
     /// `unloaded` whose history holds it out of a block without a lock
     /// shows it locked, and its spend claims are chosen again as at its
     /// load. key-wallet tells only the wallets holding the transaction's
     /// record or coins, and no wallet when it pays none of them (#828).
-    /// The locks whose store failed before are written again.
-    fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
-        let wallets = (self.history).note_instant_lock(&txid, &lock.inputs, unloaded);
+    /// Only SPV's verified event can add the lock to the reorg fallback.
+    fn fan_out_lock(&self, lock: &InstantLock, unloaded: &HashSet<WalletId>, verified: bool) {
+        let txid = lock.txid;
+        let inputs = verified.then_some(lock.inputs.as_slice());
+        let wallets = self.history.note_instant_lock(&txid, inputs, unloaded);
         if wallets.is_empty() && self.unstored_locks().is_empty() {
             return;
         }
@@ -1999,10 +2001,10 @@ impl SessionHub {
         self.update_wallet_state(id, |s| {
             let restore_held: u64 = (gone.iter())
                 .filter(|o| txids.contains(&o.txid) || inputs.contains(*o))
-                .filter_map(|o| s.excluded.coins.get(o))
-                .map(|(_, share, _)| share.confirmed())
+                .filter_map(|o| s.excluded.rescan_share(o))
+                .map(|share| share.confirmed())
                 .sum();
-            s.excluded.release(&gone);
+            s.excluded.release_rescan(&gone);
             s.restore_held = s.restore_held.saturating_add(restore_held);
         });
         self.pump.mark_balances(id);
@@ -2164,7 +2166,7 @@ impl SessionHub {
         });
         if !released.is_empty() {
             tracing::info!(wallet = %id, coins = released.len(), "coins given back are released: their rescan is back");
-            self.update_wallet_state(id, |s| s.excluded.release(&released));
+            self.update_wallet_state(id, |s| s.excluded.release_rescan(&released));
             if let Some(reread) = self.balance_reread.get() {
                 reread(id);
             }
@@ -2444,7 +2446,7 @@ impl SessionHub {
                     self.note_seen(id, [record.txid]);
                     self.lock_heard();
                     if lock.txid == record.txid {
-                        self.fan_out_lock(record.txid, lock, &unloaded);
+                        self.fan_out_lock(lock, &unloaded, false);
                     } else {
                         tracing::debug!(wallet = %id, txid = %record.txid, lock = %lock.txid,
                             "a detected record's lock names another transaction: not fanned out");
@@ -2466,7 +2468,9 @@ impl SessionHub {
                 }
                 self.note_seen(id, [*txid]);
                 self.lock_heard();
-                self.fan_out_lock(*txid, instant_lock, &unloaded);
+                if instant_lock.txid == *txid {
+                    self.fan_out_lock(instant_lock, &unloaded, false);
+                }
             }
             WalletEvent::TransactionsSwept {
                 txids,
@@ -2881,7 +2885,7 @@ impl EventHandler for SessionHub {
         {
             self.held_lock_heard(instant_lock);
             let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
-            self.fan_out_lock(instant_lock.txid, instant_lock, &unloaded);
+            self.fan_out_lock(instant_lock, &unloaded, true);
         }
     }
 
@@ -3356,9 +3360,10 @@ mod tests {
         const COIN: u64 = 100_000_000;
         let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
         let p = Txid::from_byte_array([3; 32]);
-        let (held, free) = (
+        let (held, free, fork_held) = (
             OutPoint::new(p, 1),
             OutPoint::new(Txid::from_byte_array([4; 32]), 0),
+            OutPoint::new(p, 2),
         );
         hub.history.with_wallet(W, |h| {
             h.load_incomplete = true;
@@ -3370,20 +3375,28 @@ mod tests {
         };
         let share = WalletCoreBalance::new(COIN, 0, 0, 0);
         hub.update_wallet_state(W, |s| {
-            s.balance = WalletCoreBalance::new(3 * COIN, 0, 0, 0);
+            s.balance = WalletCoreBalance::new(4 * COIN, 0, 0, 0);
             s.excluded = crate::withhold::Excluded {
-                balance: WalletCoreBalance::new(2 * COIN, 0, 0, 0),
-                accounts: BTreeMap::from([(account, WalletCoreBalance::new(2 * COIN, 0, 0, 0))]),
+                balance: WalletCoreBalance::new(3 * COIN, 0, 0, 0),
+                accounts: BTreeMap::from([(account, WalletCoreBalance::new(3 * COIN, 0, 0, 0))]),
                 pending: 0,
                 coins: BTreeMap::from([
                     (held, (account, share, crate::ExclusionReason::RescanHold)),
                     (free, (account, share, crate::ExclusionReason::RescanHold)),
+                    (
+                        fork_held,
+                        (account, share, crate::ExclusionReason::ForkKeptLock),
+                    ),
                 ]),
             };
         });
         assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, COIN);
+        assert_eq!(
+            hub.wallet_state(&W).unwrap().excluded.waiting(),
+            BTreeSet::from([held, free])
+        );
 
-        hub.release_settled(W, BTreeSet::from([held, free]));
+        hub.release_settled(W, BTreeSet::from([held, free, fork_held]));
         let b = hub.wallet_state(&W).unwrap().balances();
         assert_eq!(
             b.confirmed,
