@@ -705,7 +705,7 @@ impl Masternodes {
                 session: frozen_session,
                 ..l.clone()
             };
-            let (_, unspent) = s.op_view(wallet).await?;
+            let unspent = s.op_view(wallet).await?.unspent;
             let frozen = s.consent_checks(&locked, &ctx, &unspent, false, Some(&rec))?;
             s.consent_and_save(wallet, &grant, &l, locked.session, &frozen, &rec)
                 .await?;
@@ -783,7 +783,7 @@ impl Masternodes {
             if !participant_services_ok(&l.session.terms.core_p2p_addrs) {
                 return Err(unsupported(Some("service")));
             }
-            let (_, unspent) = s.op_view(wallet).await?;
+            let unspent = s.op_view(wallet).await?.unspent;
             let frozen = s.consent_checks(&l, &ctx, &unspent, false, None)?;
             s.consent_and_save(wallet, &grant, &l, l.session.clone(), &frozen, &rec)
                 .await?;
@@ -823,7 +823,7 @@ impl Masternodes {
             // write, as a send holds it from its coin read through signing.
             let _fence = s.coin_fence(wallet).await?;
             let own = s.reserved_inputs(wallet, &l.row, &rec.outpoints()).await?;
-            let (_, unspent) = s.op_view(wallet).await?;
+            let unspent = s.op_view(wallet).await?.unspent;
             let frozen = s.consent_checks(&l, &ctx, &unspent, true, None)?;
             // D56 at the funding step: the copy is the one this wallet
             // approved (D65).
@@ -869,7 +869,8 @@ impl Masternodes {
             // The fence from the reservation's re-check through the
             // hand-off (§6.3).
             let fence = s.coin_fence(wallet).await?;
-            match store::derive_stage(&l, &s.shared_chain(wallet).await?) {
+            let chain = s.shared_chain(wallet).await?;
+            match store::derive_stage(&l, &chain) {
                 SharedStage::Combined => {
                     s.send_registration(wallet, &grant, &l, &ctx, fence).await?
                 }
@@ -880,7 +881,10 @@ impl Masternodes {
                         stage: "abandoned".into(),
                     });
                 }
-                SharedStage::Sent => s.resend_registration(wallet, &grant, &l, fence).await?,
+                SharedStage::Sent => {
+                    s.resend_registration(wallet, &grant, &l, &chain, fence)
+                        .await?
+                }
                 stage => return Err(stage_refusal(stage)),
             }
             outcome(&s, wallet, &session).await

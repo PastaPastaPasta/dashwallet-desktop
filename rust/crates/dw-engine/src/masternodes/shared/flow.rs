@@ -21,6 +21,7 @@ use super::super::MasternodesError;
 use super::super::follow::load_notes;
 use super::super::protx::build::{Context, invalid, refused, tx_size};
 use super::super::protx::keys::{InUse, p2pkh_id};
+use super::super::protx::ops::Beats;
 use super::super::records::HeldShares;
 use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, SharedStage};
 use super::build::{Selected, placeholder, select};
@@ -177,9 +178,15 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<ChainView, MasternodesError> {
-        let (history, unspent) = self.op_view(wallet).await?;
+        let crate::masternodes::protx::ops::OpView {
+            history,
+            unspent,
+            chainlock,
+            finality,
+        } = self.op_view(wallet).await?;
+        // The registrations the test seam mines are read with the rest.
         #[cfg(test)]
-        let history = {
+        let (history, finality) = {
             use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
             let mut history = history;
             let (mined, locked) = (self.masternodes.protx_seam())
@@ -207,12 +214,19 @@ impl NetworkSession {
                     },
                 );
             }
-            history
+            drop(finality);
+            let heights = |at_most| crate::history::spender_heights(&[&history], at_most);
+            let finality = self.finality(heights).await;
+            (history, finality)
         };
+        let seen = Beats::seen(&history, chainlock, finality.clone());
+        let beats = Beats::of(&history, chainlock, finality);
         let pending = self.spends.snapshot(&wallet);
         Ok(ChainView {
             history,
             unspent,
+            beats,
+            seen,
             pending,
         })
     }

@@ -1267,12 +1267,18 @@ export const masternodes = {
       ownFirst: "To get your coins back: first abandon the registration transaction in Activity, then abandon here to spend your coins back to this wallet.",
       openActivity: "Open in Activity",
     },
-    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each names the spend by its
-     * short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
+    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each pending state names the spend
+     * by its short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
     spendBack: {
       uncertain: "The spend back to this wallet ({txid}) may already be on the network. The wallet couldn't confirm it went out.",
       refused: "The spend back to this wallet didn't go out: {sentence}.",
       inHistory: "Abandoning: waiting for the spend back ({txid}) to confirm. Your coins are still reserved.",
+      /** A spend back is in a block that isn't final yet. No txid: the mined one may be an earlier spend
+       * back than the one the session records. */
+      confirming: {
+        one: "Abandoning: the spend back is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.",
+        other: "Abandoning: the spend back is in a block ({count} confirmations). Your coins stay reserved until a ChainLock makes it final.",
+      },
       cancelled: "You cancelled the earlier spend back ({txid}) in Activity.",
       legacy: "The wallet couldn't confirm the spend back ({txid}) went out. It may still confirm.",
       sendAgain: "Send again",
@@ -1327,6 +1333,13 @@ export const masternodes = {
       sendButton: "Send registration",
       sendAsk: "Enter your passphrase to send the registration.",
       resendButton: "Send again",
+      /** A spend of the reserved coins is in a block that isn't final yet (`confirming`): no Send again until a ChainLock makes it final or a reorg drops it. */
+      contested: {
+        one: "A transaction spending your reserved coins is in a block (1 confirmation). The wallet waits for a ChainLock to make it final.",
+        other: "A transaction spending your reserved coins is in a block ({count} confirmations). The wallet waits for a ChainLock to make it final.",
+      },
+      /** `contested` before the read has the block: the same `next` also follows an abandon, so nothing more is known. */
+      contestedPending: "Waiting for the network to settle this session's coins.",
       resendText: "Send the same transaction again. It uses the same coins and costs at most {charge}.",
       handoffRefused: "The wallet couldn't hand the registration to the network: {sentence}.",
       handoffUnknown: "The wallet couldn't confirm the registration reached the network: {sentence}. It may still confirm.",
@@ -1641,6 +1654,8 @@ export const masternodes = {
       unsigned: "Not everyone has signed yet. Paste the missing signed contributions, then send.",
       /** Send again after the registration was abandoned (`shared_stage{abandoned}`). */
       abandoned: "This registration was abandoned, so it can't be sent again.",
+      /** Send again while a spend of the registration's coins is in a block that isn't final yet (`shared_stage{conflicting}`). */
+      conflicting: "A transaction spending this registration's coins is in a block, so it can't be sent again unless that block is undone.",
       unsupported: "This version of Dash Wallet can't do this yet.",
       actor_fee: "This request takes the {fee} network fee from your share. Accept it, then approve again.",
       stale: "The masternode's keys changed since this request was made, so it can't be signed or sent.",

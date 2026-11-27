@@ -22,7 +22,7 @@ use dashcore::blockdata::transaction::special_transaction::TransactionType as Sp
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use dw_protx::payloads::resolve_collateral;
 use key_wallet::managed_account::transaction_record::{OutputRole, TransactionRecord};
-use key_wallet::transaction_checking::TransactionContext;
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 
 use crate::platform::Counterparty;
 use crate::platform::attribution::Payees;
@@ -542,6 +542,19 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
+/// Whether `rival`, in a block `counts` accepts, beats a transaction it
+/// double-spends: one InstantSend-locked (`locked`) only when a ChainLock
+/// covers that block (DIP-10, key-wallet's order). A final block is
+/// ChainLocked already, but the ChainLock may be read before its proof.
+pub(crate) fn block_beats(
+    rival: &TransactionContext,
+    locked: bool,
+    chainlock: Option<u32>,
+    counts: impl FnOnce(&BlockInfo) -> bool,
+) -> bool {
+    rival.block_info().is_some_and(counts) && (!locked || chain_locked(rival, chainlock))
+}
+
 /// Whether another transaction in a block the SPV header chain proves
 /// final ([`proven_final`] under the wallet's own `chainlock`, `active`
 /// the chain's block hash at each height it has) spends one of `txid`'s
@@ -598,40 +611,105 @@ pub(crate) fn spent_outpoints(
     txs: &HashMap<Txid, TxEntry>,
     chainlock: Option<u32>,
 ) -> HashSet<OutPoint> {
-    let mined = |e: &TxEntry| e.context.block_info().is_some();
+    let conflicted = conflicted(txs, chainlock, |_| true);
+    (txs.iter())
+        .filter(|(t, e)| {
+            e.context.block_info().is_some() || !(e.is_abandoned() || conflicted.contains_key(*t))
+        })
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
+/// The transactions out of a block that can never confirm, by
+/// [`spent_outpoints`]' rule (Core's `MarkConflicted`), each with the
+/// lowest block that beats it, as `(height, hash)`: another transaction in
+/// a block spends one of their inputs, or they descend out of a block from
+/// one that does. Only a block `counts` accepts beats anything. Abandoned
+/// ones count, so a restart reads the same set from the abandoned copies
+/// the load restores. An InstantSend-locked one is conflicted only by a
+/// block `chainlock` covers, and never through its parent.
+pub(crate) fn conflicted(
+    txs: &HashMap<Txid, TxEntry>,
+    chainlock: Option<u32>,
+    counts: impl Fn(&BlockInfo) -> bool,
+) -> HashMap<Txid, (u32, dashcore::BlockHash)> {
+    let block = |e: &TxEntry| e.context.block_info().map(|b| (b.height(), b.block_hash()));
     let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
-    for (t, e) in txs.iter().filter(|(_, e)| mined(e)) {
+    for (t, e) in txs.iter().filter(|(_, e)| block(e).is_some()) {
         for i in &e.tx.input {
             in_block.entry(i.previous_output).or_default().push((*t, e));
         }
     }
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
-    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+    for (t, e) in txs.iter().filter(|(_, e)| block(e).is_none()) {
         for i in &e.tx.input {
             if !instant_locked(e) {
                 children.entry(i.previous_output.txid).or_default().push(*t);
             }
-            let beats = |(b, be): &(Txid, &TxEntry)| {
-                b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
-            };
-            if in_block
-                .get(&i.previous_output)
-                .is_some_and(|v| v.iter().any(beats))
-            {
-                todo.push(*t);
-            }
+            let beaten = (in_block.get(&i.previous_output).into_iter().flatten())
+                .filter(|(b, be)| {
+                    b != t && block_beats(&be.context, instant_locked(e), chainlock, &counts)
+                })
+                .filter_map(|(_, be)| block(be))
+                .min();
+            todo.extend(beaten.map(|b| (*t, b)));
         }
     }
-    let mut conflicted = HashSet::new();
-    while let Some(t) = todo.pop() {
-        if conflicted.insert(t) {
-            todo.extend(children.get(&t).into_iter().flatten());
+    let mut conflicted: HashMap<Txid, (u32, dashcore::BlockHash)> = HashMap::new();
+    while let Some((t, b)) = todo.pop() {
+        if conflicted.get(&t).is_none_or(|known| b < *known) {
+            conflicted.insert(t, b);
+            todo.extend((children.get(&t).into_iter().flatten()).map(|c| (*c, b)));
         }
     }
-    (txs.iter())
-        .filter(|(t, e)| mined(e) || !(e.is_abandoned() || conflicted.contains(*t)))
-        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+    conflicted
+}
+
+/// What proves a block final ([`proven_final`]): the best ChainLock, when
+/// the SPV header chain holds its block, and that chain's block hash at
+/// each height read. The default proves nothing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Finality {
+    pub chainlock: Option<(u32, dashcore::BlockHash)>,
+    pub active: HashMap<u32, dashcore::BlockHash>,
+}
+
+impl Finality {
+    pub(crate) fn proves(&self, block: &BlockInfo) -> bool {
+        proven_final(
+            (block.height(), block.block_hash()),
+            self.chainlock,
+            &self.active,
+        )
+    }
+
+    /// Whether the header chain may still make `block` final: it proves
+    /// it, or no ChainLock reaches its height yet.
+    pub(crate) fn may_hold(&self, block: &BlockInfo) -> bool {
+        self.chainlock.is_none_or(|(h, _)| block.height() > h) || self.proves(block)
+    }
+}
+
+/// Heights at or below `at_most` of the blocks holding a transaction that
+/// spends an output of another transaction of `txs`, or an outpoint
+/// another of `txs` spends too: every block that can beat one of them or
+/// a transaction that spends the wallet's coins, the headers a
+/// [`Finality`] reads.
+pub(crate) fn spender_heights(txs: &[&HashMap<Txid, TxEntry>], at_most: u32) -> BTreeSet<u32> {
+    let mut spent: HashMap<OutPoint, usize> = HashMap::new();
+    for e in txs.iter().flat_map(|h| h.values()) {
+        for i in &e.tx.input {
+            *spent.entry(i.previous_output).or_default() += 1;
+        }
+    }
+    let known = |o: &OutPoint| {
+        spent.get(o).is_some_and(|n| *n > 1) || txs.iter().any(|h| h.contains_key(&o.txid))
+    };
+    (txs.iter().flat_map(|h| h.values()))
+        .filter_map(|e| Some((e, e.context.block_info()?.height())))
+        .filter(|(e, h)| *h <= at_most && (e.tx.input.iter()).any(|i| known(&i.previous_output)))
+        .map(|(_, h)| h)
         .collect()
 }
 
@@ -5229,6 +5307,104 @@ mod tests {
             spent_outpoints(&txs, None).contains(&coin(5)),
             "A stays held"
         );
+    }
+
+    /// #740: [`conflicted`] keeps the lowest block that beats each
+    /// transaction, along every path: a child of two beaten parents, and
+    /// its child, take the lower block, whichever parent is walked first
+    /// (16 independent diamonds, as the walk's order is the map's).
+    /// [`spent_outpoints`] holds only the rivals' inputs.
+    #[test]
+    fn mg740_conflicted_keeps_the_lowest_beating_block_along_every_path() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
+        let (mut want, mut rivals) = (HashMap::new(), HashSet::new());
+        for i in 0..16u8 {
+            let (x, y) = (coin(2 * i + 1), coin(2 * i + 2));
+            let spend = |inputs: Vec<OutPoint>, value| {
+                let inputs = inputs.into_iter().map(|o| input(o.txid, o.vout)).collect();
+                tx(inputs, vec![out(value, &hash_addr(9))])
+            };
+            let (a, b) = (spend(vec![x], 1), spend(vec![y], 2));
+            let c = spend(
+                vec![OutPoint::new(a.txid(), 0), OutPoint::new(b.txid(), 0)],
+                3,
+            );
+            let d = spend(vec![OutPoint::new(c.txid(), 0)], 4);
+            want.extend([
+                (a.txid(), 20),
+                (b.txid(), 12),
+                (c.txid(), 12),
+                (d.txid(), 12),
+            ]);
+            for t in [a, b, c, d] {
+                txs.insert(t.txid(), entry(t, TransactionContext::Mempool));
+            }
+            for (o, height) in [(x, 20), (y, 12)] {
+                let r = tx(vec![input(o.txid, o.vout)], vec![out(5, &hash_addr(8))]);
+                txs.insert(r.txid(), entry(r, in_block(height, 0)));
+                rivals.insert(o);
+            }
+        }
+        let heights: HashMap<Txid, u32> = (conflicted(&txs, None, |_| true).into_iter())
+            .map(|(t, (h, _))| (t, h))
+            .collect();
+        assert_eq!(heights, want);
+        assert_eq!(spent_outpoints(&txs, None), rivals);
+    }
+
+    /// #954: only a block `counts` accepts beats a transaction, directly
+    /// or through its parent; [`Finality`] accepts a block only when the
+    /// header chain holds its hash under a ChainLock it holds too, and
+    /// [`spender_heights`] names the blocks it must read.
+    #[test]
+    fn mg954_only_a_counted_block_beats_and_finality_checks_its_hash() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let hash = |n: u8| BlockHash::from_byte_array([n; 32]);
+        let at = |h: u32, n: u8| TransactionContext::InBlock(BlockInfo::new(h, hash(n), 0));
+        let p = tx(vec![input(coin(1).txid, 0)], vec![out(1, &hash_addr(9))]);
+        let k = tx(vec![input(p.txid(), 0)], vec![out(2, &hash_addr(9))]);
+        let r = tx(vec![input(coin(1).txid, 0)], vec![out(3, &hash_addr(8))]);
+        let paid = tx(vec![input(coin(7).txid, 0)], vec![out(4, &hash_addr(9))]);
+        let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
+        for (t, c) in [
+            (&p, TransactionContext::Mempool),
+            (&k, TransactionContext::Mempool),
+            (&r, at(20, 1)),
+            (&paid, at(5, 3)),
+        ] {
+            txs.insert(t.txid(), entry(t.clone(), c));
+        }
+        let all = conflicted(&txs, None, |_| true);
+        assert_eq!(all.get(&k.txid()), Some(&(20, hash(1))), "through P");
+        assert!(conflicted(&txs, None, |b| b.height() != 20).is_empty());
+        assert_eq!(spender_heights(&[&txs], 30), BTreeSet::from([20]));
+        assert!(spender_heights(&[&txs], 19).is_empty(), "above the bound");
+
+        let block = BlockInfo::new(20, hash(1), 0);
+        let fin = |cl: Option<(u32, u8)>, active: &[(u32, u8)]| Finality {
+            chainlock: cl.map(|(h, n)| (h, hash(n))),
+            active: active.iter().map(|(h, n)| (*h, hash(*n))).collect(),
+        };
+        assert!(fin(Some((21, 2)), &[(20, 1), (21, 2)]).proves(&block));
+        assert!(
+            !fin(None, &[(20, 1), (21, 2)]).proves(&block),
+            "no ChainLock"
+        );
+        assert!(
+            !fin(Some((19, 2)), &[(20, 1), (19, 2)]).proves(&block),
+            "above it"
+        );
+        assert!(
+            !fin(Some((21, 2)), &[(20, 4), (21, 2)]).proves(&block),
+            "a stale hash"
+        );
+        assert!(
+            !fin(Some((21, 2)), &[(20, 1), (21, 5)]).proves(&block),
+            "another branch's lock"
+        );
+        assert!(!fin(Some((21, 2)), &[(21, 2)]).proves(&block), "no header");
+        assert!(!Finality::default().proves(&block));
     }
 
     /// Two mined spends of one coin B (a fork's block the store kept) beside
