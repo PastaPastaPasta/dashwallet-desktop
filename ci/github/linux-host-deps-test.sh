@@ -178,9 +178,12 @@ images_mirrors() {
 }
 
 images_mirrors
+echo 'deb https://packages.microsoft.com/ubuntu/24.04/prod noble main' > "$work/parts/microsoft-prod.list"
 run_cached nowhere env || fail "a cache hit: the script failed"
 expect_log "verify install-cache " "a cache hit"
 no_summary "a cache hit"
+[ -f "$work/parts/microsoft-prod.list" ] || fail "a cache hit dropped a source"
+rm -f "$work/parts/microsoft-prod.list"
 
 images_mirrors
 run_cached http://us-east-2.ec2. env DW_APT_LIVE_FIRST=1 || fail "live-first, live works: the script failed"
