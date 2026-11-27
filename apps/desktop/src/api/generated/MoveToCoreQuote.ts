@@ -10,7 +10,8 @@ export type MoveToCoreQuote = { credits: string, feeCredits: string, expectedDuf
  */
 to: string, grant: GrantRequest,
 /**
- * The held top-up or send from Platform this move is the exit of:
+ * The held record from Platform this move is the exit of (a top-up, a
+ * send, a cancel, or a move or contact payment too small to cancel):
  * pass it to `platformMoveToCore`.
  */
 exitOf: string | null, };

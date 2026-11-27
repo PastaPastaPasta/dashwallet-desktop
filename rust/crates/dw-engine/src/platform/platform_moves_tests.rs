@@ -994,7 +994,10 @@ impl World {
         };
         let (pool, to) = w
             .call(|_, s, wallet, id| async move {
-                let to = s.current_receiving_address(id).await.unwrap();
+                let to = s
+                    .current_receiving_address(id, &Default::default())
+                    .await
+                    .unwrap();
                 Ok((pool(&wallet).await?.into_keys().collect(), to.to_string()))
             })
             .unwrap();

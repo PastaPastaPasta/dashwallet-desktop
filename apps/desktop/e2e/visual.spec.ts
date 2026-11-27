@@ -1581,6 +1581,77 @@ const HELD_EXIT: Record<string, { scenario: string; reach: (page: Page) => Promi
       await page.getByTestId("platform-cancel-body").waitFor();
     },
   },
+  "cancel-details": { scenario: "platform-cancel-failed-may-land", reach: (page) => openDetails(page, "platform:cancelMove:pc-held:mayland") },
+  "cancel-move-confirm": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelMove:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "cancel-move-done": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelMove:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-move-outcome-text").waitFor();
+    },
+  },
+  "payout-cancel-move-confirm": {
+    scenario: "platform-payout-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:cancelPayment:pc-held:mayland");
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "move-resend-refused": {
+    scenario: "platform-cancel-failed-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-held:mayland");
+      await page.evaluate(() => (window.__dwFixture!.world.pending.platform!.cancelPreCheck = "rulesUnsupported"));
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-go").click();
+      await authorize(page);
+      await page.getByTestId("platform-cancel-refused").waitFor();
+    },
+  },
+  "move-too-small-cancel": {
+    scenario: "platform-move-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+    },
+  },
+  "move-too-small-move-confirm": {
+    scenario: "platform-move-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:moveToCore:pm-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+      await page.getByTestId("source-detail-move-to-core").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-move-exit-send").waitFor();
+      await page.getByTestId("platform-move-quote").waitFor();
+    },
+  },
+  "payout-too-small-cancel": {
+    scenario: "platform-payout-too-small-may-land",
+    reach: async (page) => {
+      await openDetails(page, "platform:contactPayment:cp-small:mayland");
+      await page.getByTestId("source-detail-cancel").click();
+      await page.getByTestId("platform-cancel-quote-error").waitFor();
+    },
+  },
 };
 
 for (const theme of THEMES) {

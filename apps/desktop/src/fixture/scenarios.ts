@@ -1236,6 +1236,43 @@ const SCENARIOS = {
     p.activity = [{ id: "cp-held", kind: "contactPayment", state: "failed", credits: "4000000000", address: null, to: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", expectedDuffs: 3_999_774, feeCredits: null, at: at - 600, mayLand: true, estimated: false, contact }, ...p.activity];
     return w;
   },
+  /** As `platform-move-failed-may-land`, and its cancel to the wallet's own Platform address, failed by height and
+   * able to land too: Move to Dash wallet is the cancel's way out beside its exact re-send. */
+  "platform-cancel-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.activity = [{ id: "pc-held", kind: "send", state: "failed", credits: "40000000000", address: null, to: p.receive.address, expectedDuffs: null, feeCredits: null, at: at - 300, mayLand: true, estimated: false, cancels: "pm-held" }, ...p.activity];
+    return w;
+  },
+  /** As `platform-cancel-failed-may-land`, the cancel of the payment to Bob. */
+  "platform-payout-cancel-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const contact = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    p.activity = [{ id: "cp-held", kind: "contactPayment", state: "failed", credits: "4000000000", address: null, to: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", expectedDuffs: 3_999_774, feeCredits: null, at: at - 600, mayLand: true, estimated: false, contact }, ...p.activity];
+    p.activity = [{ id: "pc-held", kind: "send", state: "failed", credits: "4000000000", address: null, to: p.receive.address, expectedDuffs: null, feeCredits: null, at: at - 300, mayLand: true, estimated: false, cancels: "cp-held" }, ...p.activity];
+    return w;
+  },
+  /** A move of 0.00015 that failed by height and may still land, too small to cancel: Move to Dash wallet is its way out. */
+  "platform-move-too-small-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-small", kind: "moveToCore", state: "failed", credits: "15000000", address: null, to: p.activity[0].address, expectedDuffs: 13_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    return w;
+  },
+  /** A payment of 0.00015 to Bob that failed by height and may still land, too small to cancel. */
+  "platform-payout-too-small-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const contact = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    p.activity = [{ id: "cp-small", kind: "contactPayment", state: "failed", credits: "15000000", address: null, to: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", expectedDuffs: 13_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false, contact }, ...p.activity];
+    return w;
+  },
   /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */
   "platform-move-held-and-rest": (t) => {
     const w = base(t);

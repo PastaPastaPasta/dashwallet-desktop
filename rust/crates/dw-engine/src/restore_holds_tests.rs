@@ -1239,7 +1239,7 @@ fn a_finish_without_platform_holds_platform_funds_until_platform_is_checked() {
         .id
     };
     let dp = session.dashpay(id);
-    let (g1, g2, g3) = (grant(), grant(), grant());
+    let (g1, g2, g3, g4) = (grant(), grant(), grant(), grant());
     let codes = [
         engine
             .block_on(dp.platform_send("op".into(), g1.clone()))
@@ -1247,6 +1247,15 @@ fn a_finish_without_platform_holds_platform_funds_until_platform_is_checked() {
             .map(|e| e.code()),
         engine
             .block_on(dp.shielded_send("x".into(), 1000, None, g2.clone(), false))
+            .err()
+            .map(|e| e.code()),
+        engine
+            .block_on(dp.move_to_core(
+                WithdrawAmount::All,
+                "x".into(),
+                Some("cancel-of-move-1-0-at-1-1".into()),
+                g4.clone(),
+            ))
             .err()
             .map(|e| e.code()),
         engine
@@ -1265,8 +1274,8 @@ fn a_finish_without_platform_holds_platform_funds_until_platform_is_checked() {
             .err()
             .map(|e| e.code()),
     ];
-    assert_eq!(codes, [Some("platform.restored"); 4]);
-    for g in [&g1, &g2, &g3] {
+    assert_eq!(codes, [Some("platform.restored"); 5]);
+    for g in [&g1, &g2, &g3, &g4] {
         assert!(
             session
                 .vault()

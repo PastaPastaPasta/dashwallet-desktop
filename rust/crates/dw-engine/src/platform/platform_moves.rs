@@ -263,7 +263,8 @@ pub(crate) struct MoveRecord {
     /// addresses, so it pays no one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cancel_of: Option<String>,
-    /// The held send this move to Core is the way out of (#762).
+    /// The held send or cancel this move to Core is the way out of (#762,
+    /// #1006).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) exit_of: Option<String>,
     /// A way out whose link fields disagree with its id: it stays a contact
@@ -3792,24 +3793,22 @@ pub(crate) async fn quote(
     if !(moves.iter()).any(|m| m.holds() && !m.reached(&seen)) {
         address_sends_open(network)?;
     }
-    // A move, send, contact payment, top-up or registration's create not
-    // settled: the move beside it takes exactly its inputs (C-routes C3-9,
-    // #762), as `run` plans it, so Confirm shows that move; one Platform has
-    // not answered holds the next move, as the move refuses it. Beside a
-    // send it is the send's exit, named, which only its document settles.
-    let open = |m: &&MoveRecord| m.holds() && (m.kind.credits_identity() || !m.reached(&seen));
-    let held = (moves.iter())
-        .filter(open)
-        .find(|m| m.kind.leaves_no_document())
-        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(&seen)));
+    // A move, send, cancel, contact payment, top-up or registration's create
+    // not settled: the move beside it takes exactly its inputs (C-routes
+    // C3-9, #762, #1006), as `run` plans it, so Confirm shows that move; one
+    // Platform has not answered holds the next move, as the move refuses it.
+    let held = beside(&moves, &seen);
     if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    // A held cancel has no exit of its own: its withdrawal's document
-    // settles it, and a move beside it waits, as the move refuses it.
-    if let Some(c) =
-        (moves.iter()).find(|m| m.cancel_of.is_some() && m.holds() && !m.reached(&seen))
-    {
+    // A held cancel is exited only by a move named its exit, or the exit of
+    // its identical re-send that Platform answered.
+    if let Some(c) = (moves.iter()).find(|m| {
+        m.cancel_of.is_some()
+            && m.holds()
+            && !m.reached(&seen)
+            && (m.state == PlatformActivityState::Pending || held.is_none_or(|h| !resends(h, m)))
+    }) {
         return Err(CreditsError::MovePending { id: c.id.clone() });
     }
     let version = net.version();
@@ -3830,8 +3829,12 @@ pub(crate) async fn quote(
             return Err(CreditsError::MovePending { id: h.id.clone() });
         }
     }
+    let taken: BTreeSet<String> = match held {
+        Some(c) if c.cancel_of.is_some() => paid_at(&moves, c).map(str::to_owned).collect(),
+        _ => BTreeSet::new(),
+    };
     let to = session
-        .current_receiving_address(wallet_id)
+        .current_receiving_address(wallet_id, &taken)
         .await
         .map_err(PlatformError::from)?;
     let credits = planned.may_lose();
@@ -3844,8 +3847,62 @@ pub(crate) async fn quote(
             max_duffs: 0,
             max_credits: credits,
         },
-        exit_of: (held.filter(|h| h.kind.leaves_no_document())).map(|h| h.id.clone()),
+        exit_of: (held.filter(|h| named_exit(h, version))).map(|h| h.id.clone()),
     })
+}
+
+/// The held record a move to Core is planned beside (C-routes C3-9, #762):
+/// one that leaves no document and may still execute (a top-up or a
+/// registration's create also once its nonces are taken), else any that
+/// may still execute whose nonces are not taken.
+fn beside<'m>(moves: &'m [MoveRecord], seen: &Seen) -> Option<&'m MoveRecord> {
+    let open = |m: &&MoveRecord| m.holds() && (m.kind.credits_identity() || !m.reached(seen));
+    (moves.iter())
+        .filter(open)
+        .find(|m| m.kind.leaves_no_document())
+        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(seen)))
+}
+
+/// A held withdrawal or payout with no cancel at `version`: its cancel's
+/// output, less the fee, would fall below a transfer's least
+/// (`cancel_plan`'s `credits.send_out_of_range`, #1006).
+fn uncancellable(held: &MoveRecord, version: &PlatformVersion) -> bool {
+    held.kind.withdraws()
+        && matches!(
+            cancel_plan(held, &Limits::transfer_at(version)),
+            Err(CreditsError::SendOutOfRange { .. })
+        )
+}
+
+/// The addresses the held withdrawals and payouts at `cancel`'s inputs pay,
+/// but for its own exits and those of its identical re-sends. The exit
+/// beside a held cancel pays none of them, as its quote picks its address,
+/// so its document is its own (#1006); a second exit may pay the first
+/// one's, as exits paying one address share one document.
+fn paid_at<'m>(moves: &'m [MoveRecord], cancel: &'m MoveRecord) -> impl Iterator<Item = &'m str> {
+    let key = cancel.key();
+    let own = move |id: &str| (moves.iter()).any(|c| c.id == id && resends(cancel, c));
+    (moves.iter())
+        .filter(move |m| m.holds() && m.kind.withdraws() && m.key() == key)
+        .filter(move |m| !m.exit_of.as_deref().is_some_and(own))
+        .map(|m| m.to.trim())
+}
+
+/// `m` is the transfer `named` signed again: itself, its identical retry,
+/// or, of a cancel, its identical re-send of the same record (#762, #1006).
+/// The exit of `named` follows these, and no other member that leaves no
+/// document.
+fn resends(named: &MoveRecord, m: &MoveRecord) -> bool {
+    named.kind == MoveKind::Transfer && m.cancel_of == named.cancel_of && m.terms() == named.terms()
+}
+
+/// The move beside `held` is its named exit: beside a record that leaves
+/// no document (a top-up, a send, a cancel), which only the exit's document
+/// tells apart from it, and beside a withdrawal or payout that has no
+/// cancel (#762, #1006). Beside one that has a cancel, the move is as
+/// before: unnamed, at its inputs and nonces.
+fn named_exit(held: &MoveRecord, version: &PlatformVersion) -> bool {
+    held.kind.leaves_no_document() || uncancellable(held, version)
 }
 
 /// The cancel of the held withdrawal or contact payout `of` (#762): one
@@ -4502,20 +4559,26 @@ pub(crate) async fn run(
     let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
     let cancel_of = named.filter(|_| matches!(target, Target::Cancel(_)));
     // The exit's quote was planned beside that record: once it no longer
-    // holds, this is not the move Confirm showed, whatever else holds now,
-    // and a lagging read does not hide that. A move to Core exits a held
-    // top-up or send (C3-9, #762); a cancel, a held withdrawal or payout,
-    // whose document says which of the two executed.
+    // holds, or its quote would no longer name it, this is not the move
+    // Confirm showed, whatever else holds now, and a lagging read does not
+    // hide that. A move to Core exits a held top-up, send or cancel, or a
+    // withdrawal or payout that has no cancel ([`named_exit`]; C3-9, #762,
+    // #1006); a cancel, a held withdrawal or payout, whose document says
+    // which of the two executed.
     let exits_kind = |m: &MoveRecord| match target {
         Target::Cancel(_) => m.kind.withdraws(),
-        _ => m.kind.credits_identity() || (m.kind == MoveKind::Transfer && m.cancel_of.is_none()),
+        _ => named_exit(m, version),
     };
     let exited = match exit_of.or(cancel_of) {
         Some(id) => Some(
             (moves.iter())
                 .find(|m| m.id == id && exits_kind(m) && m.holds())
                 .ok_or_else(|| {
-                    if off {
+                    // Still held, its cancel available again: a fresh quote
+                    // moves beside it unnamed (#1006).
+                    let cancellable = exit_of.is_some()
+                        && (moves.iter()).any(|m| m.id == id && m.holds() && m.kind.withdraws());
+                    if off && !cancellable {
                         flag()
                     } else {
                         CreditsError::QuoteChanged
@@ -4541,14 +4604,17 @@ pub(crate) async fn run(
                     id: pending.id.clone(),
                 });
             }
-            // A held cancel has no exit of its own, and a cancel of a
-            // record that has one holding is only its exact re-send, as the
-            // quotes offer them.
+            // A held cancel is exited only by a move named its exit, or the
+            // exit of its identical re-send (#1006), and a cancel of a record
+            // that has one holding is only its exact re-send, as the quotes
+            // offer them.
             let cancel = (moves.iter()).find(|m| {
                 m.cancel_of.is_some()
                     && m.holds()
                     && match target {
-                        Target::Core(_) => exit_of.is_none() && !m.reached(&seen),
+                        Target::Core(_) => {
+                            !exited.is_some_and(|e| resends(e, m)) && !m.reached(&seen)
+                        }
                         Target::Cancel(to) => {
                             m.cancel_of.as_deref() == cancel_of && m.to != bech32m(&to, network)
                         }
@@ -4557,6 +4623,24 @@ pub(crate) async fn run(
             });
             if let Some(c) = cancel {
                 return Err(CreditsError::MovePending { id: c.id.clone() });
+            }
+            // A withdrawal or payout with no cancel is exited only by a move
+            // named its exit, as its quote names it (#1006): unnamed, this
+            // is not the move Confirm showed.
+            if let (Target::Core(_), None) = (target, exit_of)
+                && beside(&moves, &seen).is_some_and(|h| uncancellable(h, version))
+            {
+                return Err(CreditsError::QuoteChanged);
+            }
+            if let (Target::Core(to), Some(c)) = (target, exited)
+                && c.cancel_of.is_some()
+                && let Ok(script) = withdrawal::destination(network, to)
+                && paid_at(&moves, c).any(|paid| {
+                    (withdrawal::destination(network, paid))
+                        .is_ok_and(|s| s.as_bytes() == script.as_bytes())
+                })
+            {
+                return Err(CreditsError::QuoteChanged);
             }
             let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
             // The hold may have settled since the entry's check: with the
@@ -4656,6 +4740,7 @@ pub(crate) async fn run(
         Target::Identity(identity) => (identity.id().to_string(Encoding::Base58), 0),
     };
     let at = format!("{}-{}", seen.height, moves.len());
+    // The exit of a held send or cancel carries its link (#762, #1006).
     let exit_of_send = (exit_of.and(exited))
         .filter(|h| h.kind == MoveKind::Transfer)
         .map(|h| h.id.clone());
@@ -4712,10 +4797,12 @@ pub(crate) async fn run(
     // address only its exact retry, so whichever of the two lands pays what
     // the user asked, once. Two exits differ (#762), each settled by a
     // withdrawal's document: the named "Move to Dash wallet" of a held
-    // send, and the cancel of a held withdrawal or payout. Never a cancel
-    // beside a send or a top-up: neither leaves a document to tell them
-    // apart.
-    let exits_send = exited.is_some_and(|e| e.kind == MoveKind::Transfer);
+    // send or cancel (#1006), and the cancel of a held withdrawal or
+    // payout. Never a cancel beside a send or a top-up: neither leaves a
+    // document to tell them apart. The named exit follows its transfer and
+    // that one's identical retries or re-sends only, so the key keeps one
+    // member that leaves no document.
+    let follows = |h: &MoveRecord| exited.is_some_and(|e| resends(e, h));
     let blocks = |h: &&MoveRecord| {
         if h.key() != record.key() {
             return true;
@@ -4724,7 +4811,7 @@ pub(crate) async fn run(
             return false;
         }
         match (h.kind, record.kind) {
-            (MoveKind::Transfer, MoveKind::ToCore) => !exits_send,
+            (MoveKind::Transfer, MoveKind::ToCore) => !follows(h),
             (MoveKind::ToCore | MoveKind::ToContact, MoveKind::Transfer) => cancel_of.is_none(),
             (MoveKind::Transfer, _) | (_, MoveKind::Transfer) => true,
             _ => false,

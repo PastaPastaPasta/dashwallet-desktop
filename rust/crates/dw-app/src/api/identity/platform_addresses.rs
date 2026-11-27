@@ -236,7 +236,8 @@ pub struct MoveToCoreQuote {
     /// The wallet's own Core receive address: `platformMoveToCore` pays it.
     pub to: String,
     pub grant: GrantRequest,
-    /// The held top-up or send from Platform this move is the exit of:
+    /// The held record from Platform this move is the exit of (a top-up, a
+    /// send, a cancel, or a move or contact payment too small to cancel):
     /// pass it to `platformMoveToCore`.
     pub exit_of: Option<String>,
 }

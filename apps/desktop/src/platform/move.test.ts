@@ -7,7 +7,7 @@ import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, moveOutcomeCopy, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { exitLinkOf, exitUnresolved, hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveExit, moveFor, moveOutcomeCopy, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -255,6 +255,31 @@ describe("the move's result sheet", () => {
     expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced" }, false, credits, amount)).toEqual({ title: MOVE_COPY.replaced.title, text: MOVE_COPY.replaced.text });
     expect(moveOutcomeCopy(OUTCOME, false, credits, amount).title).toBe("Moved");
     expect(moveOutcomeCopy({ ...OUTCOME, state: "failed" }, true, credits, amount)).toEqual({ title: MOVE_COPY.failed.title, text: MOVE_COPY.failed.text });
+  });
+});
+
+describe("exitUnresolved", () => {
+  const row = (id: string, kind: PlatformActivity["kind"], cancels?: string): PlatformActivity => ({ id, kind, state: "failed", credits: "1000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: 1, mayLand: true, estimated: false, ...(cancels ? { cancels } : {}) });
+  const rows = [row("pt-held", "toIdentity"), row("pc-held", "send", "pm-held"), row("pm-held", "moveToCore")];
+
+  it("holds Go only while the record the quote names has no row", () => {
+    expect(exitUnresolved(rows, null)).toBe(false);
+    expect(exitUnresolved(rows, "pc-held")).toBe(false);
+    expect(exitUnresolved(rows, "pc-later")).toBe(true);
+    expect(exitUnresolved(undefined, "pc-held")).toBe(true);
+  });
+
+  it("leaves a top-up's exit free though it gives no Confirm line", () => {
+    expect(moveExit(rows, "pt-held")).toBeNull();
+    expect(exitUnresolved(rows, "pt-held")).toBe(false);
+  });
+});
+
+describe("exitLinkOf", () => {
+  it("reads the record an exit is out of from its id, as the engine stores the link", () => {
+    expect(exitLinkOf("exit-of-cancel-of-move-1-2-at-5-1-at-9-2")).toBe("cancel-of-move-1-2-at-5-1");
+    expect(exitLinkOf("exit-of-ps-1-at-3")).toBe("ps-1");
+    for (const id of ["pm-1", "cancel-of-move-1-at-5-1", "exit-of--at-3", "exit-of-ps-1"]) expect(exitLinkOf(id)).toBeNull();
   });
 });
 
