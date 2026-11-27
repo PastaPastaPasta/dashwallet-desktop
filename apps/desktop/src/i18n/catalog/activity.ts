@@ -2,10 +2,15 @@ import type { Tree } from "../core";
 
 export const activity = {
   abandon: {
-    spending: "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the payment still goes through, it counts again, so sending it again could pay twice.",
+    sweepResendHint: "Use Resend to finish moving these mixed coins. They stay reserved until the move or a competing spend is locked or confirmed.",
+    sweepResendQuestion: "Send the same move within this wallet again? There’s no new fee. The coins stay reserved until the move or a competing spend is locked or confirmed.",
+    sweepResendConfirm: "Resend move",
+    sweepResendCancel: "Keep abandoned",
+    sweepResendUnknown: "Dash Wallet couldn't verify the send. It will try again when it reconnects. The coins stay reserved.",
+    spending: "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.",
     notSpending: "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.",
     unknownInputs:
-      "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
     rescanFirst: "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
     /** Beside Abandon on a payment whose coin is pending because it may never confirm
      * (`coins.pendingUnproven`). */

@@ -819,12 +819,38 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the payment still goes through, it counts again, so sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+  });
+
+  test("offers Resend for an abandoned mixed-coin move", async ({ page }) => {
+    const errors = await open(page);
+    await world(page, (w) => {
+      const wallet = w.wallets[0];
+      const source = wallet.rows.find((r) => r.status.kind === "unconfirmed")!;
+      const txid = "d1".repeat(32);
+      wallet.rows = [{ ...source, txid, txType: "coinJoinSend", label: "Mixed coins move",
+        timestamp: (source.timestamp ?? 0) + 60, status: { ...source.status, kind: "abandoned" } }, ...wallet.rows];
+      w.send.abandonedSweepChunks = [txid];
+    });
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"d1".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-sweep-resend-hint")).toHaveText(
+      "Use Resend to finish moving these mixed coins. They stay reserved until the move or a competing spend is locked or confirmed.",
+    );
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await page.getByTestId("tx-resend").click();
+    await expect(page.getByTestId("tx-sweep-resend-question")).toHaveText(
+      "Send the same move within this wallet again? There’s no new fee. The coins stay reserved until the move or a competing spend is locked or confirmed.",
+    );
+    await page.getByTestId("tx-sweep-resend-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was sent to the network again.");
+    await expect(page.getByTestId("tx-sweep-resend-hint")).toHaveCount(0);
+    expect(errors).toEqual([]);
   });
 
   test("warns about paying twice for a payment whose spent coins are not known yet", async ({ page }) => {
@@ -833,7 +859,7 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the payment still goes through, it counts again, so sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.",
     );
     expect(errors).toEqual([]);
   });
@@ -954,7 +980,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. Dash Wallet only retries an abandoned move if you choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");

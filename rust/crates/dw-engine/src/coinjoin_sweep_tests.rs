@@ -1029,6 +1029,7 @@ fn an_abandoned_chunk_is_not_sent_again_after_reconnect_or_restart() {
     for reopen in [false, true] {
         if reopen {
             f.reopen();
+            start_sweep_spv(&f);
             for seed in [1, 2] {
                 f.credit_coinjoin(seed, COIN);
             }
@@ -1057,11 +1058,127 @@ fn an_abandoned_chunk_is_not_sent_again_after_reconnect_or_restart() {
         assert!(sweep_out_keys(&f).contains(&txid));
         assert_held(&f, abandoned);
     }
-    let spent = abandoned.input[0].previous_output;
-    drop_coins(&f, &HashSet::from([spent]));
-    swept(&f, txid, conflict(spent).txid(), None);
+    let detail = within(&f, f.session.tx_detail_extras(f.wallet, txid)).unwrap();
+    assert!(
+        detail.can_resend,
+        "Activity must offer a way to finish the move after reopening"
+    );
+    let wire = hook(&f, 1, &[]);
+    f.session
+        .hub
+        .fail_abandon_mark
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(
+        within(&f, f.session.resend_transaction(f.wallet, txid)),
+        Err(EngineError::Storage(_))
+    ));
+    assert!(wire.txs().is_empty());
+    assert!(
+        within(&f, async {
+            Ok(f.session.abandon_marked(f.wallet, txid).await)
+        })
+        .unwrap()
+    );
+    assert_held(&f, abandoned);
+
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    let scope = f.wallet.to_string();
+    let mut hooks = f.session.coinjoin.sweep_hooks.lock().unwrap();
+    let original = hooks.broadcast.take().unwrap();
+    hooks.broadcast = Some(Arc::new(move |tx| {
+        assert!(
+            appdb
+                .setting(&scope, &format!("abandoned:{}", tx.txid()))
+                .unwrap()
+                .is_none()
+        );
+        original(tx)
+    }));
+    drop(hooks);
+    within(&f, f.session.resend_transaction(f.wallet, txid)).unwrap();
+    assert_eq!(wire.txs(), std::slice::from_ref(abandoned));
+    assert!(
+        !within(&f, async {
+            Ok(f.session.abandon_marked(f.wallet, txid).await)
+        })
+        .unwrap()
+    );
+    assert_held(&f, abandoned);
+    see_spent(&f, std::slice::from_ref(abandoned));
+    chainlock(&f, 900);
     resend(&f, None).unwrap();
     assert!(!sweep_out_keys(&f).contains(&txid));
+}
+
+fn start_sweep_spv(f: &Fixture) {
+    within(f, async {
+        f.session.start_spv().await?;
+        while !f.session.sync_snapshot()?.running {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
+    let f = fixture(false);
+    for seed in [1, 2] {
+        f.credit_coinjoin(seed, COIN);
+    }
+    let initial = hook(&f, 500, &[Outcome::Unknown]);
+    move_to_wallet(&f).unwrap();
+    let chunk = initial.txs()[0].clone();
+    let txid = chunk.txid();
+    let session = Arc::clone(&f.session);
+    let wallet = f.wallet;
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = session.manager()?;
+            session.abandon_inner(&manager, wallet, txid).await
+        }))
+        .unwrap();
+    start_sweep_spv(&f);
+    let peer = "127.0.0.1:9".parse().unwrap();
+    f.session
+        .hub
+        .tracker()
+        .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(peer));
+
+    let wire = hook(&f, 1, &[Outcome::Rejected]);
+    assert!(matches!(
+        within(&f, f.session.resend_transaction(f.wallet, txid)),
+        Err(EngineError::Send(
+            crate::send::SendFailure::BroadcastUnknown { .. }
+        ))
+    ));
+    assert_eq!(wire.txs(), std::slice::from_ref(&chunk));
+    assert!(
+        !within(&f, async {
+            Ok(f.session.abandon_marked(f.wallet, txid).await)
+        })
+        .unwrap()
+    );
+    assert!(sweep_out_keys(&f).contains(&txid));
+    assert_held(&f, &chunk);
+    dash_spv::EventHandler::on_network_event(
+        &*f.session.hub,
+        &dash_spv::network::NetworkEvent::PeerDisconnected(peer),
+    );
+    dash_spv::EventHandler::on_network_event(
+        &*f.session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected(peer),
+    );
+    within(&f, async {
+        while wire.txs().len() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(wire.txs(), [chunk.clone(), chunk.clone()]);
+    assert_held(&f, &chunk);
 }
 
 /// Q1: "Try again" and every reconnect send the chunk's recorded bytes,

@@ -2259,6 +2259,46 @@ impl NetworkSession {
         .await
     }
 
+    async fn can_restart_abandoned_sweep(&self, wallet: WalletId, txid: Txid, f: &Facts) -> bool {
+        f.abandoned
+            && f.abandon_marked
+            && f.depth == 0
+            && !f.instant_locked
+            && !f.chain_locked
+            && self
+                .pending_sweep_chunk(wallet, txid)
+                .await
+                .is_ok_and(|chunk| chunk.is_some())
+    }
+
+    /// Called under the abandon write gate for an explicitly resumed sweep.
+    pub(crate) async fn clear_sweep_abandon(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<(), EngineError> {
+        if !self.read_abandon_mark(wallet, txid).await?
+            || self
+                .hub
+                .history
+                .read_wallet(&wallet, |h| h.drops.contains_key(&txid))
+        {
+            return Err(EngineError::TxActionRefused(
+                TxActionRefusal::AlreadyAbandoned,
+            ));
+        }
+        self.write_abandoned_marks(wallet, vec![(format!("{ABANDONED_PREFIX}{txid}"), None)])
+            .await?;
+        self.hub.history.with_wallet(wallet, |history| {
+            history.abandoned_here.remove(&txid);
+            if let Some(entry) = history.txs.get_mut(&txid) {
+                entry.abandoned = false;
+            }
+        });
+        self.hub.pump.mark_history(wallet, Some(&[txid]));
+        Ok(())
+    }
+
     /// dash-qt detail fields and action enablement for one transaction.
     pub async fn tx_detail_extras(
         self: &Arc<Self>,
@@ -2318,7 +2358,8 @@ impl NetworkSession {
                 in_mempool: None,
                 abandoned: f.abandoned,
                 can_abandon: f.abandon_refusal().is_none(),
-                can_resend: f.resend_refusal().is_none(),
+                can_resend: f.resend_refusal().is_none()
+                    || this.can_restart_abandoned_sweep(wallet, txid, &f).await,
                 dust_locked_outputs,
                 withheld_outputs,
                 checking_spent_coins: f.abandoned && {
@@ -4524,6 +4565,9 @@ impl NetworkSession {
         let manager = self.manager()?;
         let (entry, f) = self.tx_facts(&manager, wallet, txid, false).await?;
         let peers = self.hub.tracker().snapshot().connected_peers;
+        if replay_generation.is_none() && self.can_restart_abandoned_sweep(wallet, txid, &f).await {
+            return self.restart_abandoned_sweep(wallet, txid).await;
+        }
         if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
             return Err(r.into());
         }
