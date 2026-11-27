@@ -2549,6 +2549,26 @@ fn skipped_at_restart(
     (engine, s, id, platform)
 }
 
+#[test]
+fn caught_up_pins_spv_reports_before_acquiring_the_tracker() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = session(dir.path(), Arc::new(Platform::default()));
+    let id = restore(&engine, &session);
+    let mut tracker = session.hub.tracker();
+    tracker.set_running(true);
+    let pinned = std::thread::scope(|scope| {
+        scope.spawn(|| caught_up(&session, id));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !session.hub.pin_progress.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pinned = session.hub.pin_progress.load(Ordering::SeqCst);
+        drop(tracker);
+        pinned
+    });
+    assert!(pinned);
+}
+
 /// SPV caught up, as dash-spv reports it, so a funding of wallet `id` is
 /// held by nothing but its bring-up.
 pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
@@ -2564,9 +2584,9 @@ pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
     let mut progress = SyncProgress::default();
     progress.update_headers(headers);
     progress.update_masternodes(mn);
-    s.hub.tracker().on_progress(&progress);
     // A later report of the offline SPV client would read as behind.
     s.hub.pin_progress.store(true, Ordering::SeqCst);
+    s.hub.tracker().on_progress(&progress);
     assert!(super::registration_flow::wallet_synced(s, id), "caught up");
 }
 

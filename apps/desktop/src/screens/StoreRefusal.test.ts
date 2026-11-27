@@ -1052,6 +1052,7 @@ describe("the fixture's restore", () => {
     const world = buildWorld("funded", null);
     world.openRefusal = STORE_SCREENS.refusedRestore(FOLDER);
     const ctx = ctxOf(world);
+    expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_refused" }));
     expect(available({ network: null }, ctx)).toBe(false);
     expect(() => request({ network: null }, ctx)).toThrow(expect.objectContaining({ code: "storage_restore", data: expect.objectContaining({ state: "refused", cause: "missingBackup" }) }));
     world.restoreAvailable = true;

@@ -194,6 +194,33 @@ fn a_request_without_a_refused_open_is_refused_and_writes_nothing() {
     assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
 }
 
+#[test]
+fn a_restore_refusal_does_not_authorize_another_network() {
+    let f = upgraded();
+    let other = upgraded();
+    let testnet = f.root.join("testnet");
+    std::fs::rename(&other.net, &testnet).unwrap();
+    let engine = on_restore_screen(&f);
+    assert!(
+        engine
+            .block_on(engine.restore_available(&DashNetwork::Testnet))
+            .unwrap()
+    );
+
+    let got = engine.block_on(engine.request_restore(&DashNetwork::Testnet));
+    assert!(
+        matches!(got, Err(EngineError::InvalidArgument(_))),
+        "{got:?}"
+    );
+    assert_eq!(dw_store_upgrade::pending_restore(&testnet).unwrap(), None);
+
+    engine
+        .block_on(engine.request_restore(&DashNetwork::Regtest))
+        .unwrap();
+    assert!(backups(&f).join("RESTORE-REQUESTED").is_file());
+    close(engine);
+}
+
 /// Restore earlier data: from the Restore screen, the request writes only
 /// RESTORE-REQUESTED; the next start's open runs it before any store opens
 /// and opens the restored data, with the RESTORED mark set. Run after a

@@ -4,6 +4,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { absentAsUnavailable } from "../api/pending";
+import { requestRestore } from "../api/generated/commands";
 import { IpcBackend } from "../api/tauri";
 import { OpenFailureActions } from "../screens/StoreRefusal";
 import { installFixture, type FixtureHandle } from "./index";
@@ -73,6 +74,7 @@ describe("fixture pending commands", () => {
   it("asks for the restore and restarts; the next start opens the earlier data, restored", async () => {
     clearMocks();
     fixture = installFixture({ scenario: "funded", openRefused: "refusedRestore", restoreAvailable: true });
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_refused" });
     expect(await backend.restoreAvailable()).toBe(true);
     await new OpenFailureActions(backend).restore();
     expect(fixture.world.restoreCalls).toEqual(["restoreAvailable", "requestRestore"]);
@@ -82,6 +84,20 @@ describe("fixture pending commands", () => {
     installFixture({ scenario: "funded" });
     expect(await backend.openNetwork()).toMatchObject({ network: { restored: true } });
     expect(await backend.activeNetwork()).toMatchObject({ restored: true });
+  });
+
+  it("only accepts a restore after the same network's qualifying refusal", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "funded", openRefused: "refusedRestore", restoreAvailable: true });
+    await expect(backend.requestRestore()).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(fixture.world.restoreRequested).toBeUndefined();
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_refused" });
+    await expect(requestRestore("mainnet")).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(fixture.world.restoreRequested).toBeUndefined();
+    fixture.world.openRefusal = undefined;
+    await backend.openNetwork();
+    await expect(backend.requestRestore()).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(fixture.world.restoreRequested).toBeUndefined();
   });
 
   it("reads restore_available as absent, and the restore commands as unavailable, in a dw-app without them", async () => {

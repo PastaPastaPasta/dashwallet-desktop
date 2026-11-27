@@ -801,6 +801,54 @@ fn a_flow_lease_pays_one_payout() {
     assert!(f.reserved(BOB).is_none(), "no second address reserved");
 }
 
+#[test]
+fn two_payouts_racing_on_one_flow_lease_pay_once() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    let grants = vec![f.grant(GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits: 10 * SHIELDED,
+    })];
+    let lease = f
+        .engine
+        .block_on(f.session.begin_flow(
+            f.wallet,
+            FlowKind::ContactPayFromBalance,
+            grants,
+            Some(PaymentSource::Shielded),
+        ))
+        .unwrap();
+    let start = Arc::new(tokio::sync::Barrier::new(2));
+    let pay = || {
+        let (start, session, lib) = (Arc::clone(&start), Arc::clone(&f.session), Arc::clone(&lib));
+        let (wallet, call) = (f.wallet, f.call(BOB, credits(), &lease, false));
+        f.session.rt.spawn(async move {
+            start.wait().await;
+            shielded_payout::pay(&session, wallet, &*lib, call).await
+        })
+    };
+    let (first, second) = (pay(), pay());
+    let results = f
+        .engine
+        .block_on(async { [first.await.unwrap(), second.await.unwrap()] });
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    let error = results.into_iter().find_map(Result::err).unwrap();
+    assert!(
+        matches!(
+            code(&error),
+            "platform.lease_expired" | "contact.payment_locked"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(lib.withdrawn_to().len(), 1);
+    assert_eq!(f.payout_rows().len(), 1);
+    assert!(f.reserved(BOB).is_none(), "no second address reserved");
+}
+
 /// A payout's `begin_flow` refuses a `PlatformOp` grant that caps no
 /// credits before redeeming it: the grant stays for another try.
 #[test]

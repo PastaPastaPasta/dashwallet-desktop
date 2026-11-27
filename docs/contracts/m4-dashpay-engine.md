@@ -5538,6 +5538,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     transfer, a withdrawal or a top-up from addresses, at the pinned platform revision (as item 103 does); a repin
     checks both again. A repin that changes the rules for address transfers or withdrawals also either ships the exit
     beside a held cancel (#1006) or shows that a held cancel's exact re-send still passes the transfer's pre-check.
+    A repin reruns `platform_address_signatures_pass_the_pinned_witness_check` to verify that the vault's compact
+    P2PKH witnesses use low S and a compressed key header and pass Platform's verifier.
     A held cancel has a way out beside its exact re-send (#1006; version 110): "Move to Dash wallet".
     `move_to_core_quote` beside a held cancel that is not `Pending` names the cancel in `exit_of`, plans on its inputs
     only, and pays the first unused receiving address that no withdrawal or payout at those inputs pays, other than

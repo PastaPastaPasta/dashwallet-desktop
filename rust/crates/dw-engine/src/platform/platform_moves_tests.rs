@@ -422,6 +422,7 @@ pub(crate) enum Act {
     /// The transition sent `n`-th (from 0) executes instead of this one,
     /// which is answered with the addresses' snapshot.
     EarlierExecutes(usize),
+    EarlierExecutesThenStaleNonce(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
     /// Signed and broadcast; the wait ends unconfirmed, a structure refusal
@@ -814,6 +815,13 @@ impl FakeMoves {
             Act::EarlierExecutes(n) => {
                 self.execute_sent(n);
                 Ok(())
+            }
+            Act::EarlierExecutesThenStaleNonce(n) => {
+                use dpp::consensus::state::address_funds::AddressInvalidNonceError;
+                assert!(self.execute_sent(n));
+                let (address, (nonce, _)) = inputs.first_key_value().unwrap();
+                let stale = AddressInvalidNonceError::new(*address, *nonce, nonce + 1);
+                Err(PlatformWalletError::Sdk(ConsensusError::from(stale).into()))
             }
         };
         result.map_err(Box::new)

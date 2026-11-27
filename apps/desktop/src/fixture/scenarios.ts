@@ -97,6 +97,8 @@ export interface World {
   /** `open_network` refuses the wallet data as the engine does when it can't open it safely (it
    * changed nothing): every open, a restart's included. */
   openRefusal?: StoreRefusedData;
+  /** The last open of this world was refused with Restore earlier data for this network. */
+  restoreRefusedNetwork?: string;
   /** `open_network` refuses a data folder others can change, before anything else: every open, a
    * restart's included, until a test clears it (the user changed the folder's permissions). */
   openNotPrivate?: NotPrivateData;

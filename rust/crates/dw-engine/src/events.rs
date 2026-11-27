@@ -2886,12 +2886,12 @@ impl EventHandler for SessionHub {
     }
 
     fn on_progress(&self, progress: &SyncProgress) {
-        #[cfg(test)]
-        if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
         let (changed, masternodes_synced, tip) = {
             let mut tracker = self.tracker();
+            #[cfg(test)]
+            if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             (
                 tracker.on_progress(progress),
                 tracker.masternodes_synced(),
