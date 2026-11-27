@@ -13,7 +13,7 @@ use dashcore::{InstantLock, OutPoint, Transaction, Txid};
 
 use super::own_spend_balance_tests::funded_wallet_and_funding;
 use super::own_spend_disk_tests::{
-    Accept, COIN, TIP, coins, fresh_address, prepare, send, sent_marks, spendable,
+    Accept, COIN, TIP, coins, fresh_address, prepare, send, sent_marks, spendable, spendable_for,
     start_offline_spv, wait_stored,
 };
 use super::{balances, deliver, mined, reopen, rows};
@@ -218,7 +218,13 @@ fn a_locked_payment_a_fork_removed_stays_pending_and_keeps_its_coin_spent() {
     let b = balances(&s.session, s.id);
     assert_eq!(b.total, 11 * COIN + CHANGE, "P's change counts: {b:?}");
     let change = OutPoint::new(s.p.txid(), 1);
-    assert!(spendable(&s.engine, &s.session, s.id, change));
+    assert!(spendable_for(
+        &s.engine,
+        &s.session,
+        s.id,
+        change,
+        CHANGE / 2
+    ));
 }
 
 /// The same, with the lock heard only after the payment's block: the
