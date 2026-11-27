@@ -520,13 +520,16 @@ impl RefusedScreen {
         }
     }
 
-    /// Adds Set up from recovery phrase after Restore earlier data: the way
-    /// out once a restore was refused for a shielded hold (R-1).
+    /// Adds Set up from recovery phrase, after Restore earlier data if present.
     pub fn offer_recover(&mut self) {
-        if !self.buttons.contains(&RECOVER) {
+        if !self.offers_recover() {
             let at = (self.buttons.iter().position(|b| *b == RESTORE)).map_or(0, |i| i + 1);
             self.buttons.insert(at, RECOVER);
         }
+    }
+
+    pub fn offers_recover(&self) -> bool {
+        self.buttons.contains(&RECOVER)
     }
 
     /// "{intro}: {detail} {unchanged} {wayOut}" with `{folder}` filled in.

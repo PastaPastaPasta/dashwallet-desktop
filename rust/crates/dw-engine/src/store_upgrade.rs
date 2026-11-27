@@ -469,13 +469,20 @@ pub(crate) fn map_error(
         "store upgrade: open stopped");
     if e.is_refusal() {
         return match screen_for(&e, ProvedState::read(network_dir, wrote)) {
-            Some(screen) => EngineError::StoreRefused(Box::new(StoreRefusal {
-                screen,
-                folder: network_dir.to_path_buf(),
-                cause,
-                stage,
-                detail: e.to_string(),
-            })),
+            Some(mut screen) => {
+                if screen.way_out == copy::WayOut::Unverified
+                    && dw_store_upgrade::snapshot_retired_for_wallet_removal(network_dir)
+                {
+                    screen.offer_recover();
+                }
+                EngineError::StoreRefused(Box::new(StoreRefusal {
+                    screen,
+                    folder: network_dir.to_path_buf(),
+                    cause,
+                    stage,
+                    detail: e.to_string(),
+                }))
+            }
             None => EngineError::Internal(format!("{NO_SCREEN}{cause}")),
         };
     }
