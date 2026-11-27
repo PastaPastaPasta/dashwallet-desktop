@@ -3,6 +3,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -518,6 +519,8 @@ pub struct NetworkSession {
     /// timeout (60 s), and SPV's stop waits for the write lock
     /// (rs-platform-wallet spv/runtime.rs:321-330, :446).
     pub(crate) resends: Mutex<Vec<tokio::task::AbortHandle>>,
+    /// The replacement client's run that needs pending-send replay, or zero.
+    pub(crate) rebroadcast_replay: AtomicU64,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
     /// The masternode follower and its event (MG-03, `masternodes/`).
@@ -1010,6 +1013,7 @@ impl NetworkSession {
             #[cfg(all(debug_assertions, feature = "test-support"))]
             payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),
+            rebroadcast_replay: AtomicU64::new(0),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,
             platform: crate::platform::runtime::PlatformRuntime::new(
@@ -1402,8 +1406,8 @@ impl NetworkSession {
         create_owned_dir(&self.data_dir, Path::new(SPV_DIR))?;
         let spv = manager.spv_arc();
         spv.start(config).await?;
-        spv.spawn_run_loop();
         self.hub.set_spv_running(true);
+        spv.spawn_run_loop();
         // E0-04 H6 part 2: the catch-up's resume pass, spawned.
         self.leases.spv_started();
         Ok(())
@@ -1442,6 +1446,12 @@ impl NetworkSession {
         });
     }
 
+    pub(crate) fn spv_can_abandon(&self, manager: &Manager) -> bool {
+        let spv = manager.spv();
+        // The wallet can record a rewind while the replacement is pending.
+        spv.is_started() || self.rebroadcast_replay.load(Ordering::Acquire) == spv.run_session() + 1
+    }
+
     fn attach_rebroadcast_rebuild(self: &Arc<Self>, mut requests: watch::Receiver<u64>) {
         let weak = Arc::downgrade(self);
         if let Ok(live) = self.live() {
@@ -1454,7 +1464,6 @@ impl NetworkSession {
         }
         self.rt.spawn(async move {
             while requests.changed().await.is_ok() {
-                tokio::time::sleep(Duration::from_millis(200)).await;
                 let Some(session) = weak.upgrade() else {
                     break;
                 };
@@ -1462,9 +1471,6 @@ impl NetworkSession {
                     break;
                 };
                 let _lifecycle = session.platform.lifecycle.lock().await;
-                // Repair holds this across the batch and its rewind. Wait
-                // for it before dropping the old client, which owns the timer.
-                drop(session.wallet_lifecycle.hold().await);
                 let generation = *requests.borrow_and_update();
                 let Ok(manager) = session.manager() else {
                     break;
@@ -1472,7 +1478,11 @@ impl NetworkSession {
                 if manager.spv().run_session() != generation || !manager.spv().is_started() {
                     continue;
                 }
+                session
+                    .rebroadcast_replay
+                    .store(generation + 1, Ordering::Release);
                 if let Err(error) = session.rebuild_spv(&manager).await {
+                    session.rebroadcast_replay.store(0, Ordering::Release);
                     session.sink.emit(EngineEvent::Notice {
                         network: Some(session.network.clone()),
                         code: NoticeCode::SpvError,
@@ -1490,6 +1500,10 @@ impl NetworkSession {
             tracing::debug!(%error, "joining SPV teardown before restarting");
             manager.spv().stop().await?;
         }
+        // Coalesce more durable drops after the old timer has stopped.
+        // Repair holds the wallet lifecycle through its batch and rewind.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _wallets = self.wallet_lifecycle.hold().await;
         self.start_spv_inner(manager).await?;
         self.emit_spv_running();
         Ok(())

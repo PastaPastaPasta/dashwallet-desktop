@@ -3277,6 +3277,8 @@ impl NetworkSession {
                 let Ok(manager) = session.manager() else {
                     return;
                 };
+                let replay = Arc::clone(&session);
+                tokio::spawn(async move { replay.resume_rebroadcasts().await });
                 for id in manager.list_wallet_ids_blocking() {
                     if let Err(e) = session.resend_mixed_coins(WalletId(id), None).await {
                         tracing::debug!(error = %e, "sweep chunks not sent again");

@@ -2773,6 +2773,57 @@ fn an_abandon_rebuilds_the_rebroadcaster_after_its_mark() {
 }
 
 #[test]
+fn a_rebuilt_spv_retries_an_unrelated_pending_send() {
+    let (_dir, engine, session, id, payment, _, paid) = pending_payment_of_one_coin();
+    let other = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 1)]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    eventually("SPV rebuilt", || {
+        manager.spv().run_session() > run && session.sync_snapshot().unwrap().running
+    });
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+    );
+    eventually("the unrelated payment is registered again", || {
+        !wire.lock().unwrap().is_empty()
+    });
+    assert_eq!(*wire.lock().unwrap(), [other.txid()]);
+}
+
+#[test]
+fn a_durable_abandon_stops_the_old_spv_before_the_batch_ends() {
+    let (_dir, engine, session, id, payment, _, _) = pending_payment_of_one_coin();
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    let batch = engine.block_on(session.wallet_lifecycle.hold());
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    eventually("the old client stopped while the batch is open", || {
+        !session.sync_snapshot().unwrap().running
+    });
+    assert!(!manager.spv().is_started());
+    assert_eq!(manager.spv().run_session(), run);
+    drop(batch);
+    eventually("a new client started after the batch", || {
+        manager.spv().run_session() > run
+    });
+}
+
+#[test]
 fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_after_its_mark() {
     let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
     let other = send(
