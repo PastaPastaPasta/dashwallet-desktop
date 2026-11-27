@@ -187,12 +187,9 @@ pub(crate) fn refuse_missing_store(dir: &std::path::Path, wrote: bool) -> Result
     if dir.join(SHIELDED_DB_FILE).try_exists()? || !app_db.try_exists()? {
         return Ok(());
     }
-    let seen = || -> rusqlite::Result<bool> {
-        use rusqlite::{Connection, OpenFlags};
-        let conn = Connection::open_with_flags(
-            app_db,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
+    #[cfg(unix)]
+    let app_db = dir.canonicalize()?.join(dw_appdb::APP_DB_FILE);
+    let seen = dw_store_upgrade::inspect_live_store(&app_db, |conn| {
         let settings: bool = conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'settings_kv')",
             [],
@@ -206,8 +203,9 @@ pub(crate) fn refuse_missing_store(dir: &std::path::Path, wrote: bool) -> Result
             [dw_appdb::GLOBAL_SCOPE, SHIELDED_STORE_SEEN],
             |r| r.get(0),
         )
-    };
-    if seen().map_err(|e| EngineError::Storage(format!("read Shielded store marker: {e}")))? {
+    })
+    .map_err(|e| EngineError::Storage(format!("read Shielded store marker: {e}")))?;
+    if seen {
         return Err(missing_store(dir, wrote));
     }
     Ok(())

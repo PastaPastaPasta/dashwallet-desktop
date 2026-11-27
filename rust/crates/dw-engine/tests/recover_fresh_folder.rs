@@ -494,6 +494,41 @@ fn missing_shielded_store_after_upgrade_offers_recovery() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+#[test]
+fn missing_shielded_store_with_a_wal_only_marker_is_refused_unchanged() {
+    probe_p9a_absent();
+    let f = fixture("v0.3.0");
+    std::fs::remove_file(f.net.join("shielded.sqlite")).unwrap();
+    let app = f.net.join("app.sqlite");
+    let conn = rusqlite::Connection::open(&app).unwrap();
+    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )
+    .unwrap();
+    let main = std::fs::read(&app).unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, 'shielded_store_seen', '1')",
+        [dw_appdb::GLOBAL_SCOPE],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(f.net.join("app.sqlite-wal").is_file());
+    assert_eq!(std::fs::read(&app).unwrap(), main);
+    std::fs::remove_file(f.net.join("app.sqlite-shm")).unwrap();
+
+    let engine = engine(&f.root);
+    let before = tree(&f.net);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => assert_eq!(r.screen.way_out, WayOut::Damaged),
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened without the shielded store"),
+    }
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A damaged refusal followed by an open that is not refused as damaged
 /// (here, the store mended) takes the way out back.
 #[test]

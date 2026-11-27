@@ -317,14 +317,17 @@ fn second_engine_on_same_data_dir_gets_storage_in_use() {
 /// (`SchemaTooNew`), so every file of the network directory is unchanged.
 #[test]
 fn a_wallet_file_from_a_newer_build_is_refused_unchanged() {
-    let tree = |dir: &std::path::Path| -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let tree = |dir: &std::path::Path| {
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.is_file())
-            .map(|p| {
-                let bytes = std::fs::read(&p).unwrap();
-                (p, bytes)
+            .map(|e| {
+                let entry = e.unwrap();
+                let bytes = entry
+                    .file_type()
+                    .unwrap()
+                    .is_file()
+                    .then(|| std::fs::read(entry.path()).unwrap());
+                (entry.file_name(), bytes)
             })
             .collect();
         files.sort();
@@ -369,10 +372,19 @@ fn a_wallet_file_from_a_newer_build_is_refused_unchanged() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(
-        tree(&net) == before,
-        "the refused open changed the network directory"
+    let after = tree(&net);
+    let names = |entries: &[(std::ffi::OsString, Option<Vec<u8>>)]| {
+        entries
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&after),
+        names(&before),
+        "refused open changed the listing"
     );
+    assert!(after == before, "refused open changed file contents");
 }
 
 #[test]
