@@ -1944,6 +1944,9 @@ impl WalletHistory {
 pub(crate) struct HistoryStore {
     wallets: RwLock<HashMap<WalletId, WalletHistory>>,
     early_locks: RwLock<EarlyInstantLocks>,
+    #[cfg(test)]
+    pub(crate) pause_after_lock_match:
+        std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Woken when a wallet's collaterals become pending.
     collateral_wake: Arc<tokio::sync::Notify>,
 }
@@ -2176,25 +2179,32 @@ impl HistoryStore {
                     .get(txid)
                     .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
         };
+        let buffer = || self.early_locks.write().unwrap_or_else(|p| p.into_inner());
         let needs_write = {
             let wallets = self.wallets.read().unwrap_or_else(|p| p.into_inner());
             match verified_inputs {
-                Some(_) => wallets.values().any(owns_lock),
+                Some(inputs) => {
+                    let mut buffer = buffer();
+                    buffer.remember(*txid, inputs);
+                    wallets.values().any(owns_lock)
+                }
                 None => wallets.iter().any(|(id, history)| wants_lock(id, history)),
             }
         };
-        let buffer = || self.early_locks.write().unwrap_or_else(|p| p.into_inner());
+        #[cfg(test)]
+        let pause = self.pause_after_lock_match.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some((reached, resume)) = pause {
+            let _ = reached.send(());
+            let _ = resume.recv_timeout(std::time::Duration::from_secs(20));
+        }
         if !needs_write {
-            if let Some(inputs) = verified_inputs {
-                buffer().remember(*txid, inputs);
-            }
             return Vec::new();
         }
 
         let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        if let Some(inputs) = verified_inputs {
-            let mut buffer = buffer();
-            buffer.remember(*txid, inputs);
+        if verified_inputs.is_some() {
+            let _buffer = buffer();
             for history in wallets.values_mut().filter(|h| owns_lock(h)) {
                 history.session_locks.insert(*txid);
             }

@@ -275,6 +275,31 @@ fn a_lock_heard_before_scanning_its_funding_parent_keeps_the_payment_across_a_fo
 }
 
 #[test]
+fn a_wallet_that_learns_an_input_after_the_lock_match_still_keeps_the_lock() {
+    let (s, funding) = before_funding();
+    let history = &s.session.hub.history;
+    let lock = s.lock();
+    let (reached, matched) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel();
+    *history.pause_after_lock_match.lock().unwrap() = Some((reached, release));
+    std::thread::scope(|scope| {
+        let hearing =
+            scope.spawn(|| history.note_instant_lock(&lock.txid, Some(&lock.inputs), |_| false));
+        let signal = resume;
+        matched
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        s.fund(funding);
+        assert!(history.read_wallet(&s.id, |h| h.session_locks.contains(&lock.txid)));
+        signal.send(()).unwrap();
+        assert!(hearing.join().unwrap().is_empty());
+    });
+    s.mined();
+    s.fork();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
 fn an_evicted_lock_still_holds_its_input_when_the_wallet_later_forks() {
     use dash_spv::EventHandler;
     let (s, funding) = before_funding();

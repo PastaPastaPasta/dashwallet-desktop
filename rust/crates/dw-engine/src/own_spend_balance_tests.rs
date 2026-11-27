@@ -1317,72 +1317,27 @@ fn abandoning_mid_batch_never_lists_a_coin_the_batch_saw_spent() {
     assert!(spendable(&engine, &session, id, b), "B is offered");
 }
 
-/// #818 (Q100 E2), SUSPECT-1: as above, and then another device's spend
-/// of B, paying the wallet change, is mined at `TIP + 2`. The drop of P it
-/// starts knows that winner's inputs and frees A, which no evidence holds
-/// spent any more: A is not listed, counted or offered before the drop's
-/// rescan passes W's block at `TIP + 1`, which spends it.
+/// A recorded rival on B cannot prove A free after A's finalized spend
+/// has been pruned from the wallet's observations.
 #[test]
-fn a_drop_after_a_forgotten_spend_holds_the_coin_until_its_rescan_passes_the_spend() {
-    let (_dir, engine, session, id, (a, b), paid, p, w) =
+fn a_recorded_rival_keeps_the_payment_after_another_spend_was_pruned() {
+    let (_dir, engine, session, id, (a, b), paid, p, _) =
         beaten_after_its_winners_spend_was_forgotten();
-    let scripts = own_scripts(&engine, &session, id);
-    let change = change_of(&p, &scripts);
     let rival = rival(&engine, &session, id, &paid, 1);
-    let back: u64 = (rival.output.iter())
-        .filter(|o| scripts.contains(&o.script_pubkey))
-        .map(|o| o.value)
-        .sum();
-    assert!(back > 0, "the rival pays the wallet change");
-    let total = COINS as u64 * COIN - 2 * COIN + back;
-    let held = [(a, "A"), (b, "B"), (change, "the change")];
-    mined(&engine, &session, id, TIP + 2, vec![rival.clone()]);
-    reconciled(&engine, &session, id);
-    assert!(!live_in_history(&session, id, p.txid()), "the drop took P");
-    kept_out(&engine, &session, id, &held, total, "dropped");
-
-    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    kept_out(
-        &engine,
-        &session,
-        id,
-        &held,
-        total,
-        "the rescan at the coins' block",
-    );
-    let session = reopen(&engine, session);
-    kept_out(
-        &engine,
-        &session,
-        id,
-        &held,
-        total,
-        "restarted in the rescan",
-    );
-    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    // B, which the stored rival spends in a block above, is no give-back: it
-    // comes back with its block until the rival's block spends it again.
-    let resumed = [held[0], held[2]];
-    kept_out(
-        &engine,
-        &session,
-        id,
-        &resumed,
-        total + COIN,
-        "the resumed rescan at the coins' block",
-    );
-    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
-    assert!(in_history(&session, id, w.txid()), "the rescan records W");
-    kept_out(
-        &engine,
-        &session,
-        id,
-        &resumed,
-        total + COIN,
-        "the rescan past W",
-    );
     mined(&engine, &session, id, TIP + 2, vec![rival]);
-    kept_out(&engine, &session, id, &held, total, "the rescan is back");
+    reconciled(&engine, &session, id);
+    assert!(live_in_history(&session, id, p.txid()), "the payment stays");
+    assert!(
+        session.hub.rescan_held(&id).is_empty(),
+        "no input was released for rescan"
+    );
+    assert_eq!(
+        synced(&engine, &session, id),
+        TIP + 2,
+        "the wallet did not rewind"
+    );
+    assert!(!spendable(&engine, &session, id, a));
+    assert!(!spendable(&engine, &session, id, b));
 }
 
 /// The mark of a payment this app sent, mined in a session that ended
