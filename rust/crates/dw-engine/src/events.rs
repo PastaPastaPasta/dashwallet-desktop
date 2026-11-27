@@ -1312,11 +1312,23 @@ impl SessionHub {
             .contains_key(wallet)
     }
 
+    pub(crate) fn pending_locks_for_open(&self, wallet: WalletId) -> Vec<InstantLock> {
+        let events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
+        events
+            .pending
+            .get(&wallet)
+            .into_iter()
+            .flat_map(|locks| locks.values())
+            .map(|pending| pending.lock.clone())
+            .collect()
+    }
+
     pub(crate) fn take_loading_locks(&self, wallet: WalletId) -> HashMap<Txid, InstantLock> {
         let mut events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
         let Some(mut locks) = events.loading.remove(&wallet) else {
             return HashMap::new();
         };
+        events.closed_targets.remove(&wallet);
         self.history.read(&wallet, |txs| {
             locks.retain(|txid, _| {
                 txs.get(txid)
@@ -1350,6 +1362,15 @@ impl SessionHub {
             .start(wallet, txid, lock, true)
     }
 
+    pub(crate) fn index_closed_lock_targets(&self, wallet: WalletId, targets: HashSet<Txid>) {
+        self.lock_events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .closed_targets
+            .insert(wallet, targets);
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_pending_lock(&self, wallet: WalletId, txid: Txid) -> bool {
         self.lock_events
             .lock()
@@ -1357,6 +1378,70 @@ impl SessionHub {
             .pending
             .get(&wallet)
             .is_some_and(|locks| locks.contains_key(&txid))
+    }
+
+    /// Called once the session's operation gate has drained.
+    pub(crate) fn seal_lock_delivery(&self) -> Vec<(WalletId, InstantLock, bool)> {
+        let mut events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
+        events.sealed = true;
+        std::mem::take(&mut events.pending)
+            .into_iter()
+            .flat_map(|(wallet, locks)| {
+                locks
+                    .into_values()
+                    .map(move |pending| (wallet, pending.lock, pending.recordless))
+            })
+            .collect()
+    }
+
+    pub(crate) fn queue_lock_retry(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+        recordless: bool,
+        at: tokio::time::Instant,
+    ) -> (bool, bool) {
+        let mut events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(pending) = events
+            .pending
+            .get_mut(&wallet)
+            .and_then(|locks| locks.get_mut(&txid))
+        else {
+            return (false, false);
+        };
+        let first_failure = !std::mem::replace(&mut pending.retried, true);
+        pending.recordless |= recordless;
+        pending.retry = Some(at);
+        let start = !std::mem::replace(&mut events.retry_running, true);
+        (start, first_failure)
+    }
+
+    pub(crate) fn take_due_lock_retries(&self) -> LockRetries {
+        let mut events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
+        let now = tokio::time::Instant::now();
+        let mut next = None;
+        let mut ready = Vec::new();
+        for (wallet, locks) in &mut events.pending {
+            for pending in locks.values_mut() {
+                let Some(at) = pending.retry else {
+                    continue;
+                };
+                if at <= now {
+                    pending.retry = None;
+                    ready.push((*wallet, pending.lock.clone(), pending.recordless));
+                } else {
+                    next = Some(next.map_or(at, |other: tokio::time::Instant| other.min(at)));
+                }
+            }
+        }
+        if !ready.is_empty() {
+            LockRetries::Ready(ready)
+        } else if let Some(next) = next {
+            LockRetries::Wait(next)
+        } else {
+            events.retry_running = false;
+            LockRetries::Done
+        }
     }
 
     pub(crate) fn finish_pending_lock(&self, wallet: WalletId, txid: Txid) -> bool {
@@ -1377,6 +1462,17 @@ impl SessionHub {
         true
     }
 
+    fn closed_lock_target(&self, events: &LockEvents, wallet: WalletId, txid: &Txid) -> bool {
+        events
+            .closed_targets
+            .get(&wallet)
+            .is_some_and(|known| known.contains(txid))
+            || self.history.read(&wallet, |txs| {
+                txs.get(txid)
+                    .is_some_and(|e| e.context.block_info().is_none())
+            })
+    }
+
     /// A verified InstantSend lock can reach a wallet without an event of
     /// its own (#828). A load replays its locks once the claims are ready.
     fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
@@ -1384,6 +1480,9 @@ impl SessionHub {
             return;
         }
         let mut events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
+        if events.sealed {
+            return;
+        }
         for locks in events.loading.values_mut() {
             locks.insert(txid, lock.clone());
         }
@@ -1396,13 +1495,9 @@ impl SessionHub {
             return;
         };
         if let Some(store) = self.lock_store.get().and_then(std::sync::Weak::upgrade) {
-            wallets.extend(
-                store
-                    .unloaded()
-                    .into_iter()
-                    .map(WalletId)
-                    .filter(|id| !events.loading.contains_key(id)),
-            );
+            wallets.extend(store.unloaded().into_iter().map(WalletId).filter(|id| {
+                !events.loading.contains_key(id) && self.closed_lock_target(&events, *id, &txid)
+            }));
         }
         wallets.retain(|wallet| events.start(*wallet, txid, lock, false));
         drop(events);
@@ -1893,7 +1988,17 @@ impl SessionHub {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
+        let mut lock_events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
+        let targets = lock_events.closed_targets.entry(*id).or_default();
+        self.history.read(id, |txs| {
+            targets.extend(
+                txs.iter().filter_map(|(txid, entry)| {
+                    entry.context.block_info().is_none().then_some(*txid)
+                }),
+            );
+        });
         self.history.remove_wallet(id);
+        drop(lock_events);
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
@@ -1990,6 +2095,7 @@ impl SessionHub {
         let mut lock_events = self.lock_events.lock().unwrap_or_else(|p| p.into_inner());
         lock_events.loading.remove(id);
         lock_events.pending.remove(id);
+        lock_events.closed_targets.remove(id);
         drop(lock_events);
         self.restore.forget_wallet_checks(*id, false);
         self.wallets
@@ -2919,16 +3025,28 @@ pub(crate) type CarriedDrop = (
     Option<u32>,
 );
 
+pub(crate) enum LockRetries {
+    Ready(Vec<(WalletId, InstantLock, bool)>),
+    Wait(tokio::time::Instant),
+    Done,
+}
+
 #[derive(Default)]
 struct LockEvents {
     loading: HashMap<WalletId, HashMap<Txid, InstantLock>>,
     pending: HashMap<WalletId, HashMap<Txid, PendingLock>>,
+    closed_targets: HashMap<WalletId, HashSet<Txid>>,
+    retry_running: bool,
+    sealed: bool,
 }
 
 struct PendingLock {
     lock: InstantLock,
     /// A load completed while the first attempt was pending.
     replay: bool,
+    retry: Option<tokio::time::Instant>,
+    retried: bool,
+    recordless: bool,
 }
 
 impl LockEvents {
@@ -2943,6 +3061,9 @@ impl LockEvents {
                 slot.insert(PendingLock {
                     lock: lock.clone(),
                     replay: false,
+                    retry: None,
+                    retried: false,
+                    recordless: false,
                 });
                 true
             }
@@ -2957,13 +3078,39 @@ pub(crate) struct LoadingLocks<'a> {
 
 impl Drop for LoadingLocks<'_> {
     fn drop(&mut self) {
-        (self
+        let wallet = self.wallet;
+        let mut events = self
             .hub
             .lock_events
             .lock()
-            .unwrap_or_else(|p| p.into_inner()))
-        .loading
-        .remove(&self.wallet);
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(buffered) = events.loading.remove(&wallet) else {
+            return;
+        };
+        let Some(rerun) = self.hub.lock_rerun.get() else {
+            return;
+        };
+        let mut matching = Vec::new();
+        for (txid, lock) in buffered {
+            if !self.hub.closed_lock_target(&events, wallet, &txid) {
+                continue;
+            }
+            if !self
+                .hub
+                .history
+                .note_instant_lock(&txid, |id| *id != wallet)
+                .is_empty()
+            {
+                self.hub.pump.mark_history(wallet, Some(&[txid]));
+            }
+            if events.start(wallet, txid, &lock, true) {
+                matching.push((txid, lock));
+            }
+        }
+        drop(events);
+        for (txid, lock) in matching {
+            rerun(txid, lock, vec![wallet]);
+        }
     }
 }
 

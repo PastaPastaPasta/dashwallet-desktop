@@ -643,11 +643,11 @@ pub(crate) fn spent_outpoints(
 /// transaction beats on any input claims nothing: its coins are the
 /// winner's or free. Key-wallet's finality order decides the beat: a block
 /// or an InstantSend lock beats a payment without a lock, and only a block
-/// `chainlock` covers beats an InstantSend-locked one.
+/// `proves_final` checks can beat an InstantSend-locked one.
 pub(crate) fn unmined_own_spends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
-    chainlock: Option<u32>,
+    proves_final: impl Fn(&TxEntry) -> bool,
 ) -> Vec<(OutPoint, Txid)> {
     if sent.is_empty() {
         return Vec::new();
@@ -663,9 +663,16 @@ pub(crate) fn unmined_own_spends(
         }
     }
     let beaten = |t: &Txid, e: &TxEntry| {
+        let wins = |rival: &TxEntry| {
+            if instant_locked(e) {
+                proves_final(rival)
+            } else {
+                beats(rival, e, None)
+            }
+        };
         (e.tx.input.iter()).any(|i| {
             (spenders.get(&i.previous_output))
-                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e, chainlock)))
+                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && wins(we)))
         })
     };
     // A beaten payment's descendants out of a block can never confirm either
@@ -3882,7 +3889,7 @@ mod tests {
         txs.insert(l, locked);
         sent.insert(l, mark(&[coin(23)]));
 
-        let mut claims = unmined_own_spends(&txs, &sent, None);
+        let mut claims = unmined_own_spends(&txs, &sent, |_| false);
         claims.sort();
         assert_eq!(claims, vec![(coin(23), l)], "only the locked child claims");
     }
@@ -4956,7 +4963,7 @@ mod tests {
         let unstored = Txid::from_byte_array([9; 32]);
         sent.insert(unstored, mark(&[coin(9)], None));
 
-        let mut claims = unmined_own_spends(&txs, &sent, None);
+        let mut claims = unmined_own_spends(&txs, &sent, |_| false);
         claims.sort();
         let mut want = vec![(coin(1), live), (coin(2), live), (coin(5), relocked)];
         want.sort();
@@ -5018,7 +5025,7 @@ mod tests {
         reorged.context = TransactionContext::Mempool;
         reorged.instant_locked = true;
         assert!(
-            unmined_own_spends(&txs, &sent, None).contains(&(coin(3), mined)),
+            unmined_own_spends(&txs, &sent, |_| false).contains(&(coin(3), mined)),
             "a reorg back to the mempool, locked: the kept mark claims again"
         );
     }
@@ -5026,8 +5033,8 @@ mod tests {
     /// #170 case 11: only a ChainLock beats an InstantSend lock
     /// (key-wallet's finality order). A locked payment beaten on an input
     /// by a plain block or another lock keeps its claims; a block the
-    /// wallet's ChainLock covers, by height or by the record's context,
-    /// beats it. A payment without a lock loses to any block or lock.
+    /// active headers prove final beats it. A payment without a lock
+    /// loses to any block or lock.
     #[test]
     fn only_a_chainlock_beats_a_locked_payments_claims() {
         let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
@@ -5053,7 +5060,14 @@ mod tests {
             };
             let sent = crate::tx_actions::Sent::from([(txid, mark)]);
             let txs = HashMap::from([(txid, payment), (winner.tx.txid(), winner)]);
-            let mut got = unmined_own_spends(&txs, &sent, chainlock);
+            let hash = BlockHash::all_zeros();
+            let lock = chainlock.map(|height| (height, hash));
+            let headers = [(12, hash)].into_iter().chain(lock).collect();
+            let mut got = unmined_own_spends(&txs, &sent, |entry| {
+                entry.context.block_info().is_some_and(|block| {
+                    proven_final((block.height(), block.block_hash()), lock, &headers)
+                })
+            });
             got.sort();
             got.into_iter().map(|(o, _)| o).collect::<Vec<_>>()
         };
@@ -5072,7 +5086,11 @@ mod tests {
         );
         assert!(claims(payment(), plain(), Some(12)).is_empty());
         assert!(claims(flagged, plain(), Some(13)).is_empty());
-        assert!(claims(payment(), spend(2, &[coin(2)], chainlocked), None).is_empty());
+        assert_eq!(
+            claims(payment(), spend(2, &[coin(2)], chainlocked), None),
+            all,
+            "a stored ChainLocked context supplies no proof"
+        );
 
         let unlocked = || spend(1, &[coin(1), coin(2)], TransactionContext::Mempool);
         assert!(claims(unlocked(), plain(), None).is_empty());
@@ -5272,7 +5290,7 @@ mod tests {
         assert!(entry.context.block_info().is_none() && !entry.is_abandoned());
         assert!(!h.txs.contains_key(&stored.txid()));
         assert_eq!(
-            unmined_own_spends(&h.txs, &sent, None),
+            unmined_own_spends(&h.txs, &sent, |_| false),
             vec![(coin(1), lost.txid())]
         );
         assert!(gone(&h, &HashSet::new()).is_empty());

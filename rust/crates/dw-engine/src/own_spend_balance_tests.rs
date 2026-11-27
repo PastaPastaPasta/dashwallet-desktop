@@ -3786,6 +3786,41 @@ fn a_swept_payments_child_stays_when_a_fork_before_its_take_leaves_the_payment_u
     );
 }
 
+#[test]
+fn a_swept_childs_buffered_lock_prevents_releasing_its_other_input() {
+    use dash_spv::{EventHandler, SyncEvent};
+
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    reconciles_done(&engine, &session);
+    let _loading = session.hub.begin_lock_replay(id);
+    session.hub.on_sync_event(&SyncEvent::InstantLockReceived {
+        instant_lock: dashcore::InstantLock {
+            txid: c.txid(),
+            inputs: c.input.iter().map(|input| input.previous_output).collect(),
+            ..Default::default()
+        },
+        validated: true,
+    });
+    session
+        .hub
+        .apply_wallet_event(&swept_by_block(id, &p, &winner, Some(TIP + 1)));
+    drops_done(&engine, &session);
+    assert!(
+        !session
+            .hub
+            .history
+            .read_wallet(&id, |h| h.rescan_holds.contains_key(&d)),
+        "the drop released the locked child's other input for a rescan"
+    );
+    assert!(
+        live_in_history(&session, id, c.txid()),
+        "the locked child stays"
+    );
+    assert!(!spendable(&engine, &session, id, d));
+}
+
 /// #891, the control: nothing happens after the drop took C, and C goes
 /// with P.
 #[test]

@@ -999,6 +999,42 @@ pub(crate) fn abandoned_txids(
     )
 }
 
+/// The transaction ids of durable marks that can identify a recordless lock.
+pub(crate) fn lock_mark_ids(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    let scope = wallet.to_string();
+    let mut ids = HashSet::new();
+    for prefix in [ABANDONED_PREFIX, SENT_PREFIX, SENT_TX_PREFIX] {
+        ids.extend(
+            appdb
+                .settings_with_prefix_lossy(&scope, prefix)?
+                .into_iter()
+                .filter_map(|(key, _)| Txid::from_str(&key[prefix.len()..]).ok()),
+        );
+    }
+    Ok(ids)
+}
+
+pub(crate) fn has_recordless_lock_mark(
+    appdb: &AppDb,
+    wallet: WalletId,
+    txid: Txid,
+    unloaded: bool,
+) -> Result<bool, dw_appdb::AppDbError> {
+    let scope = wallet.to_string();
+    let abandoned = appdb
+        .setting_lossy(&scope, &format!("{ABANDONED_PREFIX}{txid}"))?
+        .is_some();
+    Ok(
+        (abandoned || (unloaded && has_sent_mark(appdb, wallet, txid)?))
+            && appdb
+                .setting_lossy(&scope, &format!("{DROPPED_PREFIX}{txid}"))?
+                .is_none(),
+    )
+}
+
 /// Finishes in the wallet store the abandons whose marks are stored but
 /// whose sweeps are not (the mark is the commit point): of `wallets`, each
 /// payment marked abandoned that is still stored out of a block and
@@ -2777,8 +2813,7 @@ impl NetworkSession {
 
     /// [`beaten_unrecorded`] of `wallet` under the manager's read lock,
     /// each with its coins key-wallet holds as spent, at their blocks'
-    /// heights, when its winner is a block's spend the wallet does not know
-    /// ([`unknown_block`]); the truncations the hub had applied and
+    /// heights, when its winner is mined; the truncations the hub had applied and
     /// key-wallet's last processed height; and, with `stored`, the
     /// [`orphaned_unmined`] ones. `None` while the history is not whole.
     async fn find_dead(
@@ -2811,7 +2846,7 @@ impl NetworkSession {
             let beaten = beaten_unrecorded(&h.txs, recorded, observed, chainlock, pays_wallet);
             let beaten = (beaten.into_iter())
                 .map(|(t, w)| {
-                    let spent = match (unknown_block(w), h.txs.get(&t)) {
+                    let spent = match (w.mined, h.txs.get(&t)) {
                         (Some(_), Some(e)) => (e.tx.input.iter())
                             .map(|i| i.previous_output)
                             .filter_map(|o| observed.get(&o).map(|h| (o, *h)))
@@ -2872,6 +2907,9 @@ impl NetworkSession {
         stored: Option<(&HashSet<Txid>, &HashSet<Txid>)>,
     ) {
         let _gate = self.hub.drop_gate.lock().await;
+        if self.hub.wallet_replaying_locks(&wallet) {
+            return;
+        }
         let truncations = self.hub.truncations();
         // Key-wallet's processed height before the take, and before
         // `carried_drops` reads anything: a fork the hub has not counted
@@ -3678,6 +3716,10 @@ impl NetworkSession {
             pause.release.notified().await;
         }
         let _gate = self.abandon_gate(wallet).write_owned().await;
+        if self.hub.wallet_replaying_locks(&wallet) {
+            out.deferred = true;
+            return Ok(BTreeSet::new());
+        }
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         // What any loaded wallet settled can descend from this one's
@@ -3833,7 +3875,7 @@ impl NetworkSession {
             let plan = plan.filter(|p| {
                 p.freed.is_empty()
                     || (forgotten.is_empty()
-                        && (unknown_block(winner).is_none() || chainlock.is_none())
+                        && (winner.mined.is_none() || chainlock.is_none())
                         && !recheck.is_some_and(|r| {
                             r.truncations == truncations
                                 && p.freed.iter().any(|o| r.spent.contains_key(o))
