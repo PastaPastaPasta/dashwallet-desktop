@@ -12,10 +12,10 @@ use std::sync::Arc;
 use dashcore::{InstantLock, OutPoint, Transaction, Txid};
 
 use super::own_spend_disk_tests::{
-    Accept, COIN, COINS, FUNDED_AT, TIP, coins, foreign, fresh_address, funding, prepare,
+    Accept, COIN, COINS, FUNDED_AT, TIP, coins, foreign, fresh_address, funding, prepare, rival,
     second_wallet, send, sent_marks, spendable, spendable_for, start_offline_spv, wait_stored,
 };
-use super::{balances, deliver, engine_wallet, mined, reopen, rows};
+use super::{balances, deliver, engine_wallet, mempool, mined, reopen, rows};
 use crate::history::TxStatusKind;
 use crate::send::CoinSource;
 use crate::session::NetworkSession;
@@ -86,11 +86,15 @@ impl Scenario {
 
     /// SPV verifies P's lock without handing P to the wallet's mempool.
     fn hear_lock(&self) {
+        self.hear_verified_lock(self.lock());
+    }
+
+    fn hear_verified_lock(&self, instant_lock: InstantLock) {
         use dash_spv::EventHandler;
         self.session
             .hub
             .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
-                instant_lock: self.lock(),
+                instant_lock,
                 validated: true,
             });
     }
@@ -223,6 +227,143 @@ impl Scenario {
         );
         assert!(!spendable(&self.engine, &self.session, self.id, self.a));
     }
+}
+
+fn assert_forked_parent_protected(child_mined: bool) {
+    let s = scenario();
+    let change = OutPoint::new(s.p.txid(), 1);
+    let child = super::spend_of(change, vec![(super::elsewhere(), CHANGE / 2)]);
+    let child_id = child.txid();
+    let mut payments = vec![s.p.clone()];
+    if child_mined {
+        payments.push(child);
+    }
+    mined(&s.engine, &s.session, s.id, TIP + 1, payments.clone());
+    s.hear_verified_lock(InstantLock {
+        txid: child_id,
+        inputs: vec![change],
+        ..InstantLock::default()
+    });
+    assert!(!s.a_held());
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the parent's funding coin");
+    let history = &s.session.hub.history;
+    match history.get(&s.id, &child_id) {
+        Some(entry) => {
+            assert!(child_mined && entry.context.block_info().is_none());
+            assert!(crate::history::instant_locked(&entry));
+        }
+        None => assert!(!child_mined),
+    }
+    assert!(history.read_wallet(&s.id, |h| !h.session_locks.contains(&s.p.txid())));
+
+    let b = balances(&s.session, s.id);
+    let (max, inputs) = s.max();
+    assert_eq!(
+        (
+            b.total,
+            b.confirmed,
+            b.withheld,
+            max,
+            inputs.len(),
+            inputs.contains(&s.a),
+            s.a_listed(),
+            spendable(&s.engine, &s.session, s.id, s.a)
+        ),
+        (11 * COIN, 11 * COIN, 0, 11 * COIN, 11, false, false, false),
+        "balance, Max, Send selection and coin control after the fork"
+    );
+    assert!(
+        !s.session
+            .hub
+            .wallet_state(&s.id)
+            .unwrap()
+            .excluded
+            .waiting()
+            .contains(&s.a)
+    );
+
+    mined(&s.engine, &s.session, s.id, TIP + 1, payments);
+    assert!(!s.a_held(), "the parent spends its coin again");
+    assert!(matches!(s.row(), Some((status, false, _)) if status != TxStatusKind::Unconfirmed));
+}
+
+#[test]
+fn a_locked_child_keeps_its_forked_parents_funding_coin_unavailable() {
+    assert_forked_parent_protected(true);
+}
+
+#[test]
+fn a_lock_without_a_child_record_keeps_its_forked_parents_coin_unavailable() {
+    assert_forked_parent_protected(false);
+}
+
+fn assert_recordless_child_protects_pending_parent(buffered: bool) {
+    let (mut s, funding) = before_funding();
+    s.fund(funding.clone());
+    s.p = rival(&s.engine, &s.session, s.id, &funding, 0);
+    let change = OutPoint::new(s.p.txid(), 1);
+    let child_id = super::spend_of(change, vec![(super::elsewhere(), CHANGE / 2)]).txid();
+    let lock = InstantLock {
+        txid: child_id,
+        inputs: vec![change],
+        ..InstantLock::default()
+    };
+    if buffered {
+        s.hear_verified_lock(lock.clone());
+    }
+    mempool(&s.engine, &s.session, s.id, &s.p);
+    if !buffered {
+        s.hear_verified_lock(lock);
+    }
+    assert!(s.session.hub.history.get(&s.id, &child_id).is_none());
+    assert!(matches!(
+        s.row(),
+        Some((TxStatusKind::Unconfirmed, false, _))
+    ));
+    let (max_before, inputs_before) = s.max();
+    start_offline_spv(&s.engine, &s.session);
+
+    let abandon = || {
+        s.engine
+            .block_on(s.session.abandon_transaction(s.id, s.p.txid()))
+    };
+    let remove = || s.engine.block_on(s.session.drop_unconfirmed(Some(s.id)));
+    let (abandoned, removed) = if buffered {
+        let removed = remove();
+        (abandon(), removed)
+    } else {
+        (abandon(), remove())
+    };
+    assert!(
+        matches!(
+            abandoned,
+            Err(EngineError::TxActionRefused(
+                TxActionRefusal::SettledDescendant
+            ))
+        ) && matches!(removed, Ok(0)),
+        "recordless child lock protects P: Abandon {abandoned:?}, Remove Unconfirmed {removed:?}"
+    );
+    assert!(matches!(
+        s.row(),
+        Some((TxStatusKind::Unconfirmed, false, _))
+    ));
+    let (max, inputs) = s.max();
+    assert_eq!(balances(&s.session, s.id).confirmed, 11 * COIN);
+    assert_eq!((max, &inputs), (max_before, &inputs_before));
+    assert!(!inputs.contains(&s.a));
+    assert!(!s.a_listed());
+    assert!(!spendable(&s.engine, &s.session, s.id, s.a));
+}
+
+#[test]
+fn a_live_lock_without_a_child_record_protects_its_pending_parent() {
+    assert_recordless_child_protects_pending_parent(false);
+}
+
+#[test]
+fn a_buffered_lock_without_a_child_record_protects_its_pending_parent() {
+    assert_recordless_child_protects_pending_parent(true);
 }
 
 /// The issue's Desktop test: lock first, then the payment in a block
