@@ -1065,6 +1065,8 @@ fn hex32(text: &str) -> Option<[u8; 32]> {
 pub(crate) struct FundEvidence {
     /// Applied: the library's proved `Consumed`, or recorded settled.
     pub(crate) done: HashSet<OutPoint>,
+    /// A legacy zero-remainder proof, usable only for the armed recovery of that lock.
+    pub(crate) used_up_shields: HashSet<OutPoint>,
     /// Platform's "already consumed" for that outpoint, unproved.
     pub(crate) reported: HashSet<OutPoint>,
     /// Every fund lock the library tracks, any status.
@@ -1339,7 +1341,9 @@ async fn reconcile(
         let Some(at) = at else {
             continue;
         };
-        if ev.done.contains(&at) {
+        if ev.done.contains(&at)
+            || (fund.recovered && fund.armed && ev.used_up_shields.contains(&at))
+        {
             fund.complete(fund.credits, true);
             writes.push(fund_write(fund)?);
         } else if ev.reported.contains(&at) {
@@ -3093,7 +3097,19 @@ impl Store {
         let value = self
             .blocking(move |db, scope| db.setting(scope, &key))
             .await?;
-        Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
+        let record: Option<FundRecord> = value
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| PlatformError::Storage {
+                detail: format!("an unreadable Platform-address fund record: {e}"),
+            })?;
+        if record.as_ref().is_some_and(|r| r.txid != txid) {
+            return Err(PlatformError::Storage {
+                detail: "a Platform-address fund record names a different transaction".into(),
+            });
+        }
+        Ok(record)
     }
 
     /// The recorded moves, oldest first. A `pending` one may have been

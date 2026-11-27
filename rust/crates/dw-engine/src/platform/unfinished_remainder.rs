@@ -160,8 +160,22 @@ pub(crate) async fn recover(
         } => (lock, credits, floor),
     };
     let script = (lib.credit_script(outpoint).await).ok_or(PlatformError::Unavailable)?;
-    let to = lib.receive_address().await?;
-    let address = platform_moves::bech32m(&to, lib.network());
+    let txid = outpoint.txid.to_string();
+    let (to, address) = match platform_moves::fund_record(session, wallet, &txid).await? {
+        Some(record) => {
+            let to = platform_moves::parse(&record.address)
+                .filter(|to| platform_moves::bech32m(to, lib.network()) == record.address)
+                .filter(|_| record.recovered && record.vout == outpoint.vout)
+                .ok_or_else(|| PlatformError::Storage {
+                    detail: "invalid destination in the shielded recovery record".into(),
+                })?;
+            (to, record.address)
+        }
+        None => {
+            let to = lib.receive_address().await?;
+            (to, platform_moves::bech32m(&to, lib.network()))
+        }
+    };
     let lease = authority(session, wallet, grant, credits).await?;
     let funding = lease.uncounted_funding_signer()?;
     let estimate = credits.saturating_sub(floor);
@@ -190,7 +204,6 @@ pub(crate) async fn recover(
             });
         }
     };
-    let txid = outpoint.txid.to_string();
     if !signed
         && let Some(arming) = arming
         && let Err(e) = platform_moves::disarm_fund(session, wallet, &txid, arming).await
@@ -307,7 +320,7 @@ async fn used_up(session: &NetworkSession, wallet: WalletId, lock: &KindLock) ->
     let at = lock.info.outpoint;
     let record = platform_moves::fund_record(session, wallet, &at.txid.to_string()).await;
     match record {
-        Ok(Some(r)) if r.recovered && r.armed => {
+        Ok(Some(r)) if r.recovered && r.armed && r.vout == at.vout => {
             let credited = (r.credits, true);
             settle(session, wallet, lock, r.duffs, r.address, credited).await;
             LockFinish::Applied

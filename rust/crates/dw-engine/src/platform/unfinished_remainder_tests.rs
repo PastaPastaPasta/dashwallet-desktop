@@ -21,7 +21,7 @@ use super::super::unfinished::RecoverQuote;
 use super::super::unfinished_conformance as conformance;
 use super::super::unfinished_locks::{self as locks, LockFinish, LockKindId, Mark, SpentRead};
 use super::super::unfinished_remainder::{self as remainder, NOT_RECOVERABLE};
-use super::{Answer, FakeFund, grant, run};
+use super::{Answer, FakeFund, fund_world, grant, run, track_in_wallet};
 
 /// The shield's credit key (account 0, index 0), on testnet.
 const SHIELD_KEY: &str = "m/9'/1'/5'/5'/0";
@@ -530,7 +530,7 @@ fn a_recover_that_failed_after_signing_settles_on_the_next_proved_read() {
 #[test]
 fn a_retried_recover_uses_the_fresh_remainder_through_settlement() {
     let fx = Fixture::new(0);
-    let lib = Arc::new(FakeFund::new(&fx));
+    let mut lib = Arc::new(FakeFund::new(&fx));
     let at = shield_lock(&fx, &lib, 0x5C).out_point;
     let (old, fresh) = (600_000_000, 500_000_000);
     mark_remaining(&fx, at, old);
@@ -542,6 +542,9 @@ fn a_retried_recover_uses_the_fresh_remainder_through_settlement() {
     );
     let first = record(&fx, at).unwrap();
 
+    let first_address = lib.receive;
+    Arc::get_mut(&mut lib).unwrap().receive =
+        dpp::address_funds::PlatformAddress::P2pkh([0x43; 20]);
     lib.proves(at, SpentRead::Remaining { credits: fresh });
     assert!(
         matches!(quote(&fx, &lib, at), RecoverQuote::Ready { credits, .. } if credits == fresh)
@@ -553,6 +556,12 @@ fn a_retried_recover_uses_the_fresh_remainder_through_settlement() {
         LockFinish::Checking
     );
     let refreshed = record(&fx, at).unwrap();
+    assert_eq!(refreshed.address, first.address);
+    assert_eq!(*lib.signed.lock().unwrap(), [true, true]);
+    assert_eq!(
+        *lib.recovered.lock().unwrap(),
+        [(at, first_address), (at, first_address)]
+    );
     assert_eq!(refreshed.duffs, fresh / 1000);
     assert_eq!(refreshed.credits, fresh - floor(&lib));
     assert_eq!(
@@ -565,7 +574,70 @@ fn a_retried_recover_uses_the_fresh_remainder_through_settlement() {
     let done = record(&fx, at).unwrap().activity();
     assert_eq!(done.state, PlatformActivityState::Done);
     assert_eq!(done.credits, fresh - floor(&lib));
-    assert_eq!(lib.recovered.lock().unwrap().len(), 2);
+    assert_eq!(done.address, Some(first.address));
+}
+
+#[test]
+fn a_recovery_with_an_unreadable_destination_keeps_the_grant_and_signs_nothing() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let at = shield_lock(&fx, &lib, 0x5F).out_point;
+    let left = 600_000_000;
+    mark_remaining(&fx, at, left);
+    lib.proves(at, SpentRead::Remaining { credits: left });
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        recover(&fx, &lib, at, &grant(&fx, 1, left)).unwrap(),
+        LockFinish::Checking
+    );
+    let mut invalid_address = serde_json::to_value(record(&fx, at).unwrap()).unwrap();
+    invalid_address["address"] = "invalid".into();
+    let db = fx.s.live().unwrap().appdb;
+    let scope = dw_appdb::local_scope(&fx.wallet.to_string());
+    let key = format!("platform_address/fund/{}", at.txid);
+    for stored in ["{".to_owned(), invalid_address.to_string()] {
+        db.set_setting_durable(&scope, &key, Some(&stored)).unwrap();
+        let g = grant(&fx, 1, left);
+        assert!(matches!(
+            recover(&fx, &lib, at, &g),
+            Err(PlatformError::Storage { .. })
+        ));
+        assert!(kept(&fx, &g));
+        assert_eq!(*lib.signed.lock().unwrap(), [true]);
+    }
+}
+
+#[test]
+fn activity_reconciles_an_armed_recovery_with_a_legacy_zero_remainder() {
+    let (w, lib) = fund_world();
+    let fx = &w.f;
+    let lock = shield_lock(fx, &lib, 0x5E);
+    let at = lock.out_point;
+    let (s, wallet) = (Arc::clone(&fx.s), fx.wallet);
+    fx.engine
+        .block_on(async move { track_in_wallet(&s, wallet, lock).await });
+    let left = 600_000_000;
+    mark_remaining(fx, at, left);
+    lib.proves(at, SpentRead::Remaining { credits: left });
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        recover(fx, &lib, at, &grant(fx, 1, left)).unwrap(),
+        LockFinish::Checking
+    );
+    mark_remaining(fx, OutPoint::new(at.txid, at.vout + 1), 0);
+    w.activity();
+    assert_eq!(
+        record(fx, at).unwrap().state,
+        PlatformActivityState::Pending
+    );
+
+    mark_remaining(fx, at, 0);
+    w.activity();
+    let done = record(fx, at).unwrap().activity();
+    assert_eq!(done.state, PlatformActivityState::Done);
+    assert_eq!(done.credits, left - floor(&lib));
+    assert!(done.estimated);
+    assert_eq!(*lib.signed.lock().unwrap(), [true]);
 }
 
 #[test]

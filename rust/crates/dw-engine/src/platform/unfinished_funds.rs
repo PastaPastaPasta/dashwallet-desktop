@@ -360,6 +360,12 @@ pub(crate) async fn fund_evidence(
         locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Settled).await;
     let shielded_settled =
         locks::marks_of(session, wallet, LockKindId::Shielded, Mark::Settled).await;
+    let shielded_remaining = locks::remaining_of(session, wallet, LockKindId::Shielded)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(wallet_id = %wallet, error = %e, "could not read the shielded remainders");
+            Default::default()
+        });
     let by_txid = (session.leases.top_ups_settled(wallet).await).unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, error = %e, "could not read the settled funds");
         HashSet::new()
@@ -373,6 +379,10 @@ pub(crate) async fn fund_evidence(
             .chain(settled)
             .chain(shielded_settled)
             .chain(alone)
+            .collect(),
+        used_up_shields: shielded_remaining
+            .into_iter()
+            .filter_map(|(at, credits)| (credits == 0).then_some(at))
             .collect(),
         reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Used).await,
         tracked: rows.iter().map(|l| l.info.outpoint).collect(),
