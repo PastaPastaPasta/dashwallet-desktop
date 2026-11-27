@@ -63,7 +63,7 @@ export DASHCLI="$dashcore/bin/dash-cli"
 export DASHUTIL="$dashcore/bin/dash-util"
 export DASHWALLET="$dashcore/bin/dash-wallet"
 
-case "$test_script" in
+case "${test_script##*/}" in
     dwd_coinjoin_client.py|dwd_masternodes.py|dwd_governance.py|dwd_protx.py|dwd_shared.py|\
     dwd_governance_ui.py|dwd_governance_added_key_ui.py|dwd_update_registrar_ui.py)
         export DWD_REGTEST_MASTERNODES=1
