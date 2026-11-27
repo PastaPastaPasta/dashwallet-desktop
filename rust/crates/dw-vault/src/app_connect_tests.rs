@@ -351,9 +351,10 @@ fn a_session_key_never_signs() {
 
 /// Its own request's keys too are reached only through the methods that
 /// check the request, never through a raw path.
-#[test]
-fn an_app_connect_signer_reaches_no_key_through_a_raw_path() {
+#[tokio::test]
+async fn an_app_connect_signer_reaches_no_key_through_a_raw_path() {
     use crate::signer::KeyUse;
+    use key_wallet::Signer;
     let dir = tempfile::tempdir().unwrap();
     let v = vault(&dir);
     let app = app_eph_pub(9);
@@ -397,6 +398,11 @@ fn an_app_connect_signer_reaches_no_key_through_a_raw_path() {
         )
         .unwrap();
     assert!(signer.sign_identity(&encryption, &public, b"data").is_err());
+    for path in [&session, &encryption] {
+        let refused = Err(SignerError::PathNotAllowed(path.to_string()));
+        assert_eq!(signer.sign_ecdsa(path, [9; 32]).await.map(|_| ()), refused);
+        assert_eq!(signer.public_key(path).await.map(|_| ()), refused);
+    }
 }
 
 #[test]
