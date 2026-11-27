@@ -108,18 +108,18 @@ revoke the subkey without anything from GitHub. Neither the primary key nor your
 export PGP_FPR=<40-hex primary fingerprint of your release key>
 gpg --quick-add-key "$PGP_FPR" ed25519 sign 2y                  # asks to unlock your primary key
 gpg --list-secret-keys --with-subkey-fingerprints "$PGP_FPR"    # the new [S] subkey is the last one listed
-SUB=<40-hex fingerprint of that subkey>
+PGP_SUB=<40-hex fingerprint of that subkey>
 
 CI_HOME=$(mktemp -d) && chmod 700 "$CI_HOME"                    # a throwaway home that holds only the subkey
-gpg --export-secret-subkeys "$SUB!" | gpg --homedir "$CI_HOME" --import
+gpg --export-secret-subkeys "$PGP_SUB!" | gpg --homedir "$CI_HOME" --import
 GRIP=$(gpg --homedir "$CI_HOME" --list-secret-keys --with-keygrip --with-colons |
-  awk -F: -v want="$SUB" '$1 == "fpr" && $10 == want { s = 1; next } s && $1 == "grp" { print $10; exit }')
+  awk -F: -v want="$PGP_SUB" '$1 == "fpr" && $10 == want { s = 1; next } s && $1 == "grp" { print $10; exit }')
 gpg-connect-agent --homedir "$CI_HOME" "passwd $GRIP" /bye      # your passphrase once, then a NEW one for CI, twice
-gpg --homedir "$CI_HOME" --armor --export-secret-subkeys "$SUB!" |
+gpg --homedir "$CI_HOME" --armor --export-secret-subkeys "$PGP_SUB!" |
   gh secret set RELEASE_PGP_PRIVATE_KEY --env release-signing --repo "$R"    # asks for the new passphrase
 gh secret set RELEASE_PGP_PASSPHRASE --env release-signing --repo "$R"       # prompts: paste the new passphrase
 gpgconf --homedir "$CI_HOME" --kill all && rm -rf "$CI_HOME"
-gpg --delete-secret-keys "$SUB!"                                # your own keyring keeps signing with your usual subkey
+gpg --delete-secret-keys "$PGP_SUB!"                            # your own keyring keeps signing with your usual subkey
 gpg --armor --export "$PGP_FPR" > release-key.asc               # public, now with the CI subkey: step 5
 ```
 
@@ -152,6 +152,7 @@ Microsoft's steps are in <https://learn.microsoft.com/azure/artifact-signing/qui
    az ad sp create --id "$APP_ID"
    SUBJECT="$(gh api "repos/$R/actions/oidc/customization/sub" --jq .sub_claim_prefix):environment:release-signing"
    echo "$SUBJECT"   # repo:PastaPastaPasta@6443210/dashwallet-desktop@1409635492:environment:release-signing
+   [[ "$SUBJECT" == repo:*:environment:release-signing ]] || echo "STOP: that is not a subject; do not create the credential"
    az ad app federated-credential create --id "$APP_ID" --parameters "{
      \"name\": \"dashwallet-desktop-release-signing\",
      \"issuer\": \"https://token.actions.githubusercontent.com\",

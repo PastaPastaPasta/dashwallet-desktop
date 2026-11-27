@@ -6,12 +6,16 @@
 #     (--leaf-hash <sha256:64-hex> | --signer-org <organization> --signer-eku <OID> [--expect-leaf <sha256:64-hex>]) \
 #     [--ca-file <roots.pem>] [--skip-chain-verify]
 #
+# The pinned signer must have made the installer's primary signature, the one Windows shows, and the installer
+# must carry no other: osslsigncode alone is satisfied by a pinned signature nested under someone else's.
+#
 # --leaf-hash    the signer is that one long-lived certificate.
 # --signer-org   the signer names that organization and carries that EKU (windows-signer-leaf.py), chains to
-#                --ca-file (required), and its signature carries an RFC 3161 timestamp that verifies under
-#                --ca-file too. Such a certificate lives for days: without the timestamp the installer's
-#                signature would stop verifying when it expires, and osslsigncode accepts a signature with no
+#                --ca-file (required), and its signature carries a timestamp that verifies under --ca-file
+#                too. Such a certificate lives for days: without the timestamp the installer's signature
+#                would stop verifying when it expires, and osslsigncode accepts a signature with no
 #                timestamp, or with one it could not verify, while the certificate is still current.
+#                The EKU must be one identity's own (1.3.6.1.4.1.311.97.<a>.<b>.<c>.<d>).
 # --skip-chain-verify   test suites only: no timestamp, no CRL.
 set -euo pipefail
 
@@ -55,6 +59,9 @@ if [[ -n "$signer_org$signer_eku" ]]; then
   signer=1
   [[ -z "$leaf_hash" ]] || die "pass --leaf-hash or --signer-org with --signer-eku, not both"
   [[ -n "$signer_org" && -n "$signer_eku" ]] || die "--signer-org and --signer-eku go together"
+  [[ "$signer_org" != *REPLACE_* && "$signer_org" != *$'\n'* ]] || die "--signer-org is a placeholder or spans lines"
+  [[ "$signer_eku" =~ ^1\.3\.6\.1\.4\.1\.311\.97\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "--signer-eku must be the identity's own EKU, 1.3.6.1.4.1.311.97.<a>.<b>.<c>.<d> (got '$signer_eku')"
   [[ -n "$ca_file" ]] || die "--signer-org needs --ca-file: an organization and an EKU identify the signer only under a pinned root"
   [[ "$verify_help" == *"-TSA-CAfile"* ]] || die "this osslsigncode cannot pin the timestamp root (-TSA-CAfile)"
   osslsigncode extract-signature -pem -in "$exe" -out "$work/sig.pem" >/dev/null ||
@@ -68,7 +75,8 @@ else
 fi
 [[ "$leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] || die "the leaf hash must be sha256:<64 lower-case hex> (got '${leaf_hash:-<empty>}')"
 
-verify_args=(verify -in "$exe" -require-leaf-hash "$leaf_hash")
+[[ "$verify_help" == *"-index"* ]] || die "this osslsigncode cannot verify one chosen signature (-index)"
+verify_args=(verify -in "$exe" -index 0 -require-leaf-hash "$leaf_hash")
 [[ -z "$ca_file" ]] || verify_args+=(-CAfile "$ca_file")
 ((!signer)) || verify_args+=(-TSA-CAfile "$ca_file")
 if ((skip_chain_verify)); then
@@ -77,15 +85,20 @@ if ((skip_chain_verify)); then
   [[ "$verify_help" != *"-ignore-crl"* ]] || verify_args+=(-ignore-crl)
 fi
 
+# The status lines read below are all on stdout; stderr is kept apart so nothing can be interleaved into them.
 rc=0
-osslsigncode "${verify_args[@]}" > "$work/verify.log" 2>&1 || rc=$?
-cat "$work/verify.log"
+osslsigncode "${verify_args[@]}" > "$work/verify.out" 2> "$work/verify.err" || rc=$?
+cat "$work/verify.out"
+cat "$work/verify.err" >&2
 ((rc == 0)) || die "osslsigncode verify failed for $exe (exit $rc)"
 
+if grep -qE '^Warning: signature verification at index [0-9]+ was skipped' "$work/verify.out"; then
+  die "$exe carries more than one signature; a release installer carries the pinned signer's only"
+fi
 if ((signer && !skip_chain_verify)); then
-  if ! grep -qx 'Timestamp Server Signature verification: ok' "$work/verify.log" ||
-     grep -qE '^Timestamp (is not available|Server Signature verification: failed|Server Signature verification is disabled)' "$work/verify.log"; then
-    die "the signature of $exe carries no verified RFC 3161 timestamp; its certificate expires within days and the signature with it"
+  if ! grep -qx 'Timestamp Server Signature verification: ok' "$work/verify.out" ||
+     grep -qE '^Timestamp (is not available|Server Signature verification: failed|Server Signature verification is disabled)' "$work/verify.out"; then
+    die "the signature of $exe carries no verified timestamp; its certificate expires within days and the signature with it"
   fi
 fi
 echo "windows-verify-pinned: $exe is signed by the pinned signer (leaf $leaf_hash)"

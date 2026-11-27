@@ -1095,6 +1095,30 @@ subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "impostor.crt"), "-ke
 subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(impostor_signed),
                 "-out", str(wk / "impostor.exe.pem")], check=True, capture_output=True)
 
+# Timestamps without a network: osslsigncode's built-in authority, one under a root the tests pin and one not
+for name in ("tsa", "tsa-other"):
+    cnf = wk / f"{name}.cnf"
+    cnf.write_text(
+        "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n"
+        f"[dn]\nCN = Test {name}\n"
+        "[ext]\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = critical, timeStamping\n"
+    )
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(wk / f"{name}.key"), "-out", str(wk / f"{name}.crt"), "-days", "2",
+        "-config", str(cnf), "-extensions", "ext",
+    ], check=True, capture_output=True)
+    subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "win.crt"), "-key", str(wk / "win.key"), "-h", "sha256",
+                    "-TSA-certs", str(wk / f"{name}.crt"), "-TSA-key", str(wk / f"{name}.key"),
+                    "-in", str(unsigned / win_name), "-out", str(wk / f"{name}-signed.exe")], check=True, capture_output=True)
+(wk / "win-and-tsa.pem").write_text((wk / "win.crt").read_text() + (wk / "tsa.crt").read_text())
+
+# Two signatures on one installer: another signer's primary over the pinned signer's, and the reverse
+subprocess.run(["osslsigncode", "sign", "-nest", "-certs", str(wk / "win.crt"), "-key", str(wk / "win.key"), "-h", "sha256",
+                "-in", str(planted_signed), "-out", str(wk / "nested-under-other.exe")], check=True, capture_output=True)
+subprocess.run(["osslsigncode", "sign", "-nest", "-certs", str(wk / "evil.crt"), "-key", str(wk / "evil.key"), "-h", "sha256",
+                "-in", str(win_signed), "-out", str(wk / "other-nested-under-pinned.exe")], check=True, capture_output=True)
+
 # Wrong-version and wrong-key minisign latest.json fixtures
 latest_badver = json.loads(latest_path.read_text())
 latest_badver["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_file(unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", "0.0.9")
@@ -1661,7 +1685,7 @@ PY
   done
   expect_attach_fail \
     "windows_signer: without the test-only skip flag, release-attach refuses a matching, currently valid signature that carries no timestamp" \
-    "no verified RFC 3161 timestamp" "$e2e/attach-signer-nots.out" \
+    "no verified timestamp" "$e2e/attach-signer-nots.out" \
     "${signer_prod[@]}" "${signer_ids[@]}" --out-dir "$e2e/attached-signer-nots"
   check "windows_signer: osslsigncode itself accepted that signature, so the timestamp check is what refused it" \
     'grep -qx "Timestamp is not available" "$e2e/attach-signer-nots.out" && grep -qx "Signature verification: ok" "$e2e/attach-signer-nots.out" && [[ ! -e "$e2e/attached-signer-nots/signed-manifest.json" ]]'
@@ -1678,7 +1702,32 @@ PY
     '[[ $wv_rc -eq 0 ]] && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
   wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt"
   check "windows-verify-pinned: refuses that installer for want of a timestamp once the skip flag is gone" \
-    '[[ $wv_rc -ne 0 ]] && grep -q "no verified RFC 3161 timestamp" "$e2e/wv.out"'
+    '[[ $wv_rc -ne 0 ]] && grep -q "no verified timestamp" "$e2e/wv.out"'
+  wv_org=(--signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44)
+  wv_exe="$e2e/work/tsa-signed.exe"
+  wv "${wv_org[@]}" --ca-file "$e2e/work/win-and-tsa.pem"
+  check "windows-verify-pinned: accepts a signature whose timestamp verifies under the pinned roots, with no skip flag" \
+    '[[ $wv_rc -eq 0 ]] && grep -qx "Timestamp Server Signature verification: ok" "$e2e/wv.out" && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
+  if [[ $wv_rc -ne 0 ]]; then cat "$e2e/wv.out" >&2 || true; fi
+  wv_exe="$e2e/work/tsa-other-signed.exe"
+  wv "${wv_org[@]}" --ca-file "$e2e/work/win-and-tsa.pem"
+  check "windows-verify-pinned: refuses a signature whose timestamp is from an authority outside the pinned roots" \
+    '[[ $wv_rc -ne 0 ]] && grep -qE "no verified timestamp|osslsigncode verify failed" "$e2e/wv.out" && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+  for nested in nested-under-other other-nested-under-pinned; do
+    wv_exe="$e2e/work/$nested.exe"
+    wv "${wv_org[@]}" --ca-file "$e2e/work/win-and-evil.pem" --skip-chain-verify
+    check "windows-verify-pinned: refuses two signatures on one installer under the organization and EKU pin ($nested), both roots trusted" \
+      '[[ $wv_rc -ne 0 ]] && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+    wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win-and-evil.pem" --skip-chain-verify
+    check "windows-verify-pinned: refuses two signatures on one installer under the leaf-hash pin ($nested), both roots trusted" \
+      '[[ $wv_rc -ne 0 ]] && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+  done
+  check "windows-verify-pinned: the pinned signer's own second place is named as the reason" \
+    'grep -q "carries more than one signature" "$e2e/wv.out"'
+  wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.5.5.7.3.3 --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: refuses Code Signing itself as the identity EKU" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "must be the identity.s own EKU" "$e2e/wv.out"'
   wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --skip-chain-verify
   check "windows-verify-pinned: refuses an organization and EKU pin without pinned roots" \
     '[[ $wv_rc -ne 0 ]] && grep -q "needs --ca-file" "$e2e/wv.out"'
