@@ -325,7 +325,7 @@ fn reopening_during_repair_keeps_unrelated_funding_available() {
             .iter()
             .any(|row| row.out_point == outpoint)
     );
-    start_spv(&engine, &session);
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
     refresh(&engine, &session, id);
     super::own_spend_disk_tests::eventually("an unrelated funding step is available", || {
         session
