@@ -2362,6 +2362,52 @@ fn a_failed_spend_keeps_its_quote_and_maps_the_librarys_error() {
     );
 }
 
+/// A held pool-floor refusal stays pending with the notes held, and carries
+/// the pool-floor reason (`pool_too_small`) instead of reading only as an
+/// unconfirmed spend.
+#[test]
+fn a_held_pool_floor_refusal_of_unshield_to_core_carries_the_pool_floor_reason() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    let rules = Rules::at(version(LATEST)).unwrap();
+    let credits = rules.min.max(NOTE / 2);
+    let pool_text = "state transition broadcast failed: Shielded pool has insufficient notes \
+                     for outgoing transition: pool has 3 notes but minimum 250 required";
+
+    *lib.after_failure.lock().unwrap() = AfterFailure::Held;
+    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
+        pool_text.into(),
+    ));
+    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+    let out = run(&fx, &lib, move |s, lib| async move {
+        pool::unshield(&s, wallet, &*lib, credits, None, &lease, false).await
+    })
+    .unwrap();
+    assert_eq!(out.state, ShieldedSpendState::Pending);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_reason"],
+        serde_json::json!({ "kind": "pool_too_small", "notes": 3, "required": 250 })
+    );
+    assert!(!lib.held.lock().unwrap().is_empty());
+
+    lib.fail_with(PlatformWalletError::ShieldedSpendUnconfirmed {
+        operation: "withdraw",
+        reason: pool_text.into(),
+    });
+    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+    let out = run(&fx, &lib, move |s, lib| async move {
+        pool::unshield(&s, wallet, &*lib, credits, None, &lease, false).await
+    })
+    .unwrap();
+    assert_eq!(out.state, ShieldedSpendState::Pending);
+    assert!(out.unresolved.is_some());
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_reason"],
+        serde_json::json!({ "kind": "pool_too_small", "notes": 3, "required": 250 })
+    );
+}
+
 #[test]
 fn an_unshield_pays_the_address_given_or_a_fresh_receive_address() {
     let fx = Fixture::new(0);

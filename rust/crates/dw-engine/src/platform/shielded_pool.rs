@@ -170,9 +170,9 @@ use super::shield_drain::DrainCoin;
 use super::shielded::{
     HeldSpend, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedAccount, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
-    ShieldedAddress, ShieldedDirection, ShieldedRefusal, ShieldedScanProgress,
-    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo,
-    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    ShieldedAddress, ShieldedDirection, ShieldedPendingReason, ShieldedRefusal,
+    ShieldedScanProgress, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
+    ShieldedStatus, ShieldedSyncInfo, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
@@ -1375,11 +1375,24 @@ fn pool_notes(text: &str) -> Option<(u64, u64)> {
     Some((notes.trim().parse().ok()?, required.trim().parse().ok()?))
 }
 
+/// The known broadcast refusal carried on a pending spend outcome when the
+/// library kept its signed transition or note hold in place.
+fn pending_reason(e: &PlatformWalletError) -> Option<ShieldedPendingReason> {
+    let text = match e {
+        PlatformWalletError::ShieldedBroadcastFailed(text) => text.as_str(),
+        PlatformWalletError::ShieldedSpendUnconfirmed { reason, .. } => reason.as_str(),
+        _ => return None,
+    };
+    pool_notes(text)
+        .map(|(notes, required)| ShieldedPendingReason::PoolTooSmall { notes, required })
+}
+
 /// What a spend that went out left.
 pub(super) struct Spent {
     balance: u64,
     pub(super) state: ShieldedSpendState,
     unresolved: Option<UnresolvedSpend>,
+    pending_reason: Option<ShieldedPendingReason>,
     /// An unshield to a Platform address: its `FromShielded` record's row,
     /// once the hook armed it.
     record: Option<String>,
@@ -1669,12 +1682,14 @@ pub(super) async fn send_armed(
                 balance: balance(lib).await,
                 state: ShieldedSpendState::Done,
                 unresolved: None,
+                pending_reason: None,
                 record,
             })
         }
         Err(SpendError::Library(e))
             if matches!(*e, PlatformWalletError::ShieldedSpendUnconfirmed { .. }) =>
         {
+            let pending_reason = pending_reason(&e);
             let unresolved = (lib.unresolved().await.unwrap_or_default().into_iter())
                 .find(|u| !before.contains(&u.activity_id));
             match &unresolved {
@@ -1721,6 +1736,7 @@ pub(super) async fn send_armed(
                 balance: after,
                 state: ShieldedSpendState::Pending,
                 unresolved,
+                pending_reason,
                 record,
             })
         }
@@ -1771,11 +1787,13 @@ pub(super) async fn send_armed(
                      notes and it stays pending"
                 );
             }
+            let pending_reason = pending_reason(&e);
             drop(hold);
             Ok(Spent {
                 balance: after,
                 state: ShieldedSpendState::Pending,
                 unresolved: armed,
+                pending_reason,
                 record,
             })
         }
@@ -1894,6 +1912,7 @@ pub(crate) async fn unshield_to_platform(
         to: address.to_bech32m_string(lib.network()),
         state: spent.state,
         unresolved: spent.unresolved,
+        pending_reason: spent.pending_reason,
         record: spent.record,
     })
 }
@@ -1905,6 +1924,7 @@ fn outcome(credits: u64, to: String, spent: Spent) -> ShieldedSpendOutcome {
         to,
         state: spent.state,
         unresolved: spent.unresolved,
+        pending_reason: spent.pending_reason,
     }
 }
 

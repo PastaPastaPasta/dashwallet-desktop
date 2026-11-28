@@ -13,7 +13,7 @@ import { onShieldedSettled, resetShielded, SHIELDED_COPY, shieldedCanChange, shi
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
 const TO = "tdash1zq0k8y";
-const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO, state: "done", unresolved: null };
+const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO, state: "done", unresolved: null, pendingReason: null };
 const APPLIED: ShieldOutcome = { txid: "lock1", state: { kind: "applied", balance: "130000000000" } };
 const GRANT = { maxDuffs: 0, maxCredits: "10020000000" };
 const credits = (c: string) => `${Number(BigInt(c) / 1000n) / 1e8} tDASH`;

@@ -83,6 +83,20 @@ describe("fixture Shielded → Platform", () => {
     expect([shielded().notes, shielded().balance]).toEqual([["40000000000", "25000000000"], "65000000000"]);
   });
 
+  it("held pool-floor refusal stays pending with notes held and carries poolTooSmall", async () => {
+    shielded().poolTooSmallHeld = true;
+    const before = BigInt(shielded().balance);
+    const was = onReceive();
+    const q = await backend.unshieldToPlatformQuote(W, "10000000000", null);
+    const out = await backend.unshieldToPlatform(W, "10000000000", null, (await opGrant(q.totalCredits)).id, false);
+    expect(out.state).toBe("pending");
+    expect(out.unresolved).not.toBeNull();
+    expect(out.pendingReason).toEqual({ kind: "poolTooSmall", notes: 120, required: 250 });
+    expect([BigInt(shielded().balance), onReceive()]).toEqual([before - BigInt(q.totalCredits), was]);
+    expect(shielded().held).toHaveLength(1);
+    shielded().poolTooSmallHeld = false;
+  });
+
   it("checks the grant before Platform's pool floor, and the floor refusal uses the grant up", async () => {
     shielded().poolTooSmall = true;
     const before = [shielded().balance, onReceive()];

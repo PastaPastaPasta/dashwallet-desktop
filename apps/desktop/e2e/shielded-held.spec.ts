@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, openTransfer, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // Issue 809: a Shielded payment Platform refused at broadcast may still go through, so its notes
 // stay held, out of the balance. Home's Shielded row, Send from Shielded and Activity say so, and
@@ -105,4 +105,27 @@ test.describe("Shielded funds held for a payment that may still go through", () 
     });
     await expect(page.getByTestId("breakdown-shielded").locator("[role=tooltip]")).toHaveCount(0);
   });
+
+  for (const theme of THEMES) {
+    test(`a held pool-floor refusal explains the pool floor and hold instead of generic pending (${theme})`, async ({ page }) => {
+      const errors = await open(page, "funded", theme);
+      await page.evaluate(() => {
+        window.__dwFixture!.world.pending.shielded!.poolTooSmallHeld = true;
+      });
+      await openTransfer(page, "shieldedToCore");
+      await page.getByTestId("transfer-amount").fill("0.1");
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("shielded-go").click();
+      await authorize(page);
+      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Shielded pool too small");
+      await expect(page.getByTestId("shielded-outcome-text")).toContainText("Shielded withdrawals open once the network's shielded pool has enough activity.");
+      await expect(page.getByTestId("shielded-outcome-text")).toContainText("stays held until Dash Wallet proves the move can no longer go through");
+      await expect(page.getByTestId("shielded-outcome-title")).not.toHaveText("Not confirmed yet");
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await shot(page, `${theme}-shielded-pool-floor-held`);
+      await page.getByTestId("shielded-done").click();
+      await expect(page.getByTestId("breakdown-shielded")).toContainText("held for a payment");
+      expect(errors).toEqual([]);
+    });
+  }
 });

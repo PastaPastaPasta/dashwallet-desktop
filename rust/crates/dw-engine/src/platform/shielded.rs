@@ -465,6 +465,17 @@ pub struct UnrecordedSpend {
     pub since: u64,
 }
 
+/// Why a pending shielded spend was refused at broadcast while its signed
+/// transition or notes stay held until verified reads settle it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ShieldedPendingReason {
+    /// Platform refused the outgoing spend because the shielded pool holds
+    /// fewer than `required` notes (`InsufficientPoolNotesError`). The signed
+    /// spend and note hold stay in place until proof settles them.
+    PoolTooSmall { notes: u64, required: u64 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedSpendOutcome {
     pub credits: u64,
@@ -477,6 +488,9 @@ pub struct ShieldedSpendOutcome {
     pub state: ShieldedSpendState,
     /// For a `pending` spend, the library's record of it, when it kept one.
     pub unresolved: Option<UnresolvedSpend>,
+    /// For a `pending` spend, why Platform refused it at broadcast while the
+    /// hold stays in place, when known.
+    pub pending_reason: Option<ShieldedPendingReason>,
 }
 
 /// What `unshield_to_platform` did: the spend's outcome, and the Platform
@@ -492,6 +506,9 @@ pub struct UnshieldToPlatformOutcome {
     pub to: String,
     pub state: ShieldedSpendState,
     pub unresolved: Option<UnresolvedSpend>,
+    /// For a `pending` spend, why Platform refused it at broadcast while the
+    /// hold stays in place, when known.
+    pub pending_reason: Option<ShieldedPendingReason>,
     /// The `id` of the record's `PlatformActivity` row (`platform_activity`).
     pub record: Option<String>,
 }

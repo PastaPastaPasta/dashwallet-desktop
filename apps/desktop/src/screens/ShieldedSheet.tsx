@@ -331,7 +331,7 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     else if (s.kind === "consumptionUnknown") ({ title, text } = C.done.checking);
     else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
   } else if (r.outcome.state === "pending") {
-    ({ title, text } = C.done.unconfirmed);
+    ({ title, text } = r.outcome.pendingReason?.kind === "poolTooSmall" ? C.done.poolTooSmall : C.done.unconfirmed);
   } else if (flow.kind === "toPlatform") {
     ({ title } = C.done.toPlatform);
     text = C.done.toPlatform.text(r.outcome.to);
