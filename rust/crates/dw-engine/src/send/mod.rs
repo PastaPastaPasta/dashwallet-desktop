@@ -863,12 +863,27 @@ impl NetworkSession {
         self.new_draft(wallet_id, HashSet::new(), false)
     }
 
-    /// The transaction durably recorded for a payment invoice, if any.
+    /// The transaction durably recorded for a payment invoice, if any: its
+    /// global row, or for a wallet restored from a backup, the reverse row
+    /// in the wallet's scope.
     pub async fn invoice_payment(&self, invoice: [u8; 32]) -> Result<Option<String>, EngineError> {
         let _op = self.enter().await?;
         let key = hex::encode(invoice);
-        self.appdb_op(move |db| db.setting(INVOICE_SCOPE, &key))
-            .await
+        let scopes: Vec<String> = (self.manager()?.list_wallet_ids_blocking().into_iter())
+            .map(|id| WalletId(id).to_string())
+            .collect();
+        self.appdb_op(move |db| {
+            if let Some(txid) = db.setting(INVOICE_SCOPE, &key)? {
+                return Ok(Some(txid));
+            }
+            for scope in &scopes {
+                if let Some(txid) = crate::tx_actions::restored_invoice_binding(db, scope, &key)? {
+                    return Ok(Some(txid));
+                }
+            }
+            Ok(None)
+        })
+        .await
     }
 
     /// A new draft whose coin control may spend `exempt` although tracked
@@ -1310,6 +1325,7 @@ impl TxDraft {
         // included (the same outflow `sign_psbt` caps).
         let outflow = external_sent.saturating_add(r.plan.fee);
         r.check_invoice(invoice.as_ref())?;
+        let deadline = invoice.as_ref().map(|(_, _, d)| *d);
         let vault = session.vault.clone();
         let signer = tokio::task::spawn_blocking(move || {
             if invoice.is_some_and(|(_, _, deadline)| tokio::time::Instant::now() >= deadline) {
@@ -1334,6 +1350,7 @@ impl TxDraft {
             None,
             fence,
             guarded,
+            deadline,
         )
         .await
     }
@@ -1375,6 +1392,7 @@ impl TxDraft {
             Some(charge),
             fence,
             guarded,
+            invoice.map(|(_, _, d)| *d),
         )
         .await
     }
@@ -1433,10 +1451,18 @@ impl TxDraft {
         charge: Option<SpendCharge>,
         fence: CoinFence,
         guarded: u32,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         self.session.coin_fences.prepare_pause_point().await;
         // The coins are read: a rewind since the guard refuses them.
         (self.session).replay_guard(self.wallet_id, guarded).await?;
+        // A gift card quote's window is checked again right before each
+        // signature, after every wait above and below.
+        let expired = || {
+            deadline
+                .is_some_and(|d| tokio::time::Instant::now() >= d)
+                .then_some(EngineError::Send(SendFailure::Cancelled))
+        };
         let session = &self.session;
         let wallet_id = self.wallet_id;
         let network = self.network();
@@ -1460,6 +1486,9 @@ impl TxDraft {
                 None => None,
             };
             let change_script = change.as_ref().map(|c| c.script_pubkey.clone());
+            if let Some(e) = expired() {
+                return Err(e);
+            }
             let mut outputs = vec![data.clone()];
             if let Some(change) = change {
                 // Core's `RANDOM_CHANGE_POSITION` (wallet/spend.cpp:1307).
@@ -1480,6 +1509,9 @@ impl TxDraft {
                     script_pubkey: rc.address.script_pubkey(),
                 })
                 .collect();
+            if let Some(e) = expired() {
+                return Err(e);
+            }
             let tx = session
                 .sign_coinjoin_payment(wallet_id, &r.plan.inputs, outputs, &signer)
                 .await?;
@@ -1541,6 +1573,9 @@ impl TxDraft {
             }
             (ChangeTarget::Auto, None) => r.plan.inputs[0].address.clone(),
         };
+        if let Some(e) = expired() {
+            return Err(e);
+        }
         let signed = wallet
             .core()
             .finalize_transaction_with_options(
@@ -2677,7 +2712,11 @@ impl TxDraft {
                 };
                 let key = hex::encode(invoice);
                 let existing = db.setting(INVOICE_SCOPE, &key)?;
-                if existing.as_deref().is_some_and(|id| id != txid) {
+                let bound = match &existing {
+                    Some(id) => Some(id.clone()),
+                    None => crate::tx_actions::restored_invoice_binding(db, &scope, &key)?,
+                };
+                if bound.as_deref().is_some_and(|id| id != txid) {
                     return if sent {
                         Err(dw_appdb::AppDbError::Invalid(
                             "the invoice already has a different transaction".into(),

@@ -7740,14 +7740,6 @@ fn invoice_payment_recovered_in_activity_cannot_be_resent() {
         matches!(result, Err(EngineError::InvalidArgument(message)) if message.contains("gift card order"))
     );
 
-    assert!(
-        f.engine
-            .block_on(
-                f.session
-                    .resend_invoice_transaction(f.wallet, txid, [5; 32])
-            )
-            .is_err()
-    );
     f.engine.block_on(f.session.start_spv()).unwrap();
     f.engine.block_on(async {
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -7764,6 +7756,16 @@ fn invoice_payment_recovered_in_activity_cannot_be_resent() {
     );
     let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
     *f.session.hub.resend_wire.lock().unwrap() = Some(wire.clone());
+    // With SPV and the transport ready, only the order check can refuse.
+    let wrong = f.engine.block_on(
+        f.session
+            .resend_invoice_transaction(f.wallet, txid, [5; 32]),
+    );
+    assert!(
+        matches!(&wrong, Err(EngineError::InvalidArgument(m)) if m.contains("does not belong")),
+        "{wrong:?}"
+    );
+    assert!(wire.lock().unwrap().is_empty());
     f.engine
         .block_on(
             f.session
@@ -7933,4 +7935,79 @@ fn changed_invoice_is_rejected_before_redeeming_the_spend_grant() {
     f.engine
         .block_on(draft.prepare_checked(grant, Some((FOREIGN.to_string(), 10_000_000, deadline))))
         .unwrap();
+}
+
+/// A gift card quote that expires while the prepare waits, after its early
+/// check, is refused right before the signature: nothing is signed or
+/// reserved.
+#[test]
+fn a_quote_expiring_during_the_prepare_is_refused_before_signing() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_prepare.lock().unwrap() = Some(Arc::clone(&pause));
+    let grant = f.spend_grant(10_000_000 + FEE_ROOM);
+    let deadline = f
+        .engine
+        .block_on(async { tokio::time::Instant::now() + Duration::from_millis(500) });
+    let prepare = f.session.rt.spawn({
+        let draft = Arc::clone(&draft);
+        async move {
+            draft
+                .prepare_checked(grant, Some((FOREIGN.to_string(), 10_000_000, deadline)))
+                .await
+        }
+    });
+    eventually("the prepare's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    std::thread::sleep(Duration::from_millis(700));
+    pause.release.notify_one();
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert_eq!(send_failure(refused), SendFailure::Cancelled);
+    assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+}
+
+/// A wallet restored from a backup has the wallet-scope reverse row of its
+/// invoice payment but not the global one: the order still finds its
+/// transaction, and a second payment for it is still refused.
+#[test]
+fn a_restored_invoice_payment_keeps_its_order_binding() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let key = [9; 32];
+    f.engine
+        .block_on(draft.mark_sent(&prepared, true, Some(key)))
+        .unwrap();
+    // The global row stays on the computer the backup came from.
+    let db = f.session.live().unwrap().appdb;
+    db.set_setting(super::INVOICE_SCOPE, &hex::encode(key), None)
+        .unwrap();
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        Some(txid.clone())
+    );
+    f.credit(2, COIN);
+    let other = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let candidate = f
+        .engine
+        .block_on(other.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    assert_ne!(candidate.summary().txid, txid);
+    assert!(
+        f.engine
+            .block_on(other.mark_sent(&candidate, true, Some(key)))
+            .is_err()
+    );
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        Some(txid)
+    );
 }

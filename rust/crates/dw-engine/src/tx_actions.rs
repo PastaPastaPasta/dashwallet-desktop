@@ -591,9 +591,28 @@ pub(crate) mod finish_fault {
 /// the mark; one an earlier build wrote has none.
 pub(crate) const SENT_TX_PREFIX: &str = "senttx:";
 
+/// Settings key prefix of the wallet-scope reverse of an invoice binding
+/// (`invoice-tx:<txid>` = the invoice key), which wallet backups carry.
+pub(crate) const INVOICE_TX_PREFIX: &str = "invoice-tx:";
+
 /// The wallet-local guard persists with the transaction across wallet backups.
 pub(crate) fn invoice_tx_key(txid: &str) -> String {
-    format!("invoice-tx:{txid}")
+    format!("{INVOICE_TX_PREFIX}{txid}")
+}
+
+/// The transaction a wallet scope's reverse rows bind to `invoice` (hex):
+/// the binding a wallet restored from a backup keeps, whose global row
+/// stayed on the other computer.
+pub(crate) fn restored_invoice_binding(
+    db: &dw_appdb::AppDb,
+    scope: &str,
+    invoice: &str,
+) -> dw_appdb::Result<Option<String>> {
+    Ok(db
+        .settings_with_prefix(scope, INVOICE_TX_PREFIX)?
+        .into_iter()
+        .find(|(_, value)| value == invoice)
+        .map(|(key, _)| key[INVOICE_TX_PREFIX.len()..].to_owned()))
 }
 
 /// Settings key prefix of a sent mark's inputs: each signed coin's
