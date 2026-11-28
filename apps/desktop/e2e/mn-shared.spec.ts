@@ -468,6 +468,18 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`shared masternode ${theme}: a spend of the coins in a block that isn't final offers no Send again, and a confirming spend back says so`, async ({ page }, info) => {
+    const errors = await openSession(page, "sh-coordinator-sent-contested", theme);
+    await expect(page.getByTestId("sh-row-contested")).toHaveText("A transaction spending your reserved coins is in a block (2 confirmations). The wallet waits for a ChainLock to make it final.");
+    await expect(page.getByTestId("sh-resend")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-coordinator-sent-contested", theme);
+    await page.goto("about:blank");
+    const spendErrors = await openSession(page, "sh-close-out-abandon-confirming", theme);
+    await expect(page.getByTestId("sh-row-abandoning")).toHaveText("Abandoning: the spend back is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.");
+    if (info.project.name === "chromium") await shot(page, "sh-close-out-abandon-confirming", theme);
+    expect([...errors, ...spendErrors]).toEqual([]);
+  });
+
   test(`shared masternode ${theme}: an overdue registration's way out opens expanded, and still collapses`, async ({ page }) => {
     const errors = await openSession(page, "sh-coordinator-sent-overdue", theme);
     await expect(page.getByTestId("sh-way-out-toggle")).toHaveAttribute("aria-expanded", "true");

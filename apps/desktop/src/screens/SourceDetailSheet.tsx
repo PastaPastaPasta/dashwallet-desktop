@@ -51,7 +51,11 @@ function CancelPanel({ flow, record, kind, activity, network, onMove }: { flow: 
   const credits = (c: string) => display.withUnit(creditsToDuffs(c));
   const recipient = recipientOf(record);
   const { step, quote } = flow;
-  const refusal = (e: unknown) => (hasCode(e, "credits.send_out_of_range") ? CANCEL_COPY.tooSmall(kind, credits(record.credits), recipient) : moveErrorText(e, credits, activity));
+  const refusal = (e: unknown) => {
+    if (hasCode(e, "platform.restored")) return CANCEL_COPY.restoreRefusal(kind);
+    if (hasCode(e, "credits.send_out_of_range")) return CANCEL_COPY.tooSmall(kind, credits(record.credits), recipient);
+    return moveErrorText(e, credits, activity);
+  };
   const move = () => {
     flow.close();
     onMove();
@@ -255,7 +259,7 @@ export function SourceDetailSheet({ walletId, txid, network }: { walletId: strin
   const shielded = useShieldedHistory(walletId);
   const read = rowSource({ txid }) === "platform" ? platform : shielded;
   const status = useShieldedStatus(walletId);
-  const found = findSourceRecord(txid, platform.data, shielded.data, heldActivities(status.data));
+  const found = findSourceRecord(txid, platform.data, shielded.data, heldActivities(status.isError ? undefined : status.data));
   const cancel = cancelFor(useBackend(), walletId);
   useModel(cancel);
   return (

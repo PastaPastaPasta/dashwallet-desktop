@@ -194,6 +194,102 @@ fn a_request_without_a_refused_open_is_refused_and_writes_nothing() {
     assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
 }
 
+#[test]
+fn an_old_snapshot_cannot_restore_a_wallet_missing_from_live_data() {
+    let f = upgraded();
+    request(&f);
+    exec(&f.wallet(), "DELETE FROM wallets");
+    let result = open_in_child(&f.root);
+    assert!(result.starts_with("restore Refused "), "{result}");
+    assert_eq!(after_dirs(&f), 0);
+}
+
+fn fixture_passphrase() -> Vec<u8> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../testdata/upgrade/v0.1.0/expected.json"
+    )))
+    .unwrap();
+    fixture["passphrase"].as_str().unwrap().as_bytes().to_vec()
+}
+
+fn named_wallets(path: &Path) -> Vec<String> {
+    let db = rusqlite::Connection::open(path).unwrap();
+    let mut stmt = db
+        .prepare("SELECT name FROM wallets ORDER BY name")
+        .unwrap();
+    stmt.query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn removal_keeps_the_old_snapshot_retired_after_a_same_seed_reimport() {
+    let f = upgraded();
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    let before = tree(snapshot.dir());
+
+    assert_eq!(steps_in_child(&f.root, &["remove-main"]), ["removed"]);
+    assert_eq!(named_wallets(&f.net.join("app.sqlite")), ["Fixture second"]);
+    assert!(dw_store_upgrade::request_restore(&f.net, &snapshot).is_err());
+
+    assert_eq!(steps_in_child(&f.root, &["import-main"]), ["imported"]);
+    assert_eq!(
+        named_wallets(&f.net.join("app.sqlite")),
+        ["Fixture second", "Reimported main"]
+    );
+    assert!(dw_store_upgrade::request_restore(&f.net, &snapshot).is_err());
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+    assert_eq!(
+        tree_diff(&before, &tree(snapshot.dir())),
+        [dw_store_upgrade::NOT_THIS_WALLET]
+    );
+}
+
+#[test]
+fn restore_stays_retired_if_removal_stops_after_the_mark() {
+    let f = upgraded();
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    dw_store_upgrade::retire_snapshot_for_wallet_removal(&f.net, &main_wallet()).unwrap();
+
+    // The next process finds the durable mark with the original wallet still present.
+    assert_eq!(
+        named_wallets(&f.net.join("app.sqlite")),
+        ["Fixture main", "Fixture second"]
+    );
+    assert!(dw_store_upgrade::request_restore(&f.net, &snapshot).is_err());
+    break_history(&f);
+    assert_eq!(
+        steps_in_child(&f.root, &["open", "request", "recover"]),
+        [
+            RETIRED_SCREEN,
+            "err invalid_argument",
+            "recovered regtest-recovered-1",
+        ]
+    );
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+    assert_eq!(
+        named_wallets(&f.net.join("app.sqlite")),
+        ["Fixture main", "Fixture second"]
+    );
+}
+
+#[test]
+fn removal_refuses_if_the_named_snapshot_cannot_be_retired() {
+    let f = upgraded();
+    assert_eq!(
+        steps_in_child(&f.root, &["remove-main-without-backup"]),
+        ["err storage"]
+    );
+    assert_eq!(
+        named_wallets(&f.net.join("app.sqlite")),
+        ["Fixture main", "Fixture second"]
+    );
+    assert_eq!(steps_in_child(&f.root, &["remove-main"]), ["removed"]);
+}
+
 /// Restore earlier data: from the Restore screen, the request writes only
 /// RESTORE-REQUESTED; the next start's open runs it before any store opens
 /// and opens the restored data, with the RESTORED mark set. Run after a
@@ -606,10 +702,17 @@ fn child_steps() {
                 Err(EngineError::StoreRestore(r)) => format!("restore {:?} {}", r.state, r.cause),
                 Err(EngineError::StoreRefused(r)) => {
                     let keys: Vec<&str> = r.screen.buttons.iter().map(|b| b.key).collect();
-                    format!("refused {:?} {}", r.screen.way_out, keys.join(" "))
+                    if r.screen.way_out == WayOut::Unverified {
+                        format!("refused Unverified {} {}", r.screen.way_out_line.key, keys.join(" "))
+                    } else {
+                        format!("refused {:?} {}", r.screen.way_out, keys.join(" "))
+                    }
                 }
                 Err(e) => err(e),
             },
+            "open-testnet" => engine
+                .block_on(engine.open_network(DashNetwork::Testnet, local_opts()))
+                .map_or_else(err, |_| "ok".to_string()),
             "close" => engine
                 .block_on(engine.close_network(net.clone()))
                 .map_or_else(err, |closed| format!("closed {closed}")),
@@ -641,6 +744,43 @@ fn child_steps() {
                 );
                 "unheld".to_string()
             }
+            "remove-main" | "remove-main-without-backup" | "import-main" => {
+                use dw_vault::{Credential, GrantPurpose, UnlockScope};
+                use zeroize::Zeroizing;
+                let session = engine.block_on(engine.open_network(net.clone(), local_opts())).unwrap();
+                let wallet = dw_engine::WalletId(main_wallet());
+                let passphrase = Zeroizing::new(fixture_passphrase());
+                if step.starts_with("remove-main") {
+                    let moved = if step == "remove-main-without-backup" {
+                        let net_dir = session.data_dir();
+                        let snapshot = dw_store_upgrade::latest_snapshot(net_dir).unwrap().unwrap();
+                        let path = snapshot.dir().to_path_buf();
+                        let moved = path.with_file_name("moved-backup");
+                        std::fs::rename(&path, &moved).unwrap();
+                        Some((path, moved))
+                    } else {
+                        None
+                    };
+                    let grant = engine.block_on(session.vault_op(move |vault| vault.authorize(
+                        GrantPurpose::Wipe, Some(&wallet.0), Credential::Passphrase(&passphrase),
+                    ))).unwrap();
+                    let result = engine.block_on(session.remove_wallet(wallet, grant.id));
+                    if let Some((path, moved)) = moved {
+                        std::fs::rename(moved, path).unwrap();
+                        assert!(session.vault().has_wallet_secret(&wallet.0));
+                    }
+                    result.map_or_else(err, |()| "removed".to_string())
+                } else {
+                    engine.block_on(session.vault_op(move |vault| vault.unlock(&passphrase, UnlockScope::Full))).unwrap();
+                    let id = engine.block_on(session.import_wallet(
+                        Zeroizing::new(b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_vec()),
+                        Zeroizing::new(Vec::new()),
+                        dw_engine::ImportOptions {name: Some("Reimported main".into()), birth_height: Some(0), ..Default::default()},
+                    )).unwrap();
+                    assert_eq!(id, wallet);
+                    "imported".to_string()
+                }
+            }
             other => panic!("no step {other}"),
         });
     }
@@ -657,8 +797,46 @@ fn steps_in_child(root: &Path, steps: &[&str]) -> Vec<String> {
 }
 
 const RESTORE_SCREEN: &str = "refused Restore storeUpgrade.refused.restore storeUpgrade.refused.report storeUpgrade.refused.quit";
+
+#[test]
+fn cancelling_restore_works_after_another_network_opened() {
+    let f = upgraded();
+    break_history(&f);
+    let got = steps_in_child(&f.root, &["open-testnet", "open", "request", "cancel"]);
+    assert_eq!(got, ["ok", RESTORE_SCREEN, "requested", "cancelled"]);
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+    assert_eq!(after_dirs(&f), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_a_group_writable_network_before_running_restore() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = upgraded();
+    request(&f);
+    std::fs::set_permissions(&f.net, std::fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(open_in_child(&f.root).starts_with("err storage_not_private"));
+    assert_eq!(after_dirs(&f), 0);
+    assert!(backups(&f).join("RESTORE-REQUESTED").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_a_symlinked_upgrade_backups_folder() {
+    let f = upgraded();
+    let outside = f.root.join("moved-upgrade-backups");
+    std::fs::rename(backups(&f), &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, backups(&f)).unwrap();
+    let before = tree(&outside);
+    let result = open_in_child(&f.root);
+    assert!(result.starts_with("err "), "{result}");
+    assert_eq!(tree(&outside), before);
+}
 const RESTORE_HELD_SCREEN: &str = "refused Restore storeUpgrade.refused.restore \
      storeUpgrade.refused.recover storeUpgrade.refused.report storeUpgrade.refused.quit";
+const RETIRED_SCREEN: &str = "refused Unverified storeUpgrade.refused.wayOut.retired \
+     storeUpgrade.refused.recover \
+     storeUpgrade.refused.report storeUpgrade.refused.quit";
 
 /// An upgraded fixture whose open is refused with Restore earlier data (its
 /// schema history no longer matches), with a good copy of its wallet file
@@ -796,6 +974,10 @@ fn a_swap_refused_for_a_hold_offers_starting_over_after_cancel_restore() {
 /// `[n; 32]`, written as a fresh fork store over the live one: the store as
 /// an open that stopped before its drain leaves it.
 fn live_fork_store(f: &Fixture, n: u8) {
+    live_fork_store_with_notes(f, &[[n; 32]]);
+}
+
+fn live_fork_store_with_notes(f: &Fixture, notes: &[[u8; 32]]) {
     use dw_shielded_drain::test_support::{ForkRow, fork_store};
     let shielded = f.net.join("shielded.sqlite");
     for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -809,7 +991,7 @@ fn live_fork_store(f: &Fixture, n: u8) {
             st: 2,
             kind: "unresolved",
             reason: Some("purged"),
-            nullifiers: vec![[n; 32]],
+            nullifiers: notes.to_vec(),
         }],
     )
     .unwrap();
@@ -893,6 +1075,95 @@ fn a_fork_hold_the_snapshot_carries_does_not_hold_the_restore() {
         [vec![102u8; 32]],
         "held again after the restore"
     );
+}
+
+#[test]
+fn a_fork_marker_can_hold_fewer_notes_than_the_snapshot() {
+    let f = fixture("v0.1.0");
+    live_fork_store_with_notes(&f, &[[102; 32], [103; 32]]);
+    assert_eq!(open_in_child(&f.root), "ok");
+    fork_marker(&f, 102);
+    request(&f);
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert_eq!(after_dirs(&f), 1);
+    let mut notes = drained_holds(&f);
+    notes.sort();
+    assert_eq!(notes, [vec![102u8; 32], vec![103; 32]]);
+}
+
+#[test]
+fn an_imported_redrive_only_allows_restore_when_the_snapshot_can_reimport_it() {
+    for same_transition in [false, true] {
+        let f = fixture("v0.1.0");
+        let dispatch = f.net.join("dispatch.sqlite");
+        exec(
+            &dispatch,
+            &format!("INSERT INTO shielded_redrive VALUES ({MAIN}, zeroblob(32), zeroblob(32), 1)"),
+        );
+        assert_eq!(open_in_child(&f.root), "ok");
+        if !same_transition {
+            exec(
+                &dispatch,
+                "UPDATE shielded_artifact SET st_hash = randomblob(32)",
+            );
+        }
+        let got = request_got(&f);
+        if same_transition {
+            got.unwrap();
+            assert_eq!(open_in_child(&f.root), "ok");
+            assert_eq!(after_dirs(&f), 1);
+            let conn = rusqlite::Connection::open(&dispatch).unwrap();
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM shielded_artifact WHERE origin = 'imported_redrive'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "unresolved");
+        } else {
+            assert!(
+                matches!(got, Err(EngineError::ShieldedSpendHeld(_))),
+                "{got:?}"
+            );
+            assert_eq!(after_dirs(&f), 0);
+        }
+    }
+}
+
+#[test]
+fn an_imported_marker_only_allows_restore_when_the_snapshot_keeps_its_notes() {
+    for backed in [false, true] {
+        let f = fixture("v0.1.0");
+        marker(&f, 2, &[102]);
+        assert_eq!(open_in_child(&f.root), "ok");
+        let dispatch = f.net.join("dispatch.sqlite");
+        if !backed {
+            exec(
+                &dispatch,
+                "UPDATE shielded_artifact_note SET nullifier = randomblob(32)",
+            );
+        }
+        let got = request_got(&f);
+        if backed {
+            got.unwrap();
+            assert_eq!(open_in_child(&f.root), "ok");
+            let conn = rusqlite::Connection::open(dispatch).unwrap();
+            let count: usize = conn.query_row(
+                "SELECT COUNT(*) FROM shielded_artifact a
+                 JOIN shielded_artifact_note n ON n.wallet = a.wallet AND n.activity = a.activity
+                 WHERE a.origin = 'imported_marker' AND a.status_reason = 'unrecorded' AND n.spent = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap().try_into().unwrap();
+            assert_eq!(count, 1);
+        } else {
+            assert!(
+                matches!(got, Err(EngineError::ShieldedSpendHeld(_))),
+                "{got:?}"
+            );
+        }
+    }
 }
 
 /// R-1 (N): a fork hold only the live stores have, or one the snapshot's

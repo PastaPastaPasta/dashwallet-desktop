@@ -9,9 +9,8 @@ Drives the `dwcli` binary (set DWCLI to its path; the suite is skipped otherwise
    and the confirmed balance equals it;
 5. a fresh dwcli process (no sync) still shows the record and the balance (restart keeps history).
 
-Sync waits on heights and txids, not on `caught_up`: a single regtest node has no quorums, so
-dash-spv's masternode phase never finishes (dashd answers its `getqrinfo` with "Cannot find quorum
-snapshot"), and dash-spv never reaches its steady state there.
+Plain regtest skips SPV masternode sync. The test waits for specific wallet scan heights and
+transaction confirmations.
 
     DWD_COMPOSE_PROJECT=dwd-e1 DWD_REGTEST_BUILD=0 DWCLI=<target>/debug/dwcli \\
         .venv/bin/python -m pytest -v tests/test_l1_sync.py

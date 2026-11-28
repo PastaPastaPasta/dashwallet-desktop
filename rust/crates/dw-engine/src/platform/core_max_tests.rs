@@ -13,7 +13,7 @@ use key_wallet::bip32::DerivationPath;
 
 use super::*;
 use crate::platform::core_max::{self, CoreCoins};
-use crate::platform::credits::CoreMaxShort;
+use crate::platform::credits::{CoreMaxArrivalBlock, CoreMaxShort};
 use crate::platform::flows::GrantRequest;
 use crate::platform::shielded::{ShieldOutcome, ShieldQuote};
 
@@ -40,6 +40,7 @@ pub(super) fn account() -> CoreCoins {
         left_duffs: 7_000_000,
         arriving_duffs: 1_500_000,
         arriving: vec![late(3, 1_500_000)],
+        ..CoreCoins::default()
     }
 }
 
@@ -74,9 +75,26 @@ fn max_of(
     lib: &Arc<FakeShielded>,
     grant: String,
 ) -> Result<ShieldOutcome, ShieldedError> {
+    let coin_set = super::super::core_max::coin_set(&lib.core.lock().unwrap().coins);
+    shield_quoted(fx, lib, grant, coin_set)
+}
+
+fn shield_quoted(
+    fx: &Fixture,
+    lib: &Arc<FakeShielded>,
+    grant: String,
+    coin_set: [u8; 32],
+) -> Result<ShieldOutcome, ShieldedError> {
     let wallet = fx.wallet;
     run(fx, lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, FundAmount::All, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::QuotedAll { coin_set },
+            &grant,
+        )
+        .await
     })
 }
 
@@ -126,7 +144,13 @@ fn core_max_quote_and_execute_agree() {
     drop(fx.s.coinjoin.claim_sweep(fx.wallet).unwrap());
 
     *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
-    let outcome = max_of(&fx, &lib, shield_grant(&fx, quote.grant.max_duffs)).unwrap();
+    let outcome = shield_quoted(
+        &fx,
+        &lib,
+        shield_grant(&fx, quote.grant.max_duffs),
+        quote.max.unwrap().coin_set,
+    )
+    .unwrap();
     assert!(
         matches!(outcome.state, ShieldState::Applied { .. }),
         "{outcome:?}"
@@ -159,6 +183,7 @@ fn core_max_quote(inputs: u32) -> crate::platform::credits::CoreMax {
         inputs,
         left_duffs: 7_000_000,
         arriving_duffs: 1_500_000,
+        coin_set: super::super::core_max::coin_set(&account().coins),
     }
 }
 
@@ -297,26 +322,34 @@ fn drain_grant_caps_the_debit() {
     unused(&fx, &short);
 }
 
-/// Coins that changed since the quote to a smaller sum (one spent, one
-/// swapped for a smaller coin) are `coins_changed` under the quote's grant,
+/// A changed input set is `coins_changed` under the quote's grant,
 /// before the lease: nothing funded, the grant unused; a quote of the coins
 /// as they are funds.
 #[test]
 fn core_max_refuses_coins_changed_since_the_quote() {
     let fx = Fixture::new(0);
     let lib = maxer(&fx, account());
-    let quoted = quote_of(&fx, &lib).unwrap().grant.max_duffs;
+    let quoted = quote_of(&fx, &lib).unwrap();
     let spent = CoreCoins {
         coins: account().coins[..2].to_vec(),
         ..account()
     };
     let mut swapped = account();
     swapped.coins[2] = bip44(9, swapped.coins[2].value - 1);
-    for read in [spent, swapped] {
+    let mut same_sum = account();
+    let value = same_sum.coins.pop().unwrap().value;
+    same_sum
+        .coins
+        .extend([bip44(8, value / 2), bip44(9, value / 2)]);
+    let mut same_count = account();
+    same_count.coins[0] = bip44(9, same_count.coins[0].value);
+    let mut received = account();
+    received.coins.push(bip44(10, 1_000));
+    for read in [spent, swapped, same_sum, same_count, received] {
         *lib.core.lock().unwrap() = read;
-        let grant = shield_grant(&fx, quoted);
+        let grant = shield_grant(&fx, quoted.grant.max_duffs);
         assert_eq!(
-            max_of(&fx, &lib, grant.clone()).unwrap_err(),
+            shield_quoted(&fx, &lib, grant.clone(), quoted.max.unwrap().coin_set).unwrap_err(),
             ShieldedError::CoinsChanged
         );
         assert!(lib.funded.lock().unwrap().is_empty());
@@ -349,6 +382,8 @@ fn core_max_refuses_below_the_floor() {
             left_duffs,
             arriving_duffs,
             arriving_clears: false,
+            arriving_block: None,
+            other_arriving_duffs: 0,
         }),
     };
     assert_eq!(
@@ -385,18 +420,22 @@ fn core_max_refuses_below_the_floor() {
 fn core_max_says_whether_the_arriving_coins_would_clear() {
     let fx = Fixture::new(0);
     let floor = drain::drain_floor(pool_fee());
-    let clears = |coins: Vec<DrainCoin>, arriving: Vec<DrainCoin>| {
+    let readiness = |coins: Vec<DrainCoin>, arriving: Vec<DrainCoin>| {
         let read = CoreCoins {
             coins,
             left_duffs: 0,
             arriving_duffs: sum(&arriving),
             arriving,
+            ..CoreCoins::default()
         };
         match quote_of(&fx, &maxer(&fx, read)).unwrap_err() {
-            ShieldedError::BelowMinimum { max: Some(m), .. } => m.arriving_clears,
+            ShieldedError::BelowMinimum { max: Some(m), .. } => {
+                (m.arriving_clears, m.arriving_block)
+            }
             refused => panic!("{refused:?}"),
         }
     };
+    let clears = |coins, arriving| readiness(coins, arriving).0;
     let at = |n: usize| floor + crate::fees::asset_lock_fee_bound(n);
     assert!(!clears(vec![], vec![]));
     assert!(!clears(vec![bip44(0, 1_000)], vec![]));
@@ -409,9 +448,15 @@ fn core_max_says_whether_the_arriving_coins_would_clear() {
         held: true,
         ..late(0, 10 * at(1))
     };
-    assert!(!clears(vec![], vec![locked]));
+    assert_eq!(
+        readiness(vec![], vec![locked]),
+        (false, Some(CoreMaxArrivalBlock::Held))
+    );
     let many: Vec<_> = (1..=50).map(|i| late(i, 1_000_000)).collect();
-    assert!(!clears(vec![bip44(0, 1_000)], many.clone()));
+    assert_eq!(
+        readiness(vec![bip44(0, 1_000)], many.clone()),
+        (false, Some(CoreMaxArrivalBlock::InputCap))
+    );
     assert!(clears(vec![bip44(0, 1_000)], many[..49].to_vec()));
 }
 
@@ -492,6 +537,7 @@ fn core_max_leaves_other_accounts() {
             user_locked: false,
             dust_locked: false,
             reserved: false,
+            mixing_held: false,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
@@ -520,6 +566,8 @@ fn core_max_leaves_other_accounts() {
     pending_locked.utxo.is_confirmed = false;
     pending_locked.user_locked = true;
     // A withheld payment's output (`crate::withhold`): not even arriving.
+    let mut pending_other = coin(16, false);
+    pending_other.utxo.is_confirmed = false;
     let mut withheld = coin(15, true);
     withheld.utxo.is_confirmed = false;
     withheld.excluded = Some(crate::ExclusionReason::PendingUnproven);
@@ -543,6 +591,7 @@ fn core_max_leaves_other_accounts() {
             coin(13, false),
             locked_other,
             denomination_other,
+            pending_other,
         ],
     };
     let path = |p: &str| Some(DerivationPath::from_str(p).unwrap());
@@ -585,5 +634,6 @@ fn core_max_leaves_other_accounts() {
         [(2, false, false), (7, false, false), (9, true, false)]
     );
     assert_eq!(read.arriving_duffs, 2_000 + 7_000 + 9_000);
+    assert_eq!(read.other_arriving_duffs, 16_000);
     assert_eq!(read.left_duffs, 10_000 + 11_000 + 13_000 + 14_000);
 }

@@ -111,6 +111,7 @@ use dashcore::{OutPoint, Txid};
 use super::ArtifactId;
 use super::mode_b::StuckFundingRefusal;
 use crate::coinjoin::CoinJoinFailure;
+use crate::coins::UnsettledSpend;
 use crate::platform::flows::is_funding_step;
 use crate::send::{BroadcastOutcome, CoinSource, Recipient, TxDraft};
 use crate::{EngineError, NetworkSession, WalletId};
@@ -204,10 +205,15 @@ impl NetworkSession {
                 &crate::wallet_read::info_of(&wallet).await?.core_wallet,
             );
             let own: BTreeSet<Txid> = rows.iter().map(|(t, _)| *t).collect();
-            if let Some((txid, _)) =
-                (unsettled.iter()).find(|(t, mempool)| !resolve || !**mempool || !own.contains(*t))
-            {
-                return Err(StuckFundingRefusal::SpendUnsettled(*txid).into());
+            if let Some((&txid, &state)) = unsettled.iter().find(|(t, state)| {
+                !resolve || **state != UnsettledSpend::Mempool || !own.contains(*t)
+            }) {
+                let reason = if !resolve && state == UnsettledSpend::Mined && own.contains(&txid) {
+                    StuckFundingRefusal::OwnLockUnfinalized(txid)
+                } else {
+                    StuckFundingRefusal::SpendUnsettled(txid)
+                };
+                return Err(reason.into());
             }
             let locks: BTreeSet<Txid> = unsettled.into_keys().collect();
             if let Some(lock) = locks.first().copied() {
@@ -495,6 +501,7 @@ mod tests {
             user_locked: false,
             dust_locked: false,
             reserved: false,
+            mixing_held: false,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,

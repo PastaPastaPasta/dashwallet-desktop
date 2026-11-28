@@ -352,6 +352,32 @@ fn a_payout_pays_the_reserved_address_and_settles_sent() {
     );
 }
 
+#[test]
+fn a_payout_refused_by_the_structure_check_keeps_its_grant_and_address() {
+    let f = fixture(false);
+    let (net, _) = f.funded(DASH);
+    let grant = f.op_grant(debit());
+    net.set_version(platform_moves::tests::no_fee_steps());
+
+    let error = f.paid(&net, BOB, PAY, &grant).unwrap_err();
+    assert_eq!(code(&error), "credits.preflight_refused", "{error:?}");
+    assert!(net.sent().is_empty());
+    assert!(f.move_records().is_empty());
+    assert!(f.payout_states().is_empty());
+    assert!(f.contact_refs(BOB).is_empty());
+    assert!(f.lock(BOB).is_none());
+    assert!(f.reserved(BOB).is_none());
+    assert!(f.unused_grant(&grant));
+
+    net.set_version(PlatformVersion::latest());
+    let out = f.paid(&net, BOB, PAY, &grant).unwrap();
+    assert_eq!(out.state, PayoutState::Sent);
+    assert_eq!(
+        f.move_records()[0].to,
+        f.contact_address(BOB, 0).to_string()
+    );
+}
+
 /// #533: a payout planned on a read behind a done payout would sign the
 /// nonce that payout took. Refused before the grant is redeemed or an
 /// address taken; once the read is current, the same grant pays.

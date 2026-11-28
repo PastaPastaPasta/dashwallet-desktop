@@ -523,3 +523,83 @@ fn a_coin_the_user_locks_after_the_check_is_not_signed() {
     assert!(signed.is_err(), "a coin the user locked was signed");
     wallet.unlock_coins(&[coin]);
 }
+
+#[test]
+fn mixing_session_held_coins_keep_coinjoin_total_steady() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let s = Arc::clone(&session);
+    let addrs = engine
+        .block_on(
+            session.on_runtime(async move { s.reserve_coinjoin_addresses(id, 4, false).await }),
+        )
+        .unwrap();
+    let paid = funding(42, &addrs, DENOM);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let coins: Vec<OutPoint> = (0..4).map(|v| OutPoint::new(paid.txid(), v)).collect();
+
+    let read_status = || {
+        let s = Arc::clone(&session);
+        engine
+            .block_on(session.on_runtime(async move {
+                s.refresh_coinjoin_status(id).await;
+                Ok(())
+            }))
+            .unwrap();
+        session.coinjoin_status(id).unwrap()
+    };
+
+    let before = read_status();
+    assert_eq!(before.balances.anonymizable, 4 * DENOM);
+    assert_eq!(before.amount_and_rounds.amount, 4 * DENOM);
+
+    let (wallet, _owner) = session.mixing_wallet_for_test(id);
+    wallet.lock_coins(&coins[..2]);
+    let while_partial = read_status();
+    assert_eq!(while_partial.balances.anonymizable, 4 * DENOM);
+    assert_eq!(while_partial.amount_and_rounds.amount, 4 * DENOM);
+    assert_eq!(while_partial.progress, before.progress);
+
+    let ready_partial = engine
+        .block_on(session.on_runtime({
+            let s = Arc::clone(&session);
+            async move {
+                let (w, _) = s.mixing_wallet_for_test(id);
+                Ok(w.ready_to_mix(DENOM).await.unwrap())
+            }
+        }))
+        .unwrap();
+    assert_eq!(ready_partial.len(), 2);
+    for held in &coins[..2] {
+        assert!(!ready_partial.iter().any(|c| c.outpoint == *held));
+    }
+
+    wallet.lock_coins(&coins[2..]);
+    let while_all = read_status();
+    assert_eq!(while_all.balances.anonymizable, 4 * DENOM);
+    assert_eq!(while_all.amount_and_rounds.amount, 4 * DENOM);
+    assert_eq!(while_all.progress, before.progress);
+
+    let tx_owner = crate::send::SpendOwner::Tx(Txid::from_byte_array([0xab; 32]));
+    session.spends.reserve(id, tx_owner, [coins[0]]);
+    let with_pending_tx = read_status();
+    assert_eq!(with_pending_tx.balances.anonymizable, 3 * DENOM);
+    assert_eq!(with_pending_tx.amount_and_rounds.amount, 3 * DENOM);
+    session.spends.release(&id, tx_owner);
+
+    engine
+        .block_on(session.lock_outpoints(id, vec![coins[1]]))
+        .unwrap();
+    let with_user_lock = read_status();
+    assert_eq!(with_user_lock.balances.anonymizable, 3 * DENOM);
+    assert_eq!(with_user_lock.amount_and_rounds.amount, 3 * DENOM);
+    engine
+        .block_on(session.unlock_outpoints(id, vec![coins[1]]))
+        .unwrap();
+
+    wallet.unlock_coins(&coins);
+    let after = read_status();
+    assert_eq!(after.balances.anonymizable, 4 * DENOM);
+    assert_eq!(after.amount_and_rounds.amount, 4 * DENOM);
+    assert_eq!(after.progress, before.progress);
+}

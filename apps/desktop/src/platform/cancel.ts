@@ -23,6 +23,7 @@ export type CancelKind = "move" | "payment";
 export { recipientOf } from "./move";
 
 export const CANCEL_COPY = {
+  restoreRefusal: (kind: CancelKind) => t(`storeUpgrade.restore.platformRestoredCancel.${kind}`),
   action: (kind: CancelKind) => t(`platform.cancel.${kind}.action`),
   title: (kind: CancelKind) => t(`platform.cancel.${kind}.title`),
   body: (kind: CancelKind, amount: string, fee: string, recipient: string) => t(`platform.cancel.${kind}.body`, { amount, fee, recipient }),

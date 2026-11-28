@@ -481,7 +481,7 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
 
 /// A lock the engine's SPV validates against a live regtest quorum.
 #[test]
-#[ignore = "needs dashd and rust-dashcore's regtest-mn data (DASHD_PATH, DASHD_MN_DATADIR)"]
+#[ignore = "needs DASHD_PATH, DASHD_MN_DATADIR, and DWD_REGTEST_MASTERNODES=1"]
 fn g1_a_validated_lock_is_final_and_survives_a_reopen() {
     use dash_spv::test_utils::MasternodeTestContext;
 

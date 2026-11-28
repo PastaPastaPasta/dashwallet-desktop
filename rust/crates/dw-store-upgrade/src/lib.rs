@@ -63,7 +63,8 @@ pub use restore::{
 };
 pub use snapshot::{
     MissingSnapshot, NOT_THIS_WALLET, PART_UPGRADED_BY, STORE_FILES, SnapshotFile, SnapshotInfo,
-    SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot, snapshot_present,
+    SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot,
+    retire_snapshot_for_wallet_removal, snapshot_present, snapshot_retired_for_wallet_removal,
     snapshot_state, take_snapshot, upgrade_copy_present,
 };
 pub use sql::open_immutable;
@@ -94,7 +95,7 @@ pub fn prepare(network_dir: &Path, now: SystemTime) -> Result<Prepared> {
 /// here (`HoldsOpen`): the caller runs [`run_pending_restore`] with its
 /// [`HoldCheck`] first, or [`prepare_with_holds`].
 pub fn prepare_with(network_dir: &Path, adopters: &Adopters, now: SystemTime) -> Result<Prepared> {
-    prepare_with_holds(network_dir, adopters, now, &|_| {
+    prepare_with_holds(network_dir, adopters, now, &|_, _| {
         Err("no hold check ran before the restore".into())
     })
 }

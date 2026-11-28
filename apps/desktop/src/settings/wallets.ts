@@ -32,8 +32,11 @@ export const WalletsText = withTable(
     get oneOpensAtStart() {
       return t("onboarding.failure.last_startup_wallet");
     },
-    /** IOS-110. A wallet holding a shielded payment is not removed (Q86 Q-PURGE C2): `removeHeld`. */
-    removeQuestion: (name: string, watchOnly: boolean) => t(watchOnly ? "settings.wallets.removeWatchOnlyQuestion" : "settings.wallets.removeQuestion", { name }),
+    removeQuestion: ({ name, watchOnly, hasMnemonic, legacyIssued }: Pick<WalletRow, "name" | "watchOnly" | "hasMnemonic" | "legacyIssued">) => {
+      if (watchOnly) return t("settings.wallets.removeWatchOnlyQuestion", { name });
+      if (hasMnemonic && legacyIssued === false) return t("settings.wallets.removeQuestion", { name });
+      return t("settings.wallets.removeBackupQuestion", { name });
+    },
     removed: (name: string) => t("settings.wallets.removed", { name }),
     /** Why `remove_wallet` refused (`shielded_spend_unresolved`, its `shieldedHold` reason). One
      * without a reason is the removal's last check, after the wallet's keys were deleted. */
@@ -49,8 +52,8 @@ export interface WalletRow {
   loaded: boolean;
   loadOnStartup: boolean;
   watchOnly: boolean;
-  /** Known for open wallets only (`listWallets`). */
   hasMnemonic: boolean | null;
+  legacyIssued: boolean | null;
 }
 
 const MAX_NAME = 64;
@@ -93,8 +96,11 @@ export class WalletsModel extends Model {
       const open = new Map(summaries.map((s) => [s.walletId, s]));
       this.fallback = states === null;
       this.rows = states
-        ? states.map((s) => ({ ...s, hasMnemonic: open.get(s.walletId)?.hasMnemonic ?? null }))
-        : summaries.map((s) => ({ walletId: s.walletId, name: s.name, loaded: true, loadOnStartup: true, watchOnly: s.watchOnly, hasMnemonic: s.hasMnemonic }));
+        ? states.map((s) => {
+            const summary = open.get(s.walletId);
+            return { ...s, hasMnemonic: summary?.hasMnemonic ?? null, legacyIssued: summary?.legacyIssued ?? null };
+          })
+        : summaries.map(({ walletId, name, watchOnly, hasMnemonic, legacyIssued }) => ({ walletId, name, loaded: true, loadOnStartup: true, watchOnly, hasMnemonic, legacyIssued }));
       if (this.#readFailed) this.error = null;
       this.#readFailed = false;
     } catch (e) {

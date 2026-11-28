@@ -38,9 +38,29 @@
 //! only create what is missing.
 
 pub mod instance;
+#[cfg(windows)]
+mod owner_only;
 
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// Exclusively creates a file readable and writable by its owner only.
+pub fn create_new_owner_only(path: &Path) -> io::Result<std::fs::File> {
+    #[cfg(windows)]
+    return owner_only::create(path);
+
+    #[cfg(not(windows))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)
+    }
+}
 
 /// Creates `dir` and any missing parents, each 0700 whatever the umask.
 ///
@@ -125,43 +145,58 @@ pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
     }
 }
 
-/// Opens the file at `path` for reading when it is the current user's
-/// alone: a regular file whose final component is not a symlink (it is
-/// not followed: `O_NOFOLLOW`), owned by the effective user, with no group
-/// or other permission bits (0600 or stricter). A symlink among the parent
-/// directories is followed: what protects the secret is the opened file's
-/// owner and mode, checked on the descriptor. For a secret another program
-/// wrote, such as the self-test's passphrase file. Refused files are
-/// `PermissionDenied` with the reason. Errors do not name the path; the
-/// caller does.
-///
-/// Windows: no check. The file's ACL is the caller's to restrict.
-pub fn open_owner_only(path: &Path) -> io::Result<std::fs::File> {
+/// Opens a regular file read-only without following its last component.
+fn open_regular_read(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use rustix::fs::OFlags;
         use std::os::unix::fs::OpenOptionsExt;
-        // NONBLOCK: a FIFO is refused below instead of blocking the open.
         options.custom_flags((OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::NONBLOCK).bits() as i32);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    let regular = meta.is_file();
+    #[cfg(windows)]
+    let regular = regular && {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+    };
+    if !regular {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// Opens a regular file for reading only if owned by the effective user
+/// with no group or other permission bits. Parent directories may be links.
+///
+/// Windows checks the file type. The caller restricts its ACL.
+pub fn open_owner_only(path: &Path) -> io::Result<std::fs::File> {
     let refused = |what: String| io::Error::new(io::ErrorKind::PermissionDenied, what);
-    let file = options.open(path).map_err(|e| {
+    let file = open_regular_read(path).map_err(|e| {
         if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
             refused("is a symbolic link".into())
         } else {
             e
         }
     })?;
-    let meta = file.metadata()?;
-    if !meta.is_file() {
-        return Err(refused("is not a regular file".into()));
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let euid = rustix::process::geteuid().as_raw();
+        let meta = file.metadata()?;
         if meta.uid() != euid {
             return Err(refused(format!(
                 "belongs to uid {}, not to the current user ({euid})",
@@ -652,13 +687,20 @@ mod unix {
             .map_err(|e| io_at(Path::new("/"), e))?
             .uid();
         let absolute = std::path::absolute(dir).map_err(|e| io_at(dir, e))?;
-        let resolved = std::fs::canonicalize(&absolute).map_err(|e| io_at(&absolute, e))?;
-        let lexical = absolute
-            .ancestors()
-            .map(|a| (a, std::fs::symlink_metadata(a)));
-        let real = resolved.ancestors().map(|a| (a, std::fs::metadata(a)));
-        for (path, meta) in lexical.chain(real) {
-            let meta = meta.map_err(|e| io_at(path, e))?;
+        let mut path = PathBuf::from("/");
+        let mut steps = Vec::new();
+        let mut links = 0;
+        push_steps(&mut steps, &absolute, Part::Chosen);
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::Root => path = PathBuf::from("/"),
+                Step::Up => {
+                    path.pop();
+                    continue;
+                }
+                Step::Name(name, _) => path.push(name),
+            }
+            let meta = std::fs::symlink_metadata(&path).map_err(|e| io_at(&path, e))?;
             let mode = meta.mode() & 0o7777;
             let owner = meta.uid();
             let named = |reason, detail| {
@@ -691,6 +733,17 @@ mod unix {
                          run `chown {euid} {shown}`"
                     ),
                 );
+            }
+            if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(&path).map_err(|e| io_at(&path, e))?;
+                links += 1;
+                if links > MAX_SYMLINKS {
+                    return Err(at(&path, Errno::LOOP));
+                }
+                path.pop();
+                push_steps(&mut steps, &target, Part::Chosen);
+            } else if !meta.is_dir() {
+                return Err(at(&path, Errno::NOTDIR));
             }
         }
         Ok(None)
@@ -991,6 +1044,21 @@ mod tests {
         chmod(&shared, 0o1777);
         create_owned_dir(&root, Path::new("regtest")).unwrap();
         assert_eq!(mode(&net), 0o700);
+    }
+
+    #[test]
+    fn an_intermediate_link_through_a_writable_directory_is_refused() {
+        let tmp = private_tempdir();
+        let base = tmp.path().canonicalize().unwrap();
+        let shared = mkdir(&base.join("shared"), 0o775);
+        let safe = mkdir(&base.join("safe"), 0o700);
+        let intermediate = shared.join("intermediate");
+        let link = base.join("link");
+        symlink(&safe, &intermediate).unwrap();
+        symlink(&intermediate, &link).unwrap();
+        let problem = insecure_ancestor(&link).unwrap().unwrap();
+        assert_eq!(problem.dir, shared);
+        assert_eq!(problem.reason, InsecureReason::GroupWritable);
     }
 
     #[test]

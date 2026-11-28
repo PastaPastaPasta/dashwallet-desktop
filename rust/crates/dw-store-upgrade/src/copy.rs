@@ -520,13 +520,24 @@ impl RefusedScreen {
         }
     }
 
-    /// Adds Set up from recovery phrase after Restore earlier data: the way
-    /// out once a restore was refused for a shielded hold (R-1).
+    /// Adds Set up from recovery phrase, after Restore earlier data if present.
     pub fn offer_recover(&mut self) {
-        if !self.buttons.contains(&RECOVER) {
+        if !self.offers_recover() {
             let at = (self.buttons.iter().position(|b| *b == RESTORE)).map_or(0, |i| i + 1);
             self.buttons.insert(at, RECOVER);
         }
+    }
+
+    pub fn offers_recover(&self) -> bool {
+        self.buttons.contains(&RECOVER)
+    }
+
+    pub fn offer_recover_after_wallet_removal(&mut self) {
+        self.way_out_line = line(
+            "storeUpgrade.refused.wayOut.retired",
+            "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Dash Wallet retired the backup from before the upgrade as part of removing a wallet. Choose Set up from recovery phrase to start again in a new data folder. Add each wallet from its own recovery phrase. Dash Wallet leaves {folder} as it is. Payment holds, in-progress operations, imported keys and other local records stay in that folder. If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+        );
+        self.offer_recover();
     }
 
     /// "{intro}: {detail} {unchanged} {wayOut}" with `{folder}` filled in.

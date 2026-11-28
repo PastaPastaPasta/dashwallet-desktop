@@ -126,6 +126,8 @@ const BY_CODE: Partial<Record<ErrorCode, string>> = {
 /** What a refusal says, for the window's network `network` (a directory name). */
 export function connectErrorText(e: unknown, network: string): string {
   if (!isAppError(e)) return t("dashpay.connect.err.check");
+  if (e.code === "platform.restored") return t("dashpay.connect.err.platformRestored");
+  if (e.code === "platform.unavailable") return t("dashpay.connect.err.platformUnavailable");
   if (e.code === "connect.network" && e.data?.kind === "connectNetwork")
     return t("dashpay.connect.err.network", { requested: networkName(e.data.requested), current: networkName(network) });
   if (e.code === "connect.failed") return failedText(e.data);
