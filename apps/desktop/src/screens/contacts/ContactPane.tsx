@@ -21,7 +21,6 @@ import { useContactActivity, useContactDetail } from "../../contacts/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { detailDate } from "../../format/tx";
-import { Outcome } from "../tools/common";
 import { RowChips } from "./ContactList";
 import { focusInView, takeDetailFocus, useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
@@ -123,24 +122,21 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
   );
 }
 
-/** The relation's actions (D2) and the last outcome for this contact (D4). Pay and "Accept and
+/** The relation's actions (D2). Pay and "Accept and
  * pay" open Pay ▸ To a contact on it (DP3-06 D15); `locked`: a payment to it may have been sent. */
 function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo; pane: PaneContext; locked: boolean }) {
   const t = useT();
   const actions = useModel(pane.actions);
   const offer = paneActions(c, pane.hasKeys);
   const busy = actions.busy;
-  const outcome = actions.outcome?.contact === c.contact && actions.outcome.kind !== "details" ? actions.outcome : null;
-  // Accept, Ignore and Unignore change the relation, and their buttons go with it: focus goes to
-  // what the pane offers now and the outcome (D28); a toast says an outcome the pane cannot.
   const toast = useActionToast(pane.walletId);
   const area = useRef<HTMLDivElement>(null);
   const arm = useRefocus((kind) => kind === offer.kind, () => area.current);
   const done = (o: ActionOutcome | null) => {
-    toast(o, true);
+    toast(o, false);
     if (o?.ok) arm(offer.kind);
   };
-  const pay = () => navigate("pay", { payTab: "contact", payContact: { walletId: pane.walletId, contact: c.contact } });
+  const pay = () => navigate("pay", { payContact: { walletId: pane.walletId, identity: pane.identity, contact: c.contact } });
   let buttons;
   let note: string | null = null;
   let warning: string | null = null;
@@ -191,18 +187,19 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
   }
   return (
     <div className="contact-pane-actions" data-testid="contact-pane-actions" ref={area}>
-      {warning && (
-        <p className="sheet-warning" role="note" data-testid="contact-pane-unverified">
-          {warning}
-        </p>
-      )}
-      {buttons && <span className="add-contact-actions">{buttons}</span>}
-      {note && (
-        <p className="placeholder-note" data-testid="contact-pane-note">
-          {note}
-        </p>
-      )}
-      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-pane-outcome" polite />
+      <div className={c.unverified ? "contact-pane-message is-unverified" : "contact-pane-message"}>
+        {warning && (
+          <p className="sheet-warning" role="note" data-testid="contact-pane-unverified">
+            {warning}
+          </p>
+        )}
+        {note && (
+          <p className="placeholder-note" data-testid="contact-pane-note">
+            {note}
+          </p>
+        )}
+      </div>
+      <div className="contact-pane-action-slot">{buttons}</div>
     </div>
   );
 }
@@ -227,11 +224,10 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
   const form: DetailsForm = { ...text, hidden: hiding ?? saved.hidden };
   const busy = actions.busy;
   const saving = actions.isRunning("details", c.contact);
-  const outcome = actions.outcome?.contact === c.contact && actions.outcome.kind === "details" ? actions.outcome : null;
   const toast = useActionToast(walletId);
   const save = (f: DetailsForm) =>
     actions.saveDetails(c.contact, detailsOf(f)).then((o) => {
-      toast(o, true);
+      toast(o, false);
       return o;
     });
   return (
@@ -277,7 +273,6 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
             {saving ? t("contacts.details.saving") : t("contacts.details.save")}
           </DashButton>
         </span>
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-details-outcome" polite />
       </form>
     </section>
   );

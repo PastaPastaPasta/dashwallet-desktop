@@ -318,6 +318,31 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(false);
   });
 
+  it("reopening a wallet shows its Platform restore hold without a sync event", async () => {
+    const client = new QueryClient();
+    vi.stubGlobal("sessionStorage", { getItem: () => null });
+    const fixture = installFixture({ scenario: "funded" });
+    const backend = new IpcBackend("fixture");
+    const wallet = FIXTURE_WALLET_ID;
+    const hold = { waiting: ["platformPass"] as const, historyWallets: [], clearFailed: false, platformOnly: true, platformOff: false };
+    fixture.world.restoreStatus = { ...hold, waiting: [...hold.waiting] };
+    const observer = new QueryObserver(client, {
+      queryKey: keys.restoreStatus,
+      queryFn: () => fixture.world.settings.closed.includes(wallet) ? Promise.resolve(null) : backend.restoreStatus(),
+    });
+    await bridged(backend, client, "testnet");
+    const stop = observer.subscribe(() => undefined);
+    try {
+      await vi.waitFor(() => expect(observer.getCurrentResult().data).toEqual(hold));
+      await backend.unloadWallet(wallet);
+      await vi.waitFor(() => expect(observer.getCurrentResult().data).toBeNull());
+      await backend.loadWallet(wallet);
+      await vi.waitFor(() => expect(observer.getCurrentResult().data).toEqual(hold));
+    } finally {
+      stop();
+    }
+  });
+
   it("sync reads what RESTORED waits for again after a first read that failed", async () => {
     const client = new QueryClient();
     let reads = 0;

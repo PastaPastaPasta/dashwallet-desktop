@@ -5,11 +5,17 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import type { CoinJoinLimits } from "../../api/generated/CoinJoinLimits";
 import type { CoinJoinSettings } from "../../api/generated/CoinJoinSettings";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import { useBackend, useWallets } from "../../api/queries";
+import { useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { QuestionSheet } from "../../components/sheet";
 import { checkSettings, CoinJoinText, formOf, settingsFailureText, type FormField, type SettingsForm } from "../../coinjoin/model";
-import { useCoinJoinLimits, useCoinJoinSettings, useSaveCoinJoinSettings } from "../../coinjoin/queries";
+import { RETURN_COPY, returnToCoreFor } from "../../coinjoin/move";
+import { useCoinJoinAmount, useCoinJoinLimits, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
 import { useT } from "../../i18n";
+import { useModel } from "../../onboarding/model";
+import { ReturnToCoreSheet } from "../coinjoin/ReturnToCoreSheet";
 import { Done, Hint, pendingText, Problem, SettingsCard } from "./parts";
 
 const fields = (): { field: FormField; label: string; hint?: string }[] => [
@@ -22,7 +28,7 @@ const fields = (): { field: FormField; label: string; hint?: string }[] => [
 
 const NONE: Partial<CoinJoinSettings> = {};
 
-export function CoinJoinTab() {
+export function CoinJoinTab({ network }: { network: NetworkInfo }) {
   const settings = useCoinJoinSettings();
   const limits = useCoinJoinLimits();
   const t = useT();
@@ -32,7 +38,50 @@ export function CoinJoinTab() {
         <Hint>{pendingText(settings.isError ? settings : limits)}</Hint>
       </SettingsCard>
     );
-  return <CoinJoinForm current={settings.data} limits={limits.data} />;
+  return (
+    <>
+      <HeldCoinsCard network={network} />
+      <CoinJoinForm current={settings.data} limits={limits.data} />
+    </>
+  );
+}
+
+/** Held CoinJoin coins recovery card on Settings ▸ CoinJoin for the active wallet. */
+function HeldCoinsCard({ network }: { network: NetworkInfo }) {
+  const walletId = useUi((s) => s.walletId);
+  const wallets = useWallets();
+  const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
+  if (!wallet || wallet.watchOnly) return null;
+  return <HeldCoinsWalletCard key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+}
+
+function HeldCoinsWalletCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  useT();
+  const b = useBackend();
+  const { status } = useCoinJoinView(walletId, network);
+  const flow = returnToCoreFor(b, walletId);
+  useModel(flow);
+  const plain = useCoinJoinAmount(network);
+  const masked = useMaskedAmount(network);
+  const shownAmount = (duffs: number) => masked ?? plain(duffs);
+  const held = status?.balances.heldFromMixing ?? 0;
+  if (status?.unavailable?.kind === "watchOnly") return null;
+  if (!(held > 0 || flow.open || flow.running || flow.step === "done")) return null;
+  return (
+    <SettingsCard title={RETURN_COPY.settingsTitle} testId="settings-coinjoin-return">
+      {held > 0 && (
+        <p className="field-hint settings-hint" data-testid="settings-coinjoin-held-note">
+          {RETURN_COPY.cardHeld(shownAmount(held))}
+        </p>
+      )}
+      <div className="card-actions">
+        <DashButton variant="tintedBlue" data-testid="settings-coinjoin-return-open" onClick={() => flow.begin()}>
+          {RETURN_COPY.open}
+        </DashButton>
+      </div>
+      <ReturnToCoreSheet flow={flow} network={network} />
+    </SettingsCard>
+  );
 }
 
 function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: CoinJoinLimits }) {

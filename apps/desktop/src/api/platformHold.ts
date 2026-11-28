@@ -14,11 +14,11 @@ export function readPlatformOffFrom(read: () => boolean) {
 }
 
 /** C7: Dash Platform is off for this session. The engine says so with `feature_off` for `"platform"`,
- * or with a bare `platform.unavailable` that only `restore_status`'s `platformOff` tells from
- * unreachable. */
-const platformOff = (e: AppError) =>
-  (e.code === "platform.feature_off" && e.data?.kind === "feature" && e.data.feature === "platform") ||
-  (e.code === "platform.unavailable" && sessionPlatformOff());
+ * or `platform.unavailable` with the same feature. Older bare refusals can use the restore status. */
+const platformOff = (e: AppError) => {
+  const platform = e.data?.kind === "feature" && e.data.feature === "platform";
+  return (e.code === "platform.feature_off" && platform) || (e.code === "platform.unavailable" && (platform || sessionPlatformOff()));
+};
 
 /** C7's line alone, for a refusal Platform's hold of the restore never makes; null for any other. */
 export function platformOffText(e: unknown, sending = true): string | null {

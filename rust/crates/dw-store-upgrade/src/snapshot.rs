@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::error::{Result, StoreUpgradeError};
 use crate::fork;
 use crate::fsx::{self, fault};
-use crate::sql::{self, has_table, hex, sha256_file};
+use crate::sql::{self, has_table, hex, sha256_file, sha256_reader};
 
 /// The four stores of a network directory, in snapshot and restore order.
 pub const STORE_FILES: [&str; 4] = [
@@ -259,7 +259,44 @@ fn snapshot_fault(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> Sna
     }
 }
 
+const MAX_MARKER_BYTES: u64 = 64 * 1024;
+
+fn read_regular_text(path: &Path, limit: u64) -> io::Result<String> {
+    use std::io::Read;
+
+    let file = dw_fs::open_regular_read(path)?;
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("file exceeds {limit} bytes"),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 pub(crate) fn check_snapshot(
+    dir: &Path,
+    verify_hashes: bool,
+) -> std::result::Result<SnapshotInfo, SnapshotFault> {
+    match fs::symlink_metadata(dir.join(NOT_THIS_WALLET)) {
+        Ok(_) => {
+            return Err(SnapshotFault::Defect(
+                "retired: not of this wallet before the upgrade".into(),
+            ));
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(snapshot_fault(NOT_THIS_WALLET)(e)),
+    }
+    let info = check_snapshot_contents(dir, verify_hashes)?;
+    if verify_hashes {
+        require_lineage(dir, &info)?;
+    }
+    Ok(info)
+}
+
+fn check_snapshot_contents(
     dir: &Path,
     verify_hashes: bool,
 ) -> std::result::Result<SnapshotInfo, SnapshotFault> {
@@ -271,27 +308,20 @@ pub(crate) fn check_snapshot(
     }) {
         return Err(snapshot_fault("read marker")(io::Error::from(kind)));
     }
-    match fs::symlink_metadata(dir.join(NOT_THIS_WALLET)) {
-        Ok(_) => {
-            return Err(SnapshotFault::Defect(
-                "retired: not of this wallet before the upgrade".into(),
-            ));
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(snapshot_fault(NOT_THIS_WALLET)(e)),
-    }
-    let text = fs::read_to_string(dir.join(MARKER)).map_err(snapshot_fault("read marker"))?;
+    let text = read_regular_text(&dir.join(MARKER), MAX_MARKER_BYTES)
+        .map_err(snapshot_fault("read marker"))?;
     let info = parse_marker(dir, &text).map_err(SnapshotFault::Defect)?;
     for f in &info.files {
         let path = dir.join(&f.name);
-        let len = fs::metadata(&path).map_err(snapshot_fault(&f.name))?.len();
+        let mut file = dw_fs::open_regular_read(&path).map_err(snapshot_fault(&f.name))?;
+        let len = file.metadata().map_err(snapshot_fault(&f.name))?.len();
         if len != f.bytes {
             return Err(SnapshotFault::Defect(format!(
                 "{} is {len} bytes, marker says {}",
                 f.name, f.bytes
             )));
         }
-        if verify_hashes && sha256_file(&path).map_err(snapshot_fault(&f.name))? != f.sha256 {
+        if verify_hashes && sha256_reader(&mut file).map_err(snapshot_fault(&f.name))? != f.sha256 {
             return Err(SnapshotFault::Defect(format!(
                 "{} does not match its sha256",
                 f.name
@@ -305,9 +335,6 @@ pub(crate) fn check_snapshot(
             )));
         }
     }
-    if verify_hashes {
-        require_lineage(dir, &info)?;
-    }
     Ok(info)
 }
 
@@ -320,6 +347,13 @@ enum Lineage {
         name: String,
         manifest: String,
         wallets: BTreeSet<String>,
+    },
+    /// The named snapshot was missing when a wallet was removed, so restore is
+    /// excluded while Shielded migration and refusal copy can still recognize
+    /// a returned copy by its exact name and recorded manifest.
+    Removed {
+        name: String,
+        manifest: String,
     },
     None,
 }
@@ -336,22 +370,38 @@ pub fn retire_snapshot_for_wallet_removal(network_dir: &Path, wallet: &[u8; 32])
     crate::restore::refuse_if_restore_pending(network_dir)?;
     let failure =
         StoreUpgradeError::io("retire the upgrade backup before removing the wallet", true);
-    let Some(Lineage::Snapshot { name, wallets, .. }) =
-        read_lineage(network_dir).map_err(&failure)?
-    else {
-        return Ok(());
+    let backups = backups_dir(network_dir);
+    fsx::check_private_dir(&backups).map_err(&failure)?;
+    let (name, manifest, wallets) = match read_lineage(network_dir).map_err(&failure)? {
+        Some(Lineage::Snapshot {
+            name,
+            manifest,
+            wallets,
+        }) => (name, manifest, wallets),
+        Some(Lineage::Removed { .. } | Lineage::None) => {
+            return fsx::fsync_dir(&backups).map_err(failure);
+        }
+        None => return Ok(()),
     };
     if !wallets.contains(&hex(wallet).to_ascii_uppercase()) {
         return Ok(());
     }
-    let dir = backups_dir(network_dir).join(name);
-    let meta = fs::symlink_metadata(&dir).map_err(&failure)?;
+    let dir = backups.join(&name);
+    let meta = match fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            write_lineage_removed(network_dir, &name, &manifest)?;
+            return Ok(());
+        }
+        Err(e) => return Err(failure(e)),
+    };
     if !meta.is_dir() {
         return Err(failure(io::Error::new(
             io::ErrorKind::InvalidData,
             "the named backup is not a directory",
         )));
     }
+    fsx::check_private_dir(&dir).map_err(&failure)?;
     let path = dir.join(NOT_THIS_WALLET);
     match fs::symlink_metadata(&path) {
         Ok(_) => return fsx::fsync_dir(&dir).map_err(failure),
@@ -368,20 +418,41 @@ pub fn retire_snapshot_for_wallet_removal(network_dir: &Path, wallet: &[u8; 32])
 
 /// Whether this network's named backup was retired by Remove wallet.
 pub fn snapshot_retired_for_wallet_removal(network_dir: &Path) -> bool {
+    match read_lineage(network_dir) {
+        Ok(Some(Lineage::Snapshot { name, .. })) => {
+            has_wallet_removal_marker(&backups_dir(network_dir).join(name))
+        }
+        Ok(Some(Lineage::Removed { name, manifest })) => {
+            let dir = backups_dir(network_dir).join(name);
+            fsx::check_private_dir(&dir).is_ok()
+                && matches!(check_wallet_removal_marker(&dir), Ok(None | Some(true)))
+                && check_snapshot_contents(&dir, true).is_ok_and(|i| i.manifest_sha256 == manifest)
+        }
+        _ => false,
+    }
+}
+
+/// Checks `NOT-THIS-WALLET` in `dir`: `Ok(None)` when absent, `Ok(Some(true))`
+/// when it is an owner-only regular file with the exact wallet-removal marker,
+/// `Ok(Some(false))` for any other marker content.
+fn check_wallet_removal_marker(dir: &Path) -> std::result::Result<Option<bool>, SnapshotFault> {
     use std::io::Read;
 
-    let Ok(Some(Lineage::Snapshot { name, .. })) = read_lineage(network_dir) else {
-        return false;
-    };
-    let path = backups_dir(network_dir).join(name).join(NOT_THIS_WALLET);
-    let Ok(file) = dw_fs::open_owner_only(&path) else {
-        return false;
+    let path = dir.join(NOT_THIS_WALLET);
+    let file = match dw_fs::open_owner_only(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(snapshot_fault(NOT_THIS_WALLET)(e)),
     };
     let mut marker = Vec::new();
     file.take(REMOVED_WALLET_MARK.len() as u64 + 1)
         .read_to_end(&mut marker)
-        .is_ok()
-        && marker == REMOVED_WALLET_MARK
+        .map_err(snapshot_fault(NOT_THIS_WALLET))?;
+    Ok(Some(marker == REMOVED_WALLET_MARK))
+}
+
+fn has_wallet_removal_marker(dir: &Path) -> bool {
+    matches!(check_wallet_removal_marker(dir), Ok(Some(true)))
 }
 
 /// [`UPGRADED_FROM`], `None` when there is none. A record that doesn't
@@ -400,6 +471,13 @@ fn read_lineage(network_dir: &Path) -> io::Result<Option<Lineage>> {
     })
 }
 
+fn valid_snapshot_ref(name: &str, manifest: &str) -> bool {
+    name.starts_with(&format!("{BEFORE_PREFIX}-"))
+        && !name.contains(['/', '\\', ' '])
+        && manifest.len() == 64
+        && manifest.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn parse_lineage(text: &str) -> Option<Lineage> {
     let mut lines = text.lines();
     if lines.next()? != UPGRADED_FROM_HEADER || lines.next()? != "format 1" {
@@ -408,24 +486,33 @@ fn parse_lineage(text: &str) -> Option<Lineage> {
     let record = match lines.next()?.strip_prefix("snapshot ")? {
         "none" => Lineage::None,
         rest => {
-            let (name, manifest) = rest.split_once(' ')?;
-            let wallets = match lines.next()?.strip_prefix("wallets ")? {
-                "-" => BTreeSet::new(),
-                ids => ids.split(',').map(str::to_string).collect(),
-            };
-            let ok = name.starts_with(&format!("{BEFORE_PREFIX}-"))
-                && !name.contains(['/', '\\', ' '])
-                && manifest.len() == 64
-                && wallets
-                    .iter()
-                    .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_hexdigit()));
-            if !ok {
-                return None;
-            }
-            Lineage::Snapshot {
-                name: name.into(),
-                manifest: manifest.into(),
-                wallets,
+            if let Some(removed) = rest.strip_prefix("removed ") {
+                let (name, manifest) = removed.split_once(' ')?;
+                if !valid_snapshot_ref(name, manifest) {
+                    return None;
+                }
+                Lineage::Removed {
+                    name: name.into(),
+                    manifest: manifest.into(),
+                }
+            } else {
+                let (name, manifest) = rest.split_once(' ')?;
+                let wallets = match lines.next()?.strip_prefix("wallets ")? {
+                    "-" => BTreeSet::new(),
+                    ids => ids.split(',').map(str::to_string).collect(),
+                };
+                let ok = valid_snapshot_ref(name, manifest)
+                    && wallets
+                        .iter()
+                        .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_hexdigit()));
+                if !ok {
+                    return None;
+                }
+                Lineage::Snapshot {
+                    name: name.into(),
+                    manifest: manifest.into(),
+                    wallets,
+                }
             }
         }
     };
@@ -438,7 +525,6 @@ fn write_lineage(
     network_dir: &Path,
     named: Option<(&SnapshotInfo, &BTreeSet<String>)>,
 ) -> Result<()> {
-    crate::restore::refuse_if_restore_pending(network_dir)?;
     let mut text = format!("{UPGRADED_FROM_HEADER}\nformat 1\n");
     match named {
         Some((info, wallets)) => {
@@ -456,6 +542,16 @@ fn write_lineage(
         }
         None => text += "snapshot none\n",
     }
+    write_lineage_text(network_dir, &text)
+}
+
+fn write_lineage_removed(network_dir: &Path, name: &str, manifest: &str) -> Result<()> {
+    let text = format!("{UPGRADED_FROM_HEADER}\nformat 1\nsnapshot removed {name} {manifest}\n");
+    write_lineage_text(network_dir, &text)
+}
+
+fn write_lineage_text(network_dir: &Path, text: &str) -> Result<()> {
+    crate::restore::refuse_if_restore_pending(network_dir)?;
     fsx::write_durable(&lineage_path(network_dir), text.as_bytes())
         .map_err(StoreUpgradeError::io("record the upgrade snapshot", true))
 }
@@ -761,9 +857,10 @@ pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
 }
 
 /// Whether an upgrade copy of `store` (one of [`STORE_FILES`]) exists: the
-/// newest verified before-upgrade snapshot lists it, or the `part-upgraded`
-/// copy [`PART_UPGRADED_BY`] records verifies with that manifest and does.
-/// A copy marked [`NOT_THIS_WALLET`] never counts. Reads only.
+/// newest verified before-upgrade snapshot, the named snapshot retired by
+/// wallet removal, or this upgrade's recorded `part-upgraded` copy lists it.
+/// Migration needs verified data from this upgrade. Restore also requires
+/// the current wallet IDs to match and refuses a retired copy. Reads only.
 pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool> {
     let lists = |info: &SnapshotInfo| info.files.iter().any(|f| f.name == store);
     if let SnapshotState::Verified(info) = snapshot_state(network_dir)?
@@ -771,12 +868,55 @@ pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool>
     {
         return Ok(true);
     }
+    let mut retired_io = None;
+    let retired = match read_lineage(network_dir) {
+        Ok(Some(Lineage::Snapshot { name, manifest, .. })) => Some((name, manifest, true)),
+        Ok(Some(Lineage::Removed { name, manifest })) => Some((name, manifest, false)),
+        Ok(Some(Lineage::None) | None) => None,
+        Err(e) => {
+            if let SnapshotFault::Io(e) = snapshot_fault(UPGRADED_FROM)(e) {
+                retired_io = Some(e);
+            }
+            None
+        }
+    };
+    if let Some((name, manifest, require_marker)) = retired {
+        let dir = backups_dir(network_dir).join(name);
+        match fsx::check_private_dir(&dir) {
+            Ok(()) => match check_wallet_removal_marker(&dir) {
+                Ok(marker) if marker == Some(true) || (!require_marker && marker.is_none()) => {
+                    match check_snapshot_contents(&dir, true) {
+                        Ok(i) if i.manifest_sha256 == manifest && lists(&i) => return Ok(true),
+                        Ok(_) | Err(SnapshotFault::Defect(_)) => {}
+                        Err(SnapshotFault::Io(e)) => retired_io = Some(e),
+                    }
+                }
+                Ok(_) | Err(SnapshotFault::Defect(_)) => {}
+                Err(SnapshotFault::Io(e)) => retired_io = Some(e),
+            },
+            Err(e) => {
+                if let SnapshotFault::Io(e) = snapshot_fault("retired backup")(e) {
+                    retired_io = Some(e);
+                }
+            }
+        }
+    }
     let Some((name, manifest)) = recorded_part(network_dir)? else {
+        if let Some(err) = retired_io {
+            return Err(err);
+        }
         return Ok(false);
     };
     let dir = backups_dir(network_dir).join(name);
-    Ok(dir.join(MARKER).exists()
-        && read_snapshot(&dir, true).is_ok_and(|i| i.manifest_sha256 == manifest && lists(&i)))
+    if dir.join(MARKER).exists()
+        && read_snapshot(&dir, true).is_ok_and(|i| i.manifest_sha256 == manifest && lists(&i))
+    {
+        return Ok(true);
+    }
+    if let Some(err) = retired_io {
+        return Err(err);
+    }
+    Ok(false)
 }
 
 /// The copy [`PART_UPGRADED_BY`] records: `None` with no record, or one
@@ -1311,7 +1451,9 @@ fn upgraded_from(
     let retry = StoreUpgradeError::io("read the upgrade snapshot record", true);
     let name = match read_lineage(network_dir) {
         Ok(Some(Lineage::Snapshot { name, .. })) => name,
-        Ok(Some(Lineage::None) | None) => return Ok(Err(MissingSnapshot::Absent)),
+        Ok(Some(Lineage::Removed { .. } | Lineage::None) | None) => {
+            return Ok(Err(MissingSnapshot::Absent));
+        }
         Err(e) => {
             return match snapshot_fault(UPGRADED_FROM)(e) {
                 SnapshotFault::Defect(_) => Ok(Err(MissingSnapshot::Unverified)),

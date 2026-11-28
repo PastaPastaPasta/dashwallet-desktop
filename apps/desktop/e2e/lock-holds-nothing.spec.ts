@@ -8,7 +8,7 @@ import { PAYEE } from "./wallet";
 // over them, so the page's text and markup carry no balance, wallet name, history row, contact or
 // address until the unlock, and the renderer reads none of them meanwhile.
 
-const BALANCE = "32.04698287";
+const BALANCE = "31.84698287";
 
 /** What the renderer may ask the engine while locked: the window, the lock and its report, the menus. */
 const LOCKED_CALLS = new Set(["launch_info", "ui_settings", "open_network", "lock_status", "last_lock_report", "leases", "dispatch_status", "shell_sync", "take_links"]);
@@ -190,7 +190,6 @@ async function expectNotResubmittable(page: Page) {
   await expect(page.getByTestId("pay-continue")).toBeDisabled();
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await expect(page.getByTestId("pay-address")).toHaveValue("");
   await expect(page.getByTestId("pay-amount")).toHaveValue("");
 }

@@ -25,7 +25,7 @@ import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
-import { hasPendingMove } from "../platform/move";
+import { hasPendingMove, isPendingPlatformCredit } from "../platform/move";
 import { heroQuietEnds, heroSync, newHeroWatch, watchHero, type HeroReading, type HeroSync, type HeroWatch, type PoolReading } from "../format/homeBalance";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
@@ -251,10 +251,9 @@ export function usePlatformAddresses(walletId: string) {
 export const PENDING_MOVE_REFETCH_MS = 30_000;
 
 /** How soon Platform activity is read again: while a move or send is pending or may still land (it settles in the engine within minutes). */
-// A move or send that may still execute, or an add from the Dash wallet not applied yet, settles
-// within minutes: look again.
+// Refresh while an outgoing operation can still execute or an incoming credit is awaiting proof.
 export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false =>
-  hasPendingMove(data) || data?.some((a) => (a.kind === "fromCore" || a.kind === "recovered") && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
+  hasPendingMove(data) || data?.some(isPendingPlatformCredit) ? PENDING_MOVE_REFETCH_MS : false;
 
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
@@ -287,10 +286,10 @@ export function usePlatformReceiveAddress(walletId: string, enabled: boolean) {
 }
 
 /** What sending `amount` to the Platform address `to` takes; `null` amount: no quote yet. */
-export function usePlatformSendQuote(walletId: string, to: string, amount: WithdrawAmount | null) {
+export function usePlatformSendQuote(walletId: string, to: string, amount: WithdrawAmount | null, recipientRevision: string) {
   const b = useBackend();
   return useQuery({
-    queryKey: keys.platformSendQuote(walletId, to, amount === null ? "" : amount.kind === "all" ? "all" : amount.credits),
+    queryKey: [...keys.platformSendQuote(walletId, to, amount === null ? "" : amount.kind === "all" ? "all" : amount.credits), recipientRevision],
     queryFn: () => b.platformSendQuote(walletId, to, amount!, null),
     enabled: amount !== null && to !== "",
     retry: false,
@@ -475,6 +474,8 @@ export function usePoolBalances(walletId: string) {
   const platform = usePlatformAddresses(walletId);
   return {
     shielded: poolReading(shielded, shieldedReading),
+    // Amount of pending activity in both directions. Open shield locks have their own journal.
+    shieldedPendingCredits: shielded.data?.active ? shielded.data.pending : "0",
     shieldedHold: shieldedHold(shielded.data),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: poolReading(platform, (p) => p?.duffs ?? "absent"),

@@ -19,6 +19,7 @@ import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
 import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, sourceGap, type ListSource } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
+import { clearAlert, showAlert, showToast } from "../components/toast";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
 import { activityRowTitle, filterExtra, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, type ActivityRow } from "../history/sourceRows";
@@ -172,18 +173,17 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const total = routeFilter ? (history.hasNextPage ? null : coreRows.length) : coreTotal === null ? null : coreTotal + extraShown.length;
   const ctx = useRowContext(network);
 
-  // Export CSV (QT-093): the records the filters select, all pages; the line under the bar says
-  // where the file went, or why not.
+  // Export CSV (QT-093): the records the filters select, all pages.
   const [exporting, setExporting] = useState(false);
-  const [exported, setExported] = useState<{ ok: boolean; text: string } | null>(null);
   const exportCsv = async () => {
+    const key = `history-export:${walletId}`;
     setExporting(true);
-    setExported(null);
+    clearAlert(key);
     try {
       const path = await exportHistory(backend, walletId, filter, shown.unit, backend.now());
-      if (path !== null) setExported({ ok: true, text: `Exported to ${path}.` });
+      if (path !== null) showToast(`Exported to ${path}.`);
     } catch (e) {
-      setExported({ ok: false, text: `The history could not be exported. ${fileErrorText(e)}` });
+      showAlert(`The history could not be exported. ${fileErrorText(e)}`, key);
     } finally {
       setExporting(false);
     }
@@ -226,16 +226,6 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             </div>
           </div>
         </header>
-        {exportWhy && (
-          <p className="field-hint" id="tx-export-why" data-testid="tx-export-why">
-            {exportWhy}
-          </p>
-        )}
-        {exported && (
-          <p className={exported.ok ? "settings-done" : "form-problem"} role={exported.ok ? "status" : "alert"} data-testid="tx-export-result">
-            {exported.text}
-          </p>
-        )}
         <div className="tx-filter-bar" data-testid="tx-filter-bar">
           <div className="tx-filter-row">
             <label className="search-field" data-testid="tx-search">
@@ -271,12 +261,15 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
                 aria-describedby={minError ? "tx-min-amount-error" : undefined}
                 onChange={(e) => setMinText(e.target.value)}
               />
-              {minError && (
-                <span id="tx-min-amount-error" className="field-error" data-testid="tx-min-amount-error">
-                  Not an amount in {UNIT_LABEL[shown.unit]}: ignored
-                </span>
-              )}
             </label>
+          </div>
+          <div className="tx-filter-notes">
+            {exportWhy && <span className="field-hint" id="tx-export-why" data-testid="tx-export-why">{exportWhy}</span>}
+            {minError && (
+              <span id="tx-min-amount-error" className="field-error" data-testid="tx-min-amount-error">
+                Not an amount in {UNIT_LABEL[shown.unit]}: ignored
+              </span>
+            )}
           </div>
           <div className="filter-chips" role="group" aria-label="Transaction type" data-testid="tx-categories">
             {CATEGORIES.map((c) => (

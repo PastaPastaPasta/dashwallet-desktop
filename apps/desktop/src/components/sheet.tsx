@@ -11,6 +11,7 @@ import { createContext, useContext, useEffect, useRef, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import { useT } from "../i18n";
 import { DashButton } from "./basics";
+import { sheetOpened } from "./sheetOrder";
 
 /** App's layer for sheets opened inside the shell; `null` renders a sheet in place. */
 export const SheetLayer = createContext<HTMLElement | null>(null);
@@ -82,6 +83,7 @@ export function Sheet({
     hold(1);
     return () => hold(-1);
   }, [layer]);
+  useEffect(sheetOpened, []);
   useEffect(() => {
     // The opener first: the effect below moves focus away from it.
     const opener = document.activeElement as HTMLElement | null;

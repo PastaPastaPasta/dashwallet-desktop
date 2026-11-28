@@ -100,6 +100,9 @@ pub struct ShieldedStatus {
     /// The wallet's last sync pass this session failed; cleared by the next
     /// one that succeeds (passes run again by themselves).
     pub last_pass_failed: bool,
+    /// Reason a local safety hold stopped the last pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pass_failure_reason: Option<String>,
 }
 
 /// Where the account's viewing key stands. Its first bind reads the key
@@ -157,6 +160,9 @@ pub struct ShieldedSyncInfo {
     pub scan: Option<ShieldedScanProgress>,
     /// The wallet's last pass this session failed, until one succeeds.
     pub last_pass_failed: bool,
+    /// Reason a local safety hold stopped the last pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pass_failure_reason: Option<String>,
     /// As [`ShieldedStatus::spends_available`], read on an inactive network
     /// too, so Receive holds the address without waiting for a status read.
     pub spends_available: bool,
@@ -870,7 +876,9 @@ impl DashPay {
     ) -> Result<Vec<ShieldedActivity>, ShieldedError> {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
+            lib.keep_history().await;
             let mut rows = pool::history(&lib, offset, limit).await?;
+            lib.show_refusals(&mut rows).await?;
             session.name_shielded_payouts(wallet, &mut rows).await;
             Ok(rows)
         })

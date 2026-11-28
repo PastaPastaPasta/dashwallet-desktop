@@ -679,6 +679,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
     if (world.networkSwitch) world.networkSwitch.reopenFails = false;
     world.noPlatform = undefined;
+    world.restoreRefusedNetwork = undefined;
     // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
     if (world.restoreRequested) {
       world.restoreRequested = false;
@@ -694,9 +695,11 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     (world.restoreCalls ??= []).push("restoreAvailable");
     return world.restoreAvailable === true;
   },
-  request_restore: (_: { network: string | null }, { world }: Ctx) => {
+  request_restore: ({ network }: { network: string | null }, { world }: Ctx) => {
     (world.restoreCalls ??= []).push("requestRestore");
-    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`));
+    const target = network ?? world.launch.network.dirName;
+    if (target !== world.restoreRefusedNetwork) throw fail("invalid_argument", "the last open of this network was not refused with Restore earlier data");
+    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${target}`));
     world.restoreRequested = true;
     return null;
   },

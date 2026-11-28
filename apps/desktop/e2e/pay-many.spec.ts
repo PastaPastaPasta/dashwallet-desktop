@@ -17,7 +17,6 @@ async function open(page: Page, scenario = "funded", theme: Theme = "light") {
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   return errors;
 }
 
@@ -103,7 +102,6 @@ test("a removed row leaves the payment, a refused row says so, and mainnet has n
   await page.goto(fixtureUrl("funded", "light", "&network=mainnet"));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await expect(page.getByTestId("pay-address")).toBeVisible();
   await expect(page.getByTestId("pay-add-recipient")).toHaveCount(0);
 });

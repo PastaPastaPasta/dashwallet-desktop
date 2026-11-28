@@ -50,7 +50,9 @@ use crate::events::unix_now;
 use crate::masternode_keys::{MasternodeKeyInfo, MasternodeKeyRole};
 use crate::masternodes::AttachedKeyRole;
 use crate::masternodes::follow::{Notes, load_notes, read_list};
-use crate::platform::contest_watch::{ContestNet, ENDS_PAGE, POLL_PAGE, Poll, SdkContests};
+use crate::platform::contest_watch::{
+    ContestNet, ContestOwnership, ENDS_PAGE, POLL_PAGE, Poll, SdkContests,
+};
 use crate::platform::lease::fence::HandOff;
 use crate::platform::lease::{
     AdmitRequest, ArtifactId, ArtifactKind, DispatchScope, Lease, Outcome, Verdict,
@@ -437,7 +439,10 @@ fn name_voters<'a>(
 
 /// The DPNS contests still open, soonest ending first, with their first
 /// page of contenders.
-async fn open_contests(net: &impl NameVoteNet) -> Result<Vec<ContestedName>, GovernanceError> {
+async fn open_contests(
+    net: &impl NameVoteNet,
+    ownership: &ContestOwnership,
+) -> Result<Vec<ContestedName>, GovernanceError> {
     let now = unix_now();
     let ends = net.end_page(now, ENDS_PAGE).await?;
     let mut open: Vec<(String, u64)> = ends.into_iter().filter(|(_, end)| *end > now).collect();
@@ -460,6 +465,7 @@ async fn open_contests(net: &impl NameVoteNet) -> Result<Vec<ContestedName>, Gov
             continue;
         }
         contests.push(ContestedName {
+            own: ownership.owns(&label, &poll),
             contenders_complete: poll.contenders.len() < usize::from(POLL_PAGE),
             contenders: (poll.contenders.iter())
                 .map(|(id, votes)| NameContender {
@@ -599,7 +605,8 @@ impl Governance {
         let voters = name_voters(&list, &keys, &notes);
 
         let net = net?;
-        let contests = open_contests(net).await?;
+        let ownership = self.session.contest_ownership(wallet).await?;
+        let contests = open_contests(net, &ownership).await?;
         let labels: Vec<String> = contests.iter().map(|c| c.label.clone()).collect();
         let mut out = Vec::with_capacity(voters.len());
         for (e, key) in voters {

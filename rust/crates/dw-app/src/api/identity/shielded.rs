@@ -83,6 +83,10 @@ pub struct ShieldedStatus {
     pub scan: Option<ShieldedScanProgress>,
     /// The last sync pass failed; cleared by the next one that succeeds.
     pub last_pass_failed: bool,
+    /// Reason a local safety hold stopped the last pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_pass_failure_reason: Option<String>,
 }
 
 /// Where the shielded account's viewing key stands. `locked` and
@@ -134,6 +138,10 @@ pub struct ShieldedSyncInfo {
     pub scan: Option<ShieldedScanProgress>,
     /// The wallet's last pass this session failed, until one succeeds.
     pub last_pass_failed: bool,
+    /// Reason a local safety hold stopped the last pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_pass_failure_reason: Option<String>,
     /// As `ShieldedStatus.spendsAvailable`, and read on an inactive network
     /// too.
     pub spends_available: bool,
@@ -148,6 +156,7 @@ impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
             syncing,
             scan,
             last_pass_failed,
+            last_pass_failure_reason,
             spends_available,
         } = s;
         ShieldedSyncInfo {
@@ -157,6 +166,7 @@ impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
             syncing,
             scan: scan.map(Into::into),
             last_pass_failed,
+            last_pass_failure_reason,
             spends_available,
         }
     }
@@ -184,6 +194,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             account,
             scan,
             last_pass_failed,
+            last_pass_failure_reason,
         } = s;
         ShieldedStatus {
             active,
@@ -205,6 +216,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             account: account.map(Into::into),
             scan: scan.map(Into::into),
             last_pass_failed,
+            last_pass_failure_reason,
         }
     }
 }

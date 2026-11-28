@@ -67,11 +67,11 @@ const LATEST: u32 = 15;
 const NOTE: u64 = 300_000_000;
 /// Lane V's reference: iOS and Android show this shielded address for
 /// "abandon … about" on mainnet.
-const ABANDON_MAINNET: &str =
+pub(super) const ABANDON_MAINNET: &str =
     "dash1zrlpvqcgyx2rag5d5rkhq0wy69hz3q37xe54xlrreqgp8htpv3gmm2l52gznxha0fd3kq9s4l67rj";
 
 /// A shielded address of an unrelated regtest wallet.
-fn payee() -> OrchardAddress {
+pub(super) fn payee() -> OrchardAddress {
     let keys = OrchardKeySet::from_seed(&[7; 64], Network::Regtest, 0).unwrap();
     let raw = keys.viewing_keys().default_address.to_raw_address_bytes();
     OrchardAddress::from_raw_bytes(&raw).unwrap()
@@ -259,9 +259,36 @@ fn a_spend_shows_credits_only_where_its_amount_is_credits() {
             "tokens are not credits"
         );
     }
+}
+
+#[test]
+fn a_private_spend_reports_the_fee_once() {
+    let fee = 20_000_000;
     for kind in [Kind::PrivateDocumentCreate, Kind::PrivateContactRequest] {
-        assert_eq!(shown(kind, fee, fee), (0, Some(fee)), "the fee once");
+        let row = pool::activity(
+            ShieldedActivityEntry {
+                fee: Some(fee),
+                ..entry(kind, fee, Status::Confirmed)
+            },
+            Network::Testnet,
+        );
+        assert_eq!(
+            (row.kind, row.credits, row.fee_credits),
+            (ShieldedActivityKind::Spend, 0, Some(fee))
+        );
     }
+}
+
+#[tokio::test]
+async fn a_pending_token_quantity_is_not_pending_credits() {
+    let lib = FakeShielded {
+        activity: vec![
+            entry(Kind::TokenShieldedTransfer, 777, Status::Pending),
+            entry(Kind::Sent, 120, Status::Pending),
+        ],
+        ..FakeShielded::default()
+    };
+    assert_eq!(pool::status(&lib).await.unwrap().pending, 120);
 }
 
 fn lock(n: u8, status: LockStatus) -> LockInfo {
@@ -1004,7 +1031,7 @@ impl ShieldedLib for FakeShielded {
             .collect())
     }
 
-    async fn sync_now(&self) -> bool {
+    async fn sync_now(&self) -> pool::PassOutcome {
         self.syncs.fetch_add(1, Ordering::SeqCst);
         if let Some(on_sync) = self.on_sync.lock().unwrap().take() {
             on_sync();
@@ -1018,7 +1045,7 @@ impl ShieldedLib for FakeShielded {
                 row.status = found;
             }
         }
-        true
+        pool::PassOutcome::Ran
     }
 
     fn sync_state(&self) -> SyncState {
@@ -1157,7 +1184,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     /// The field's, and with a funder the session's own records.
-    async fn partly_used(&self) -> HashSet<OutPoint> {
+    async fn partly_used(&self) -> Result<HashSet<OutPoint>, PlatformError> {
         if self.real_rows {
             return self.real().await.partly_used().await;
         }
@@ -1166,9 +1193,9 @@ impl ShieldedLib for FakeShielded {
         if let Some((session, wallet)) = funder.and_then(|(s, w)| Some((s.upgrade()?, w))) {
             let kind = crate::platform::unfinished_locks::LockKindId::Shielded;
             let kept = crate::platform::unfinished_locks::remaining_of(&session, wallet, kind);
-            out.extend(kept.await.into_keys());
+            out.extend(kept.await?.into_keys());
         }
-        out
+        Ok(out)
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {
@@ -1179,7 +1206,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn spent(&self, outpoint: OutPoint) -> SpentRead {
-        (self.spent_reads.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unread, |r| *r)
+        (self.spent_reads.lock().unwrap().get(&outpoint)).map_or(SpentRead::Unspent, |r| *r)
     }
 
     async fn settle(&self, txid: Txid) -> Result<(), PlatformError> {
@@ -1996,6 +2023,7 @@ fn the_address_reads_before_the_first_scan_and_its_note_shows_after() {
             total: 10_000,
         }),
         last_pass_failed: false,
+        last_pass_failure_reason: None,
     };
     let (early, before) = run(&fx, &lib, |_, lib| async move {
         let address = pool::receive_address(&*lib).await.unwrap();
@@ -2045,6 +2073,7 @@ fn the_status_reports_a_failed_pass_and_no_progress_between_passes() {
             total: 2,
         }),
         last_pass_failed: true,
+        last_pass_failure_reason: None,
     };
     let status = run(&fx, &lib, |_, lib| async move {
         pool::status(&*lib).await.unwrap()
@@ -2729,11 +2758,9 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
 
         // The session's next pass resolves it.
         *lib.scan_finds.lock().unwrap() = Some(found);
-        run(
-            &fx,
-            &lib,
-            |_, lib| async move { assert!(lib.sync_now().await) },
-        );
+        run(&fx, &lib, |_, lib| async move {
+            assert_eq!(lib.sync_now().await, pool::PassOutcome::Ran)
+        });
         assert_eq!(row(n), want);
         assert!(status().unresolved_spends.is_empty());
         assert_eq!(
@@ -4039,8 +4066,8 @@ fn an_identity_found_after_the_bind_binds_its_tip_account_at_the_next_pass() {
     assert_eq!(registered(&f, f.wallet), [0]);
     let next_pass = || {
         let (s, manager) = (Arc::clone(&f.session), f.session.manager().unwrap());
-        f.engine
-            .block_on(async move { pool::bind_new_tip_accounts(&s, &manager).await });
+        *s.platform.notes_count.lock().unwrap() = Some(Some(0));
+        f.engine.block_on(pool::periodic_pass(s, manager, |_| true));
     };
 
     add_identity(&f, f.wallet, 1);
@@ -4062,6 +4089,194 @@ fn an_identity_found_after_the_bind_binds_its_tip_account_at_the_next_pass() {
         bound_address(&f.engine, &f.session, f.wallet),
         (ShieldedAccount::Bound, want)
     );
+}
+
+#[test]
+fn an_identity_found_after_the_bind_binds_its_tip_account_inline() {
+    let tip = platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE;
+    let f = super::topup_tests::fixture(true);
+    let before = bound_address(&f.engine, &f.session, f.wallet);
+    add_identity(&f, f.wallet, 1);
+    assert_eq!(registered(&f, f.wallet), [0]);
+    assert_eq!(bound_address(&f.engine, &f.session, f.wallet), before);
+    assert_eq!(registered(&f, f.wallet), [0, tip + 1]);
+}
+
+#[test]
+fn a_bound_receive_address_never_waits_for_a_tip_key_while_mixing_only() {
+    let f = super::topup_tests::fixture(true);
+    let (_, address) = bound_address(&f.engine, &f.session, f.wallet);
+    add_identity(&f, f.wallet, 0);
+    f.session.vault.lock();
+    f.session
+        .vault
+        .unlock(super::topup_tests::PASS, dw_vault::UnlockScope::MixingOnly)
+        .unwrap();
+    let (s, wallet) = (Arc::clone(&f.session), f.wallet);
+    f.engine.block_on(async move {
+        let _pass = s.platform.shielded_passes.read().await;
+        let receive = on_pool(&s, wallet, |_, lib| async move {
+            pool::receive_address(&lib).await
+        });
+        let got = tokio::time::timeout(Duration::from_secs(1), receive)
+            .await
+            .expect("the bound receive address should not wait for the pass")
+            .unwrap();
+        assert_eq!(got.address, address.unwrap());
+    });
+}
+
+#[test]
+fn a_periodic_pass_binds_an_upgraded_wallet_after_full_unlock() {
+    use super::topup_tests::{PASS, fixture, options};
+    let tip = platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE;
+    for mixing_only in [false, true] {
+        let mut f = fixture(true);
+        assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
+        add_identity(&f, f.wallet, 0);
+        assert_eq!(registered(&f, f.wallet), [0]);
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        f.session = f
+            .engine
+            .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+            .unwrap();
+        f.session.vault.lock();
+        let expected = if mixing_only {
+            f.session
+                .vault
+                .unlock(PASS, dw_vault::UnlockScope::MixingOnly)
+                .unwrap();
+            ShieldedAccount::MixingOnly
+        } else {
+            ShieldedAccount::Locked
+        };
+        let dp = f.session.dashpay(f.wallet);
+        assert_eq!(
+            f.engine.block_on(dp.shielded_sync_info()).unwrap().account,
+            Some(expected)
+        );
+        unlock_full(&f);
+        *f.session.platform.notes_count.lock().unwrap() = Some(Some(0));
+        f.engine.block_on(pool::periodic_pass(
+            Arc::clone(&f.session),
+            f.session.manager().unwrap(),
+            |_| true,
+        ));
+        assert_eq!(
+            f.engine.block_on(dp.shielded_sync_info()).unwrap().account,
+            Some(ShieldedAccount::Bound)
+        );
+        assert_eq!(registered(&f, f.wallet), [0, tip]);
+    }
+}
+
+#[test]
+fn a_missing_tip_does_not_overwrite_a_different_account_zero_key() {
+    use platform_wallet::changeset::ShieldedChangeSet;
+    use platform_wallet::wallet::shielded::SubwalletId;
+    let f = super::topup_tests::fixture(true);
+    add_identity(&f, f.wallet, 0);
+    let account = SubwalletId::new(f.wallet.0, 0);
+    let other = OrchardKeySet::from_seed(&[71; 32], Network::Regtest, 0)
+        .unwrap()
+        .full_viewing_key
+        .to_bytes();
+    let store = f.session.live().unwrap().store;
+    let mut shielded = ShieldedChangeSet::default();
+    shielded.record_viewing_key(account, other);
+    store
+        .store(
+            f.wallet.0,
+            PlatformWalletChangeSet {
+                shielded: Some(shielded),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store.flush(f.wallet.0).unwrap();
+    let before = store.load().unwrap().shielded.viewing_keys;
+    let dp = f.session.dashpay(f.wallet);
+    assert!(f.engine.block_on(dp.shielded_status()).is_err());
+    assert_eq!(store.load().unwrap().shielded.viewing_keys, before);
+}
+
+#[test]
+fn tip_notes_and_activity_stay_out_of_the_wallet_account() {
+    use platform_wallet::wallet::shielded::{
+        ShieldedDispatch, ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedStore, SubwalletId,
+    };
+    let f = super::topup_tests::fixture(true);
+    add_identity(&f, f.wallet, 0);
+    assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
+    let tip = platform_wallet::SHIELDED_IDENTITY_ACCOUNT_BASE;
+    let wallet = f.wallet;
+    f.engine
+        .block_on(on_pool(&f.session, wallet, move |s, lib| async move {
+            let m = s.manager().unwrap();
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let primary = SubwalletId::new(wallet.0, 0);
+            let tip_wallet = SubwalletId::new(wallet.0, tip);
+            let pending = note(2, 9_000_000);
+            {
+                let mut store = coordinator.store().write().await;
+                store.save_note(primary, &note(1, NOTE)).unwrap();
+                store.set_last_synced_note_index(primary, 2).unwrap();
+                store.save_note(tip_wallet, &pending).unwrap();
+                store.save_note(tip_wallet, &note(3, 10_000_000)).unwrap();
+                store.set_last_synced_note_index(tip_wallet, 4).unwrap();
+                store
+                    .save_activity(tip_wallet, &entry(Kind::Sent, 11, Status::Pending))
+                    .unwrap();
+                assert!(store.mark_pending(tip_wallet, &pending.nullifier).unwrap());
+                store
+                    .set_pending_spend(tip_wallet, &pending.nullifier, [4; 32], [5; 32], None)
+                    .unwrap();
+            }
+            assert_eq!(lib.ledger().await.unwrap().unwrap().spendable, NOTE);
+            assert_eq!(
+                lib.unspent()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|n| n.value)
+                    .collect::<Vec<_>>(),
+                [NOTE]
+            );
+            assert_eq!(
+                lib.all_notes()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|n| n.value)
+                    .collect::<Vec<_>>(),
+                [NOTE]
+            );
+            assert!(lib.activity(0, 10).await.unwrap().is_empty());
+            assert!(lib.holds().await.unwrap().is_empty());
+            assert!(lib.reservations().await.unwrap().is_empty());
+            let status = pool::status(&lib).await.unwrap();
+            assert_eq!((status.balance, status.pending, status.held), (NOTE, 0, 0));
+
+            let refused = pool::EngineDispatch::new(&s, &coordinator)
+                .dispatch(ShieldedDispatchPayload {
+                    kind: ShieldedDispatchKind::Transfer,
+                    wallet_id: wallet.0,
+                    account_index: tip,
+                    activity_id: [5; 32],
+                    st_hash: [6; 32],
+                    st_bytes: Vec::new(),
+                    anchor: [4; 32],
+                    selected_notes: Vec::new(),
+                    published_nullifiers: Vec::new(),
+                })
+                .await
+                .unwrap_err();
+            assert!(refused.reason.contains("account"), "{refused:?}");
+            Ok(())
+        }))
+        .unwrap();
 }
 
 /// Review: a pass holds the note store for the whole of a first scan. The
