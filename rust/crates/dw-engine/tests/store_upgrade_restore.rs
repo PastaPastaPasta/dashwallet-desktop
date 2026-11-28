@@ -310,10 +310,37 @@ fn removal_succeeds_when_the_named_snapshot_is_missing_and_stays_retired_if_retu
     let archived = snapshot.dir().with_file_name("archived-before-removal");
     std::fs::rename(snapshot.dir(), &archived).unwrap();
     assert_eq!(steps_in_child(&f.root, &["remove-main"]), ["removed"]);
+    let lineage =
+        std::fs::read_to_string(backups(&f).join(dw_store_upgrade::UPGRADED_FROM)).unwrap();
+    assert!(
+        lineage.contains(&format!(
+            "snapshot removed {} {}\n",
+            snapshot.dir().file_name().unwrap().to_string_lossy(),
+            snapshot.manifest_sha256()
+        )),
+        "expected snapshot removed record: {lineage}"
+    );
     assert_eq!(named_wallets(&f.net.join("app.sqlite")), ["Fixture second"]);
     std::fs::rename(&archived, snapshot.dir()).unwrap();
     assert_eq!(steps_in_child(&f.root, &["import-main"]), ["imported"]);
     assert!(!dw_store_upgrade::snapshot_present(&f.net).unwrap());
+    assert!(dw_store_upgrade::request_restore(&f.net, &snapshot).is_err());
+    assert!(
+        dw_store_upgrade::upgrade_copy_present(&f.net, "shielded.sqlite").unwrap(),
+        "returned archive still counts as an upgrade copy for Shielded migration"
+    );
+    exec(
+        &f.wallet(),
+        "CREATE TABLE dw_fork_schema_history (version INTEGER PRIMARY KEY)",
+    );
+    assert_eq!(
+        steps_in_child(&f.root, &["open", "request", "recover"]),
+        [
+            RETIRED_SCREEN,
+            "err invalid_argument",
+            "recovered regtest-recovered-1",
+        ]
+    );
 }
 
 #[cfg(unix)]
@@ -786,23 +813,13 @@ fn child_steps() {
                 );
                 "unheld".to_string()
             }
-            "remove-main" | "remove-main-without-backup" | "remove-main-with-redirected-backup" | "import-main" => {
+            "remove-main" | "remove-main-with-redirected-backup" | "import-main" => {
                 use dw_vault::{Credential, GrantPurpose, UnlockScope};
                 use zeroize::Zeroizing;
                 let session = engine.block_on(engine.open_network(net.clone(), local_opts())).unwrap();
                 let wallet = dw_engine::WalletId(main_wallet());
                 let passphrase = Zeroizing::new(fixture_passphrase());
                 if step.starts_with("remove-main") {
-                    let moved = if step == "remove-main-without-backup" {
-                        let net_dir = session.data_dir();
-                        let snapshot = dw_store_upgrade::latest_snapshot(net_dir).unwrap().unwrap();
-                        let path = snapshot.dir().to_path_buf();
-                        let moved = path.with_file_name("moved-backup");
-                        std::fs::rename(&path, &moved).unwrap();
-                        Some((path, moved))
-                    } else {
-                        None
-                    };
                     #[cfg(unix)]
                     let redirected = (step == "remove-main-with-redirected-backup").then(|| {
                         let path = session.data_dir().join(UPGRADE_BACKUPS_DIR);
@@ -815,9 +832,6 @@ fn child_steps() {
                         GrantPurpose::Wipe, Some(&wallet.0), Credential::Passphrase(&passphrase),
                     ))).unwrap();
                     let result = engine.block_on(session.remove_wallet(wallet, grant.id));
-                    if let Some((path, moved)) = moved {
-                        std::fs::rename(moved, path).unwrap();
-                    }
                     #[cfg(unix)]
                     if let Some((path, target)) = redirected {
                         std::fs::remove_file(&path).unwrap();
