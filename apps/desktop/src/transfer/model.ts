@@ -9,6 +9,7 @@ import type { FundAmount } from "../api/generated/FundAmount";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
+import type { Utxo } from "../api/generated/Utxo";
 import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
 import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
@@ -197,10 +198,10 @@ export const TRANSFER_COPY = {
 export interface Pools {
   /** The Dash wallet's balance in duffs; `null` while it is not read. */
   core: number | null;
-  /** Every coin the Dash wallet holds that isn't locked or reserved, in duffs, incoming and mixed ones too:
-   * Max from it is offered while there is any, since the Core Max says why it can't move them. `null` while
-   * it is not read; `undefined` when the coin list can't be read, and the balance decides. */
+  /** The duffs of coins that enable Core Max, including arriving coins locked in Coin Selection.
+   * `null` while loading and `undefined` when the coin list can't be read and the balance decides. */
   coreCoins?: number | null;
+  coreCoinRows?: readonly Utxo[];
   mixing?: number;
   /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
    * while it is no reading. `spendsOff`: this build cannot spend from it (shielded/spends.ts). */
@@ -408,6 +409,12 @@ export class QuoteLine<Q> extends Model {
         this.pump();
       }, this.delayMs);
     }
+    this.changed();
+  }
+
+  clearWholeRefusal() {
+    if (this.state.kind !== "refused" || !this.state.whole) return;
+    this.state = { kind: "idle" };
     this.changed();
   }
 

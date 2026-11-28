@@ -63,7 +63,8 @@ pub use restore::{
 };
 pub use snapshot::{
     MissingSnapshot, NOT_THIS_WALLET, PART_UPGRADED_BY, STORE_FILES, SnapshotFile, SnapshotInfo,
-    SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot, snapshot_present,
+    SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot,
+    retire_snapshot_for_wallet_removal, snapshot_present, snapshot_retired_for_wallet_removal,
     snapshot_state, take_snapshot, upgrade_copy_present,
 };
 pub use sql::open_immutable;

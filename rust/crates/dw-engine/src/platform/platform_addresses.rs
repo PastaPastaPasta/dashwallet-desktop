@@ -715,7 +715,7 @@ impl DashPay {
     /// "Add from Dash wallet": an asset lock of `amount` from the Core
     /// balance under a `PlatformAddressFund` lease begun from `grant`, then
     /// Platform's AddressFundingFromAssetLock of it to the wallet's Platform
-    /// receive address. `All` drains BIP44 account 0 (`core_max.rs`).
+    /// receive address. `QuotedAll` drains the confirmed set of BIP44 account 0 coins.
     pub async fn platform_fund(
         &self,
         amount: FundAmount,
