@@ -76,6 +76,9 @@ enum Script {
     Proved,
     /// A lock out, its proof not seen yet.
     Unproved,
+    /// Signed and tracked unproved, but the funding call returned an error
+    /// (uncertain delivery: no broadcast evidence yet).
+    UnprovedErr,
     /// Signed, nothing tracked: the outcome is unknown.
     LostUntracked,
     /// The input cap refused the build.
@@ -390,7 +393,8 @@ impl FundLib for FakeFund {
             gate.notified().await;
         }
         let n = self.funds.fetch_add(1, Ordering::SeqCst) as u8 + 0x70;
-        let (status, proof) = match *self.funding.lock().unwrap() {
+        let script = *self.funding.lock().unwrap();
+        let (status, proof) = match script {
             Script::LostUntracked => {
                 permit.note_signed([0xfe; 32]);
                 return Err(FundError::Failed(PlatformError::Unavailable));
@@ -414,7 +418,7 @@ impl FundLib for FakeFund {
                 }));
             }
             Script::Proved => (AssetLockStatus::InstantSendLocked, true),
-            Script::Unproved => (AssetLockStatus::Broadcast, false),
+            Script::Unproved | Script::UnprovedErr => (AssetLockStatus::Broadcast, false),
         };
         let row = self.lock(n, duffs, status, proof);
         let outpoint = row.out_point;
@@ -432,6 +436,9 @@ impl FundLib for FakeFund {
             }],
         );
         self.track(row);
+        if script == Script::UnprovedErr {
+            return Err(FundError::Refused(PlatformError::Unavailable));
+        }
         Ok(outpoint)
     }
 
@@ -3444,4 +3451,53 @@ fn a_close_ends_a_resume_proof_wait_as_waiting_for_proof() {
     assert_eq!(resumed, Ok(PlatformFundState::ProofWaiting));
     assert!(lib.applied().is_empty(), "no apply");
     assert!(lib.signed.lock().unwrap().is_empty(), "no signature");
+}
+
+#[test]
+fn fund_and_resume_report_queued_and_activity_upgrades_with_sent_evidence() {
+    use super::flows::PendingDispatch;
+    let w = World::new();
+    let lib = Arc::new(FakeFund::new(&w.f));
+    *lib.funding.lock().unwrap() = Script::UnprovedErr;
+
+    let out = fund_of(&w.f, &lib).unwrap();
+    assert_eq!(out.state, PlatformFundState::ProofWaiting);
+    assert_eq!(out.pending_dispatch, Some(PendingDispatch::Queued));
+
+    let row = lib.tracked.lock().unwrap()[0].clone();
+    let outpoint = row.out_point;
+    let (s, wallet) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.f.engine.block_on(track_in_wallet(&s, wallet, row));
+
+    // Resume on an unproved confirming lock stays Queued when wait_proof does not prove it.
+    let g = grant(&w.f, 1, 0);
+    let txid = outpoint.txid.to_string();
+    let resumed = run(&w.f, &lib, move |s, lib| async move {
+        fund::resume(&s, wallet, &*lib, &txid, &g).await
+    })
+    .unwrap();
+    assert_eq!(resumed.state, PlatformFundState::ProofWaiting);
+    assert_eq!(resumed.pending_dispatch, Some(PendingDispatch::Queued));
+
+    // Activity shows Queued before Core lock proof is seen in ev.sent.
+    let before = w.activity();
+    let before_fund = before
+        .iter()
+        .find(|r| r.kind == PlatformActivityKind::FromCore)
+        .unwrap();
+    assert_eq!(before_fund.pending_dispatch, Some(PendingDispatch::Queued));
+
+    // Once the wallet tracks a proved lock for that exact outpoint, ev.sent upgrades it to Broadcast.
+    lib.prove(outpoint);
+    let proved_row = lib.tracked.lock().unwrap()[0].clone();
+    w.f.engine.block_on(track_in_wallet(&s, wallet, proved_row));
+    let after = w.activity();
+    let after_fund = after
+        .iter()
+        .find(|r| r.kind == PlatformActivityKind::FromCore)
+        .unwrap();
+    assert_eq!(
+        after_fund.pending_dispatch,
+        Some(PendingDispatch::Broadcast)
+    );
 }

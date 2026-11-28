@@ -2061,7 +2061,8 @@ input[type="radio"]:disabled {
 
 .io-row {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto; /* the "#n" / short outpoint column */
+  grid-template-columns: minmax(140px, auto) minmax(0, 1fr) auto; /* the "#n" / short outpoint column */
+  align-items: center;
   gap: var(--dw-space-m);
   padding: var(--dw-space-xs) 0;
   font-size: var(--dw-type-footnote-size);

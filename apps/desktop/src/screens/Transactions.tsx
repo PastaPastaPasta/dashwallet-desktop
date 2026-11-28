@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { HistorySortName } from "../api/generated/HistorySortName";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { PendingDispatch } from "../api/generated/PendingDispatch";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
@@ -39,6 +41,22 @@ const decorateSource = (row: ActivityRow): RowDecor => {
     ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isSettledUnknownRow(row) ? (row.amount === 0 ? { hideAmount: true } : {}) : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
   };
 };
+
+/** Pending Core→Shielded asset locks mapped to their dispatch state; ignored on an errored read so
+ * a stale cached lock never keeps showing "Sent". */
+export function pendingShieldDispatches(status: ShieldedStatus | null | undefined, isError: boolean): Map<string, PendingDispatch> {
+  if (isError || !status) return new Map();
+  return new Map(status.pendingShields.map((lock) => [lock.txid, lock.pendingDispatch ?? "queued"]));
+}
+
+/** Decorates a Core assetLock row from `pendingShields`, falling back to Platform/Shielded source rows. */
+export function decorateActivityRow(row: ActivityRow, pendingShields: ReadonlyMap<string, PendingDispatch>): RowDecor {
+  const dispatch = pendingShields.get(row.txid);
+  if (row.txType === "assetLock" && dispatch !== undefined && !isProblem(row.status)) {
+    return { title: pendingDispatchLabel(dispatch), note: TxTitle.chipPending };
+  }
+  return decorateSource(row);
+}
 
 const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] = [
   { id: "all", title: "All", categories: [] },
@@ -97,14 +115,11 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
   const shieldedStatus = useShieldedStatus(walletId);
-  const pendingShields = useMemo(() => new Map(shieldedStatus.data?.pendingShields.map((lock) => [lock.txid, lock.pendingDispatch ?? "queued"])), [shieldedStatus.data?.pendingShields]);
-  const decorate = (row: TxRow): RowDecor => {
-    const dispatch = pendingShields.get(row.txid);
-    if (row.txType === "assetLock" && dispatch !== undefined && !isProblem(row.status)) {
-      return { title: pendingDispatchLabel(dispatch), note: TxTitle.chipPending };
-    }
-    return decorateSource(row);
-  };
+  const pendingShields = useMemo(
+    () => pendingShieldDispatches(shieldedStatus.data, shieldedStatus.isError),
+    [shieldedStatus.data, shieldedStatus.isError],
+  );
+  const decorate = (row: TxRow): RowDecor => decorateActivityRow(row, pendingShields);
   const extra = useMemo(() => {
     const held = heldActivities(shieldedStatus.isError ? undefined : shieldedStatus.data);
     return [...(platform.data ?? []).map((a, _, all) => platformRow(a, all)), ...(shielded.data ?? []).map((a) => shieldedRow(a, held))];

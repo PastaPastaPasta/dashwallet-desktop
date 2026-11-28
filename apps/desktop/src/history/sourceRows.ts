@@ -169,8 +169,8 @@ export const heldActivities = (status: ShieldedStatus | null | undefined): Reado
   status ? new Set(status.heldSpends.map((h) => h.activityId)) : undefined;
 
 export type SourceRecord =
-  | { source: "platform"; row: TxRow; record: PlatformActivity }
-  | { source: "shielded"; row: TxRow; record: ShieldedActivity };
+  | { source: "platform"; row: ActivityRow; record: PlatformActivity }
+  | { source: "shielded"; row: ActivityRow; record: ShieldedActivity };
 
 /** A row's txid without its state suffix: a move that is replaced or may still land while its
  * details are open is still the same record. */

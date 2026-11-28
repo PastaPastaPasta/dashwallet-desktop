@@ -1,8 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../onboarding/model", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../onboarding/model")>();
+  return { ...actual, useModel: <M,>(model: M) => model };
+});
+import type { Backend } from "../api/backend";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
+import { BackendContext, keys } from "../api/queries";
+import { SourceDetailSheet } from "../screens/SourceDetailSheet";
+import { decorateActivityRow, pendingShieldDispatches } from "../screens/Transactions";
 import { activityRowTitle, filterExtra, findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, SourceRowText, sourceRowTitle } from "./sourceRows";
 import { creditsToDuffs } from "../api/pending";
 
@@ -72,6 +85,57 @@ describe("pending transfer labels", () => {
     const row = shieldedRow(failed);
     expect(activityRowTitle(row)).toBe(SourceRowText.moveToCore);
     expect(row.status.kind).toBe("notAccepted");
+  });
+
+  it("decorates Core assetLock rows from pendingShields and ignores stale locks when the status read erred", () => {
+    const lockTxid = "ab".repeat(32);
+    const queuedTxid = "cd".repeat(32);
+    const assetLock = (txid: string, statusKind: TxRow["status"]["kind"] = "unconfirmed"): TxRow => ({
+      ...core(txid, 100),
+      txType: "assetLock",
+      status: { kind: statusKind, confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    });
+    const status = {
+      pendingShields: [
+        { txid: lockTxid, duffs: 1_000_000, proved: true, pendingDispatch: "broadcast" as const, consumptionUnknown: false },
+        { txid: queuedTxid, duffs: 2_000_000, proved: false, pendingDispatch: "queued" as const, consumptionUnknown: false },
+      ],
+    } as unknown as ShieldedStatus;
+
+    const okMap = pendingShieldDispatches(status, false);
+    expect(decorateActivityRow(assetLock(lockTxid), okMap)).toEqual({ title: "Sent", note: "Pending" });
+    expect(decorateActivityRow(assetLock(queuedTxid), okMap)).toEqual({ title: "Sending…", note: "Pending" });
+    // A problem status never reads as Sent.
+    expect(decorateActivityRow(assetLock(lockTxid, "notAccepted"), okMap)).toEqual({});
+    // An errored status read drops stale cached pendingShields so it cannot keep showing Sent.
+    const errMap = pendingShieldDispatches(status, true);
+    expect(errMap.size).toBe(0);
+    expect(decorateActivityRow(assetLock(lockTxid), errMap)).toEqual({});
+  });
+
+  it("titles SourceDetailSheet as Sent or Sending… while pending, and past-tense once done", () => {
+    const network: NetworkInfo = { kind: "testnet", dirName: "testnet", unitName: "tDASH" };
+    const renderDetail = (record: PlatformActivity) => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+      client.setQueryData(keys.platformActivity("w1"), [record]);
+      return renderToStaticMarkup(
+        createElement(
+          QueryClientProvider,
+          { client },
+          createElement(BackendContext.Provider, { value: { locale: "en-US" } as Backend }, createElement(SourceDetailSheet, { walletId: "w1", txid: `platform:moveToCore:${record.id}`, network })),
+        ),
+      );
+    };
+
+    const broadcastHtml = renderDetail({ ...act("m1", { kind: "moveToCore", state: "pending" }), pendingDispatch: "broadcast" });
+    expect(broadcastHtml).toContain('data-testid="source-detail-title">Sent</h3>');
+    expect(broadcastHtml).toContain('data-testid="source-detail-status">Pending</span>');
+
+    const queuedHtml = renderDetail({ ...act("m2", { kind: "moveToCore", state: "pending" }), pendingDispatch: "queued" });
+    expect(queuedHtml).toContain('data-testid="source-detail-title">Sending…</h3>');
+
+    const doneHtml = renderDetail(act("m3", { kind: "moveToCore", state: "done" }));
+    expect(doneHtml).toContain(`data-testid="source-detail-title">${SourceRowText.moveToCore}</h3>`);
   });
 });
 

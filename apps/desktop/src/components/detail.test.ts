@@ -4,11 +4,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { TxDetails } from "../api/generated/TxDetails";
 import { BackendContext, keys } from "../api/queries";
 import { ConfirmSheet } from "../screens/pay/ConfirmSheet";
 import type { Advanced, Confirmed, Sending } from "../screens/pay/model";
 import type { DraftApi, DraftSpec } from "../screens/pay/useDraft";
 import { ReceivePage } from "../screens/Receive";
+import { TxDetailSheet } from "../screens/TxDetailSheet";
 import * as copyModule from "./copy";
 import { CopyValue, Identifier, middleTruncate } from "./detail";
 import { copyWithToast } from "./toast";
@@ -151,5 +153,68 @@ describe("Identifier and CopyValue middle truncation", () => {
     expect(html).toContain(`<p class="address-full" data-testid="receive-address">${RECEIVE_ADDRESS}</p>`);
     expect(html).not.toContain(middleTruncate(RECEIVE_ADDRESS));
     expect(html).not.toContain('class="identifier');
+  });
+
+  it("lets Transaction details inputs and outputs copy their full addresses and outpoint", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+
+    const copiedTexts: string[] = [];
+    const OriginalCopyIconButton = copyModule.CopyIconButton;
+    vi.spyOn(copyModule, "CopyIconButton").mockImplementation((props) => {
+      copiedTexts.push(props.text);
+      return OriginalCopyIconButton(props);
+    });
+
+    const PREV_TXID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    const INPUT_ADDR = "yInputAddr11111111111111111111111111";
+    const OUTPUT_ADDR = "yOutputAddr2222222222222222222222222";
+    const details: TxDetails = {
+      txid: TXID,
+      rows: [
+        {
+          txid: TXID,
+          recordIndex: 0,
+          txType: "sendToAddress",
+          category: "sent",
+          status: { kind: "confirmed", confirmations: 6, instantLocked: false, chainLocked: false, maturesIn: null },
+          timestamp: 1_700_000_000,
+          blockHeight: 100,
+          amount: -50_000_226,
+          fee: 226,
+          address: OUTPUT_ADDR,
+          label: null,
+          countsTowardBalance: true,
+          involvesWatchOnly: false,
+        },
+      ],
+      status: { kind: "confirmed", confirmations: 6, instantLocked: false, chainLocked: false, maturesIn: null },
+      timestamp: 1_700_000_000,
+      blockHeight: 100,
+      blockHash: "00".repeat(32),
+      fee: 226,
+      sizeBytes: 226,
+      inputs: [{ previousTxid: PREV_TXID, previousVout: 1, address: INPUT_ADDR, amount: 100_000_000, isMine: true }],
+      outputs: [{ vout: 0, address: OUTPUT_ADDR, amount: 50_000_000, isMine: false, isChange: false, dataHex: null }],
+      message: null,
+      label: null,
+      rawHex: "00".repeat(32),
+    };
+
+    const html = renderWithProviders(createElement(TxDetailSheet, { walletId: "w1", txid: TXID, network: NETWORK }), (client) => {
+      client.setQueryData(keys.txDetail("w1", TXID), details);
+    });
+
+    expect(html).toContain(`title="${PREV_TXID}:1"`);
+    expect(html).toContain(`title="${INPUT_ADDR}"`);
+    expect(html).toContain(`title="${OUTPUT_ADDR}"`);
+    expect(copiedTexts).toContain(`${PREV_TXID}:1`);
+    expect(copiedTexts).toContain(INPUT_ADDR);
+    expect(copiedTexts).toContain(OUTPUT_ADDR);
+
+    expect(await copyWithToast(INPUT_ADDR)).toBe(true);
+    expect(await copyWithToast(OUTPUT_ADDR)).toBe(true);
+    expect(writeText).toHaveBeenNthCalledWith(1, INPUT_ADDR);
+    expect(writeText).toHaveBeenNthCalledWith(2, OUTPUT_ADDR);
   });
 });

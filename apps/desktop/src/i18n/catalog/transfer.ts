@@ -233,7 +233,6 @@ export const transfer = {
     },
     done: {
       applied: { title: "Added to Platform", text: "About {amount} was added to your Platform balance." },
-      waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
       /** `text`: the Add to Platform address result, which has no Check again button: it names Home's Unfinished transfers
        * card and its button. `row`: Home's row, beside its `card.checkAgain` button. Keep "Check again" and the card's
        * title the same as theirs. */

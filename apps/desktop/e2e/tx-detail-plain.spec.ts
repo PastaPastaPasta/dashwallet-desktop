@@ -83,6 +83,11 @@ for (const theme of THEMES) {
       await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
       await txid.getByRole("button", { name: "Copy transaction ID" }).click();
       expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sent.txid);
+      const outputAddress = page.getByTestId("tx-detail-outputs").locator("li").first();
+      const fullOutput = await outputAddress.locator("bdi[title]").getAttribute("title");
+      expect(fullOutput).toBeTruthy();
+      await outputAddress.getByRole("button", { name: "Copy address" }).click();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(fullOutput);
       await copyRaw.click();
       const copied = await page.evaluate(() => navigator.clipboard.readText());
       // The whole transaction, not the preview: two hex digits per byte of its Size.

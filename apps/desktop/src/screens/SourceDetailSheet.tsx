@@ -19,7 +19,7 @@ import { addressSendsOff } from "../platform/mainnetOff";
 import { cancelOf, isHeldCancel, isHeldSend, MOVE_COPY, moveErrorText } from "../platform/move";
 import { moveToDashWallet } from "./dashpay/DashPayCard";
 import { GrantSheet } from "./tools/common";
-import { findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
+import { activityRowTitle, findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, type SourceRecord } from "../history/sourceRows";
 import { useT } from "../i18n";
 
 function Address({ value }: { value: string }) {
@@ -190,7 +190,7 @@ function Body({ found, network, walletId }: { found: SourceRecord; network: Netw
       <div className="tx-detail-summary" data-testid="source-detail-summary">
         <Icon id={problem ? "txDetailError" : row.amount < 0 || row.category === "sent" ? "txDetailSent" : "txDetailReceived"} size={50} />
         <h3 className="tx-detail-title" data-testid="source-detail-title">
-          {sourceRowTitle(row)}
+          {activityRowTitle(row)}
         </h3>
         {!replaced && !(unknown && row.amount === 0) && <AmountText className="tx-detail-amount" testId="source-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />}
         <div className="tx-detail-status">

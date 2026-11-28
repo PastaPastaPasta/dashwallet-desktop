@@ -20,7 +20,7 @@ import { AmountText, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
 import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
-import { CopyValue, DetailRow, Identifier } from "../components/detail";
+import { CopyValue, DetailRow } from "../components/detail";
 import { findContact, subtitle } from "../contacts/model";
 import { droppedLine, invalidSourceDetail, recipientOf } from "../history/dropped";
 import { recordUnreadableText, unreadableWallet } from "../history/recordUnreadable";
@@ -510,8 +510,10 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
         <ul role="list" className="io-list" data-testid="tx-detail-inputs">
           {d.inputs.map((i) => (
             <li key={`${i.previousTxid}:${i.previousVout}`} className="io-row">
-              <span className="mono io-ref"><Identifier value={i.previousTxid} />:{i.previousVout}</span>
-              <span>{i.address ? <Identifier value={i.address} /> : "—"}</span>
+              <span className="mono io-ref">
+                <CopyValue value={i.previousTxid} suffix={`:${i.previousVout}`} label="transaction ID" mono truncate />
+              </span>
+              <span>{i.address ? <CopyValue value={i.address} label="address" truncate /> : "—"}</span>
               {i.amount !== null ? <AmountText text={display.full(i.amount)} unitName={unit} glyph={false} /> : <span title="Not a wallet input">—</span>}
             </li>
           ))}
@@ -522,7 +524,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             <li key={o.vout} className="io-row">
               <span className="mono io-ref">#{o.vout}</span>
               <span>
-                {o.address ? <Identifier value={o.address} /> : "—"}
+                {o.address ? <CopyValue value={o.address} label="address" truncate /> : "—"}
                 {o.isChange ? " (change)" : o.isMine ? " (own address)" : ""}
               </span>
               <AmountText text={display.full(o.amount)} unitName={unit} glyph={false} />

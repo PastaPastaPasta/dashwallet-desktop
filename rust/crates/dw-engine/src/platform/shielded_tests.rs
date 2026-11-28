@@ -1871,9 +1871,15 @@ fn the_status_reads_the_ledger_pending_rows_and_open_shields() {
     assert_eq!(status.last_sync_at, Some(1_700_000_000));
     assert!(status.prover_ready && !status.syncing);
     let shields: Vec<_> = (status.pending_shields.iter())
-        .map(|p| (p.duffs, p.proved))
+        .map(|p| (p.duffs, p.proved, p.pending_dispatch))
         .collect();
-    assert_eq!(shields, [(1_000_000, true), (3_000_000, false)]);
+    assert_eq!(
+        shields,
+        [
+            (1_000_000, true, super::flows::PendingDispatch::Broadcast),
+            (3_000_000, false, super::flows::PendingDispatch::Queued),
+        ]
+    );
 
     // Unbound, or bound with nothing restored or scanned: not a reading.
     for lib in [
@@ -2521,6 +2527,86 @@ fn resume_refuses_an_unknown_lock_and_waits_for_a_proof() {
         "queued"
     );
     assert!(fx.unused(&grant));
+}
+
+#[test]
+fn finish_lock_reports_broadcast_only_with_matching_fund_evidence() {
+    use super::flows::PendingDispatch;
+    let fx = Fixture::new(0);
+    let wallet = fx.wallet;
+    let grant = shield_grant(&fx, 1_001_000);
+    let pending = lock(1, LockStatus::Broadcast);
+    let outpoint = pending.outpoint;
+    let lib = Arc::new(FakeShielded {
+        locks: vec![pending],
+        ..FakeShielded::default()
+    });
+    let step = "shield/0/funding".to_owned();
+    let (broadcast_out, queued_out) = run(&fx, &lib, move |s, lib| async move {
+        let lease = s
+            .begin_lease(wallet, FlowKind::Shield, &[grant])
+            .await
+            .unwrap();
+        let signer = lease.uncounted_funding_signer().unwrap();
+        lease
+            .scope_step(Some(step.clone()), async {
+                let fence = s.coin_fence(wallet).await.unwrap();
+                let permit = s
+                    .funding_call_permit(
+                        &lease,
+                        step.clone(),
+                        1_000_000,
+                        step.clone(),
+                        pool::SHIELD_KEY,
+                        fence,
+                    )
+                    .await
+                    .unwrap();
+                let sighash = outpoint.txid.to_byte_array();
+                permit.note_signed(sighash);
+                s.leases.record_signed_locks(
+                    wallet,
+                    &[super::lease::StoredLock {
+                        txid: outpoint.txid,
+                        inputs: vec![OutPoint::new(Txid::from_byte_array([0x66; 32]), 0)],
+                        sighashes: Some(vec![sighash]),
+                        built: true,
+                    }],
+                );
+                permit.finish(true);
+            })
+            .await;
+        let broadcast_out = pool::finish_lock(
+            &s,
+            wallet,
+            &*lib,
+            &lease,
+            &signer,
+            step.clone(),
+            Ok(outpoint),
+        )
+        .await
+        .unwrap();
+        let queued_out = pool::finish_lock(
+            &s,
+            wallet,
+            &*lib,
+            &lease,
+            &signer,
+            step,
+            Err(FundError::NotSent(PlatformError::Unavailable)),
+        )
+        .await
+        .unwrap();
+        (broadcast_out, queued_out)
+    });
+    assert_eq!(broadcast_out.state, ShieldState::ProofWaiting);
+    assert_eq!(
+        broadcast_out.pending_dispatch,
+        Some(PendingDispatch::Broadcast)
+    );
+    assert_eq!(queued_out.state, ShieldState::ProofWaiting);
+    assert_eq!(queued_out.pending_dispatch, Some(PendingDispatch::Queued));
 }
 
 /// #879: a close that starts while "Check again" waits for a shield lock's

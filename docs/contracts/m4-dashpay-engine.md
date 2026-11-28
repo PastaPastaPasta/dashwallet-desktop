@@ -590,6 +590,13 @@ which ship together (§7 item 75), and (version 56) "Add from Dash wallet", a fu
 Core balance (§7 item 79). 1.0 (C-routes C1a-1, version 68) adds the quote of a move into Shielded (§7 item 88).
 Every call refuses an unknown wallet (`wallet_not_found`) and a closed session (`network_not_open`).
 
+`MoveToCoreOutcome`, `PlatformFundOutcome` and the corresponding pending Activity rows may report
+`pending_dispatch` as `broadcast`, `queued`, or `preparing`. A broadcast needs evidence for this exact
+move or asset lock. A recorded Platform move awaiting its first signature reads `preparing`, and an
+unanswered signed move reads `queued`. A tracked Core lock awaiting proof with uncertain delivery
+also reads `queued`. The dispatch evidence is display-only. Settlement, funding holds and repeat
+send checks still use the underlying lifecycle state.
+
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `platform_addresses()` | async | `PlatformAddressBalance`: the funded addresses (bech32m, the largest first) with their credits, the total in credits (`credits`), what one `All` move could take of it (`movable_credits`: the plan of `move_to_core_quote(All)` at the session's protocol version over these balances, so balances below the minimum input, beyond the inputs one transition takes, and the fee reserve are not movable) and that in whole duffs (`duffs`, rounded down; Home adds `duffs`, the movable part only, to the spendable total), this session's last completed pass (`synced_at`, unix seconds; `None` before one, when the balances are the ones stored at the last run), whether a pass runs now, and whether the network's protocol version as the session last knew it has address funds transitions (`sends_active`: below it a send or a top-up from these addresses is `platform.feature_off`), and `sends_off`: `Some("platform_address_sends")` where this build keeps the addresses' own funds paths off on the network (mainnet, §7 item 106), with `sends_active` then `false`; `None` elsewhere. Reads the library's memory; no network. **Implemented (release 0.1).** | `CreditsError` |
@@ -653,6 +660,12 @@ and dropped when it returns (§7 item 72).
 
 The move from the Platform addresses into this account is §2.12's (`platform_shield_quote`, 1.0 C1a-1): its money,
 hold and plan are the addresses', and it refuses with this section's gate codes through `CreditsError::Shielded`.
+
+`ShieldOutcome` reports the same dispatch evidence for a Core lock waiting for its proof. The
+desktop facade reports `queued` for an unconfirmed Shielded spend and its corresponding Activity
+row, including a withdrawal to a Platform address. The pinned library's unconfirmed result can
+mean either an acknowledged broadcast or an unresolved delivery, and its pending Activity row
+is written before broadcast. A proved result still settles the move as before.
 
 **The gate.** Every call except `shielded_status` first reads the network's protocol version (the SDK's proved version,
 refreshed by one proved read while it is below the activation) and refuses below `SHIELDED_ACTIVATION_VERSION` (12, the
