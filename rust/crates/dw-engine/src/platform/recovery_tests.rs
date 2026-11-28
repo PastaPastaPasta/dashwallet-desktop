@@ -2564,9 +2564,8 @@ pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
     let mut progress = SyncProgress::default();
     progress.update_headers(headers);
     progress.update_masternodes(mn);
-    s.hub.tracker().on_progress(&progress);
     // A later report of the offline SPV client would read as behind.
-    s.hub.pin_progress.store(true, Ordering::SeqCst);
+    s.hub.pin_progress(&progress);
     assert!(super::registration_flow::wallet_synced(s, id), "caught up");
 }
 
@@ -2682,31 +2681,45 @@ fn two_fundings_held_on_one_rerun_both_go_on() {
 fn a_funding_waiting_on_a_rerun_ends_when_spv_stops() {
     let dir = dw_testutil::private_tempdir();
     let (engine, s, id, _platform) = skipped_at_restart(dir.path());
-    let pause = Arc::new(TestPause {
-        reached: AtomicBool::new(false),
-        release: Notify::new(),
-    });
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
+    let pause = test_pause();
     *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
-    let started = Instant::now();
-    let funded = engine.block_on(async {
-        let stopping = async {
-            while !pause.reached.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+    let (funded, stopped, released) = engine.block_on(async {
+        let run = async {
+            let mut fund = Box::pin(fund_once(&s, id));
+            let parked = async {
+                while !pause.reached.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            };
+            tokio::select! {
+                biased;
+                result = &mut fund => panic!("funding ended before its rerun was parked: {result:?}"),
+                () = parked => {}
             }
-            let _ = s.stop_spv().await;
+            assert!(s.platform.preparing());
+            let at = Instant::now();
+            let funding = async {
+                let result = fund.await;
+                (result, at.elapsed())
+            };
+            let ((funded, released), stopped) = tokio::join!(funding, s.stop_spv());
+            (funded, stopped, released)
         };
-        tokio::join!(fund_once(&s, id), stopping).0
+        tokio::time::timeout(Duration::from_secs(60), run)
+            .await
+            .expect("the rerun must park and SPV must stop within 60 seconds")
     });
+    assert!(
+        stopped.is_ok() || names_only_stuck_loops(&stopped),
+        "{stopped:?}"
+    );
     assert_eq!(
         funded.as_ref().map_err(|e| e.code()).err(),
         Some("platform.unavailable"),
         "{funded:?}"
     );
-    assert!(
-        started.elapsed() < super::bringup::FLOW_WAIT,
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(released < super::bringup::FLOW_WAIT, "{released:?}");
     engine.block_on(engine.shutdown()).unwrap();
 }
 

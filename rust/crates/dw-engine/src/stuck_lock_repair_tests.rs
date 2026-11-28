@@ -369,6 +369,11 @@ fn a_lock_that_confirms_after_phase_one_is_never_sent_back() {
     let block = block_with(vec![lock.clone()]);
     mined(&engine, &session, id, TIP + 1, vec![lock.clone()]);
     refresh(&engine, &session, id);
+    let preview = engine.block_on(session.stuck_funding_draft(id, &step));
+    assert!(matches!(
+        preview,
+        Err(EngineError::StuckFunding(StuckFundingRefusal::OwnLockUnfinalized(t))) if t == lock.txid()
+    ));
     let mined_only = resolve(&engine, &session, id, &step);
     assert!(
         matches!(

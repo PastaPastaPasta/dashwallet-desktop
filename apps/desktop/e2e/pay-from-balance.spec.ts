@@ -162,6 +162,27 @@ test("PAY-FROM the form quotes again after a refused attempt and once a held tra
   await expect(page.getByTestId("pay-continue")).toBeEnabled();
 });
 
+test("PAY-FROM retries the contact check before returning to review", async ({ page }) => {
+  await openBob(page);
+  await reviewFromPlatform(page);
+  await world(page, (w) => {
+    const dashpay = w.dashpay!;
+    dashpay.contacts.find((c) => c.summary.displayName === "Bob Builder")!.summary.unverified = true;
+    dashpay.unverifiedPrepare = "contextUnavailable";
+  });
+  await page.getByTestId("pay-balance-go").click();
+  await authorize(page);
+  await expect(page.getByTestId("pay-balance-updating")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("pay-balance-refusal")).toHaveCount(0);
+  await page.getByTestId("pay-balance-retry").click();
+  await expect(page.getByTestId("pay-balance-retry")).toBeEnabled();
+
+  await world(page, (w) => { w.dashpay!.unverifiedPrepare = undefined; });
+  await page.getByTestId("pay-balance-retry").click();
+  await expect(page.getByTestId("pay-balance-confirm")).toBeVisible();
+  expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "contact_pay"))).toHaveLength(1);
+});
+
 test("PAY-FROM discreet mode masks the amounts a refusal names", async ({ page }) => {
   await openBob(page);
   await page.getByTestId("toolbar-discreet").click();

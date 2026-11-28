@@ -54,6 +54,9 @@ pub struct WalletInfo {
     /// issued address ranges, which a recovery phrase doesn't restore. A
     /// failed read counts as `true`.
     pub legacy_issued: bool,
+    /// A recovery phrase alone cannot reproduce the stored address lookahead.
+    /// An unreadable setting counts as raised.
+    pub raised_lookahead: bool,
     /// Every platform-wallet wallet is an HD wallet.
     pub hd: bool,
     pub birth_height: Option<u32>,
@@ -88,6 +91,8 @@ impl NetworkSession {
         let name = self.hub.name_of(&id);
         let state = self.hub.wallet_state(&id);
         let has_secret = self.vault.has_wallet_secret(&id.0);
+        let live = self.live();
+        let scope = id.to_string();
         WalletInfo {
             wallet_id: id,
             name: name
@@ -97,10 +102,20 @@ impl NetworkSession {
             watch_only: !has_secret,
             // A wallet imported from a raw seed has keys but no phrase.
             has_mnemonic: self.vault.has_wallet_mnemonic(&id.0),
-            legacy_issued: self.live().map_or(true, |live| {
-                (live.appdb)
-                    .setting(&id.to_string(), crate::compat::ISSUED_SETTING)
+            legacy_issued: live.as_ref().map_or(true, |live| {
+                live.appdb
+                    .setting(&scope, crate::compat::ISSUED_SETTING)
                     .map_or(true, |v| v.is_some())
+            }),
+            raised_lookahead: live.as_ref().map_or(true, |live| {
+                live.appdb
+                    .setting(&scope, crate::keys::LOOKAHEAD_SETTING)
+                    .map_or(true, |value| {
+                        value.is_some_and(|gap| {
+                            crate::keys::parse_lookahead(&gap)
+                                .is_none_or(|gap| gap > crate::keys::DEFAULT_LOOKAHEAD)
+                        })
+                    })
             }),
             hd: true,
             birth_height: state.as_ref().map(|s| s.birth_height),
@@ -110,8 +125,7 @@ impl NetworkSession {
     }
 
     /// Every registered wallet, in the order they were added (wallets
-    /// without a stored name last, by id). In-memory but for one settings
-    /// read per wallet.
+    /// without a stored name last, by id). In-memory except for the settings reads.
     pub fn wallet_infos(&self) -> Result<Vec<WalletInfo>, EngineError> {
         let _op = self.try_enter()?;
         let manager = self.manager()?;
@@ -330,6 +344,13 @@ impl NetworkSession {
             if let Some(hold) = held.await {
                 this.spawn_ensure_background();
                 return Err(EngineError::ShieldedSpendHeld(hold));
+            }
+            let dir = this.data_dir().to_path_buf();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                dw_store_upgrade::retire_snapshot_for_wallet_removal(&dir, &id.0)
+            }).await? {
+                this.spawn_ensure_background();
+                return Err(EngineError::Storage(e.to_string()));
             }
             // DEC-134: the vault records first; their failure fails the
             // removal closed, before anything else of the wallet goes.

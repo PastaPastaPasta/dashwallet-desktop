@@ -440,7 +440,7 @@ pub(crate) fn mnemonic_error(e: MnemonicError) -> EngineError {
 }
 
 /// A stored lookahead row's gap, when it is one key-wallet supports.
-fn parse_lookahead(value: &str) -> Option<u32> {
+pub(crate) fn parse_lookahead(value: &str) -> Option<u32> {
     (value.parse().ok()).filter(|g| (1..=MAX_LOOKAHEAD).contains(g))
 }
 

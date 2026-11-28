@@ -16,9 +16,30 @@ pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::DirBuilder::new().create(path)
 }
 
+pub(crate) fn check_private_dir(path: &Path) -> io::Result<()> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let safe = meta.is_dir();
+    #[cfg(unix)]
+    let safe = safe && {
+        use std::os::unix::fs::MetadataExt;
+        meta.uid() == rustix::process::geteuid().as_raw() && meta.mode() & 0o022 == 0
+    };
+    if !safe {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not an owner-controlled directory", path.display()),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     match create_private_dir(path) {
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => check_private_dir(path),
         other => other,
     }
 }
@@ -49,24 +70,34 @@ pub(crate) fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".partial");
     let tmp = std::path::PathBuf::from(tmp);
-    let written = (|| {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()
-    })();
-    if let Err(e) = written {
+    let mut file = create_partial(&tmp)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written.and_then(|()| fs::rename(&tmp, path)) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    fs::rename(&tmp, path)?;
     fsync_dir(dir)
+}
+
+pub(crate) fn create_partial(path: &Path) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Err(e)
+            if e.kind() == io::ErrorKind::AlreadyExists
+                && fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) =>
+        {
+            fs::remove_file(path)?;
+            options.open(path)
+        }
+        result => result,
+    }
 }
 
 /// Remove `path` if present and fsync its directory.

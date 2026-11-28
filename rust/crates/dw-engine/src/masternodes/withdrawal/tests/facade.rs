@@ -1077,6 +1077,20 @@ impl Fa {
         });
     }
 
+    /// A record of the SPV header chain's block at `height`.
+    fn block(&self, height: u32) -> TransactionContext {
+        TransactionContext::InBlock(key_wallet::transaction_checking::BlockInfo::new(
+            height,
+            self.f.chain.hash(height),
+            0,
+        ))
+    }
+
+    /// SPV's ChainLock of the header chain's block at `height`.
+    fn chainlock(&self, height: u32) {
+        (self.f.session.hub).note_chainlock(height, self.f.chain.hash(height));
+    }
+
     /// What `abandon_transaction` leaves in the history for `tx`.
     fn abandoned(&self, tx: &Transaction) {
         (self.f.session.hub.history).with_wallet(self.f.wallet, |h| {
@@ -1199,8 +1213,136 @@ fn a_conflicted_payout_change_holds_nothing() {
         let rival = rival_of(&change);
         fa.seen(&rival, TransactionContext::Mempool);
         fa.held_by(key, UNCONFIRMED);
-        fa.seen(&rival, in_block(TIP - 3));
+        // A block a reorg can undo releases nothing until a ChainLock
+        // covers it.
+        fa.seen(&rival, fa.block(TIP - 3));
+        fa.held_by(key, UNCONFIRMED);
+        fa.chainlock(TIP - 3);
         fa.released(key);
+    }
+}
+
+/// #740: a change paid from an unconfirmed payment P's output can never
+/// mine once a block holds a rival of P's input, so it holds nothing then;
+/// with the rival only unconfirmed, it holds.
+#[test]
+fn mg740_a_payout_change_paid_from_a_beaten_payment_holds_nothing() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    for key in [Key::Owner, Key::Payout] {
+        let fa = Fa::new(true);
+        let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+        let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+        fa.seen_in(OTHER_WALLET, &payment, TransactionContext::Mempool);
+        fa.seen(&change, TransactionContext::Mempool);
+        let mut rival = rival_of(&payment);
+        rival.lock_time = 1;
+        fa.seen(&rival, TransactionContext::Mempool);
+        fa.held_by(key, UNCONFIRMED);
+        fa.seen(&rival, fa.block(TIP - 3));
+        fa.held_by(key, UNCONFIRMED);
+        fa.chainlock(TIP);
+        fa.released(key);
+    }
+}
+
+/// #740 across wallets that hold different mined copies of the rival: one
+/// in a block a reorg replaced, one in the final block. The proven copy is
+/// the one the descendant rule reads, in either wallet order; with only the
+/// replaced copy, the change holds.
+#[test]
+fn mg740_a_payout_change_reads_the_rivals_final_copy_over_a_replaced_one() {
+    use super::super::session::payout_changes_in;
+    use crate::history::{Finality, TxEntry};
+    use std::collections::HashMap;
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+    let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+    let mut rival = rival_of(&payment);
+    rival.lock_time = 1;
+    let entry = |tx: &Transaction, context: TransactionContext| TxEntry {
+        tx: tx.clone(),
+        context,
+        instant_locked: false,
+        first_seen: None,
+        own_inputs: Default::default(),
+        abandoned: false,
+    };
+    let at = |hash: [u8; 32]| {
+        TransactionContext::InBlock(key_wallet::transaction_checking::BlockInfo::new(
+            TIP - 3,
+            dashcore::BlockHash::from_byte_array(hash),
+            0,
+        ))
+    };
+    let one = |tx: &Transaction, context| HashMap::from([(tx.txid(), entry(tx, context))]);
+    let mut paying = one(&payment, TransactionContext::Mempool);
+    paying.insert(change.txid(), entry(&change, TransactionContext::Mempool));
+    let replaced = one(&rival, at([0x60; 32]));
+    let proven = one(&rival, at([0x61; 32]));
+    let tip = dashcore::BlockHash::from_byte_array([0x64; 32]);
+    let finality = Finality {
+        chainlock: Some((TIP, tip)),
+        active: HashMap::from([
+            (TIP - 3, dashcore::BlockHash::from_byte_array([0x61; 32])),
+            (TIP, tip),
+        ]),
+    };
+    let changes = |rivals: [&HashMap<_, _>; 2]| {
+        payout_changes_in(
+            &[&paying, rivals[0], rivals[1]],
+            &PRO_TX,
+            Some(TIP),
+            &finality,
+        )
+        .len()
+    };
+    assert_eq!(changes([&replaced, &replaced]), 1, "only the replaced copy");
+    assert_eq!(changes([&replaced, &proven]), 0, "replaced first");
+    assert_eq!(changes([&proven, &replaced]), 0, "proven first");
+}
+
+/// #740's rule reads every wallet: a change InstantSend-locked, or paid
+/// from a payment another wallet reads mined, still holds when a final
+/// block holds a rival of the payment's input. One paid from a payment
+/// another wallet reads InstantSend-locked holds until a ChainLock covers
+/// that block (DIP-10).
+#[test]
+fn mg740_a_payout_change_holds_while_any_wallet_reads_it_or_its_payment_settled() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+    let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+    let mut rival = rival_of(&payment);
+    rival.lock_time = 1;
+    let locked = || TransactionContext::InstantSend(Default::default());
+    let cases: [(&str, TransactionContext, Option<TransactionContext>); 3] = [
+        ("the change locked", locked(), None),
+        (
+            "the payment locked elsewhere",
+            TransactionContext::Mempool,
+            Some(locked()),
+        ),
+        (
+            "the payment mined elsewhere",
+            TransactionContext::Mempool,
+            Some(in_block(TIP - 5)),
+        ),
+    ];
+    for (case, change_context, elsewhere) in cases {
+        let fa = Fa::new(true);
+        fa.seen(&payment, TransactionContext::Mempool);
+        if let Some(context) = elsewhere {
+            fa.seen_in(OTHER_WALLET, &payment, context);
+        }
+        fa.seen(&change, change_context);
+        fa.seen(&rival, fa.block(TIP - 3));
+        fa.chainlock(TIP - 4);
+        eprintln!("{case}");
+        fa.held_by(Key::Owner, UNCONFIRMED);
+        fa.chainlock(TIP);
+        match case {
+            "the payment locked elsewhere" => fa.released(Key::Owner),
+            _ => fa.held_by(Key::Owner, UNCONFIRMED),
+        }
     }
 }
 
@@ -1223,7 +1365,8 @@ fn a_payout_change_in_several_wallets_is_released_by_any_wallets_abandon_or_conf
         let fa = Fa::new(true);
         let change = payout_change(&PRO_TX, &moved, coin(1));
         fa.seen_in(OTHER_WALLET, &change, TransactionContext::Mempool);
-        fa.seen(&rival_of(&change), in_block(TIP - 3));
+        fa.seen(&rival_of(&change), fa.block(TIP - 3));
+        fa.chainlock(TIP);
         fa.released(key);
     }
     // Mined as one wallet sees it, out of a block as the other still does.
@@ -1253,7 +1396,8 @@ fn an_undecoded_payout_change_of_the_masternode_holds() {
 }
 
 /// key-wallet's finality order: only a ChainLocked block beats an
-/// InstantSend lock.
+/// InstantSend lock, and a record's ChainLocked context alone, naming a
+/// block the header chain doesn't hold, proves nothing.
 #[test]
 fn an_instant_send_locked_payout_change_is_conflicted_only_by_a_chain_locked_block() {
     let moved = CoreScript::new_p2pkh([0x22; 20]);
@@ -1261,9 +1405,12 @@ fn an_instant_send_locked_payout_change_is_conflicted_only_by_a_chain_locked_blo
     let change = payout_change(&PRO_TX, &moved, coin(1));
     fa.seen(&change, TransactionContext::InstantSend(Default::default()));
     let rival = rival_of(&change);
-    fa.seen(&rival, in_block(TIP - 3));
+    fa.seen(&rival, fa.block(TIP - 3));
     fa.held_by(Key::Owner, UNCONFIRMED);
     fa.seen(&rival, in_chain_locked_block(TIP - 3));
+    fa.chainlock(TIP);
+    fa.held_by(Key::Owner, UNCONFIRMED);
+    fa.seen(&rival, fa.block(TIP - 3));
     fa.released(Key::Owner);
     // Locked as another wallet saw it: still locked.
     let fa = Fa::new(true);
@@ -1287,8 +1434,8 @@ fn a_block_at_or_below_the_best_chain_lock_conflicts_an_instant_send_locked_chan
         let fa = Fa::new(true);
         let change = payout_change(&PRO_TX, &moved, coin(1));
         fa.seen(&change, TransactionContext::InstantSend(Default::default()));
-        fa.seen(&rival_of(&change), in_block(TIP - 3));
-        (fa.f.session.hub).note_chainlock(chainlock, dashcore::BlockHash::all_zeros());
+        fa.seen(&rival_of(&change), fa.block(TIP - 3));
+        fa.chainlock(chainlock);
         match holds {
             true => fa.held_by(Key::Owner, UNCONFIRMED),
             false => fa.released(Key::Owner),
@@ -1500,7 +1647,8 @@ fn an_abandoned_or_conflicted_p2sh_change_does_not_make_the_payout_p2sh() {
         let change = payout_change(&PRO_TX, &p2sh_payout(), coin(1));
         fa.seen(&change, TransactionContext::Mempool);
         if conflicted {
-            fa.seen(&rival_of(&change), in_block(TIP - 3));
+            fa.seen(&rival_of(&change), fa.block(TIP - 3));
+            fa.chainlock(TIP);
         } else {
             fa.abandoned(&change);
         }

@@ -393,7 +393,7 @@ fn rollback_hold(engine: &Engine, session: Arc<NetworkSession>) -> Option<crate:
             .block_on(engine.close_network(DashNetwork::Regtest))
             .unwrap()
     );
-    super::super::restore_hold::restore_hold(&network_dir)
+    super::super::restore_hold::restore_hold(&network_dir, None)
 }
 
 /// #976 (a), (b): a removal of a wallet whose create was proved consumed,
