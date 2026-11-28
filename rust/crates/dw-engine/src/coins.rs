@@ -256,6 +256,9 @@ impl WalletCoin {
 pub(crate) struct CoinSnapshot {
     pub height: u32,
     pub coins: Vec<WalletCoin>,
+    /// Full exclusion map before unlisted reasons (`ForkKeptLock`,
+    /// `RescanHold`) are pruned from `coins`.
+    pub excluded: crate::withhold::Exclusions,
 }
 
 /// Why a funding-account coin holds a library funding build back (E0-04
@@ -847,6 +850,7 @@ pub(crate) fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     CoinSnapshot {
         height: info.last_processed_height(),
         coins,
+        excluded: Default::default(),
     }
 }
 
@@ -1270,6 +1274,7 @@ impl NetworkSession {
                 coin.mixing_held = false;
             }
         }
+        snapshot.excluded = excluded;
         // An excluded coin is listed with its reason, or not at all.
         (snapshot.coins).retain(|c| c.excluded.is_none_or(|r| r.listed()));
         fence.record_checked(snapshot.free_outpoints());
@@ -2106,6 +2111,7 @@ mod tests {
                 coinjoin,
                 unresolved.clone(),
             ],
+            excluded: Default::default(),
         };
         let held: Vec<HeldCoin> = snapshot.held_funding_coins().collect();
         let expect = |c: &WalletCoin, hold| HeldCoin {

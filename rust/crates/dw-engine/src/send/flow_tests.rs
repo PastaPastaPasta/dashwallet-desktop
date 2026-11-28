@@ -7631,3 +7631,46 @@ fn pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_br
         vec![coin]
     );
 }
+
+#[test]
+fn psbt_sign_and_broadcast_refuse_reserved_input() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(112, COIN);
+    let coin = OutPoint::new(prev.txid(), 0);
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 1_000)]);
+    let pre_signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+
+    // Reserve the coin via an in-flight prepared payment.
+    let draft = f.draft(vec![pay(&other_foreign(), COIN / 2)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(COIN / 2 + FEE_ROOM)))
+        .unwrap();
+    assert!(prepared.summary().inputs.iter().any(|i| i.outpoint == coin));
+
+    fn assert_reserved_refused<T: std::fmt::Debug>(r: Result<T, EngineError>, coin: OutPoint) {
+        match r {
+            Err(EngineError::Psbt(PsbtFailure::Invalid(d))) => {
+                assert!(
+                    d.contains(&coin.to_string()) && d.contains("held") && d.contains("Activity"),
+                    "expected reserved refusal naming coin and way out, got: {d}"
+                );
+            }
+            other => panic!("expected PsbtFailure::Invalid for reserved coin, got: {other:?}"),
+        }
+    }
+
+    let grant = f.spend_grant(COIN);
+    assert_reserved_refused(f.sign_psbt(&psbt, grant.clone()), coin);
+    assert_reserved_refused(
+        f.engine.block_on(f.session.broadcast_psbt(pre_signed)),
+        coin,
+    );
+
+    // Abandoning the prepared payment frees the coin and the unconsumed grant still signs.
+    f.engine.block_on(draft.abandon(prepared)).unwrap();
+    assert!(
+        f.sign_psbt(&psbt, grant).is_ok(),
+        "abandoning the reserved payment should free the coin for PSBT signing"
+    );
+}

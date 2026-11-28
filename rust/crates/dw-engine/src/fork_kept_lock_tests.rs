@@ -942,3 +942,88 @@ fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     let kept = hub.history.read_wallet(&s.id, |h| h.session_locks.clone());
     assert_eq!(kept, [s.p.txid()].into_iter().collect());
 }
+
+#[test]
+fn psbt_sign_and_broadcast_refuse_fork_held_input() {
+    let (s, paid) = before_funding();
+    s.fund(paid.clone());
+
+    let unsigned = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: s.a,
+            ..Default::default()
+        }],
+        output: vec![dashcore::TxOut {
+            value: COIN - 1_000,
+            script_pubkey: super::elsewhere(),
+        }],
+        special_transaction_payload: None,
+    };
+    let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+    psbt.inputs[0].non_witness_utxo = Some(paid);
+
+    let spend_grant = || {
+        s.session
+            .vault()
+            .authorize(
+                dw_vault::GrantPurpose::Spend { max_duffs: COIN },
+                Some(&s.id.0),
+                dw_vault::Credential::None,
+            )
+            .unwrap()
+            .id
+    };
+
+    // Free before the fork: signing succeeds.
+    let pre_signed = s
+        .engine
+        .block_on(s.session.sign_psbt(s.id, psbt.clone(), spend_grant()))
+        .expect("free coin signs before fork hold");
+
+    // Hearing the verified lock, mining P, and forking puts `s.a` under ForkKeptLock.
+    s.hear_lock();
+    s.mined();
+    s.fork();
+    assert!(s.a_held(), "fork must hold coin a under ForkKeptLock");
+
+    // Exported PSBT (`create_unsigned`) must not offer the fork-held coin.
+    let draft = s.session.new_tx_draft(s.id).unwrap();
+    draft
+        .set_recipients(vec![crate::send::Recipient {
+            address: "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n".into(),
+            amount: COIN / 2,
+            subtract_fee_from_amount: false,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    draft.set_source(CoinSource::Outpoints(vec![s.a])).unwrap();
+    assert!(
+        matches!(
+            s.engine.block_on(draft.create_unsigned()),
+            Err(EngineError::Send(crate::SendFailure::OutpointUnavailable(o))) if o == s.a
+        ),
+        "create_unsigned must refuse fork-held coin"
+    );
+
+    fn assert_fork_refused<T: std::fmt::Debug>(r: Result<T, EngineError>, outpoint: OutPoint) {
+        match r {
+            Err(EngineError::Psbt(crate::PsbtFailure::Invalid(d))) => {
+                assert!(
+                    d.contains(&outpoint.to_string()) && d.contains("held") && d.contains("fork"),
+                    "expected fork-held refusal naming coin and way out, got: {d}"
+                );
+            }
+            other => panic!("expected PsbtFailure::Invalid for fork-held coin, got: {other:?}"),
+        }
+    }
+
+    assert_fork_refused(
+        s.engine
+            .block_on(s.session.sign_psbt(s.id, psbt, spend_grant())),
+        s.a,
+    );
+    assert_fork_refused(s.engine.block_on(s.session.broadcast_psbt(pre_signed)), s.a);
+}
