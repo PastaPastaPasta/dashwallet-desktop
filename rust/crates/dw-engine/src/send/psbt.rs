@@ -5,11 +5,13 @@
 //! knows (which scripts are its own, their derivation paths, the previous
 //! transactions) and the grant and broadcast rules of the send flow.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use rand::seq::SliceRandom;
 
+use dashcore::consensus::encode::serialize_hex;
 use dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_psbt::{InputData, KeyPaths, PartiallySignedTransaction, Status};
 use dw_vault::{GrantKind, VaultError};
@@ -26,6 +28,101 @@ use crate::{EngineError, NetworkSession, WalletId};
 pub(crate) const FINGERPRINT_SETTING: &str = "bip32.master_fingerprint";
 /// How long `broadcast_psbt` waits for dash-spv to have broadcast peers.
 const BROADCAST_READY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Replaces [`SpvBroadcaster`] in [`NetworkSession::broadcast_psbt`] (tests).
+#[cfg(test)]
+pub(crate) trait PsbtBroadcaster: Send + Sync {
+    fn broadcast(
+        &self,
+        tx: &Transaction,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Txid, BroadcastError>> + Send>>;
+}
+
+/// Writes `wallet_id`'s durable sent mark (`sent:`, `senttx:`, `sentin:`) for
+/// `txid` before `broadcast_psbt` hands the transaction to peers, matching
+/// [`TxDraft::mark_sent`](super::TxDraft). Returns whether a mark for `txid`
+/// was already present before this write.
+async fn write_psbt_sent_mark(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+    txid: Txid,
+    tx_hex: String,
+    own_inputs: Vec<(OutPoint, u64, String)>,
+) -> Result<bool, EngineError> {
+    let scope = wallet_id.to_string();
+    let keys = [
+        format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
+        format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX),
+        format!("{}{txid}", crate::tx_actions::SENT_IN_PREFIX),
+    ];
+    let coins = own_inputs
+        .iter()
+        .map(|(o, _, _)| o.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let inputs = own_inputs
+        .iter()
+        .map(|(o, v, a)| format!("{o} {v} {a}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let ours: HashSet<OutPoint> = own_inputs.iter().map(|(o, _, _)| *o).collect();
+    session
+        .appdb_op(move |db| {
+            let already_marked = db.setting_lossy(&scope, &keys[0])?.is_some()
+                || db.setting_lossy(&scope, &keys[1])?.is_some();
+            let merged = |key: &str, new: &str| {
+                let old = db.setting_lossy(&scope, key)?.unwrap_or_default();
+                let kept = (old.split(',')).filter(|e| {
+                    let outpoint = e.split(' ').next().and_then(|o| OutPoint::from_str(o).ok());
+                    outpoint.is_some_and(|o| ours.contains(&o))
+                });
+                let all: BTreeSet<&str> = (new.split(',').chain(kept))
+                    .filter(|e| !e.is_empty())
+                    .collect();
+                Ok::<_, dw_appdb::AppDbError>(all.into_iter().collect::<Vec<_>>().join(","))
+            };
+            let coins = merged(&keys[0], &coins)?;
+            let inputs = merged(&keys[2], &inputs)?;
+            let writes = [
+                (keys[0].as_str(), Some(coins.as_str())),
+                (keys[1].as_str(), Some(tx_hex.as_str())),
+                (keys[2].as_str(), Some(inputs.as_str())),
+            ];
+            db.set_settings_durable(&scope, &writes)?;
+            Ok(already_marked)
+        })
+        .await
+}
+
+/// Drops `wallet_id`'s durable sent mark (`sent:`, `senttx:`, `sentin:`) for
+/// `txid` when a PSBT broadcast never reached peers.
+async fn drop_psbt_sent_mark(session: &NetworkSession, wallet_id: WalletId, txid: Txid) -> bool {
+    let scope = wallet_id.to_string();
+    let keys = [
+        format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
+        format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX),
+        format!("{}{txid}", crate::tx_actions::SENT_IN_PREFIX),
+    ];
+    let dropped = session
+        .appdb_op(move |db| {
+            let writes = [
+                (keys[0].as_str(), None),
+                (keys[1].as_str(), None),
+                (keys[2].as_str(), None),
+            ];
+            db.set_settings_durable(&scope, &writes)
+        })
+        .await;
+    if let Err(e) = &dropped {
+        tracing::warn!(
+            wallet = %wallet_id,
+            %txid,
+            error = %e,
+            "could not drop a PSBT broadcast's sent mark: inputs stay held until restart"
+        );
+    }
+    dropped.is_ok()
+}
 
 /// Refuses `tx` when it spends a `held` input: one of an asset lock the
 /// library tracks, or one a Mode B funding call signed whose step is
@@ -531,11 +628,14 @@ impl NetworkSession {
     /// 0.1 DASH/kB (from txid-verified input values only; an input without
     /// one is `Invalid`) and broadcasts with the send flow's verdict rules
     /// (accepted; never sent: `NoPeers` / `BroadcastRejected`; no verdict:
-    /// `BroadcastUnknown`). Returns the txid. An input of an asset lock a
-    /// funding call of any wallet signed whose step is unresolved is
-    /// refused (`Invalid`, [`held_lock_input`]), read right before the send
-    /// under the coin fence of each wallet owning a signable input, held through the
-    /// send (up to dash-spv's acceptance wait).
+    /// `BroadcastUnknown`). Returns the txid. Under each owning wallet's coin
+    /// fence, held through the send (up to dash-spv's acceptance wait), writes
+    /// the wallet's durable sent mark (`sent:`, `senttx:`, `sentin:`) before
+    /// handing the transaction to peers, drops freshly written marks on
+    /// `NoPeers` / `BroadcastRejected`, and keeps them on acceptance or
+    /// `BroadcastUnknown`. An input of an asset lock a funding call of any
+    /// wallet signed whose step is unresolved is refused (`Invalid`,
+    /// [`held_lock_input`]).
     pub async fn broadcast_psbt(
         self: &Arc<Self>,
         mut psbt: PartiallySignedTransaction,
@@ -556,10 +656,14 @@ impl NetworkSession {
             if rate > dw_psbt::MAX_BROADCAST_FEE_PER_KB {
                 return Err(PsbtFailure::FeeRateTooHigh { duffs_per_kb: rate }.into());
             }
+            #[cfg(test)]
+            let seam = this.psbt_broadcaster.lock().unwrap().clone();
+            #[cfg(not(test))]
+            let seam = None::<()>;
             let manager = this.manager()?;
             let started = manager.spv().is_started();
             let broadcaster = SpvBroadcaster::new(manager.spv_arc());
-            if started {
+            if seam.is_none() && started {
                 // A loaded PSBT may be sent right after SPV starts: give
                 // dash-spv a bounded time to connect. Without peers the
                 // broadcast below reports `NoPeers` (nothing sent).
@@ -574,33 +678,111 @@ impl NetworkSession {
             let network = this.network.core_network();
             let mut wallets = manager.list_wallet_ids_blocking();
             wallets.sort_unstable();
-            let mut fences = Vec::new();
+            let mut owning = Vec::new();
             for id in wallets.into_iter().map(WalletId) {
                 let Ok(w) = this.wallet(&id).await else {
                     continue;
                 };
                 #[cfg(test)]
                 crate::coins::pause_at(&this.coin_fences.pause_ownership).await;
-                let owns = {
+                let own = {
                     let state = crate::wallet_read::info_of(&w).await?;
-                    !ownership(&state.core_wallet, &psbt, network)
-                        .paths
-                        .is_empty()
+                    ownership(&state.core_wallet, &psbt, network)
                 };
-                if owns {
-                    fences.push(this.coin_fences.acquire(id).await);
+                if !own.paths.is_empty() {
+                    let mut own_inputs = Vec::new();
+                    for &i in own.paths.keys() {
+                        let Some(txin) = tx.input.get(i) else {
+                            continue;
+                        };
+                        let Some(out) = dw_psbt::spent_output(&psbt, i) else {
+                            continue;
+                        };
+                        let Ok(addr) = Address::from_script(&out.script_pubkey, network) else {
+                            continue;
+                        };
+                        own_inputs.push((txin.previous_output, out.value, addr.to_string()));
+                    }
+                    let fence = this.coin_fences.acquire(id).await;
+                    owning.push((id, own_inputs, fence));
                 }
             }
             held_lock_input(&tx, &this.leases.unresolved_lock_inputs_of_any())?;
-            if !started {
+            if seam.is_none() && !started {
                 return Err(PsbtFailure::NoPeers.into());
             }
-            match broadcaster.broadcast(&tx).await {
-                Ok(txid) => Ok(txid),
+            // Write each owning wallet's durable sent mark under its coin
+            // fence before the transaction can reach peers, matching
+            // `TxDraft::mark_sent`.
+            let txid = tx.txid();
+            let tx_hex = serialize_hex(&tx);
+            let mut marked: Vec<(WalletId, bool)> = Vec::with_capacity(owning.len());
+            for (id, own_inputs, _) in &owning {
+                match write_psbt_sent_mark(&this, *id, txid, tx_hex.clone(), own_inputs.clone())
+                    .await
+                {
+                    Ok(already_marked) => {
+                        let claimed = this
+                            .hub
+                            .history
+                            .read_wallet(id, |h| h.claimed_at_load.contains(&txid));
+                        marked.push((*id, already_marked || claimed));
+                    }
+                    Err(e) => {
+                        for (prev_id, keep) in marked {
+                            if !keep {
+                                drop_psbt_sent_mark(&this, prev_id, txid).await;
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+            let broadcast_result = {
+                #[cfg(test)]
+                if let Some(seam) = seam {
+                    seam.broadcast(&tx).await
+                } else {
+                    broadcaster.broadcast(&tx).await
+                }
+                #[cfg(not(test))]
+                {
+                    broadcaster.broadcast(&tx).await
+                }
+            };
+            match broadcast_result {
+                Ok(txid) => {
+                    this.hub.note_announced(txid);
+                    for (id, _, _) in &owning {
+                        this.refresh_wallet_state(&manager, *id).await;
+                        this.hub.pump.mark_balances(*id);
+                        this.hub.pump.mark_history(*id, None);
+                    }
+                    Ok(txid)
+                }
                 Err(BroadcastError::MaybeSent { reason }) => {
+                    this.hub.note_announced(txid);
+                    for (id, _, _) in &owning {
+                        this.refresh_wallet_state(&manager, *id).await;
+                        this.hub.pump.mark_balances(*id);
+                        this.hub.pump.mark_history(*id, None);
+                    }
                     Err(PsbtFailure::BroadcastUnknown { reason }.into())
                 }
                 Err(BroadcastError::Rejected { reason }) => {
+                    let mut drop_failed = false;
+                    for (id, keep) in marked {
+                        if !keep && !drop_psbt_sent_mark(&this, id, txid).await {
+                            drop_failed = true;
+                        }
+                    }
+                    if drop_failed {
+                        return Err(PsbtFailure::BroadcastUnknown {
+                            reason: "could not drop the sent mark after rejection; inputs stay held until restart"
+                                .into(),
+                        }
+                        .into());
+                    }
                     Err(if reason_means_no_peers(&reason) {
                         PsbtFailure::NoPeers
                     } else {

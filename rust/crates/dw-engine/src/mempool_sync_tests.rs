@@ -37,6 +37,8 @@ mod kill9_abandon_tests;
 mod own_spend_balance_tests;
 #[path = "own_spend_disk_tests.rs"]
 mod own_spend_disk_tests;
+#[path = "psbt_sent_mark_tests.rs"]
+mod psbt_sent_mark_tests;
 #[path = "removed_payment_way_out_tests.rs"]
 mod removed_payment_way_out_tests;
 #[path = "restore_holds_tests.rs"]
