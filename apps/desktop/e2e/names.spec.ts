@@ -45,6 +45,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("name-row-a11ce")).toContainText("2 contenders");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("You: 2 of 3 voted");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("18 votes");
+    await expect(page.getByTestId("names-list").getByText("Your username", { exact: true })).toHaveCount(0);
     await expect(page.getByTestId("name-pane-lead")).toHaveText("Alice (8ZtW…R97P) leads with 9 of 18 votes");
     await expect(page.getByTestId("name-tally").locator("li")).toHaveCount(4);
     await expect(page.getByTestId("name-pane-masternodes")).toContainText("Votes Lock · No votes left");

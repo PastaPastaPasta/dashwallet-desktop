@@ -24,6 +24,8 @@ use dpp::consensus::state::voting::vote_choice_not_allowed_for_vote_poll_error::
 use dpp::consensus::state::voting::vote_poll_not_available_for_voting_error::VotePollNotAvailableForVotingError;
 use dpp::consensus::state::voting::vote_poll_not_found_error::VotePollNotFoundError;
 use dpp::identifier::MasternodeIdentifiers;
+use dpp::identity::Identity;
+use dpp::identity::v0::IdentityV0;
 use dpp::platform_value::Bytes20;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
@@ -307,6 +309,7 @@ fn names() -> Names {
     ]);
     let open = Poll {
         winner: None,
+        verified: true,
         contenders: vec![(ID1.into(), Some(3)), (ID2.into(), Some(1))],
         lock_votes: Some(1),
         abstain_votes: Some(0),
@@ -389,6 +392,25 @@ fn reasons(cast: &[NameVoteCast]) -> Vec<(String, Option<&str>)> {
 #[test]
 fn contested_names_lists_open_contests_and_the_wallets_voters() {
     let n = names();
+    let wallet = n.f.wallet;
+    let session = &n.f.session;
+    n.f.engine.block_on(async {
+        let owned = session
+            .manager()
+            .unwrap()
+            .get_wallet(&wallet.0)
+            .await
+            .unwrap();
+        let identity = Identity::V0(IdentityV0 {
+            id: ID1.into(),
+            public_keys: Default::default(),
+            balance: 0,
+            revision: 0,
+        });
+        (owned.state_mut().await.identity_manager)
+            .add_identity(identity, 0, wallet.0, owned.persister())
+            .unwrap();
+    });
     let names =
         n.f.engine
             .block_on(n.gov.contested_names(n.f.wallet))
@@ -399,7 +421,7 @@ fn contested_names_lists_open_contests_and_the_wallets_voters() {
             ContestedName {
                 label: LABEL.into(),
                 ends_at: n.now + 3600,
-                own: false,
+                own: true,
                 contenders: vec![
                     NameContender {
                         identity: b58(ID1),
@@ -431,6 +453,23 @@ fn contested_names_lists_open_contests_and_the_wallets_voters() {
             },
         ]
     );
+    {
+        let mut polls = lock(&n.net.polls);
+        let poll = polls.get_mut(LABEL).unwrap();
+        poll.verified = false;
+        poll.labels.clear();
+    }
+    let fallback = n.f.engine.block_on(n.gov.contested_names(wallet)).unwrap();
+    assert_eq!(
+        fallback
+            .contests
+            .iter()
+            .map(|c| (c.label.as_str(), c.own))
+            .collect::<Vec<_>>(),
+        [(LABEL, false), ("dashx", false)]
+    );
+    assert_eq!(fallback.contests[0].contenders[0].votes, Some(3));
+    assert_eq!(fallback.contests[0].lock_votes, Some(1));
     let voter = |mn: &[u8; 32], kind, weight, key, current| NameVoter {
         pro_tx_hash: display_hex(mn),
         kind,

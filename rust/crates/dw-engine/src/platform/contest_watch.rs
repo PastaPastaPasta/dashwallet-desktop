@@ -73,7 +73,8 @@ use super::journal::{Age, Event, name_ref};
 use super::names::{ContestContender, ContestState, ContestStatus};
 use super::notifications::EventKind;
 use super::private_details::WriteFence;
-use super::registration_flow::b58;
+use super::registration_flow::{b58, name_taken};
+use super::registration_rows::Phase;
 use super::runtime::{PlatformSignal, guard};
 use crate::events::unix_now;
 use crate::session::Manager;
@@ -119,6 +120,8 @@ pub(crate) struct Poll {
     pub(crate) abstain_votes: Option<u32>,
     /// Each contender's own spelling of the name, by [`contender_labels`].
     pub(crate) labels: BTreeMap<Identifier, String>,
+    /// Every contender identity in this poll came from an SPV-verified proof.
+    pub(crate) verified: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +133,14 @@ pub(crate) enum PollWinner {
 }
 
 impl Poll {
-    fn of(state: Contenders) -> Self {
+    /// The ids, tallies and winner are available on fallback. Only an
+    /// SPV-verified proof can vouch for a contender's spelling.
+    pub(crate) fn read(
+        state: Contenders,
+        normalized: &str,
+        version: &PlatformVersion,
+        verified: bool,
+    ) -> Self {
         let winner = state.winner.map(|(winner, block)| {
             let winner = match winner {
                 ContestedDocumentVotePollWinnerInfo::WonByIdentity(id) => PollWinner::Identity(id),
@@ -139,6 +149,11 @@ impl Poll {
             };
             (winner, block.time_ms)
         });
+        let labels = if verified {
+            contender_labels(&state, normalized, version)
+        } else {
+            BTreeMap::new()
+        };
         Self {
             winner,
             contenders: (state.contenders.iter())
@@ -146,28 +161,8 @@ impl Poll {
                 .collect(),
             lock_votes: state.lock_vote_tally,
             abstain_votes: state.abstain_vote_tally,
-            labels: BTreeMap::new(),
-        }
-    }
-
-    /// `state` with each contender's own spelling, but only when every
-    /// quorum key its proof used was SPV-verified (H-09): read through the
-    /// trusted-service fallback, the ids, tallies and winner stay and no
-    /// contender is named.
-    pub(crate) fn read(
-        state: Contenders,
-        normalized: &str,
-        version: &PlatformVersion,
-        verified: bool,
-    ) -> Self {
-        let labels = if verified {
-            contender_labels(&state, normalized, version)
-        } else {
-            BTreeMap::new()
-        };
-        Self {
             labels,
-            ..Self::of(state)
+            verified,
         }
     }
 
@@ -495,14 +490,26 @@ async fn identities_of(wallet: &PlatformWallet) -> Result<BTreeMap<String, Mine>
         .collect())
 }
 
-pub(crate) struct ContestOwnership(BTreeMap<String, Mine>);
+pub(crate) struct ContestOwnership {
+    identities: BTreeMap<String, Mine>,
+    requested: BTreeSet<String>,
+}
 
 impl ContestOwnership {
     pub(crate) fn owns(&self, label: &str, poll: &Poll) -> bool {
-        self.0.values().any(|identity| {
-            poll.lists(&identity.id)
-                || (poll.truncated() && identity.open.iter().any(|own| own == label))
-        })
+        if poll.verified {
+            if self
+                .identities
+                .values()
+                .any(|identity| poll.lists(&identity.id))
+            {
+                return true;
+            }
+            if !poll.truncated() {
+                return false;
+            }
+        }
+        self.requested.contains(label)
     }
 }
 
@@ -530,7 +537,26 @@ impl NetworkSession {
     ) -> Result<ContestOwnership, PlatformError> {
         let manager = self.manager()?;
         let wallet = super::names::platform_wallet(&manager, id).await?;
-        Ok(ContestOwnership(identities_of(&wallet).await?))
+        let identities = identities_of(&wallet).await?;
+        let wallet_id = id.to_string();
+        let rows = self
+            .appdb_op(move |db| db.registration_rows(&wallet_id))
+            .await?;
+        let requested = rows
+            .into_iter()
+            .filter_map(|row| {
+                let identity = identities.get(row.identity.as_deref()?)?;
+                let label = convert_to_homograph_safe_chars(&row.label);
+                let contested = Phase::parse(&row.phase) == Some(Phase::Contested);
+                let still_contends = identity.open.contains(&label);
+                (row.name_error.is_none() && (contested || (name_taken(&row) && still_contends)))
+                    .then_some(label)
+            })
+            .collect();
+        Ok(ContestOwnership {
+            identities,
+            requested,
+        })
     }
 
     /// What the watch asks of Platform.

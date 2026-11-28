@@ -19,7 +19,7 @@ use super::errors::PlatformError;
 use super::journal_tests::{b58, id};
 use super::names::{ContestContender, ContestState, record_contest};
 use super::notifications::EventKind;
-use super::registration_rows::Funding;
+use super::registration_rows::{Funding, Phase};
 use super::runtime::guard;
 use super::startup::DashPayStatus;
 use crate::events::unix_now;
@@ -121,6 +121,7 @@ fn crowd(winner: Option<PollWinner>, at_ms: u64, n: u8, with_me: bool) -> Poll {
         lock_votes: Some(0),
         abstain_votes: Some(0),
         labels: BTreeMap::new(),
+        verified: false,
     }
 }
 
@@ -139,6 +140,7 @@ pub(super) fn poll(winner: Option<PollWinner>, at_ms: u64, contenders: &[u8]) ->
         lock_votes: Some(1),
         abstain_votes: Some(0),
         labels: BTreeMap::new(),
+        verified: false,
     }
 }
 
@@ -159,15 +161,44 @@ fn watch(label: &str, ends_at: u64, last_state: Option<&str>) -> ContestWatch {
 fn contest_ownership_survives_a_full_contender_page() {
     let f = Fixture::new(true);
     f.contending("Alice");
-    let ownership = f.engine.block_on(f.s.contest_ownership(f.wallet)).unwrap();
     let full = crowd(None, 0, POLL_PAGE as u8, false);
+    let ownership = f.engine.block_on(f.s.contest_ownership(f.wallet)).unwrap();
+    assert!(
+        !ownership.owns("a11ce", &full),
+        "the managed list alone has no proof provenance"
+    );
+
+    f.registration("Alice", Phase::Done);
+    let ownership = f.engine.block_on(f.s.contest_ownership(f.wallet)).unwrap();
     assert!(ownership.owns("a11ce", &full));
     assert!(!ownership.owns("dash-pay", &full));
-    assert!(!ownership.owns("a11ce", &poll(None, 0, &[BOB])));
-    assert!(ownership.owns("dash-pay", &poll(None, 0, &[BOB, ME])));
+    let complete = Poll {
+        verified: true,
+        ..poll(None, 0, &[BOB])
+    };
+    assert!(!ownership.owns("a11ce", &complete));
 }
 
 impl Fixture {
+    fn registration(&self, label: &str, phase: Phase) {
+        let wallet = self.wallet.to_string();
+        let row = dw_appdb::NewRegistration {
+            identity_index: Some(0),
+            identity: Some(b58(ME)),
+            label: label.into(),
+            temp_label: None,
+            funding: Funding::ExistingIdentity.encode(),
+            initial_profile: None,
+            phase: phase.as_str().into(),
+        };
+        self.engine
+            .block_on(
+                self.s
+                    .appdb_op(move |db| db.insert_registration(&wallet, &row, 1)),
+            )
+            .unwrap();
+    }
+
     /// Our identity, contending for `label` as the library records it,
     /// on a wallet past its first bring-up.
     fn contending(&self, label: &'static str) {
@@ -1232,14 +1263,28 @@ fn a_poll_read_through_the_trusted_fallback_names_no_one() {
         (Some(3), Some(2))
     );
     assert_eq!(fallback.winner, None);
+    let f = Fixture::new(true);
+    f.give_me();
+    let ownership = || f.engine.block_on(f.s.contest_ownership(f.wallet)).unwrap();
+    assert!(
+        !ownership().owns("a11ce", &fallback),
+        "an unverified contender must not mark a username as ours"
+    );
+    f.registration("Alice", Phase::NameRequested);
+    assert!(!ownership().owns("a11ce", &fallback));
+
     let verified = Poll::read(state, "a11ce", pv, true);
     assert_eq!(
         verified.labels,
         BTreeMap::from([(id(1), "Alice".to_owned()), (id(2), "A11ce".to_owned())])
     );
+    assert!(ownership().owns("a11ce", &verified));
+    f.registration("Alice", Phase::Contested);
+    assert!(ownership().owns("a11ce", &fallback));
     assert_eq!(
         Poll {
             labels: BTreeMap::new(),
+            verified: false,
             ..verified
         },
         fallback
