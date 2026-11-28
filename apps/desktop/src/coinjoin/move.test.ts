@@ -259,8 +259,8 @@ describe("Move mixed coins to Shielded", () => {
     flow.begin("shielded");
     await until(() => flow.step !== "plan");
     expect([flow.step, flow.planFailed]).toEqual(["refused", true]);
-    expect(refusalText(flow)).toBe("Dash Platform is off until you next start Dash Wallet, and this needs it.");
-    expect(refusalText({ error: off, planFailed: false })).toBe("Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.");
+    expect(refusalText(flow)).toBe("Dash Platform is off until you next start DashPay Desktop, and this needs it.");
+    expect(refusalText({ error: off, planFailed: false })).toBe("Nothing was sent: Dash Platform is off until you next start DashPay Desktop, and this needs it.");
   });
 
   it("is refused while the wallet mixes, and quotes once Stop Mixing ends it", async () => {

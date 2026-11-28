@@ -9,23 +9,23 @@ export const platform = {
   preflight: {
     /** Only while the network proved a protocol version above every one this build plans at. */
     rulesUnsupported:
-      "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them. Nothing was sent, and your balance is unchanged. Update Dash Wallet, then try again.",
-    refused: "Dash Platform would refuse this transfer as Dash Wallet built it, so nothing was sent and your balance is unchanged. If this keeps happening, update Dash Wallet.",
+      "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them. Nothing was sent, and your balance is unchanged. Update DashPay Desktop, then try again.",
+    refused: "Dash Platform would refuse this transfer as DashPay Desktop built it, so nothing was sent and your balance is unchanged. If this keeps happening, update DashPay Desktop.",
     /** The same refusals of the exact retry of a send that still holds: the earlier payment may land. */
     refusedRetry:
-      "Dash Platform would refuse this attempt as Dash Wallet built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update Dash Wallet.",
+      "Dash Platform would refuse this attempt as DashPay Desktop built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update DashPay Desktop.",
     rulesUnsupportedRetry:
-      "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update Dash Wallet, and check Activity before you pay again.",
+      "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update DashPay Desktop, and check Activity before you pay again.",
     /** The same refusals of the move out of a top-up that still holds: the earlier top-up may land. */
     refusedHeldTopUp:
-      "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.",
+      "Dash Platform would refuse this move as DashPay Desktop built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update DashPay Desktop.",
     rulesUnsupportedHeldTopUp:
-      "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update Dash Wallet, and check Activity before you try again.",
+      "Dash Platform's rules have changed, and this version of DashPay Desktop can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update DashPay Desktop, and check Activity before you try again.",
     /** The same refusals of the move out of a held cancel, move or contact payment: the earlier one may land. */
     refusedHeld:
-      "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier payment, move or cancel may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.",
+      "Dash Platform would refuse this move as DashPay Desktop built it, so this attempt sent nothing. Your earlier payment, move or cancel may still go through, so check Activity before you try again. If this keeps happening, update DashPay Desktop.",
     rulesUnsupportedHeld:
-      "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier payment, move or cancel may still go through. Update Dash Wallet, and check Activity before you try again.",
+      "Dash Platform's rules have changed, and this version of DashPay Desktop can't make this move under them, so this attempt sent nothing. Your earlier payment, move or cancel may still go through. Update DashPay Desktop, and check Activity before you try again.",
   },
   /** The cancel of a move to the Dash wallet or a contact payment from Platform that may still go through:
    * the same Platform funds go to the wallet's own Platform address instead, and only one of the two goes through. */
@@ -33,7 +33,7 @@ export const platform = {
     move: {
       action: "Cancel move",
       title: "Cancel this move?",
-      body: "Dash Wallet can't tell yet whether this move of {amount} to your Dash wallet will go through. Cancelling uses the same Platform funds to send to your own Platform address instead, so only one of the two can go through. If the cancel goes through, the amount stays in your Platform balance, minus a fee of about {fee}.",
+      body: "DashPay Desktop can't tell yet whether this move of {amount} to your Dash wallet will go through. Cancelling uses the same Platform funds to send to your own Platform address instead, so only one of the two can go through. If the cancel goes through, the amount stays in your Platform balance, minus a fee of about {fee}.",
       confirm: "Cancel move",
       done: "Move cancelled. The amount is in your Platform balance, minus the fee.",
       lost: "The move went through before the cancel, so the amount is in your Dash wallet. The cancel wasn't charged.",
@@ -44,7 +44,7 @@ export const platform = {
     payment: {
       action: "Cancel payment",
       title: "Cancel this payment?",
-      body: "Dash Wallet can't tell yet whether this payment of {amount} to {recipient} will go through. Cancelling sends the same Platform balance to your own Platform address instead, so only one of the two can go through. If the cancel goes through, {recipient} isn't paid, and the amount stays in your Platform balance, minus a fee of about {fee}. If the payment goes through first, {recipient} is paid and the cancel fails.",
+      body: "DashPay Desktop can't tell yet whether this payment of {amount} to {recipient} will go through. Cancelling sends the same Platform balance to your own Platform address instead, so only one of the two can go through. If the cancel goes through, {recipient} isn't paid, and the amount stays in your Platform balance, minus a fee of about {fee}. If the payment goes through first, {recipient} is paid and the cancel fails.",
       confirm: "Cancel payment",
       done: "Payment cancelled. {recipient} wasn't paid, and the amount is in your Platform balance, minus the fee.",
       lost: "The payment went through before the cancel, so {recipient} was paid. The cancel wasn't charged.",
@@ -52,6 +52,6 @@ export const platform = {
         "This payment of {amount} to {recipient} is too small to cancel. You can move the same funds to your Dash wallet instead. Only one of the two can go through: if the move does, {recipient} isn't paid, and the amount, less fees, goes to your Dash wallet.",
     },
     dismiss: "Keep waiting",
-    pending: "Cancelling. Dash Wallet is waiting for Dash Platform to confirm which one went through.",
+    pending: "Cancelling. DashPay Desktop is waiting for Dash Platform to confirm which one went through.",
   },
 } as const satisfies Tree;

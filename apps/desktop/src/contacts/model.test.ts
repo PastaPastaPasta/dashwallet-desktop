@@ -115,8 +115,8 @@ describe("Contacts view model", () => {
   });
 
   it("warns beside Accept and Send Contact Request for a profile not yet verified, and only then (H-09)", () => {
-    expect(unverifiedWarning("accept", true)).toBe("Dash Wallet can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.");
-    expect(unverifiedWarning("send", true)).toBe("Dash Wallet can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.");
+    expect(unverifiedWarning("accept", true)).toBe("DashPay Desktop can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.");
+    expect(unverifiedWarning("send", true)).toBe("DashPay Desktop can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.");
     expect(unverifiedWarning("accept", false)).toBeNull();
     expect(unverifiedWarning("send", false)).toBeNull();
   });

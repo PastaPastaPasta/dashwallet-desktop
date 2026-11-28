@@ -78,7 +78,7 @@ export function BackupsTab() {
       <AutomaticBackupsCard names={new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]))} own={own} onBackUp={(wallet) => setSheet({ kind: "backup", wallet })} />
       {!restoreOnly && (
         <SettingsCard title="Import" testId="settings-import-card">
-          <Hint>A Dash Wallet backup, a Dash Core dumpwallet file or wallet.dat, or raw keys.</Hint>
+          <Hint>A DashPay Desktop backup, a Dash Core dumpwallet file or wallet.dat, or raw keys.</Hint>
           <DashButton variant="plainBlue" data-testid="settings-import-file" onClick={() => setSheet({ kind: "importFile" })}>
             Import a wallet file…
           </DashButton>

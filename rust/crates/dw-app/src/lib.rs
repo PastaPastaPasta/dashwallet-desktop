@@ -56,14 +56,14 @@ pub fn is_app_url(url: &Url) -> bool {
     }
 }
 
-/// "Dash Wallet", with " — Testnet" (or another network name) off mainnet (DASHPAY R11).
+/// "DashPay Desktop", with " — Testnet" (or another network name) off mainnet (DASHPAY R11).
 pub fn window_title(network: &dw_engine::DashNetwork) -> String {
     use dw_engine::DashNetwork as N;
     match network {
-        N::Mainnet => "Dash Wallet".into(),
-        N::Testnet => "Dash Wallet — Testnet".into(),
-        N::Regtest => "Dash Wallet — Regtest".into(),
-        N::Devnet { name } => format!("Dash Wallet — Devnet {name}"),
+        N::Mainnet => "DashPay Desktop".into(),
+        N::Testnet => "DashPay Desktop — Testnet".into(),
+        N::Regtest => "DashPay Desktop — Regtest".into(),
+        N::Devnet { name } => format!("DashPay Desktop — Devnet {name}"),
     }
 }
 
@@ -726,13 +726,16 @@ mod tests {
     #[test]
     fn window_title_names_the_network_off_mainnet() {
         use dw_engine::DashNetwork;
-        assert_eq!(window_title(&DashNetwork::Mainnet), "Dash Wallet");
-        assert_eq!(window_title(&DashNetwork::Testnet), "Dash Wallet — Testnet");
+        assert_eq!(window_title(&DashNetwork::Mainnet), "DashPay Desktop");
+        assert_eq!(
+            window_title(&DashNetwork::Testnet),
+            "DashPay Desktop — Testnet"
+        );
         assert_eq!(
             window_title(&DashNetwork::Devnet {
                 name: "paloma".into()
             }),
-            "Dash Wallet — Devnet paloma"
+            "DashPay Desktop — Devnet paloma"
         );
     }
 }

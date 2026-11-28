@@ -244,10 +244,10 @@ describe("App Connect links", () => {
   it("says why a request was refused before any sheet", () => {
     const rejected = (reason: "invalid" | "unsupported" | "needsNewerWallet" | "busy") => ({ kind: "rejected", reason: { kind: "connect", reason } }) as const;
     expect(linkProblem(rejected("invalid"))).toBe("This sign-in request can't be read. Ask the app for a new one.");
-    expect(linkProblem(rejected("unsupported"))).toBe("This app uses a sign-in method this version of Dash Wallet doesn't support.");
-    expect(linkProblem(rejected("needsNewerWallet"))).toBe("This link needs a newer version of Dash Wallet.");
+    expect(linkProblem(rejected("unsupported"))).toBe("This app uses a sign-in method this version of DashPay Desktop doesn't support.");
+    expect(linkProblem(rejected("needsNewerWallet"))).toBe("This link needs a newer version of DashPay Desktop.");
     expect(linkProblem(rejected("busy"))).toBe(
-      "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
+      "DashPay Desktop already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
     );
     expect(traceName(rejected("needsNewerWallet"))).toBe("rejected connect needsNewerWallet");
     expect(ui.get().appConnect).toBeNull();

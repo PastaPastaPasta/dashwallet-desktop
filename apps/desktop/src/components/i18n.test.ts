@@ -98,8 +98,8 @@ describe("a refused network switch", () => {
   });
 
   it("says a refusal it has no words for with the engine's message, and its code when there is one", () => {
-    expect(NetworkText.notSwitchedBecause("busy", "app.network_busy")).toBe("Dash Wallet could not switch networks. busy (app.network_busy)");
-    expect(NetworkText.notSwitchedBecause("boom")).toBe("Dash Wallet could not switch networks. boom");
+    expect(NetworkText.notSwitchedBecause("busy", "app.network_busy")).toBe("DashPay Desktop could not switch networks. busy (app.network_busy)");
+    expect(NetworkText.notSwitchedBecause("boom")).toBe("DashPay Desktop could not switch networks. boom");
   });
 
   it("takes every part from the catalog, the payment and each flow as the sentence needs them", () => {

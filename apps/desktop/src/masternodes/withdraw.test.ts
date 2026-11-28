@@ -3,7 +3,7 @@ import type { AppError } from "../api/generated/AppError";
 import { destinationNote, payoutUnconfirmedRefusal, withdrawDestinationText, withdrawUnverifiedText, type WithdrawDestination } from "./withdraw";
 
 const err = (code: AppError["code"]): AppError => ({ code, message: code, data: null });
-const UNVERIFIED = "Dash Wallet can't check this masternode's details yet. Try again in a few minutes.";
+const UNVERIFIED = "DashPay Desktop can't check this masternode's details yet. Try again in a few minutes.";
 const fixed: WithdrawDestination = { kind: "fixed", address: "yPay8vK2Lw2dCsWHrPJeS4tYGmEGQnWm4c" };
 const checking = (reason: Extract<WithdrawDestination, { kind: "checking" }>["reason"]): WithdrawDestination => ({ kind: "checking", reason });
 

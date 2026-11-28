@@ -228,7 +228,7 @@ test.describe("first-run notice", () => {
       const errors = await open(page, "pre-release-notice", theme);
       const notice = page.getByTestId("pre-release-notice");
       await expect(notice).toBeVisible();
-      await expect(notice).toContainText("Dash Wallet is an early release");
+      await expect(notice).toContainText("DashPay Desktop is an early release");
       await expect(notice).toContainText("It has had no security review; use small amounts.");
       await expect(page.getByTestId("pre-release-dismiss")).toBeFocused();
       expect(await seriousAxeViolations(page)).toEqual([]);
@@ -296,14 +296,14 @@ test.describe("network choice", () => {
     await page.getByTestId("onboarding-welcome").waitFor();
     await expect(page.getByTestId("onboarding-network-testnet")).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "false");
-    await expect(page.getByTestId("onboarding-network-pinned")).toHaveText("Testnet is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+    await expect(page.getByTestId("onboarding-network-pinned")).toHaveText("Testnet is in use for this session. Mainnet will be used the next time DashPay Desktop starts normally.");
 
     await page.goto(fixtureUrl("funded", "light", "&network=testnet"));
     await page.getByTestId("hero").waitFor();
     await toSettings(page);
     await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("settings-network-choice-mainnet")).toHaveAttribute("aria-pressed", "false");
-    await expect(page.getByTestId("settings-network-choice-pinned")).toHaveText("Testnet is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+    await expect(page.getByTestId("settings-network-choice-pinned")).toHaveText("Testnet is in use for this session. Mainnet will be used the next time DashPay Desktop starts normally.");
   });
 
   test("Welcome on a first run: choosing Testnet switches the window at once, and Create goes on", async ({ page }, info) => {
@@ -351,7 +351,7 @@ test.describe("network choice", () => {
     await page.getByTestId("settings-network-choice-mainnet").click();
     const sheet = page.getByTestId("network-switch-sheet");
     await expect(sheet).toContainText("Switch to Mainnet?");
-    await expect(sheet).toContainText("Dash Wallet locks this wallet and opens Mainnet. Payments you haven't sent are dropped. Your Testnet wallet stays on this computer.");
+    await expect(sheet).toContainText("DashPay Desktop locks this wallet and opens Mainnet. Payments you haven't sent are dropped. Your Testnet wallet stays on this computer.");
     await expect(page.getByTestId("network-switch-pending")).toHaveCount(0);
     await shot(page, "light-settings-network-confirm");
     // Cancel changes nothing.
@@ -419,7 +419,7 @@ test.describe("network choice", () => {
     await setKnobs(page, { closeRefused: "shielded_spend_unresolved" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
-    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("DashPay Desktop doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit DashPay Desktop.");
     await setKnobs(page, { closeRefused: "transfer_preparing" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
@@ -568,7 +568,7 @@ test.describe("network choice", () => {
     await setKnobs(page, { fail: { rolledBack: true } });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
-    await expect(page.locator(".toast")).toContainText("Mainnet did not open. Dash Wallet is back on Testnet.");
+    await expect(page.locator(".toast")).toContainText("Mainnet did not open. DashPay Desktop is back on Testnet.");
     expect(await activeNetwork(page)).toBe("testnet");
     await expect(page.getByTestId("lock-screen")).toBeVisible();
     expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
@@ -581,7 +581,7 @@ test.describe("network choice", () => {
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
     await expect(page.locator(".toast")).toContainText("Mainnet did not open, and neither did Testnet again.");
-    await expect(page.getByTestId("storage-in-use")).toContainText("Dash Wallet is still closing your wallet data");
+    await expect(page.getByTestId("storage-in-use")).toContainText("DashPay Desktop is still closing your wallet data");
     await expect(page.getByTestId("storage-in-use-retry")).toHaveCount(0);
     await shot(page, "light-network-switch-none-open");
     await page.getByTestId("storage-in-use-restart").click();
@@ -602,7 +602,7 @@ test.describe("network choice", () => {
   test("a window started with --network only saves the choice", async ({ page }) => {
     await open(page, "network-pinned");
     await toSettings(page);
-    await expect(page.getByTestId("settings-network-choice-pinned")).toContainText("Regtest is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+    await expect(page.getByTestId("settings-network-choice-pinned")).toContainText("Regtest is in use for this session. Mainnet will be used the next time DashPay Desktop starts normally.");
     await expect(page.getByTestId("settings-network-choice-mainnet")).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "false");
     await page.getByTestId("settings-network-choice-testnet").click();
@@ -656,7 +656,7 @@ test.describe("Export CSV", () => {
     const saved = await world(page, (w) => w.tools.files.saved);
     expect(saved).toHaveLength(1);
     expect(saved[0].purpose).toBe("historyCsv");
-    expect(saved[0].path).toMatch(/Dash Wallet history \d{4}-\d{2}-\d{2}\.csv$/);
+    expect(saved[0].path).toMatch(/DashPay Desktop history \d{4}-\d{2}-\d{2}\.csv$/);
     const csv = await page.evaluate((b64) => atob(b64), saved[0].data);
     expect(csv.split("\n")[0]).toBe('"Confirmed","Date","Type","Label","Address","Amount (DASH)","ID"');
     expect(csv.split("\n").length).toBeGreaterThan(5);

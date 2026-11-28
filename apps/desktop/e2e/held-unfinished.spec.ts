@@ -61,9 +61,9 @@ for (const theme of THEMES) {
     await page.goto(fixtureUrl("funded", theme));
     await hold(page, 150_000_000, 0);
     const text = await openWayOut(page);
-    await expect(text).toContainText("its BIP39 passphrase if the wallet was created with one. That isn't the passphrase you unlock Dash Wallet with");
+    await expect(text).toContainText("its BIP39 passphrase if the wallet was created with one. That isn't the passphrase you unlock DashPay Desktop with");
     await expect(text).toContainText("Removing Main also unlocks any coins you locked with Lock unspent in Tools ▸ Coin Selection");
-    await expect(text).toContainText("Otherwise Dash Wallet shows Welcome to Dash Wallet once Main is removed: choose Restore from recovery phrase and enter its phrase.");
+    await expect(text).toContainText("Otherwise DashPay Desktop shows Welcome to DashPay Desktop once Main is removed: choose Restore from recovery phrase and enter its phrase.");
     await expect(text).toContainText("under Scan the blockchain from, choose The beginning.");
     await expect(text).not.toContainText("extra wallet");
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-single.png`) });
@@ -104,7 +104,7 @@ for (const theme of THEMES) {
     await hold(page, 150_000_000, 0, {}, true);
     const text = await openWayOut(page);
     await expect(text).toHaveText(
-      "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. A transaction that uses some of these coins isn't final on the network yet. When it is, Dash Wallet shows here how to get back any coins the payment didn't spend. Until then, don't remove or restore Main.",
+      "DashPay Desktop stopped this payment but still holds the coins it was using, and this version can't release them on its own. A transaction that uses some of these coins isn't final on the network yet. When it is, DashPay Desktop shows here how to get back any coins the payment didn't spend. Until then, don't remove or restore Main.",
     );
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-waiting.png`) });
     await page.keyboard.press("Escape");

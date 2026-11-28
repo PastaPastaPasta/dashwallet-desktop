@@ -391,7 +391,7 @@ async function holdPlatformPayment(page: Page, draft: string) {
 
 /** The held line names both actions, so it shows only beside both (MG). */
 const HELD_LINE =
-  "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.";
+  "DashPay Desktop can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.";
 
 const calls = (page: Page, name: string) => page.evaluate((n) => window.__dwFixture!.calls.filter((c) => c === n).length, name);
 

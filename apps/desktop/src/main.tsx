@@ -34,7 +34,7 @@ async function connect(): Promise<{ backend: IpcBackend; fixturePassphrase: stri
     window.__dwFixture = fixture;
     return { backend: guardWhileLocked(new IpcBackend("fixture", () => fixture.now, fixture.locale)), fixturePassphrase: fixture.world.passphrase };
   }
-  throw new Error("this page runs only inside the Dash Wallet app");
+  throw new Error("this page runs only inside the DashPay Desktop app");
 }
 
 async function boot() {
@@ -70,6 +70,6 @@ async function boot() {
 
 boot().catch((e) => {
   const root = document.getElementById("root")!;
-  root.textContent = `Dash Wallet could not start: ${e?.message ?? JSON.stringify(e)}`;
+  root.textContent = `DashPay Desktop could not start: ${e?.message ?? JSON.stringify(e)}`;
   root.className = "boot-error";
 });

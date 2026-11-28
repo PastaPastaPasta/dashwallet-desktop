@@ -18,8 +18,8 @@ export const settings = {
     themeLight: "Light",
     themeDark: "Dark",
     themeForced: {
-      light: "Light is in use for this session. Your choice below applies the next time Dash Wallet starts normally.",
-      dark: "Dark is in use for this session. Your choice below applies the next time Dash Wallet starts normally.",
+      light: "Light is in use for this session. Your choice below applies the next time DashPay Desktop starts normally.",
+      dark: "Dark is in use for this session. Your choice below applies the next time DashPay Desktop starts normally.",
     },
     unit: "Unit to show amounts in",
     decimals: "Decimal places",
@@ -29,7 +29,7 @@ export const settings = {
     languageSystem: "System default ({language})",
     /** A saved language this build does not ship; the app follows the system instead. */
     languageUnavailable: "{tag} (not available, using System default)",
-    languageHint: "The language of Dash Wallet's own screens. Messages that come from the network stay in English.",
+    languageHint: "The language of DashPay Desktop's own screens. Messages that come from the network stay in English.",
     showMasternodes: "Show Masternodes",
     showMasternodesHint: "Shows Masternodes in the sidebar, where you set up and follow masternodes and vote on proposals and usernames. Auto shows it while this wallet holds a masternode or one of its keys, tracks a masternode, holds a coin of exactly 1,000 or 4,000 Dash, has a registration in progress, or has a proposal in progress.",
     masternodesAuto: "Auto",
@@ -41,7 +41,7 @@ export const settings = {
     comingSoon: "Coming soon",
     notifications: "Notifications",
     notificationsWhy: "System and DashPay notifications are coming soon.",
-    startOnLogin: "Start Dash Wallet on system login",
+    startOnLogin: "Start DashPay Desktop on system login",
     startOnLoginWhy: "Starting on login is coming soon.",
     proxy: "Connect through a SOCKS5 proxy or Tor",
     proxyWhy: "Tor and SOCKS5 proxy support are coming soon.",
@@ -76,7 +76,7 @@ export const settings = {
     title: "Privacy",
     contactPictures: "Load contact pictures",
     contactPicturesHint:
-      "Show the profile pictures of your contacts and other DashPay users. Dash Wallet fetches them from the addresses in their profiles. Turned off, it fetches none and shows initials instead.",
+      "Show the profile pictures of your contacts and other DashPay users. DashPay Desktop fetches them from the addresses in their profiles. Turned off, it fetches none and shows initials instead.",
     usernameInRequests: "Include my username in payment requests",
     usernameInRequestsHint:
       "The Receive QR code and the payment requests of “{wallet}” show its DashPay username, once it has one, so whoever sees them knows the Dash address is yours. Off by default. You can also include it for a single request in Receive. Each request keeps its choice, so turning this off does not remove your username from requests already created.",
@@ -85,35 +85,35 @@ export const settings = {
     title: "Updates",
     auto: "Check for updates automatically",
     autoHint:
-      "Shortly after Dash Wallet starts, and once a day while it runs, it asks GitHub whether a newer version of Dash Wallet has been released. The request carries no wallet data, address or identifier: GitHub sees your IP address, the time and that an update check was made. Nothing is downloaded or installed until you choose to. Off by default; turning it on also checks once now.",
+      "Shortly after DashPay Desktop starts, and once a day while it runs, it asks GitHub whether a newer version of DashPay Desktop has been released. The request carries no wallet data, address or identifier: GitHub sees your IP address, the time and that an update check was made. Nothing is downloaded or installed until you choose to. Off by default; turning it on also checks once now.",
     check: "Check for updates",
     checking: "Checking for updates…",
-    upToDate: "Dash Wallet is up to date.",
-    found: "Dash Wallet {version} is available.",
-    downloaded: "Dash Wallet {version} is downloaded and ready to install.",
+    upToDate: "DashPay Desktop is up to date.",
+    found: "DashPay Desktop {version} is available.",
+    downloaded: "DashPay Desktop {version} is downloaded and ready to install.",
     notes: "Release notes",
     install: "Download and install",
     installAndRestart: "Install and restart",
-    installClosesApp: "Dash Wallet closes to install the update and opens again when it is done. Your wallet is locked and saved first.",
-    downloading: "Downloading Dash Wallet {version}…",
-    downloadingPercent: "Downloading Dash Wallet {version}… {percent}%",
-    installing: "Installing Dash Wallet {version}…",
-    installed: "Dash Wallet {version} is installed. Restart Dash Wallet to use it.",
+    installClosesApp: "DashPay Desktop closes to install the update and opens again when it is done. Your wallet is locked and saved first.",
+    downloading: "Downloading DashPay Desktop {version}…",
+    downloadingPercent: "Downloading DashPay Desktop {version}… {percent}%",
+    installing: "Installing DashPay Desktop {version}…",
+    installed: "DashPay Desktop {version} is installed. Restart DashPay Desktop to use it.",
     restart: "Restart now",
-    restartHint: "Your wallet is locked and saved before Dash Wallet restarts.",
-    restartRequiredTitle: "Restart Dash Wallet",
-    restartRequired: "The update could not be installed, and Dash Wallet has already closed your wallet for it. Restart Dash Wallet to keep using it; your wallet was saved.",
-    foundToast: "Dash Wallet {version} is available. See Settings ▸ About.",
+    restartHint: "Your wallet is locked and saved before DashPay Desktop restarts.",
+    restartRequiredTitle: "Restart DashPay Desktop",
+    restartRequired: "The update could not be installed, and DashPay Desktop has already closed your wallet for it. Restart DashPay Desktop to keep using it; your wallet was saved.",
+    foundToast: "DashPay Desktop {version} is available. See Settings ▸ About.",
     releasesPage: "Open the releases page",
     unavailable: {
-      notInThisBuild: "This build of Dash Wallet does not update itself. New versions are published on the releases page.",
-      flatpak: "This copy of Dash Wallet was installed with Flatpak, which keeps it up to date: use your software center or run “flatpak update”.",
-      packageManager: "This copy of Dash Wallet was installed from a package. Install the new package from the releases page to update it.",
-      notInstalled: "This copy of Dash Wallet is not run from an installed app, so it cannot update itself. New versions are published on the releases page.",
-      moveToApplications: "Dash Wallet is running from the disk image or a temporary location, so it cannot update itself. Move it to the Applications folder and open it from there.",
+      notInThisBuild: "This build of DashPay Desktop does not update itself. New versions are published on the releases page.",
+      flatpak: "This copy of DashPay Desktop was installed with Flatpak, which keeps it up to date: use your software center or run “flatpak update”.",
+      packageManager: "This copy of DashPay Desktop was installed from a package. Install the new package from the releases page to update it.",
+      notInstalled: "This copy of DashPay Desktop is not run from an installed app, so it cannot update itself. New versions are published on the releases page.",
+      moveToApplications: "DashPay Desktop is running from the disk image or a temporary location, so it cannot update itself. Move it to the Applications folder and open it from there.",
     },
     failed: {
-      check: "Dash Wallet could not reach the update server. Check your connection and try again.",
+      check: "DashPay Desktop could not reach the update server. Check your connection and try again.",
       notPublished: "No update information has been published for the latest release yet. Try again later, or see the releases page.",
       download: "The update could not be downloaded. Try again.",
       signature: "The update did not pass its signature check, so nothing was installed.",
@@ -122,11 +122,11 @@ export const settings = {
       browser: "The browser could not be opened.",
     },
     busy: {
-      startup: "Dash Wallet is still starting. Try again in a moment.",
+      startup: "DashPay Desktop is still starting. Try again in a moment.",
       payment: "A payment is being sent. Try again once it has gone.",
       mixing: "CoinJoin is mixing. Stop mixing first, then try again.",
       platform: "A DashPay or Platform action is still running. Try again once it has finished.",
-      unknown: "Dash Wallet is busy. Try again when it has finished.",
+      unknown: "DashPay Desktop is busy. Try again when it has finished.",
     },
   },
   backups: {
@@ -134,7 +134,7 @@ export const settings = {
     /** Shows the automatic-backup folder in the system file manager. */
     showFolder: "Show Folder",
     /** Show Folder before any automatic backup made the folder. */
-    noFolderYet: "There's no backup folder yet. Dash Wallet creates it with the first automatic backup.",
+    noFolderYet: "There's no backup folder yet. DashPay Desktop creates it with the first automatic backup.",
     /** The folder exists but no file manager opened it; its path is on the same card with a copy button. */
     showFolderFailed: "The backup folder couldn't be opened. Copy its path and open it in your file manager.",
     /** Import a wallet file: the system's open dialog fills the path. */
@@ -142,7 +142,7 @@ export const settings = {
     pathHint: "Choose the file, or paste its full path.",
     automaticFailed: {
       title: "The latest automatic backup failed",
-      body: "Dash Wallet could not write an automatic backup of {wallet} on {date}. Your funds are not affected, and your recovery phrase still restores them. Make a backup now with Back up wallet…, and check that the backup folder has free space and that Dash Wallet can write to it.",
+      body: "DashPay Desktop could not write an automatic backup of {wallet} on {date}. Your funds are not affected, and your recovery phrase still restores them. Make a backup now with Back up wallet…, and check that the backup folder has free space and that DashPay Desktop can write to it.",
       toast: "An automatic backup failed. Open Settings ▸ Backups to see what to do.",
     },
   },
@@ -169,7 +169,7 @@ export const settings = {
     open: "Open",
     closed: "Closed",
     watchOnly: "Watch-only",
-    openAtStart: "Open when Dash Wallet starts",
+    openAtStart: "Open when DashPay Desktop starts",
     openWallet: "Open",
     closeWallet: "Close",
     rename: "Rename…",
@@ -195,9 +195,9 @@ export const settings = {
     removeHeldTitle: "This wallet can't be removed yet",
     removeHeldInFlight: "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed.",
     removeHeldCarriedOver:
-      "Dash Wallet can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
+      "DashPay Desktop can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
     removeHeldKeysRemoved:
-      "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
+      "DashPay Desktop removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
     removeHeldOk: "OK",
     xpubTitle: "Extended public key",
     xpubHint: "Anyone with this key can see every address and payment of this account, but cannot spend.",
@@ -298,7 +298,7 @@ export const settings = {
     },
   },
   about: {
-    title: "Dash Wallet",
+    title: "DashPay Desktop",
     version: "Version",
     engine: "Engine",
     network: "Network",
@@ -322,17 +322,17 @@ export const settings = {
     },
     license: {
       title: "License",
-      intro: "Dash Wallet is free software, released under the MIT License.",
+      intro: "DashPay Desktop is free software, released under the MIT License.",
       text: `MIT License
 
-Copyright (c) Dash Wallet Desktop contributors
+Copyright (c) DashPay Desktop contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`,
-      thirdParty: "Dash Wallet is built on open-source software, including Dash Platform, rust-dashcore, Tauri, React and the Inter typeface, each under its own license.",
+      thirdParty: "DashPay Desktop is built on open-source software, including Dash Platform, rust-dashcore, Tauri, React and the Inter typeface, each under its own license.",
     },
   },
   security: {
@@ -382,7 +382,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
     duffs: "{amount} duffs",
     /** The engine reports the sealed spending limit as unreadable (issue 173, item 10). MG's words. */
     spendLimitUnreadable:
-      "Dash Wallet couldn't read your saved spending limit, so it asks for your passphrase for every payment, and quick unlock is off. Set the limit again to turn quick unlock back on. Setting up quick unlock again won't fix this.",
+      "DashPay Desktop couldn't read your saved spending limit, so it asks for your passphrase for every payment, and quick unlock is off. Set the limit again to turn quick unlock back on. Setting up quick unlock again won't fix this.",
     spendLimitSetAgain: "Set limit again…",
     spendLimitChange:
       "Change the limit from {from} to {to}. Payments during the 5 minutes after you unlock can add up to {to}. A total over that still asks for the passphrase.",

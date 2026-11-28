@@ -226,9 +226,9 @@ jobs:
           mnt="$RUNNER_TEMP/dmg-mnt"
           mkdir -p "$mnt" "$RUNNER_TEMP/app"
           hdiutil attach "$DMG" -mountpoint "$mnt" -nobrowse -readonly
-          cp -R "$mnt/Dash Wallet.app" "$RUNNER_TEMP/app/"
+          cp -R "$mnt/DashPay Desktop.app" "$RUNNER_TEMP/app/"
           hdiutil detach "$mnt"
-          app="$RUNNER_TEMP/app/Dash Wallet.app"
+          app="$RUNNER_TEMP/app/DashPay Desktop.app"
           echo "APP=$app" >> "$GITHUB_ENV"
           lipo -archs "$app/Contents/MacOS/dash-wallet"
           codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier"

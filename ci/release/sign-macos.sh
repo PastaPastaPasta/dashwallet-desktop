@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Local macOS signing step (runs on the release signer's Mac; mirrors Dash Core's detached-sig-create.sh).
 #
-# Signs Dash Wallet.app with Developer ID Application from the local Keychain, notarizes and staples
-# it with Apple, extracts the small detached signature payload into <sigs-dir>/osx/Dash Wallet.app,
+# Signs DashPay Desktop.app with Developer ID Application from the local Keychain, notarizes and staples
+# it with Apple, extracts the small detached signature payload into <sigs-dir>/osx/DashPay Desktop.app,
 # round-trip verifies re-attachment onto the unsigned CI .app, builds the deterministic updater archive
 # (.app.tar.gz), and builds + signs + notarizes + staples the final .dmg.
 #
@@ -105,52 +105,52 @@ trap 'rm -rf "$work"' EXIT
 
 mkdir -p "$work/unsigned" "$work/signed" "$work/roundtrip" "$out_dir/dist" "$out_dir/feed" "$sigs_dir/osx"
 tar -xzf "$unsigned_tar" -C "$work/unsigned"
-[[ -d "$work/unsigned/Dash Wallet.app" ]] || die "$unsigned_tar did not contain Dash Wallet.app"
-cp -R "$work/unsigned/Dash Wallet.app" "$work/signed/Dash Wallet.app"
+[[ -d "$work/unsigned/DashPay Desktop.app" ]] || die "$unsigned_tar did not contain DashPay Desktop.app"
+cp -R "$work/unsigned/DashPay Desktop.app" "$work/signed/DashPay Desktop.app"
 
-app="$work/signed/Dash Wallet.app"
+app="$work/signed/DashPay Desktop.app"
 xattr -crs "$app"
 
-echo "sign-macos: codesigning Dash Wallet.app with $identity"
+echo "sign-macos: codesigning DashPay Desktop.app with $identity"
 codesign --force --options runtime --timestamp --sign "$identity" "$app/Contents/MacOS/dash-wallet"
 codesign --force --options runtime --timestamp --sign "$identity" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
-echo "sign-macos: notarizing and stapling Dash Wallet.app"
+echo "sign-macos: notarizing and stapling DashPay Desktop.app"
 ditto -c -k --keepParent "$app" "$work/DashWallet-app.zip"
-notarize_and_staple "$app" "$work/DashWallet-app.zip" "Dash Wallet.app"
+notarize_and_staple "$app" "$work/DashWallet-app.zip" "DashPay Desktop.app"
 spctl --assess --type execute -vv "$app"
 
-echo "sign-macos: extracting detached signatures into $sigs_dir/osx/Dash Wallet.app"
-python3 "$gh_dir/macos-detached-sig.py" extract "$work/unsigned/Dash Wallet.app" "$app" "$sigs_dir/osx/Dash Wallet.app"
+echo "sign-macos: extracting detached signatures into $sigs_dir/osx/DashPay Desktop.app"
+python3 "$gh_dir/macos-detached-sig.py" extract "$work/unsigned/DashPay Desktop.app" "$app" "$sigs_dir/osx/DashPay Desktop.app"
 
 echo "sign-macos: round-trip verifying detached signature attachment"
-python3 "$gh_dir/macos-detached-sig.py" apply "$work/unsigned/Dash Wallet.app" "$sigs_dir/osx/Dash Wallet.app" "$work/roundtrip/Dash Wallet.app"
-diff -qr "$app" "$work/roundtrip/Dash Wallet.app" || die "round-trip attached Dash Wallet.app differed from signed .app"
-codesign --verify --deep --strict --verbose=2 "$work/roundtrip/Dash Wallet.app"
-spctl --assess --type execute -vv "$work/roundtrip/Dash Wallet.app"
-xcrun stapler validate "$work/roundtrip/Dash Wallet.app"
+python3 "$gh_dir/macos-detached-sig.py" apply "$work/unsigned/DashPay Desktop.app" "$sigs_dir/osx/DashPay Desktop.app" "$work/roundtrip/DashPay Desktop.app"
+diff -qr "$app" "$work/roundtrip/DashPay Desktop.app" || die "round-trip attached DashPay Desktop.app differed from signed .app"
+codesign --verify --deep --strict --verbose=2 "$work/roundtrip/DashPay Desktop.app"
+spctl --assess --type execute -vv "$work/roundtrip/DashPay Desktop.app"
+xcrun stapler validate "$work/roundtrip/DashPay Desktop.app"
 
 # The updater archive is part of a stable release's feed only; a candidate publishes no feed.
 app_tar="(none: release candidate, no updater feed)"
 if [[ "$version" != *-rc.* ]]; then
   app_tar="$out_dir/feed/dash-wallet-$version-macos-universal.app.tar.gz"
-  python3 "$gh_dir/macos-detached-sig.py" pack-app "$work/roundtrip/Dash Wallet.app" "$app_tar"
+  python3 "$gh_dir/macos-detached-sig.py" pack-app "$work/roundtrip/DashPay Desktop.app" "$app_tar"
 fi
 
 echo "sign-macos: creating, signing, notarizing, and stapling the .dmg"
 dmg_src="$work/dmg-src"
 mkdir -p "$dmg_src"
-cp -R "$work/roundtrip/Dash Wallet.app" "$dmg_src/Dash Wallet.app"
+cp -R "$work/roundtrip/DashPay Desktop.app" "$dmg_src/DashPay Desktop.app"
 ln -s /Applications "$dmg_src/Applications"
 dmg="$out_dir/dist/dash-wallet-$version-macos-universal.dmg"
 rm -f "$dmg"
-hdiutil create -volname "Dash Wallet" -srcfolder "$dmg_src" -ov -format UDZO "$dmg"
+hdiutil create -volname "DashPay Desktop" -srcfolder "$dmg_src" -ov -format UDZO "$dmg"
 codesign --force --timestamp --sign "$identity" "$dmg"
 codesign --verify --verbose=2 "$dmg"
 notarize_and_staple "$dmg" "$dmg" "$(basename "$dmg")"
 
 echo "sign-macos: done"
-echo "  detached sigs: $sigs_dir/osx/Dash Wallet.app"
+echo "  detached sigs: $sigs_dir/osx/DashPay Desktop.app"
 echo "  signed .dmg:   $dmg"
 echo "  updater tar:   $app_tar"

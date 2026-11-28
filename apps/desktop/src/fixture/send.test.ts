@@ -305,7 +305,7 @@ describe("fixture send engine", () => {
     expect(await cmd.txDetailExtras(W, txid)).toMatchObject({ canAbandon: true, canResend: false, abandoned: false });
     await expect(cmd.abandonTransaction(W, txid)).rejects.toMatchObject({
       code: "tx_action_refused",
-      message: "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
+      message: "[fixture engine] Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again.",
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
     clearMocks();

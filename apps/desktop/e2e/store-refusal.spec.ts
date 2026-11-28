@@ -19,8 +19,8 @@ test.describe("a refused store", () => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl(scenario, "light", "&openRefused=refusedPrevious"));
       const screen = page.getByTestId("store-refused");
-      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet can't open this wallet data safely");
-      await expect(page.getByTestId("store-refused-text")).toContainText("/home/user/.local/share/dashwallet/testnet: it holds contact data that this version can't read yet. Dash Wallet didn't change anything in it.");
+      await expect(screen.getByRole("heading")).toHaveText("DashPay Desktop can't open this wallet data safely");
+      await expect(page.getByTestId("store-refused-text")).toContainText("/home/user/.local/share/dashwallet/testnet: it holds contact data that this version can't read yet. DashPay Desktop didn't change anything in it.");
       await expectNoWallet(page);
       await page.getByTestId("store-refused-button-storeUpgrade.refused.quit").click();
       await expect.poll(() => appExits(page)).toEqual(["quit"]);
@@ -39,7 +39,7 @@ test.describe("a refused store", () => {
     await page.goto(fixtureUrl("funded", "light", "&openRefused=retiredBackup"));
     const screen = page.getByTestId("store-refused");
     const text = page.getByTestId("store-refused-text");
-    await expect(text).toContainText("Dash Wallet retired the backup from before the upgrade as part of removing a wallet.");
+    await expect(text).toContainText("DashPay Desktop retired the backup from before the upgrade as part of removing a wallet.");
     await expect(text).toContainText("Payment holds, in-progress operations, imported keys and other local records stay in that folder.");
     await expect(text).toContainText("If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.");
     await expect(screen.locator("button")).toHaveText(["Set up from recovery phrase", "Report a problem", "Quit"]);
@@ -58,9 +58,9 @@ test.describe("an upgrade that stopped on the machine", () => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl("funded", theme, "&openRetry=yes"));
       const screen = page.getByTestId("store-retry");
-      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet couldn't finish upgrading your wallet data");
+      await expect(screen.getByRole("heading")).toHaveText("DashPay Desktop couldn't finish upgrading your wallet data");
       await expect(page.getByTestId("store-retry-text")).toHaveText(
-        "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.",
+        "The disk is full, or DashPay Desktop couldn't write to it. Free up some space, then quit DashPay Desktop and open it again. Until then, don't open this wallet data with an earlier version.",
       );
       await expect(page.getByTestId("store-retry-button-storeUpgrade.refused.report")).toBeFocused();
       await expect(page.getByTestId("store-retry-hint")).toHaveText("Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.");
@@ -74,7 +74,7 @@ test.describe("an upgrade that stopped on the machine", () => {
 test.describe("StorageInUse", () => {
   test("Try again opens the wallet once the session before lets go", async ({ page }) => {
     await page.goto(fixtureUrl("funded", "light", "&storageInUse=retry"));
-    await expect(page.getByTestId("storage-in-use-text")).toContainText("Try again in a moment, or restart Dash Wallet to finish.");
+    await expect(page.getByTestId("storage-in-use-text")).toContainText("Try again in a moment, or restart DashPay Desktop to finish.");
     await expectNoWallet(page);
     await page.getByTestId("storage-in-use-retry").click();
     await page.locator("[data-testid=hero], [data-testid=lock-screen]").first().waitFor();
@@ -85,7 +85,7 @@ test.describe("StorageInUse", () => {
     test(`only a restart frees a store held until one, never onboarding (${scenario})`, async ({ page }) => {
       await page.goto(fixtureUrl(scenario, "light", "&storageInUse=restart"));
       await expect(page.getByTestId("storage-in-use-text")).toHaveText(
-        "Dash Wallet hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Restart Dash Wallet to finish.",
+        "DashPay Desktop hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Restart DashPay Desktop to finish.",
       );
       await expect(page.getByTestId("storage-in-use-retry")).toHaveCount(0);
       await expectNoWallet(page);
@@ -104,9 +104,9 @@ test.describe("a data folder others can change", () => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl(scenario, "light", "&notPrivate=groupWritable"));
       const screen = page.getByTestId("store-not-private");
-      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet can't use this data folder");
+      await expect(screen.getByRole("heading")).toHaveText("DashPay Desktop can't use this data folder");
       await expect(page.getByTestId("store-not-private-text")).toHaveText(
-        `Other accounts on this computer can change files in ${ROOT}. To keep your wallet safe, Dash Wallet won't open it until only your account can change that folder.`,
+        `Other accounts on this computer can change files in ${ROOT}. To keep your wallet safe, DashPay Desktop won't open it until only your account can change that folder.`,
       );
       await expect(page.getByTestId("store-not-private-reason")).toHaveText("Your group can write to it.");
       await expect(page.getByTestId("store-not-private-fix")).toHaveText("Change the folder's permissions so only you can write to it, then try again. Your wallet files weren't changed.");
@@ -176,7 +176,7 @@ test.describe("a damaged store (Q107 C1)", () => {
       await expect(page.getByTestId(RECOVER)).not.toBeFocused();
       const text = page.getByTestId("store-refused-text");
       await expect(text).toContainText("it can't be read as wallet data, so it may be damaged.");
-      await expect(text).toContainText("Dash Wallet leaves /home/user/.local/share/dashwallet/testnet as it is and doesn't delete anything.");
+      await expect(text).toContainText("DashPay Desktop leaves /home/user/.local/share/dashwallet/testnet as it is and doesn't delete anything.");
       await expectNoWallet(page);
       expect(errors).toEqual([]);
     });
@@ -196,7 +196,7 @@ test.describe("a damaged store (Q107 C1)", () => {
     await page.getByTestId(RECOVER).click();
     await expect(page.getByTestId("recover-confirm").locator("h2")).toHaveText("Set up from a recovery phrase?");
     await expect(page.getByTestId("recover-confirm-text")).toHaveText(
-      "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in /home/user/.local/share/dashwallet/testnet.",
+      "DashPay Desktop restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in /home/user/.local/share/dashwallet/testnet.",
     );
     await expect(page.getByTestId("recover-confirm-cancel")).toBeFocused();
     await page.getByTestId("recover-confirm-cancel").click();
@@ -211,7 +211,7 @@ test.describe("a damaged store (Q107 C1)", () => {
     expect(await restoreCalls(page)).toEqual(["recover"]);
     expect(await appExits(page)).toEqual(["restart"]);
     await expect(page.getByTestId("onboarding-welcome-text")).toHaveText(
-      "Your earlier wallet data couldn't be read, so Dash Wallet started with a new data folder. Enter a recovery phrase to set up a wallet again.",
+      "Your earlier wallet data couldn't be read, so DashPay Desktop started with a new data folder. Enter a recovery phrase to set up a wallet again.",
     );
     await expect(page.getByTestId("store-refused")).toHaveCount(0);
 
@@ -227,7 +227,7 @@ test.describe("a damaged store (Q107 C1)", () => {
     await expect(page.getByTestId("onboarding-welcome").locator("h1")).toHaveText("Add a wallet");
     await expectRestoreOnly(page);
     await expect(page.getByTestId("onboarding-welcome-text")).toHaveText(
-      "Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase. The other ways to add a wallet come back after that.",
+      "Until DashPay Desktop has finished its first sync, you can only add a wallet from its recovery phrase. The other ways to add a wallet come back after that.",
     );
     await restorePhrase(page, SECOND_PHRASE);
     await page.getByTestId("onboarding-open").click();

@@ -13,12 +13,12 @@ import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "../fixture/scenarios
 import { moveErrorText, plannedWithdrawalCredits } from "./move";
 import { sendRefusalText } from "./send";
 
-const REFUSED = "Dash Platform would refuse this transfer as Dash Wallet built it, so nothing was sent and your balance is unchanged. If this keeps happening, update Dash Wallet.";
-const RULES = "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them. Nothing was sent, and your balance is unchanged. Update Dash Wallet, then try again.";
-const REFUSED_RETRY = "Dash Platform would refuse this attempt as Dash Wallet built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update Dash Wallet.";
-const RULES_RETRY = "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update Dash Wallet, and check Activity before you pay again.";
-const REFUSED_TOP_UP = "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.";
-const RULES_TOP_UP = "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update Dash Wallet, and check Activity before you try again.";
+const REFUSED = "Dash Platform would refuse this transfer as DashPay Desktop built it, so nothing was sent and your balance is unchanged. If this keeps happening, update DashPay Desktop.";
+const RULES = "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them. Nothing was sent, and your balance is unchanged. Update DashPay Desktop, then try again.";
+const REFUSED_RETRY = "Dash Platform would refuse this attempt as DashPay Desktop built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update DashPay Desktop.";
+const RULES_RETRY = "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update DashPay Desktop, and check Activity before you pay again.";
+const REFUSED_TOP_UP = "Dash Platform would refuse this move as DashPay Desktop built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update DashPay Desktop.";
+const RULES_TOP_UP = "Dash Platform's rules have changed, and this version of DashPay Desktop can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update DashPay Desktop, and check Activity before you try again.";
 const RAW = "FeeStrategyTooManyStepsError: Fee strategy has 1 steps, maximum allowed is 0";
 
 const KINDS = [

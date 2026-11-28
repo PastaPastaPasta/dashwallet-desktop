@@ -245,9 +245,9 @@ describe("the move's result sheet", () => {
   it("says a group's debit left for this move or another when nothing names the winner", () => {
     expect(moveOutcomeCopy({ ...OUTCOME, expectedDuffs: null, feeCredits: null, winnerKnown: false }, false, credits, amount)).toEqual({
       title: "Settled with another payment or move",
-      text: "40000000000 credits left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
+      text: "40000000000 credits left your Platform addresses, for this move or another payment or move from the same addresses. DashPay Desktop can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     });
-    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced", winnerKnown: false }, false, credits, amount)).toEqual({ title: "Settled with another payment or move", text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again." });
+    expect(moveOutcomeCopy({ ...OUTCOME, state: "replaced", winnerKnown: false }, false, credits, amount)).toEqual({ title: "Settled with another payment or move", text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Check your Platform balance and Dash wallet before moving again." });
   });
 
   it("keeps the debit-only and replaced lines when the group names its winner", () => {

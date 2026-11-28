@@ -77,7 +77,7 @@ impl TxActionRefusal {
     pub fn message(&self) -> String {
         match self {
             Self::RescanFirst => {
-                "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+                "Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again."
                     .into()
             }
             Self::RecordUnreadable(wallet) => format!(

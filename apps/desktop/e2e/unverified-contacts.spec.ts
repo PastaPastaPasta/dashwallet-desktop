@@ -8,10 +8,10 @@ import { PAYEE } from "./wallet";
 // a notice with Try again, and when the data doesn't match it is refused; Accept and Send Contact
 // Request warn and stay on; the row keeps "Unverified".
 
-const UPDATING = "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.";
-const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
-const ACCEPT = "Dash Wallet can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.";
-const SEND = "Dash Wallet can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.";
+const UPDATING = "DashPay Desktop hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.";
+const MISMATCH = "DashPay Desktop couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
+const ACCEPT = "DashPay Desktop can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.";
+const SEND = "DashPay Desktop can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.";
 
 async function open(page: Page, scenario: string, theme: Theme = "light", extra = "") {
   const errors = trackPageErrors(page);
@@ -168,7 +168,7 @@ test("H-09 Pay's found user warns before Send Contact Request to an unverified p
 test("H-09 Tools ▸ Information says what the trusted-only setting means for contact payments", async ({ page }) => {
   await open(page, "dashpay-info-trusted-only");
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "information" }));
-  await expect(page.getByTestId("information-dashpay")).toContainText("Dash Wallet's own checks are off. Payments to contacts rely on the Platform service's data without them.");
+  await expect(page.getByTestId("information-dashpay")).toContainText("DashPay Desktop's own checks are off. Payments to contacts rely on the Platform service's data without them.");
 });
 
 test("H-09 the notice outlives the page: a form shown again after the refusal still says it", async ({ page }) => {

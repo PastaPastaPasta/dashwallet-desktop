@@ -139,7 +139,7 @@ signed_direct="$work/$exe_name"
 sig_pem="$sigs_dir/win/$exe_name.pem"
 signed_out="$out_dir/dist/$exe_name"
 
-app_name="Dash Wallet"
+app_name="DashPay Desktop"
 app_url="https://github.com/PastaPastaPasta/dashwallet-desktop"
 
 if [[ -n "$jsign_jar" ]]; then

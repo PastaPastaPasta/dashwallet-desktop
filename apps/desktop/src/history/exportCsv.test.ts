@@ -3,8 +3,8 @@ import { csvFileName, exportHistory, utcOffsetSecs, type CsvFilter } from "./exp
 
 describe("Export CSV", () => {
   it("names the file with the local date", () => {
-    expect(csvFileName(new Date(2026, 10, 1, 23, 59))).toBe("Dash Wallet history 2026-11-01.csv");
-    expect(csvFileName(new Date(2026, 0, 9))).toBe("Dash Wallet history 2026-01-09.csv");
+    expect(csvFileName(new Date(2026, 10, 1, 23, 59))).toBe("DashPay Desktop history 2026-11-01.csv");
+    expect(csvFileName(new Date(2026, 0, 9))).toBe("DashPay Desktop history 2026-01-09.csv");
   });
 
   it("gives the offset east of UTC in seconds", () => {
@@ -28,7 +28,7 @@ describe("Export CSV", () => {
     );
     expect(path).toBe("/home/user/h.csv");
     expect(calls).toEqual([["w1", { categories: ["received"], text: "alice", minAmount: 5 }, "oldestFirst", "milliDash", [], utcOffsetSecs(new Date(2026, 10, 1))]]);
-    expect(saved).toEqual([["historyCsv", "Dash Wallet history 2026-11-01.csv", btoa('"a"\n')]]);
+    expect(saved).toEqual([["historyCsv", "DashPay Desktop history 2026-11-01.csv", btoa('"a"\n')]]);
   });
 
   it("answers null when the dialog is cancelled", async () => {

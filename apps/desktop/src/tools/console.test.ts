@@ -166,7 +166,7 @@ describe("Console (QT-145)", () => {
 
   it("keeps the path example and the command names literal in every language", () => {
     expect(ConsoleText.welcome(false)).toBe(
-      "Welcome to the Dash Wallet RPC console.\nUse up and down arrows to navigate history, and Ctrl+L to clear screen.\nUse Ctrl++ and Ctrl+- to increase or decrease the font size.\nType help for an overview of available commands.\nFor more information on using this console, type help-console.",
+      "Welcome to the DashPay Desktop RPC console.\nUse up and down arrows to navigate history, and Ctrl+L to clear screen.\nUse Ctrl++ and Ctrl+- to increase or decrease the font size.\nType help for an overview of available commands.\nFor more information on using this console, type help-console.",
     );
     ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
     try {

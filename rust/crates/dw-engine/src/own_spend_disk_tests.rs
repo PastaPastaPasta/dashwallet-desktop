@@ -6208,7 +6208,7 @@ fn a_locked_payment_beaten_after_a_restart_is_abandoned_only_after_the_next() {
     );
     assert_eq!(
         refused.unwrap_err().to_string(),
-        "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+        "Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again."
     );
 
     let session = reopen(&engine, session);

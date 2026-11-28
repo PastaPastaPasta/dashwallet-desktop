@@ -117,7 +117,7 @@ function run(cmd: string, args: string[], timeout: number): string {
  * whatever happens. */
 function shortcut(keys: string) {
   try {
-    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^Dash Wallet", "windowfocus", "key", "--clearmodifiers", keys], XDOTOOL_TIMEOUT_MS);
+    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^DashPay Desktop", "windowfocus", "key", "--clearmodifiers", keys], XDOTOOL_TIMEOUT_MS);
   } finally {
     run("xdotool", ["keyup", keys], XDOTOOL_TIMEOUT_MS);
   }

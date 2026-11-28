@@ -21,7 +21,7 @@
 # default, as for a link the OS opens: the opened launch has no `--datadir`, and only a launch
 # on the same data root hands its link over (U-01 D2).
 #
-# CI only on macOS and Windows: there it replaces ~/Applications/Dash Wallet.app or installs into
+# CI only on macOS and Windows: there it replaces ~/Applications/DashPay Desktop.app or installs into
 # %LOCALAPPDATA%, claims the schemes for the user and uses the default data root. Set
 # DW_LINKS_LOCAL=1 to run it anyway. The Linux leg keeps everything under its work directory.
 set -euo pipefail
@@ -95,7 +95,7 @@ case "$os" in
     export XDG_DATA_HOME="$work/share" XDG_CONFIG_HOME="$work/config" HOME="$work/home"
     mkdir -p "$XDG_DATA_HOME/applications" "$XDG_CONFIG_HOME" "$HOME"
     # Registered as `dash-wallet.desktop`: the bundle names the file after productName
-    # ("Dash Wallet.desktop"), and xdg-utils' generic path (no desktop environment, as here)
+    # ("DashPay Desktop.desktop"), and xdg-utils' generic path (no desktop environment, as here)
     # splits a desktop-file id at the space (U-01 D21; GNOME and KDE resolve it through gio/kio).
     name=dash-wallet.desktop
     cp "$desktop" "$XDG_DATA_HOME/applications/$name"
@@ -110,23 +110,23 @@ case "$os" in
   macos)
     apps="$HOME/Applications"
     mkdir -p "$apps"
-    rm -rf "$apps/Dash Wallet.app"
+    rm -rf "$apps/DashPay Desktop.app"
     step "copying and registering $bundle"
-    ditto "$bundle" "$apps/Dash Wallet.app"
-    plist="$apps/Dash Wallet.app/Contents/Info.plist"
+    ditto "$bundle" "$apps/DashPay Desktop.app"
+    plist="$apps/DashPay Desktop.app/Contents/Info.plist"
     cp "$plist" "$out/"
     for scheme in dash pay dashwallet dashpay; do
       plutil -extract CFBundleURLTypes json -o - "$plist" | grep -q "\"$scheme\"" || fail "Info.plist does not claim $scheme"
     done
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$apps/Dash Wallet.app"
-    exe="$apps/Dash Wallet.app/Contents/MacOS/dash-wallet"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$apps/DashPay Desktop.app"
+    exe="$apps/DashPay Desktop.app/Contents/MacOS/dash-wallet"
     open_link() { step "opening a ${1%%:*}: link"; open "$1"; }
     ;;
   windows)
     step "installing $bundle silently"
     "$bundle" //S
     # NSIS installs per user by default, into %LOCALAPPDATA%\<productName>.
-    exe="$(cygpath -u "$LOCALAPPDATA")/Dash Wallet/dash-wallet.exe"
+    exe="$(cygpath -u "$LOCALAPPDATA")/DashPay Desktop/dash-wallet.exe"
     [[ -f "$exe" ]] || fail "the installer put no $exe"
     for scheme in dash pay dashwallet dashpay; do
       reg query "HKCU\\Software\\Classes\\$scheme\\shell\\open\\command" //ve | tee -a "$out/registry.txt" | grep -qi 'dash-wallet.exe" "%1"' \

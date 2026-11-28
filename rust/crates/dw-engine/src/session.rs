@@ -225,7 +225,7 @@ static KEPT_AFTER_FAILED_OPEN: Mutex<Vec<(PathBuf, Weak<SqlitePersister>)>> =
     Mutex::new(Vec::new());
 
 /// Why an open of a [`KEPT_AFTER_FAILED_OPEN`] directory is refused.
-pub(crate) const KEPT_AFTER_FAILED_OPEN_REFUSAL: &str = "Dash Wallet needs to restart first. Quit Dash Wallet and open it again. Your wallets and their payments are kept, and Try again won't work until you've restarted.";
+pub(crate) const KEPT_AFTER_FAILED_OPEN_REFUSAL: &str = "DashPay Desktop needs to restart first. Quit DashPay Desktop and open it again. Your wallets and their payments are kept, and Try again won't work until you've restarted.";
 
 /// The key of `data_dir` in [`KEPT_AFTER_FAILED_OPEN`], canonical as the
 /// store upgrade's holder keys are.

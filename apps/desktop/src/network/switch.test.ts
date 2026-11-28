@@ -65,8 +65,8 @@ describe("a switch's reboot", () => {
   });
 
   it("leaves the note for the next page, once", async () => {
-    await bootAgain("Mainnet did not open. Dash Wallet is back on Testnet.", () => undefined);
-    expect(takeSwitchNote()).toBe("Mainnet did not open. Dash Wallet is back on Testnet.");
+    await bootAgain("Mainnet did not open. DashPay Desktop is back on Testnet.", () => undefined);
+    expect(takeSwitchNote()).toBe("Mainnet did not open. DashPay Desktop is back on Testnet.");
     expect(takeSwitchNote()).toBeNull();
   });
 });
@@ -106,10 +106,10 @@ describe("switchOutcome", () => {
 
   it("says work that did not finish in time by its flag, and gives a busy reply naming nothing the generic words", () => {
     expect(switchOutcome(busy([], false, false, { draining: true }), "mainnet", "testnet")).toEqual({
-      problem: "Dash Wallet is still finishing a request on this network. Try switching again once it is done.",
+      problem: "DashPay Desktop is still finishing a request on this network. Try switching again once it is done.",
     });
     expect(switchOutcome(busy([], false, false), "mainnet", "testnet")).toEqual({
-      problem: "Dash Wallet could not switch networks. busy (app.network_busy)",
+      problem: "DashPay Desktop could not switch networks. busy (app.network_busy)",
     });
   });
 
@@ -119,18 +119,18 @@ describe("switchOutcome", () => {
       problem: "A wallet is still opening. Switch networks once it is open.",
     });
     expect(switchOutcome(refused("shielded_spend_unresolved", "shieldedSpendUnresolved"), "testnet", "mainnet")).toEqual({
-      problem: "Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
+      problem: "DashPay Desktop doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit DashPay Desktop.",
     });
     expect(switchOutcome(refused("app.transfer_preparing", "transferPreparing"), "testnet", "mainnet")).toEqual({
       problem: "A transfer in one of your wallets is still being prepared. Try again when it's done.",
     });
     // A reason this build does not know, and a `wallet` error that is not the close's refusal.
-    expect(switchOutcome(refused("wallet", "later"), "mainnet", "testnet")).toEqual({ problem: "Dash Wallet could not switch networks. x (wallet)" });
+    expect(switchOutcome(refused("wallet", "later"), "mainnet", "testnet")).toEqual({ problem: "DashPay Desktop could not switch networks. x (wallet)" });
     expect(switchOutcome({ code: "wallet", message: "the wallet file is damaged", data: null }, "mainnet", "testnet")).toEqual({
-      problem: "Dash Wallet could not switch networks. the wallet file is damaged (wallet)",
+      problem: "DashPay Desktop could not switch networks. the wallet file is damaged (wallet)",
     });
     expect(switchOutcome({ code: "storage_in_use", message: "the data directory is in use", data: null }, "testnet", "mainnet")).toEqual({
-      problem: "Dash Wallet could not switch networks. the data directory is in use (storage_in_use)",
+      problem: "DashPay Desktop could not switch networks. the data directory is in use (storage_in_use)",
     });
   });
 
@@ -140,7 +140,7 @@ describe("switchOutcome", () => {
       message: "x",
       data: { kind: "networkSwitch", network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" }, rolledBack },
     });
-    expect(switchOutcome(failed(true), "mainnet", "testnet")).toEqual({ reboot: "Mainnet did not open. Dash Wallet is back on Testnet." });
+    expect(switchOutcome(failed(true), "mainnet", "testnet")).toEqual({ reboot: "Mainnet did not open. DashPay Desktop is back on Testnet." });
     expect(switchOutcome(failed(false), "mainnet", "testnet")).toEqual({ reboot: "Mainnet did not open, and neither did Testnet again." });
   });
 });

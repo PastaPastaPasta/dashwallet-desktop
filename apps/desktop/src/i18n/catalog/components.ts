@@ -22,8 +22,8 @@ export const components = {
   },
   phrase: {
     preparing: "Preparing…",
-    failed: "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not show or take a recovery phrase.",
-    failedKeys: "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not take a seed or private key.",
+    failed: "DashPay Desktop could not keep this window out of screenshots and screen sharing, so it will not show or take a recovery phrase.",
+    failedKeys: "DashPay Desktop could not keep this window out of screenshots and screen sharing, so it will not take a seed or private key.",
     tryAgain: "Try again",
     label: "Recovery phrase",
     suggestions: "Suggestions",
@@ -51,7 +51,7 @@ export const components = {
      * Status cell's word, and the sentence it shows as its tooltip and description. */
     pendingUnproven: {
       short: "Pending",
-      text: "Dash Wallet can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.",
+      text: "DashPay Desktop can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.",
     },
   },
   date: {

@@ -812,8 +812,8 @@ def make_fat(s1: bytes, s2: bytes) -> bytes:
     buf[off2:off2+len(s2)] = s2
     return bytes(buf)
 
-u_app = wk / "unsigned-app/Dash Wallet.app"
-s_app = wk / "signed-app/Dash Wallet.app"
+u_app = wk / "unsigned-app/DashPay Desktop.app"
+s_app = wk / "signed-app/DashPay Desktop.app"
 for d in (u_app, s_app):
     (d / "Contents/MacOS").mkdir(parents=True)
     (d / "Contents/Info.plist").write_text("<plist/>")
@@ -829,10 +829,10 @@ subprocess.run(["python3", str(here / "macos-detached-sig.py"), "pack-app", str(
                 str(unsigned / f"dash-wallet-{ver}-macos-unsigned.tar.gz")], check=True, capture_output=True)
 (unsigned / f"dash-wallet-{ver}-macos-universal.dmg").write_bytes(b"unsigned-dmg")
 subprocess.run(["python3", str(here / "macos-detached-sig.py"), "extract",
-                str(u_app), str(s_app), str(sigs / "osx/Dash Wallet.app")], check=True, capture_output=True)
+                str(u_app), str(s_app), str(sigs / "osx/DashPay Desktop.app")], check=True, capture_output=True)
 
 # Verify tampering 1 byte of __TEXT is refused by extract
-t_app = wk / "tampered-app/Dash Wallet.app"
+t_app = wk / "tampered-app/DashPay Desktop.app"
 shutil.copytree(s_app, t_app)
 (t_app / "Contents/MacOS/dash-wallet").write_bytes(make_fat(make_slice(0x01000007, cms, b"\x91"), make_slice(0x0100000C, cms)))
 tamper_res = subprocess.run(["python3", str(here / "macos-detached-sig.py"), "extract",
@@ -1020,7 +1020,7 @@ def minisign_file(p: Path, version: str) -> str:
     return minisign_with_kp(kp1, key_id, p, version)
 
 # Blocker #5: Verify fixed golden SHA-256 of pack-app across Python 3.12/3.14/3.15 (compresslevel=9)
-g_app = wk / "golden/Dash Wallet.app"
+g_app = wk / "golden/DashPay Desktop.app"
 (g_app / "Contents/MacOS").mkdir(parents=True)
 (g_app / "Contents/Info.plist").write_bytes(b"<plist>golden-v1</plist>\n")
 g_exe = g_app / "Contents/MacOS/dash-wallet"
@@ -1296,7 +1296,7 @@ if [[ "\$1" == attach ]]; then
     [[ "\$prev" == -mountpoint ]] && mnt=\$a
     prev=\$a
   done
-  cp -Rp "$e2e/work/signed-app/Dash Wallet.app" "\$mnt/"
+  cp -Rp "$e2e/work/signed-app/DashPay Desktop.app" "\$mnt/"
   ln -s /Applications "\$mnt/Applications"
 fi
 exit 0
@@ -1511,60 +1511,60 @@ PY
 
   # H1: symlink inside sigs dir refused by release-attach.sh AND macos-detached-sig.py apply
   cp -R "$e2e/sigs" "$e2e/sigs-sym"
-  ln -s /etc/hosts "$e2e/sigs-sym/osx/Dash Wallet.app/Contents/evil-link"
+  ln -s /etc/hosts "$e2e/sigs-sym/osx/DashPay Desktop.app/Contents/evil-link"
   expect_attach_fail \
     "H1: release-attach refuses sigs directory containing symlinks" \
     "refusing sigs directory containing symlinks" "$e2e/attach-sym.out" \
     "${attach_base[@]}" --sigs-dir "$e2e/sigs-sym" --out-dir "$e2e/attached-sym"
 
   sym_py_rc=0
-  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
-    "$e2e/sigs-sym/osx/Dash Wallet.app" "$e2e/work/out-sym.app" > "$e2e/sym-py.out" 2>&1 || sym_py_rc=$?
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
+    "$e2e/sigs-sym/osx/DashPay Desktop.app" "$e2e/work/out-sym.app" > "$e2e/sym-py.out" 2>&1 || sym_py_rc=$?
   check "H1: macos-detached-sig.py apply refuses symlinks in sigs directory" \
     '[[ $sym_py_rc -ne 0 ]] && grep -qF "refusing symlink" "$e2e/sym-py.out"'
 
   # H1: path traversal in bundle_sig_files[].path AND L2 untrusted cs_file refused by macos-detached-sig.py apply
-  cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-trav"
-  jq '.bundle_sig_files[0].path = "Contents/L/../../escaped-victim.py"' "$e2e/sigs/osx/Dash Wallet.app/manifest.json" > "$e2e/work/sigs-trav/manifest.json"
+  cp -R "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/sigs-trav"
+  jq '.bundle_sig_files[0].path = "Contents/L/../../escaped-victim.py"' "$e2e/sigs/osx/DashPay Desktop.app/manifest.json" > "$e2e/work/sigs-trav/manifest.json"
   trav_rc=0
-  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
     "$e2e/work/sigs-trav" "$e2e/work/out-trav.app" > "$e2e/trav.out" 2>&1 || trav_rc=$?
   check "H1: macos-detached-sig.py apply refuses bundle_sig_files path traversal outside allowlist" \
     '[[ $trav_rc -ne 0 && ! -e "$e2e/work/escaped-victim.py" ]] && grep -qF "outside allowlist" "$e2e/trav.out"'
 
-  cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-cs"
-  jq '.macho_binaries[0].slices[0].cs_file = "../evil.cs"' "$e2e/sigs/osx/Dash Wallet.app/manifest.json" > "$e2e/work/sigs-cs/manifest.json"
+  cp -R "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/sigs-cs"
+  jq '.macho_binaries[0].slices[0].cs_file = "../evil.cs"' "$e2e/sigs/osx/DashPay Desktop.app/manifest.json" > "$e2e/work/sigs-cs/manifest.json"
   cs_rc=0
-  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
     "$e2e/work/sigs-cs" "$e2e/work/out-cs.app" > "$e2e/cs.out" 2>&1 || cs_rc=$?
   check "H1/L2: macos-detached-sig.py apply refuses non-canonical cs_file path" \
     '[[ $cs_rc -ne 0 ]] && grep -qF "Untrusted cs_file" "$e2e/cs.out"'
 
   # r4687084381: failed extract preserves previously valid sigs_dir intact (staged rename-aside swap)
-  cp -R "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/sigs-preserve"
+  cp -R "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/sigs-preserve"
   printf 'keep-prior-sigs\n' > "$e2e/work/sigs-preserve/SENTINEL"
   ext_fail_rc=0
-  python3 "$here/macos-detached-sig.py" extract "$e2e/work/unsigned-app/Dash Wallet.app" \
-    "$e2e/work/tampered-app/Dash Wallet.app" "$e2e/work/sigs-preserve" > "$e2e/ext-preserve.out" 2>&1 || ext_fail_rc=$?
+  python3 "$here/macos-detached-sig.py" extract "$e2e/work/unsigned-app/DashPay Desktop.app" \
+    "$e2e/work/tampered-app/DashPay Desktop.app" "$e2e/work/sigs-preserve" > "$e2e/ext-preserve.out" 2>&1 || ext_fail_rc=$?
   check "r4687084381: failed macos-detached-sig.py extract preserves previous sigs_dir intact" \
     '[[ $ext_fail_rc -ne 0 && "$(cat "$e2e/work/sigs-preserve/SENTINEL")" == "keep-prior-sigs" ]]'
 
   # r4687084393: apply refuses overlapping out_app (same as or inside unsigned_app) and preserves prior out_app on error
-  cp -R "$e2e/work/unsigned-app/Dash Wallet.app" "$e2e/work/overlap-app.app"
+  cp -R "$e2e/work/unsigned-app/DashPay Desktop.app" "$e2e/work/overlap-app.app"
   ov_rc=0
   python3 "$here/macos-detached-sig.py" apply "$e2e/work/overlap-app.app" \
-    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/overlap-app.app" > "$e2e/ov.out" 2>&1 || ov_rc=$?
+    "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/overlap-app.app" > "$e2e/ov.out" 2>&1 || ov_rc=$?
   check "r4687084393: macos-detached-sig.py apply refuses out_app overlapping unsigned_app without deleting input" \
     '[[ $ov_rc -ne 0 && -f "$e2e/work/overlap-app.app/Contents/MacOS/dash-wallet" ]] && grep -q "overlapping" "$e2e/ov.out"'
   ov_in_rc=0
   python3 "$here/macos-detached-sig.py" apply "$e2e/work/overlap-app.app" \
-    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/overlap-app.app/sub.app" > "$e2e/ov-in.out" 2>&1 || ov_in_rc=$?
+    "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/overlap-app.app/sub.app" > "$e2e/ov-in.out" 2>&1 || ov_in_rc=$?
   check "r4687084393: macos-detached-sig.py apply refuses out_app nested inside unsigned_app" \
     '[[ $ov_in_rc -ne 0 ]] && grep -q "overlapping" "$e2e/ov-in.out"'
   mkdir -p "$e2e/work/prior-out.app"
   printf 'keep-prior-app\n' > "$e2e/work/prior-out.app/SENTINEL"
   app_fail_rc=0
-  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
     "$e2e/work/sigs-cs" "$e2e/work/prior-out.app" > "$e2e/app-preserve.out" 2>&1 || app_fail_rc=$?
   check "r4687084393: failed macos-detached-sig.py apply preserves prior out_app intact" \
     '[[ $app_fail_rc -ne 0 && "$(cat "$e2e/work/prior-out.app/SENTINEL")" == "keep-prior-app" ]]'
@@ -1575,11 +1575,11 @@ PY
   chmod 555 "$e2e/work/ro-cleanup/prior.app/locked"
   ro_rc=0
   if [[ $(id -u) -ne 0 ]]; then
-    python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
-      "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/ro-cleanup/prior.app" > "$e2e/ro-cleanup.stdout" 2> "$e2e/ro-cleanup.stderr" || ro_rc=$?
+    python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
+      "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/ro-cleanup/prior.app" > "$e2e/ro-cleanup.stdout" 2> "$e2e/ro-cleanup.stderr" || ro_rc=$?
   else
-    python3 - "$here/macos-detached-sig.py" "$e2e/work/unsigned-app/Dash Wallet.app" \
-      "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/ro-cleanup/prior.app" > "$e2e/ro-cleanup.stdout" 2> "$e2e/ro-cleanup.stderr" <<'PY' || ro_rc=$?
+    python3 - "$here/macos-detached-sig.py" "$e2e/work/unsigned-app/DashPay Desktop.app" \
+      "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/ro-cleanup/prior.app" > "$e2e/ro-cleanup.stdout" 2> "$e2e/ro-cleanup.stderr" <<'PY' || ro_rc=$?
 import importlib.util, shutil, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("mds", sys.argv[1])
@@ -1604,38 +1604,38 @@ PY
   printf 'do-not-overwrite-me\n' > "$e2e/work/precious-file.txt"
   ln -s "$e2e/work/precious-file.txt" "$e2e/work/precious-link"
   ext_file_rc=0
-  python3 "$here/macos-detached-sig.py" extract "$e2e/work/unsigned-app/Dash Wallet.app" \
-    "$e2e/work/signed-app/Dash Wallet.app" "$e2e/work/precious-file.txt" > "$e2e/ext-file.out" 2>&1 || ext_file_rc=$?
+  python3 "$here/macos-detached-sig.py" extract "$e2e/work/unsigned-app/DashPay Desktop.app" \
+    "$e2e/work/signed-app/DashPay Desktop.app" "$e2e/work/precious-file.txt" > "$e2e/ext-file.out" 2>&1 || ext_file_rc=$?
   check "r4688012535: macos-detached-sig.py extract refuses existing regular file at sigs_dir and preserves its bytes" \
     '[[ $ext_file_rc -ne 0 && "$(cat "$e2e/work/precious-file.txt")" == "do-not-overwrite-me" ]] && grep -q "non-directory" "$e2e/ext-file.out"'
   app_file_rc=0
-  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
-    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/precious-file.txt" > "$e2e/app-file.out" 2>&1 || app_file_rc=$?
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
+    "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/precious-file.txt" > "$e2e/app-file.out" 2>&1 || app_file_rc=$?
   check "r4688012535: macos-detached-sig.py apply refuses existing regular file at out_app and preserves its bytes" \
     '[[ $app_file_rc -ne 0 && "$(cat "$e2e/work/precious-file.txt")" == "do-not-overwrite-me" ]] && grep -q "non-directory" "$e2e/app-file.out"'
   app_sym_rc=0
-  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/Dash Wallet.app" \
-    "$e2e/sigs/osx/Dash Wallet.app" "$e2e/work/precious-link" > "$e2e/app-sym.out" 2>&1 || app_sym_rc=$?
+  python3 "$here/macos-detached-sig.py" apply "$e2e/work/unsigned-app/DashPay Desktop.app" \
+    "$e2e/sigs/osx/DashPay Desktop.app" "$e2e/work/precious-link" > "$e2e/app-sym.out" 2>&1 || app_sym_rc=$?
   check "r4688012535: macos-detached-sig.py apply refuses symlink at out_app and preserves target bytes" \
     '[[ $app_sym_rc -ne 0 && -L "$e2e/work/precious-link" && "$(cat "$e2e/work/precious-file.txt")" == "do-not-overwrite-me" ]] && grep -q "symlink" "$e2e/app-sym.out"'
 
-  # H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications} and refuses extras/mode tamper
+  # H2/M4: verify-dmg-layout accepts exact {DashPay Desktop.app, Applications -> /Applications} and refuses extras/mode tamper
   mkdir -p "$e2e/work/dmg-ok"
-  cp -R "$e2e/work/signed-app/Dash Wallet.app" "$e2e/work/dmg-ok/"
+  cp -R "$e2e/work/signed-app/DashPay Desktop.app" "$e2e/work/dmg-ok/"
   ln -s /Applications "$e2e/work/dmg-ok/Applications"
   dmg_ok_rc=0
-  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/Dash Wallet.app" > "$e2e/dmg-ok.out" 2>&1 || dmg_ok_rc=$?
-  check "H2/M4: verify-dmg-layout accepts exact {Dash Wallet.app, Applications -> /Applications}" \
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/DashPay Desktop.app" > "$e2e/dmg-ok.out" 2>&1 || dmg_ok_rc=$?
+  check "H2/M4: verify-dmg-layout accepts exact {DashPay Desktop.app, Applications -> /Applications}" \
     '[[ $dmg_ok_rc -eq 0 ]]'
   touch "$e2e/work/dmg-ok/evil.command"
   dmg_extra_rc=0
-  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/Dash Wallet.app" > "$e2e/dmg-extra.out" 2>&1 || dmg_extra_rc=$?
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/DashPay Desktop.app" > "$e2e/dmg-extra.out" 2>&1 || dmg_extra_rc=$?
   check "H2: verify-dmg-layout refuses extra top-level file in .dmg" \
     '[[ $dmg_extra_rc -ne 0 ]] && grep -qF "evil.command" "$e2e/dmg-extra.out"'
   rm -f "$e2e/work/dmg-ok/evil.command" "$e2e/work/dmg-ok/Applications"
   ln -s /tmp "$e2e/work/dmg-ok/Applications"
   dmg_link_rc=0
-  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/Dash Wallet.app" > "$e2e/dmg-link.out" 2>&1 || dmg_link_rc=$?
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$e2e/work/dmg-ok" "$e2e/work/signed-app/DashPay Desktop.app" > "$e2e/dmg-link.out" 2>&1 || dmg_link_rc=$?
   check "H2: verify-dmg-layout refuses Applications symlink not pointing to /Applications" \
     '[[ $dmg_link_rc -ne 0 ]] && grep -qF "/Applications" "$e2e/dmg-link.out"'
 
@@ -1809,9 +1809,9 @@ PY
 
   # unpack-signatures.py: what release-sign.yml's signing job hands to the publish job
   up=$e2e/unpack
-  mkdir -p "$up/src/sigs/osx/Dash Wallet.app" "$up/src/sigs/win" "$up/out-ok" "$up/out-link" "$up/out-outside" "$up/out-dotdot" "$up/src-outside/other"
+  mkdir -p "$up/src/sigs/osx/DashPay Desktop.app" "$up/src/sigs/win" "$up/out-ok" "$up/out-link" "$up/out-outside" "$up/out-dotdot" "$up/src-outside/other"
   echo sums > "$up/src/sigs/unsigned.SHA256SUMS"
-  echo m > "$up/src/sigs/osx/Dash Wallet.app/manifest.json"
+  echo m > "$up/src/sigs/osx/DashPay Desktop.app/manifest.json"
   echo p > "$up/src/sigs/win/setup.exe.pem"
   tar -cf "$up/ok.tar" -C "$up/src" sigs
   up_rc=0

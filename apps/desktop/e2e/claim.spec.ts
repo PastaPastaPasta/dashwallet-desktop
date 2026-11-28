@@ -72,7 +72,7 @@ test("Join entry: valid → name → recipient → Claim → progress → Done, 
   await expect(page.getByTestId("claim-inviter-primary")).toHaveText("@bob");
   await expect(page.getByTestId("claim-inviter")).toContainText("Bob Builder");
   await expect(page.getByTestId("claim-inviter-check")).toHaveText(
-    "Dash Wallet checked that @bob is a DashPay username. It cannot check who sent you this link.",
+    "DashPay Desktop checked that @bob is a DashPay username. It cannot check who sent you this link.",
   );
   await expect(claim(page)).not.toContainText(/verified/i);
   await expect(claim(page)).toContainText("Paid by the invitation: nothing is paid from this wallet.");

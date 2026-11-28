@@ -7,7 +7,7 @@ export const dashpay = {
     looking: { title: "Looking for your DashPay identity…" },
     notStarted: { title: "DashPay has not started", message: "It starts when the wallet connects to the Dash network." },
     unlockToLook: { title: "Unlock to look for your DashPay identity", message: "DashPay looks for your identity once the wallet is fully unlocked." },
-    lookFailed: { title: "Could not finish looking for your DashPay identity", message: "Dash Wallet looks again the next time it starts." },
+    lookFailed: { title: "Could not finish looking for your DashPay identity", message: "DashPay Desktop looks again the next time it starts." },
     unverified: { title: "Could not confirm your DashPay identity", message: "Its keys could not be checked against this wallet's recovery phrase." },
     join: { title: "Get a DashPay username", message: "Pay friends by name instead of an address.", action: "Join DashPay" },
     joinWaiting: {
@@ -96,10 +96,10 @@ export const dashpay = {
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
     paymentUnknownShielded: "Checking whether the payment from your Shielded balance went through.",
     /** Shown beside Continue, which checks again. */
-    paymentUnknownShieldedIdle: "Dash Wallet hasn't checked the payment from your Shielded balance since it reopened. Choose Continue to check it again. This doesn't spend anything.",
-    paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
+    paymentUnknownShieldedIdle: "DashPay Desktop hasn't checked the payment from your Shielded balance since it reopened. Choose Continue to check it again. This doesn't spend anything.",
+    paymentHeld: "DashPay Desktop can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
     /** Shown only beside both Continue and Move to Dash wallet, which it names. */
-    paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
+    paymentHeldActions: "DashPay Desktop can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
   },
   /** Why a registration stopped. `needed` and `available` are amounts; `code` is the engine's. */
   failure: {
@@ -124,7 +124,7 @@ export const dashpay = {
      * (C-funding F12): another device with the same recovery phrase may have spent them, so the
      * line claims no refund. */
     consumedShielded:
-      "Dash Wallet couldn't register the username. The Shielded funds chosen to pay for it have been spent, but no username was registered. Either this payment spent them, and Dash Platform kept a penalty and sent the rest to your Platform balance, or another device using this recovery phrase spent them. Check your Platform balance before you start a new registration.",
+      "DashPay Desktop couldn't register the username. The Shielded funds chosen to pay for it have been spent, but no username was registered. Either this payment spent them, and Dash Platform kept a penalty and sent the rest to your Platform balance, or another device using this recovery phrase spent them. Check your Platform balance before you start a new registration.",
     /** A Shielded-funded run whose readiness no longer held when it was about to pay. */
     shieldedNotReady: "Your Shielded balance can't pay for the username right now, so nothing was spent. Try again in a moment.",
     /** A Shielded payment that was refused before it was sent. */
@@ -178,7 +178,7 @@ export const dashpay = {
         title: "A second username to use meanwhile",
         text: "While the network votes you can register an instant username too, and use it until the vote ends",
       },
-      notified: { title: "You will be notified", text: "When the voting ends, Dash Wallet tells you whether you got the username" },
+      notified: { title: "You will be notified", text: "When the voting ends, DashPay Desktop tells you whether you got the username" },
       phrase: { title: "Keep your recovery phrase safe", text: "In case you lose your recovery phrase you will lose your right to your requested username" },
       masternodes: {
         title: "Masternode owners vote",
@@ -229,7 +229,7 @@ export const dashpay = {
       lostPhrase: {
         question: "What if I lose my recovery phrase?",
         answer:
-          "Your username belongs to the identity your recovery phrase creates. Restoring the wallet from the phrase brings the username, your contacts and your payments back. Without the phrase nobody, Dash Wallet included, can recover them.",
+          "Your username belongs to the identity your recovery phrase creates. Restoring the wallet from the phrase brings the username, your contacts and your payments back. Without the phrase nobody, DashPay Desktop included, can recover them.",
       },
     },
   },
@@ -267,7 +267,7 @@ export const dashpay = {
       resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
       /** `unsettled` while what holds the payment back is a hold: no "Try again". */
-      held: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
+      held: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. DashPay Desktop keeps checking while it's open.",
       syncing: "Your shielded balance is still syncing.",
     },
     /** "Make your username private", the step before the name (C-funding F19; the iOS and Android
@@ -360,7 +360,7 @@ export const dashpay = {
       finish: "Finish transfers",
     },
     recovery:
-      "Your funds are safe. The payment is locked for this registration, and Dash Wallet finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
+      "Your funds are safe. The payment is locked for this registration, and DashPay Desktop finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
     failed: { title: "Registration failed", another: "Choose another username", startNew: "Start a new registration", reviewCost: "Review the cost" },
     stopped: { title: "Registration stopped" },
     done: {
@@ -441,7 +441,7 @@ export const dashpay = {
     pendingFirst: "Finish the pending top-up first.",
     title: "Credit balance",
     unknown: "Credit balance unknown",
-    unknownLine: "Dash Wallet reads it from the network.",
+    unknownLine: "DashPay Desktop reads it from the network.",
     updating: "Updating…",
     low: {
       title: "Your credit balance is low",
@@ -587,7 +587,7 @@ export const dashpay = {
       candidateGone: "The picture you chose is no longer ready. Choose it again.",
       conflict: "Your profile was changed on another device since you opened it. Save again to replace it with your changes, or cancel to keep the new one.",
       conflictMatches: "Your profile was changed on another device since you opened it, and it now matches your changes.",
-      unsupportedContract: "This version cannot edit profiles on the network's DashPay contract. Update Dash Wallet.",
+      unsupportedContract: "This version cannot edit profiles on the network's DashPay contract. Update DashPay Desktop.",
       credits: "Not enough credits. Top up your credits and try again.",
       unavailable: "Could not reach Dash Platform. Try again.",
       unlock: "Unlock the wallet and try again.",
@@ -660,7 +660,7 @@ export const dashpay = {
     status: {
       settledUnknown: {
         title: "Settled with another payment or move",
-        text: "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.",
+        text: "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Check your identity's balance before topping up again.",
       },
     },
     /** A top-up from the Platform addresses. `identity` is the username or "your identity"; `amount`,
@@ -794,7 +794,7 @@ export const dashpay = {
     assetLockNotFound: "The network does not know this invitation's funding yet. Try again later.",
     invited: {
       from: "Invited by",
-      checked: "Dash Wallet checked that {username} is a DashPay username. It cannot check who sent you this link.",
+      checked: "DashPay Desktop checked that {username} is a DashPay username. It cannot check who sent you this link.",
       unnamed: "This invitation does not name who sent it.",
     },
     paid: "Paid by the invitation: nothing is paid from this wallet.",
@@ -828,7 +828,7 @@ export const dashpay = {
     loading: "Checking this request with Platform…",
     app: {
       claim: "“{label}” (name given by the app, not verified)",
-      unverified: "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+      unverified: "DashPay Desktop can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
       id: "App ID",
       copyId: "Copy App ID",
     },
@@ -889,23 +889,23 @@ export const dashpay = {
     planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
     err: {
       network: "This request is for {requested}, but this wallet uses {current}.",
-      unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
+      unsupported: "This app uses a sign-in method this version of DashPay Desktop doesn't support.",
       invalid: "This sign-in request can't be read. Ask the app for a new one.",
-      newer: "This link needs a newer version of Dash Wallet.",
+      newer: "This link needs a newer version of DashPay Desktop.",
       /** A new request while every request kept is on screen or being approved. */
-      busy: "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
+      busy: "DashPay Desktop already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
       stale: "This sign-in request has expired. Ask the app for a new one.",
       protocol: "This network doesn't support app sign-in yet.",
       noIdentity: "You need a DashPay username to sign in to apps. Create one in DashPay first.",
       hint: "This sign-in is for an identity that isn't in this wallet.",
-      owner: "Dash Wallet refused this request: the app asked for keys covering contracts it doesn't own.",
+      owner: "DashPay Desktop refused this request: the app asked for keys covering contracts it doesn't own.",
       credits: "Your identity needs {amount} more in credits to add these keys. Top it up, then try again.",
       answered: "You've already answered this request. Ask the app for a new one.",
       check: "Couldn't check this request with Platform. Try again.",
-      platformRestored: "Finish checking the restored wallet data with Dash Platform before trying again. If you finish the restore without Dash Platform, reopen Dash Wallet with Dash Platform on before trying again.",
+      platformRestored: "Finish checking the restored wallet data with Dash Platform before trying again. If you finish the restore without Dash Platform, reopen DashPay Desktop with Dash Platform on before trying again.",
       platformUnavailable: "Dash Platform is unavailable for this request. Make sure Dash Platform is on and connected, then try again.",
       failed: "Sign-in didn't finish: {detail}",
-      returnFailed: "Dash Wallet couldn't open {host}. Switch back to the app yourself.",
+      returnFailed: "DashPay Desktop couldn't open {host}. Switch back to the app yourself.",
     },
     /** After `err.failed`, only where the wallet read the identity back: never after `notConfirmed`. */
     failed: {
@@ -914,14 +914,14 @@ export const dashpay = {
     /** `err.failed`'s `detail`, by where the approval stopped. */
     failure: {
       keyConflict: "a key for this app is already on your identity, with different limits.",
-      notConfirmed: "Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, Dash Wallet checks your identity first.",
+      notConfirmed: "Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, DashPay Desktop checks your identity first.",
       noResponseKey: "your identity has no key that can sign the answer to the app.",
-      nothingToSend: "Dash Wallet had nothing to send back to the app. Start again from the app; that adds new keys to your identity, for a small fee in credits.",
+      nothingToSend: "DashPay Desktop had nothing to send back to the app. Start again from the app; that adds new keys to your identity, for a small fee in credits.",
       scopeChanged: "the app changed its contracts or keys on Dash Platform after your keys were added.",
-      unverifiedKey: "Dash Wallet couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any.",
-      feeTooHigh: "the Dash Platform fee to disable these keys is higher than Dash Wallet's limit.",
+      unverifiedKey: "DashPay Desktop couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any.",
+      feeTooHigh: "the Dash Platform fee to disable these keys is higher than DashPay Desktop's limit.",
       disconnectConflict: "this identity changed on Dash Platform before the earlier disconnect finished.",
-      pendingFeeTooHigh: "the Dash Platform fee to resend this disconnect is above Dash Wallet's limit.",
+      pendingFeeTooHigh: "the Dash Platform fee to resend this disconnect is above DashPay Desktop's limit.",
       pendingWrite: "another change on this identity hasn't settled on Dash Platform yet.",
       unknown: "something went wrong on the way.",
     },
@@ -935,7 +935,7 @@ export const dashpay = {
       loading: "Checking connected apps on Dash Platform…",
       empty: "No connected apps.",
       emptySub: "Apps you sign in to with DashPay Connect show here.",
-      loadError: "Dash Wallet couldn't load connected apps from Dash Platform.",
+      loadError: "DashPay Desktop couldn't load connected apps from Dash Platform.",
       tryAgain: "Try again",
       returnsTo: "Returns to",
       keys: "Keys",
@@ -948,8 +948,8 @@ export const dashpay = {
       disconnected: "Disconnected “{label}”.",
       disconnectedResponsePending: "Disconnected “{label}”. Its session keys are disabled, but a sign-in response was still in flight, so a key may already have reached the app.",
       sheetTitle: "Disconnect this app?",
-      sheetBody: "Dash Wallet disables this app's keys on Dash Platform, so the app can no longer use them to sign for {who}. Anything it already did with them stays as it is.",
-      sheetBodySelf: "Dash Wallet disables this app's keys on Dash Platform, so the app can no longer use them to sign for your identity. Anything it already did with them stays as it is.",
+      sheetBody: "DashPay Desktop disables this app's keys on Dash Platform, so the app can no longer use them to sign for {who}. Anything it already did with them stays as it is.",
+      sheetBodySelf: "DashPay Desktop disables this app's keys on Dash Platform, so the app can no longer use them to sign for your identity. Anything it already did with them stays as it is.",
       keysLabel: "Keys to disable",
       fee: "Disabling these keys costs about {amount} in credits.",
       priorChargeKnown: "An earlier disconnect attempt couldn't finish after another change to this identity, and up to {amount} in credits were debited. Disconnecting again sends a new paid update.",
@@ -958,15 +958,15 @@ export const dashpay = {
       busy: "Disabling keys on Dash Platform…",
       cancel: "Cancel",
       err: {
-        notConfirmed: "Dash Platform didn't confirm the change, so the keys may already be disabled. Try again: Dash Wallet checks first, so you don't pay twice.",
-        unverifiedKey: "Dash Wallet couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any. Nothing was changed, and the app can still use its keys. To get help, choose Report a problem in Settings ▸ About.",
-        feeTooHigh: "The Dash Platform fee to disable these keys is higher than Dash Wallet's limit, so nothing was changed. Try again later.",
+        notConfirmed: "Dash Platform didn't confirm the change, so the keys may already be disabled. Try again: DashPay Desktop checks first, so you don't pay twice.",
+        unverifiedKey: "DashPay Desktop couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any. Nothing was changed, and the app can still use its keys. To get help, choose Report a problem in Settings ▸ About.",
+        feeTooHigh: "The Dash Platform fee to disable these keys is higher than DashPay Desktop's limit, so nothing was changed. Try again later.",
         grantExceeded: "The Dash Platform fee changed while disconnecting, so review the updated fee and try again.",
         disconnectConflict: "This identity changed on Dash Platform before the earlier disconnect finished, so its keys are still active. Review the updated fee and disconnect again.",
-        pendingFeeTooHigh: "The Dash Platform fee to resend this disconnect is above Dash Wallet's limit, so it wasn't resent. The earlier attempt may still be in flight — refresh in a moment to check.",
+        pendingFeeTooHigh: "The Dash Platform fee to resend this disconnect is above DashPay Desktop's limit, so it wasn't resent. The earlier attempt may still be in flight — refresh in a moment to check.",
         pendingWrite: "Another change on this identity hasn't settled on Dash Platform yet. Wait for it to finish, then try again.",
-        generic: "Dash Wallet couldn't disconnect this app. Try again.",
-        genericUnsent: "Dash Wallet couldn't disconnect this app. Try again. Nothing was changed.",
+        generic: "DashPay Desktop couldn't disconnect this app. Try again.",
+        genericUnsent: "DashPay Desktop couldn't disconnect this app. Try again. Nothing was changed.",
       },
     },
   },

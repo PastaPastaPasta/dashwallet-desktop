@@ -59,7 +59,7 @@ export const pay = {
     broadcastUnknown: "The payment may have been sent: the network did not answer in time.",
     cancelled: "The payment was cancelled before anything was sent.",
     heldUntilRestart:
-      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.",
+      "The payment was not sent, but its coins stay reserved until you restart DashPay Desktop. After the restart it's listed as pending in Activity; abandon it there to get the coins back.",
     contactLocked: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.",
     pendingIncoming: "Accept the contact request first, or use Accept and pay.",
     ineligible: "This contact cannot be paid now.",
@@ -67,9 +67,9 @@ export const pay = {
     noIdentity: "Your DashPay identity is not available. Try again once DashPay has synced.",
     platformUnreachable: "Could not reach Dash Platform. Try again.",
     /** A contact payment whose contact's data the wallet could not check in time (H-09). */
-    contactUnchecked: "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.",
+    contactUnchecked: "DashPay Desktop can't check this contact's payment details yet. Try again in a few minutes.",
     /** A contact payment whose contact's data did not match what the Dash network proves (H-09). */
-    contactMismatch: "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.",
+    contactMismatch: "DashPay Desktop couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.",
     leaseRevoked: "The wallet locked during the payment.",
     unlockAndRetry: "Unlock the wallet and try again.",
     storage: "The payment could not be recorded in this wallet.",
@@ -81,7 +81,7 @@ export const pay = {
     /** A contact payment refused while the contact's payment details aren't checked yet: after a
      * launch until the first DashPay pass, or while the check can't finish (H-09). Nothing is ever
      * sent to an unchecked contact. */
-    contactsUpdating: "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.",
+    contactsUpdating: "DashPay Desktop hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.",
     /** Runs the estimate again and reopens the review, where Send runs the check again. */
     tryAgain: "Try again",
   },
@@ -348,14 +348,14 @@ export const pay = {
       movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
       shieldedPending: "An earlier shielded payment is still being checked. Try again when it is settled.",
       /** `shieldedPending` while what holds the payment back is a hold: no "Try again". */
-      shieldedHeld: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
+      shieldedHeld: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. DashPay Desktop keeps checking while it's open.",
     },
   },
   /** As `transfer.status`, for a payment from the Platform addresses. */
   status: {
     settledUnknown: {
       title: "Settled with another payment or move",
-      text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
+      text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Before paying again, check whether the recipient was paid.",
     },
   },
   platform: {

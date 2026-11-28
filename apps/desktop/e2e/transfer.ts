@@ -578,7 +578,7 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await page.evaluate(() => window.__dwFixture!.fail("unshield_to_platform", "artifact"));
       await run(page, "shieldedToPlatform");
-      await expect(page.getByTestId("shielded-refusal")).toHaveText("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
+      await expect(page.getByTestId("shielded-refusal")).toHaveText("This move may still go through. Until DashPay Desktop knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
       await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
     },
   },

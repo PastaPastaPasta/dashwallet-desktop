@@ -120,7 +120,7 @@ describe("Shielded readiness reasons (F16, F17)", () => {
     const hold = { count: 1, credits: "30000000000", duffs: 30_000_000 };
     const held = shieldedReason(readiness("noUnsettledSpend"), amount, clock, hold);
     expect(held).toBe(PAY_WITH_COPY.held);
-    expect(held).toBe("An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.");
+    expect(held).toBe("An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. DashPay Desktop keeps checking while it's open.");
     expect(held).not.toMatch(/try again/i);
     // A listed spend that holds nothing (a scan saw its notes spent) is still settling.
     expect(shieldedReason(readiness("noUnsettledSpend"), amount, clock, null)).toBe(PAY_WITH_COPY.unsettled);

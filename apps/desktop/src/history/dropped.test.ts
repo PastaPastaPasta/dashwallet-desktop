@@ -17,7 +17,7 @@ describe("a dropped transaction's details", () => {
   it("say a never-valid incoming transaction counts nowhere, whatever its state", () => {
     for (const state of [{ kind: "released" }, { kind: "rescanNeeded" }] as const) {
       expect(droppedLine(drop(state, "invalidClaim"))).toBe(
-        "Dash Wallet dropped this transaction because it was never valid, so it can never confirm. It no longer counts toward your balance.",
+        "DashPay Desktop dropped this transaction because it was never valid, so it can never confirm. It no longer counts toward your balance.",
       );
     }
   });

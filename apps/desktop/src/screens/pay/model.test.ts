@@ -211,7 +211,7 @@ describe("the engine's refusals", () => {
   it("says a payment not sent whose coins stay reserved needs a restart, with no retry", () => {
     const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
     const text =
-      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.";
+      "The payment was not sent, but its coins stay reserved until you restart DashPay Desktop. After the restart it's listed as pending in Activity; abandon it there to get the coins back.";
     expect(sendErrorText(err("send.held_until_restart"), "test")).toEqual({ text, field: null });
     for (const first of [true, false]) expect(broadcastFailure(err("send.held_until_restart"), "test", held, first)).toEqual({ kind: "failed", text });
   });
@@ -226,8 +226,8 @@ describe("the engine's refusals", () => {
 });
 
 describe("a contact payment's refusals over the contact's data (H-09)", () => {
-  const UNCHECKED = "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.";
-  const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
+  const UNCHECKED = "DashPay Desktop can't check this contact's payment details yet. Try again in a few minutes.";
+  const MISMATCH = "DashPay Desktop couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 
   it("says the contact's details can't be checked yet, or don't match", () => {
     expect(contactDataText(err("platform.context_unavailable"))).toBe(UNCHECKED);
@@ -245,8 +245,8 @@ describe("a contact payment's refusals over the contact's data (H-09)", () => {
 });
 
 describe("a contact payment waiting for the contacts to be re-checked after a launch (H-09)", () => {
-  const NOTICE = "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.";
-  const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
+  const NOTICE = "DashPay Desktop hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.";
+  const MISMATCH = "DashPay Desktop couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 
   it("is a notice with Try again, not an error", () => {
     const notice = { kind: "updating", text: NOTICE };

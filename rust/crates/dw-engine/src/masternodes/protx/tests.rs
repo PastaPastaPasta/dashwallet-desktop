@@ -1034,7 +1034,7 @@ fn mg10_a_discard_that_cannot_drop_the_mark_is_refused() {
     match &refused {
         Err(MasternodesError::Engine(crate::EngineError::Storage(m))) => {
             assert!(
-                m.contains("restart Dash Wallet, then discard it again"),
+                m.contains("restart DashPay Desktop, then discard it again"),
                 "{m}"
             );
         }
@@ -1414,7 +1414,7 @@ fn assert_discard_waits_for_a_restart(f: &Fx, op: &ProTxOperation, txid: Txid) {
     match &refused {
         Err(MasternodesError::Engine(crate::EngineError::Wallet(m))) => assert_eq!(
             m,
-            "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again"
+            "discarding the operation: its payment may still be on its way; restart DashPay Desktop, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again"
         ),
         other => panic!("{other:?}"),
     }

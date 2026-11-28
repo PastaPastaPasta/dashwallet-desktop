@@ -169,7 +169,7 @@ describe("routes", () => {
     expect(one).toEqual({
       held: true,
       credits: "40000000000",
-      text: "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
+      text: "A payment or move you made earlier from your Platform balance hasn't finished, and DashPay Desktop can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
     });
     expect(one.text).not.toMatch(/\d/);
     expect(platformToCoreOff(on(one))).toBeNull();
@@ -179,7 +179,7 @@ describe("routes", () => {
     // Several records in one hold: one line with their count, still no amount.
     const several = mainnetOff("40000000000", 2, fmt);
     expect(several.text).toBe(
-      "2 payments or moves you made earlier from your Platform balance haven't finished, and Dash Wallet can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
+      "2 payments or moves you made earlier from your Platform balance haven't finished, and DashPay Desktop can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
     );
     expect(several.text.replace(/^2 /, "")).not.toMatch(/\d/);
     // Rest: the credits outside what the exit's quote takes, only when there are some.

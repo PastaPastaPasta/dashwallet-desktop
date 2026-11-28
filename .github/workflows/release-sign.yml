@@ -231,7 +231,7 @@ jobs:
       - name: Remove the keychain, the API key and the GnuPG home
         if: ${{ always() }}
         run: ci/release/ci-signing-keys.sh cleanup
-      # One tar: the signature tree keeps its layout and file names ("osx/Dash Wallet.app/...") as written.
+      # One tar: the signature tree keeps its layout and file names ("osx/DashPay Desktop.app/...") as written.
       # COPYFILE_DISABLE: no AppleDouble "._" entries for files that carry extended attributes.
       - name: Pack the detached signatures and the signed .dmg
         run: |

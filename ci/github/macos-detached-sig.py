@@ -709,8 +709,8 @@ def _snapshot_tree(root: Path) -> dict[str, tuple[str, int, str]]:
 
 
 def cmd_verify_dmg_layout(args: argparse.Namespace) -> None:
-    """Verify mounted .dmg top-level is exactly {Dash Wallet.app, Applications -> /Applications}
-    and its Dash Wallet.app matches expected_app in paths, types, executable modes, and bytes."""
+    """Verify mounted .dmg top-level is exactly {DashPay Desktop.app, Applications -> /Applications}
+    and its DashPay Desktop.app matches expected_app in paths, types, executable modes, and bytes."""
     mnt = Path(args.dmg_mount)
     expected_app = Path(args.expected_app)
     if not mnt.is_dir():
@@ -727,7 +727,7 @@ def cmd_verify_dmg_layout(args: argparse.Namespace) -> None:
             raise SystemExit(f"verify-dmg-layout: unexpected hidden top-level entry in .dmg: {name!r}")
         visible.add(name)
 
-    want_visible = {"Applications", "Dash Wallet.app"}
+    want_visible = {"Applications", "DashPay Desktop.app"}
     if visible != want_visible:
         raise SystemExit(
             f"verify-dmg-layout: top-level .dmg entries {sorted(visible)} != expected {sorted(want_visible)}"
@@ -740,9 +740,9 @@ def cmd_verify_dmg_layout(args: argparse.Namespace) -> None:
             f"verify-dmg-layout: Applications must be a symlink to /Applications (got {target!r})"
         )
 
-    dmg_app = mnt / "Dash Wallet.app"
+    dmg_app = mnt / "DashPay Desktop.app"
     if dmg_app.is_symlink() or not dmg_app.is_dir():
-        raise SystemExit("verify-dmg-layout: Dash Wallet.app in .dmg must be a real directory")
+        raise SystemExit("verify-dmg-layout: DashPay Desktop.app in .dmg must be a real directory")
 
     got_tree = _snapshot_tree(dmg_app)
     want_tree = _snapshot_tree(expected_app)
@@ -751,7 +751,7 @@ def cmd_verify_dmg_layout(args: argparse.Namespace) -> None:
         extra = sorted(set(got_tree) - set(want_tree))
         changed = sorted(k for k in (set(want_tree) & set(got_tree)) if want_tree[k] != got_tree[k])
         raise SystemExit(
-            f"verify-dmg-layout: Dash Wallet.app in .dmg differs from CI unsigned build + detached signatures "
+            f"verify-dmg-layout: DashPay Desktop.app in .dmg differs from CI unsigned build + detached signatures "
             f"(missing={missing[:5]}, extra={extra[:5]}, changed={changed[:5]})"
         )
     print(f"macos-detached-sig: verified .dmg layout and {len(got_tree)} app entries (types, modes, bytes)")

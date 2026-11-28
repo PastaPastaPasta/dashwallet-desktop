@@ -461,7 +461,7 @@ export const masternodes = {
     renameTitle: "Rename masternode",
     renameName: "Name",
     /** A masternode's name is kept for every wallet on this network (app.sqlite's global settings, or the tracked registry). */
-    renameHelp: "Only Dash Wallet on this computer sees it. Leave it empty for the default name.",
+    renameHelp: "Only DashPay Desktop on this computer sees it. Leave it empty for the default name.",
     cancel: "Cancel",
     save: "Save",
     copyHash: "Copy ProTx hash",
@@ -622,9 +622,9 @@ export const masternodes = {
       menu: "Service update or revoke…",
       title: "Service update or revoke",
       hosted:
-        "Your operator signs these with the operator key, which stays on the server. Dash Wallet doesn't hold that key, so it can't send them.",
+        "Your operator signs these with the operator key, which stays on the server. DashPay Desktop doesn't hold that key, so it can't send them.",
       selfRun:
-        "This wallet derives your operator key, but Dash Wallet doesn't use it to sign service updates or revocations. Send those from your node; the secret is in Masternode keys.",
+        "This wallet derives your operator key, but DashPay Desktop doesn't use it to sign service updates or revocations. Send those from your node; the secret is in Masternode keys.",
       covers:
         "A service update sets a new IP address or port (and an evonode's Platform ports), and brings a banned node back once its server is fixed. A revocation ends the operator's role.",
       instead: "From this wallet you can:",
@@ -646,7 +646,7 @@ export const masternodes = {
       alreadyTracked: "Already tracked",
       label: "Name (optional)",
       /** A tracked masternode's name is the tracked registry's, which every wallet on this network reads. */
-      labelHelp: "Only Dash Wallet on this computer sees it.",
+      labelHelp: "Only DashPay Desktop on this computer sees it.",
       submit: "Track",
       invalid: "Enter an IP address and port, or a 64-character ProTx hash.",
       none: "No masternode with this address or ProTx hash is in the masternode list.",
@@ -680,7 +680,7 @@ export const masternodes = {
       removeRow: "Remove {role} key",
       removeTitle: "Remove the {role} key?",
       removeText:
-        "This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
+        "This deletes it from DashPay Desktop on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
       removeConfirm: "Remove key",
       check: { matched: "matches", unchecked: "not checked", key_mismatch: "doesn't match" },
       line: "{role} · {check}",
@@ -691,12 +691,12 @@ export const masternodes = {
       title: "Stop tracking",
       text: "{name} leaves My masternodes.",
       keys: {
-        one: "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
-        other: "The {count} keys you added for it are deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need them again.",
+        one: "The key you added for it is deleted from DashPay Desktop on this computer, in every wallet. Keep your own copy if you'll need it again.",
+        other: "The {count} keys you added for it are deleted from DashPay Desktop on this computer, in every wallet. Keep your own copy if you'll need them again.",
       },
       /** While the vault is locked the added keys aren't read, so their count isn't known. */
       keysUnknown:
-        "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+        "Any keys you added for it are deleted from DashPay Desktop on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
       submit: "Stop tracking",
     },
     errors: {
@@ -1345,7 +1345,7 @@ export const masternodes = {
       handoffRefused: "The wallet couldn't hand the registration to the network: {sentence}.",
       handoffUnknown: "The wallet couldn't confirm the registration reached the network: {sentence}. It may still confirm.",
       /** `{sentence}` above for the resend marker; handoffCode for a code with no sentence of its own. */
-      handoffResending: "a resend was still in progress when Dash Wallet last closed",
+      handoffResending: "a resend was still in progress when DashPay Desktop last closed",
       handoffCode: "error {code}",
       /** `{sentence}` for `send.broadcast_unknown`. */
       handoffTimeout: "the network didn't answer in time",
@@ -1601,8 +1601,8 @@ export const masternodes = {
       sent: "Dissolution sent. It applies once it's in a block.",
       /** A dissolution, alone, together or standby, the network didn't take. */
       notSent: "The network didn't accept it. Send it again from In progress.",
-      notSentOffline: "Dash Wallet isn't connected to the Dash network, so this wasn't sent. Send it again from In progress.",
-      handoffUnknown: "Dash Wallet couldn't confirm that the dissolution reached the network. It may still confirm. You can send it again from In progress.",
+      notSentOffline: "DashPay Desktop isn't connected to the Dash network, so this wasn't sent. Send it again from In progress.",
+      handoffUnknown: "DashPay Desktop couldn't confirm that the dissolution reached the network. It may still confirm. You can send it again from In progress.",
       noSession: "Leave now: create a standby dissolution, then send it now and pay the {penalty} penalty.",
       noSessionFull: "Leave now: create a standby dissolution, then send its full refund.",
       togetherText: "Every owner signs one dissolution, and nobody pays a penalty. You pay the network fee from your share.",
@@ -1657,7 +1657,7 @@ export const masternodes = {
       abandoned: "This registration was abandoned, so it can't be sent again.",
       /** Send again while a spend of the registration's coins is in a block that isn't final yet (`shared_stage{conflicting}`). */
       conflicting: "A transaction spending this registration's coins is in a block, so it can't be sent again unless that block is undone.",
-      unsupported: "This version of Dash Wallet can't do this yet.",
+      unsupported: "This version of DashPay Desktop can't do this yet.",
       actor_fee: "This request takes the {fee} network fee from your share. Accept it, then approve again.",
       stale: "The masternode's keys changed since this request was made, so it can't be signed or sent.",
       not_key_change: "This isn't a key change.",
@@ -1714,7 +1714,7 @@ export const masternodes = {
     /** A wallet without its secret (Forgot Passphrase left it watch-only) still lists its public keys.
      * Restoring a backup, which carries the seed, or the phrase with its recovery passphrase brings
      * Reveal back (dw-engine tests/m3_keychain_offline.rs, test_ios_083_*). */
-    noSeed: "This wallet's private keys are no longer in Dash Wallet, so it shows only the public part of these keys. To reveal a private key, restore the wallet from a backup, or from its recovery phrase with its recovery passphrase if it has one.",
+    noSeed: "This wallet's private keys are no longer in DashPay Desktop, so it shows only the public part of these keys. To reveal a private key, restore the wallet from a backup, or from its recovery phrase with its recovery passphrase if it has one.",
     /** A key's match line while the known masternodes are still being read, and after a read failed. */
     checking: "Checking…",
     checkFailed: "Couldn't check",
@@ -1724,7 +1724,7 @@ export const masternodes = {
   },
   withdraw: {
     /** An evonode credit withdrawal whose identity data the wallet could not verify (H-09). */
-    unverified: "Dash Wallet can't check this masternode's details yet. Try again in a few minutes.",
+    unverified: "DashPay Desktop can't check this masternode's details yet. Try again in a few minutes.",
     /** The destination row while the engine still checks where the withdrawal pays. */
     checking: "Checking…",
     /** Under "Checking…" while a payout change only the wallet's history holds is unconfirmed. */

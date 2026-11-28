@@ -67,7 +67,7 @@ export const transfer = {
   status: {
     settledUnknown: {
       title: "Settled with another payment or move",
-      text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
+      text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Check your Platform balance and Dash wallet before moving again.",
     },
   },
   /** What this version keeps off on mainnet, each in place of its controls; `mainnetOffChip` beside the pool it can't reach. */
@@ -78,9 +78,9 @@ export const transfer = {
     /** In place of `mainnetOff` while the Platform addresses hold a balance. */
     mainnetHeld: "{amount} is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.",
     /** In place of both while a payment or move made earlier holds the addresses: its exit is offered. */
-    mainnetHeldExit: "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
+    mainnetHeldExit: "A payment or move you made earlier from your Platform balance hasn't finished, and DashPay Desktop can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
     /** `mainnetHeldExit` for a hold of `count` (2 or more) records. */
-    mainnetHeldExitSeveral: "{count} payments or moves you made earlier from your Platform balance haven't finished, and Dash Wallet can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
+    mainnetHeldExitSeveral: "{count} payments or moves you made earlier from your Platform balance haven't finished, and DashPay Desktop can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
     /** After `mainnetHeldExit` while the addresses outside the hold hold credits. */
     mainnetHeldExitRest: "The rest of your Platform balance, {rest}, is still yours. This version can move it on test networks only.",
   },
@@ -120,7 +120,7 @@ export const transfer = {
       textWithFee: "About {amount} is on its way to your Dash wallet. The network fee was {fee}. It shows in Activity once it arrives.",
       debitOnly: "{taken} left your Platform addresses. Activity shows what arrives in your Dash wallet.",
       /** `debitOnly` when nothing says which member of its group went through. */
-      debitUnknown: "{taken} left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
+      debitUnknown: "{taken} left your Platform addresses, for this move or another payment or move from the same addresses. DashPay Desktop can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     },
     pending: {
       title: "Not confirmed yet",
@@ -295,13 +295,13 @@ export const transfer = {
     },
     /** Where this version cannot send from Shielded (shielded/spends.ts). `source`: a "Pay from" row. */
     spends: {
-      unavailable: "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.",
+      unavailable: "This version of DashPay Desktop can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.",
       source: "Not available in this version",
     },
     /** Where a move into Shielded would be, while this version cannot send from Shielded (shielded/spends.ts). */
-    shieldInUnavailable: "This version of Dash Wallet doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.",
+    shieldInUnavailable: "This version of DashPay Desktop doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.",
     /** Receive's Shielded tab, in place of the address, while this version cannot send from Shielded. */
-    receiveUnavailable: "This version of Dash Wallet doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.",
+    receiveUnavailable: "This version of DashPay Desktop doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.",
     card: {
       inactive: "Shielded is not active on this network yet.",
       finish: "Finish",
@@ -312,8 +312,8 @@ export const transfer = {
     /** What payments that may still go through hold of the Shielded balance (not in it). `amount`
      * is the held total with its unit; `count` the payments holding it. */
     held: {
-      one: "{amount} is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
-      other: "{amount} is held for {count} payments that may still go through. If the network shows one can no longer go through, its part comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+      one: "{amount} is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. DashPay Desktop keeps checking while it's open.",
+      other: "{amount} is held for {count} payments that may still go through. If the network shows one can no longer go through, its part comes back to your Shielded balance. DashPay Desktop keeps checking while it's open.",
     },
     titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
     form: {
@@ -345,14 +345,14 @@ export const transfer = {
       gain: "Added to Shielded",
       receive: "You receive about",
       to: "To",
-      slow: "Making the private proof takes up to a minute. Keep Dash Wallet open.",
+      slow: "Making the private proof takes up to a minute. Keep DashPay Desktop open.",
       slowFirst: "The first Shielded payment after starting takes longer: the prover is still getting ready.",
       back: "Back",
       go: "Confirm",
     },
     running: {
       title: "Working…",
-      prove: "Proving the transaction. This takes up to a minute; keep Dash Wallet open. You can close this: Activity shows it.",
+      prove: "Proving the transaction. This takes up to a minute; keep DashPay Desktop open. You can close this: Activity shows it.",
       lock: "Locking the Dash and waiting for the network. You can close this: Activity shows it.",
     },
     done: {
@@ -403,10 +403,10 @@ export const transfer = {
      * reason (MG). Report a problem is `settings.about.links.issues`, with its hint. */
     closed: {
       title: "Shielded couldn't open",
-      inUse: "Another program, possibly another copy of Dash Wallet, is using your Shielded data, so Dash Wallet didn't open Shielded. The rest of your wallet works as usual. Close any other copy of Dash Wallet, then restart.",
-      failed: "Dash Wallet couldn't move your Shielded data to this version, so it didn't open Shielded. The rest of your wallet works as usual. Restart to try again. If Shielded still doesn't open, choose Report a problem, and keep your wallet data as it is: support may need it.",
-      damaged: "Dash Wallet couldn't read your Shielded data from before the upgrade, so it didn't open Shielded and changed nothing in that data. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
-      noUpgradeCopy: "Dash Wallet has no backup of your Shielded data from before the upgrade, so it won't move that data and didn't open Shielded. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
+      inUse: "Another program, possibly another copy of DashPay Desktop, is using your Shielded data, so DashPay Desktop didn't open Shielded. The rest of your wallet works as usual. Close any other copy of DashPay Desktop, then restart.",
+      failed: "DashPay Desktop couldn't move your Shielded data to this version, so it didn't open Shielded. The rest of your wallet works as usual. Restart to try again. If Shielded still doesn't open, choose Report a problem, and keep your wallet data as it is: support may need it.",
+      damaged: "DashPay Desktop couldn't read your Shielded data from before the upgrade, so it didn't open Shielded and changed nothing in that data. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
+      noUpgradeCopy: "DashPay Desktop has no backup of your Shielded data from before the upgrade, so it won't move that data and didn't open Shielded. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
       restart: "Restart",
     },
     error: {
@@ -425,7 +425,7 @@ export const transfer = {
       contextUnavailable: "Waiting for the network to sync before Shielded can be used. Try again shortly.",
       trustMismatch: "Your Shielded account could not be verified against the network. Nothing was moved.",
       featureOff: "Shielded is turned off.",
-      toPlatformUnknown: "This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.",
+      toPlatformUnknown: "This move may still go through. Until DashPay Desktop knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.",
     },
   },
 } as const satisfies Tree;

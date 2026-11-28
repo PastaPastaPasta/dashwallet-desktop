@@ -9,10 +9,10 @@ import { saveText } from "../app/files";
 
 export type CsvFilter = Omit<HistoryRequest, "cursor" | "limit">;
 
-/** `Dash Wallet history 2026-11-01.csv`, the local date. */
+/** `DashPay Desktop history 2026-11-01.csv`, the local date. */
 export function csvFileName(now: Date): string {
   const two = (n: number) => String(n).padStart(2, "0");
-  return `Dash Wallet history ${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}.csv`;
+  return `DashPay Desktop history ${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}.csv`;
 }
 
 /** Seconds east of UTC at `now`, for the CSV's local dates. */

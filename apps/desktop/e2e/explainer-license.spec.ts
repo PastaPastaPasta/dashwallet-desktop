@@ -42,9 +42,9 @@ for (const theme of THEMES) {
     const errors = trackPageErrors(page);
     await showSettingsView(page, "about", theme);
     const card = page.getByTestId("settings-about-license");
-    await expect(card).toContainText("Dash Wallet is free software, released under the MIT License.");
+    await expect(card).toContainText("DashPay Desktop is free software, released under the MIT License.");
     const text = page.getByTestId("settings-about-license-text");
-    await expect(text).toContainText("Copyright (c) Dash Wallet Desktop contributors");
+    await expect(text).toContainText("Copyright (c) DashPay Desktop contributors");
     await expect(text).toContainText('THE SOFTWARE IS PROVIDED "AS IS"');
     expect(await seriousAxeViolations(page)).toEqual([]);
     await settleAnimations(page);

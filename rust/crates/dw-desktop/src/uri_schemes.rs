@@ -15,7 +15,7 @@
 use crate::DesktopError;
 
 /// The name the Linux handler entry shows in "Open with" lists.
-pub const HANDLER_NAME: &str = "Dash Wallet";
+pub const HANDLER_NAME: &str = "DashPay Desktop";
 
 fn check_scheme(scheme: &str) -> Result<(), DesktopError> {
     let mut chars = scheme.chars();
@@ -185,7 +185,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             std::fs::read_to_string(apps.join("org.dash.DashWallet.desktop")).unwrap(),
-            "[Desktop Entry]\nType=Application\nVersion=1.5\nName=Dash Wallet\nExec=\"/opt/Dash Wallet/dash-wallet\" %u\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/dash;x-scheme-handler/pay;\n"
+            "[Desktop Entry]\nType=Application\nVersion=1.5\nName=DashPay Desktop\nExec=\"/opt/Dash Wallet/dash-wallet\" %u\nTerminal=false\nNoDisplay=true\nMimeType=x-scheme-handler/dash;x-scheme-handler/pay;\n"
         );
         assert_eq!(
             std::fs::read_to_string(config.path().join("mimeapps.list")).unwrap(),

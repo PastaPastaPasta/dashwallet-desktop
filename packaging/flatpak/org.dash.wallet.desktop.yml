@@ -23,7 +23,7 @@ modules:
       - ar x dash-wallet.deb
       - tar -xf data.tar.*
       - install -Dm755 usr/bin/dash-wallet -t /app/bin
-      - install -Dm644 "usr/share/applications/Dash Wallet.desktop" /app/share/applications/org.dash.wallet.desktop.desktop
+      - install -Dm644 "usr/share/applications/DashPay Desktop.desktop" /app/share/applications/org.dash.wallet.desktop.desktop
       - desktop-file-edit --set-icon=org.dash.wallet.desktop /app/share/applications/org.dash.wallet.desktop.desktop
       - install -Dm644 usr/share/icons/hicolor/32x32/apps/dash-wallet.png /app/share/icons/hicolor/32x32/apps/org.dash.wallet.desktop.png
       - install -Dm644 usr/share/icons/hicolor/128x128/apps/dash-wallet.png /app/share/icons/hicolor/128x128/apps/org.dash.wallet.desktop.png

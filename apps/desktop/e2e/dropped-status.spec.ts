@@ -18,7 +18,7 @@ test.describe("Dropped payments", () => {
       const notice = page.getByTestId("dropped-notice");
       await expect(notice).toBeVisible();
       await expect(page.getByTestId("dropped-notice-text")).toContainText("A payment of 0.25");
-      await expect(page.getByTestId("dropped-notice-text")).toContainText("didn't go through. The Dash it used came from an incoming transaction that was never valid, so Dash Wallet dropped the payment.");
+      await expect(page.getByTestId("dropped-notice-text")).toContainText("didn't go through. The Dash it used came from an incoming transaction that was never valid, so DashPay Desktop dropped the payment.");
       expect(await seriousAxeViolations(page)).toEqual([]);
       await page.getByTestId("dropped-notice-details").click();
       await expect(page.getByTestId("tx-detail")).toBeVisible();
@@ -38,7 +38,7 @@ test.describe("Dropped payments", () => {
   test("Home counts several dropped payments, and Details opens Activity", async ({ page }) => {
     await page.goto(fixtureUrl("dropped-several", "light"));
     await expect(page.getByTestId("dropped-notice-text")).toHaveText(
-      "2 payments didn't go through. The Dash they used came from an incoming transaction that was never valid, so Dash Wallet dropped them.",
+      "2 payments didn't go through. The Dash they used came from an incoming transaction that was never valid, so DashPay Desktop dropped them.",
     );
     await page.getByTestId("dropped-notice-details").click();
     await expect(page.getByTestId("tx-list")).toBeVisible();

@@ -134,9 +134,9 @@ describe("platform activity rows", () => {
 
 describe("a group that settled with no named winner", () => {
   const unknown = (id: string, over: Partial<PlatformActivity>) => platformRow(act(id, { address: null, winnerKnown: false, ...over }));
-  const MOVE = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.";
-  const PAY = "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.";
-  const TOP_UP = "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.";
+  const MOVE = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Check your Platform balance and Dash wallet before moving again.";
+  const PAY = "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Before paying again, check whether the recipient was paid.";
+  const TOP_UP = "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Check your identity's balance before topping up again.";
 
   it("titles every row of each kind as settled with another, with the kind's text", () => {
     const rows = [

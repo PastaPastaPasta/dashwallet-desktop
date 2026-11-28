@@ -28,7 +28,7 @@ import { abandonHint, actionOffer, actionProblem, Actions } from "./TxDetailShee
 import { payWithCoinsOffered } from "./tools/CoinSelection";
 
 const PENDING_UNPROVEN =
-  "Dash Wallet can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.";
+  "DashPay Desktop can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.";
 const RESTORED_HINT =
   "This payment was still pending in your wallet data from before the upgrade, and it hasn't confirmed since. Anything you did with it after the upgrade, such as abandoning it, is no longer recorded here.";
 const ALL_COINS = { includeLocked: true, fullyMixedOnly: false, minConfirmations: null };

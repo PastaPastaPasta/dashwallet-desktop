@@ -64,7 +64,7 @@ describe("the From step (C-funding P16)", () => {
 });
 
 describe("a Shielded payment waiting on a hold", () => {
-  const HELD = "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.";
+  const HELD = "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. DashPay Desktop keeps checking while it's open.";
   const live = new Set(["core", "shielded", "platform"] as const);
   const hold = { count: 1, credits: "300000000000", duffs: 3e8 };
   const short = (needed: string, available: string) => appError("shielded.insufficient_funds", { kind: "credits", needed, available });

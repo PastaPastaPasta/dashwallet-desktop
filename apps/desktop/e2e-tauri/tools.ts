@@ -291,7 +291,7 @@ function run(cmd: string, args: string[]): string {
  * bar owns it; WebDriver's keys reach only the page). The keys are always released again. */
 async function openTools(wd: WebDriver) {
   try {
-    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^Dash Wallet", "windowfocus", "key", "--clearmodifiers", "ctrl+shift+i"]);
+    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^DashPay Desktop", "windowfocus", "key", "--clearmodifiers", "ctrl+shift+i"]);
   } finally {
     run("xdotool", ["keyup", "ctrl+shift+i"]);
   }

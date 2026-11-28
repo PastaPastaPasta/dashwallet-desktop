@@ -44,7 +44,7 @@ describe("wallets list", () => {
   it("E1_closeWalletSaysAShieldedPaymentIsStillBeingConfirmed", () => {
     // DEC-1046: the engine refuses Close Wallet while a shielded payment's result is unknown.
     const refused = { code: "shielded_spend_unresolved", message: "refused", data: null };
-    expect(failureText(refused)).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    expect(failureText(refused)).toBe("DashPay Desktop doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit DashPay Desktop.");
   });
 
   it("a refused Close keeps its reason after the list is read again", async () => {
@@ -52,7 +52,7 @@ describe("wallets list", () => {
     await model.load();
     fixture.world.settings.unloadRefusal = "unresolved";
     expect(await model.close(B)).toBe(false);
-    expect(model.error).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    expect(model.error).toBe("DashPay Desktop doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit DashPay Desktop.");
     expect(model.rows[1].loaded).toBe(true);
     fixture.world.settings.unloadRefusal = "opening";
     expect(await model.close(B)).toBe(false);
@@ -238,7 +238,7 @@ describe("remove wallet", () => {
   const HELD = {
     inFlight: "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed.",
     carriedOver:
-      "Dash Wallet can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
+      "DashPay Desktop can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
   } as const;
 
   for (const reason of ["inFlight", "carriedOver"] as const) {
@@ -274,7 +274,7 @@ describe("remove wallet", () => {
     await model.remove(PASS);
     expect(model.step).toBe("held");
     expect(model.held).toBe(
-      "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
+      "DashPay Desktop removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
     );
     expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
   });

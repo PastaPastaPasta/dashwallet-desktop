@@ -23,9 +23,9 @@ import { platformHoldText, readPlatformOffFrom } from "./platformHold";
 import { cachedPlatformOff, keys } from "./queries";
 
 const RESTORED =
-  "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.";
-const OFF = "Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.";
-const OFF_NOT_SENDING = "Dash Platform is off until you next start Dash Wallet, and this needs it.";
+  "DashPay Desktop hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.";
+const OFF = "Nothing was sent: Dash Platform is off until you next start DashPay Desktop, and this needs it.";
+const OFF_NOT_SENDING = "Dash Platform is off until you next start DashPay Desktop, and this needs it.";
 
 const restored = { code: "platform.restored", message: "restored" };
 const featureOff = { code: "platform.feature_off", message: "platform off", data: { kind: "feature", feature: "platform" } };

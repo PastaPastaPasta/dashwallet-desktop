@@ -10,9 +10,9 @@ import { callsOf } from "./transfer";
 // Receive shows no Shielded address, with its own line. Nothing reaches the engine. The balance
 // carries on. With the flag on (main today), every one of them is as it was.
 
-const REASON = "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.";
-const SHIELD_IN = "This version of Dash Wallet doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.";
-const RECEIVE = "This version of Dash Wallet doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.";
+const REASON = "This version of DashPay Desktop can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.";
+const SHIELD_IN = "This version of DashPay Desktop doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.";
+const RECEIVE = "This version of DashPay Desktop doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.";
 const SHIELDED_ADDRESS = "tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2";
 const SPENDS = ["shielded_send", "shielded_send_quote", "unshield_to_core", "unshield_quote", "unshield_to_platform", "unshield_to_platform_quote", "shield_from_core", "shield_quote", "shield_mixed_coins", "shield_mixed_quote", "platform_shield_quote"];
 

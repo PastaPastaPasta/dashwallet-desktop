@@ -14,8 +14,8 @@ import { t } from "../i18n";
 import { moveErrorText } from "./move";
 import { sendRefusalText } from "./send";
 
-const RULES = "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them. Nothing was sent, and your balance is unchanged. Update Dash Wallet, then try again.";
-const REFUSED = "Dash Platform would refuse this transfer as Dash Wallet built it, so nothing was sent and your balance is unchanged. If this keeps happening, update Dash Wallet.";
+const RULES = "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them. Nothing was sent, and your balance is unchanged. Update DashPay Desktop, then try again.";
+const REFUSED = "Dash Platform would refuse this transfer as DashPay Desktop built it, so nothing was sent and your balance is unchanged. If this keeps happening, update DashPay Desktop.";
 const RAW = "FeeStrategyTooManyStepsError: Fee strategy has 1 steps, maximum allowed is 0";
 const KINDS = [
   { preCheck: "refused", code: "credits.preflight_refused", line: REFUSED },

@@ -99,7 +99,7 @@ describe("the status bar", () => {
     for (const startup of ["discoveryFailed", "identityScanIncomplete", "partialNoIdentity", "partialAccountsPending", "seedBindingUnverified"] as const) {
       const p = platform({ startup });
       expect(bar(p, shielded())).toEqual({ text: "Platform sync didn't finish", percent: null, button: "incomplete" });
-      expect(row(platformItem(p))).toBe("Didn't finish. It tries again the next time you start Dash Wallet.");
+      expect(row(platformItem(p))).toBe("Didn't finish. It tries again the next time you start DashPay Desktop.");
     }
   });
 

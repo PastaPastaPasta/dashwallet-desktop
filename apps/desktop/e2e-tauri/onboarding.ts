@@ -59,7 +59,7 @@ function run(cmd: string, args: string[], input?: string): string {
  * repeating into every later field (and every later run on that display). */
 function shortcut(keys: string) {
   try {
-    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^Dash Wallet", "windowfocus", "key", "--clearmodifiers", keys]);
+    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^DashPay Desktop", "windowfocus", "key", "--clearmodifiers", keys]);
   } finally {
     run("xdotool", ["keyup", keys]);
   }

@@ -17,18 +17,18 @@ export const storeUpgrade = {
   recover: {
     confirm: {
       title: "Set up from a recovery phrase?",
-      text: "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.",
+      text: "DashPay Desktop restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.",
       confirm: "Restart and set up",
       cancel: "Cancel",
     },
     /** The Restore screen's way out once Restore earlier data was refused for a shielded hold and the
      * screen offers Set up from recovery phrase; it replaces `refused.wayOut.restore` there. */
     restoreHeld:
-      "Dash Wallet can't restore your earlier wallet data, because it doesn't know yet whether a Shielded payment from one of your wallets went through. To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first. If you restart Dash Wallet, choose Restore earlier data again to get this choice back.",
+      "DashPay Desktop can't restore your earlier wallet data, because it doesn't know yet whether a Shielded payment from one of your wallets went through. To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and DashPay Desktop leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first. If you restart DashPay Desktop, choose Restore earlier data again to get this choice back.",
   },
   notPrivate: {
-    title: "Dash Wallet can't use this data folder",
-    text: "Other accounts on this computer can change files in {folder}. To keep your wallet safe, Dash Wallet won't open it until only your account can change that folder.\n\nChange the folder's permissions so only you can write to it, then try again. Your wallet files weren't changed.",
+    title: "DashPay Desktop can't use this data folder",
+    text: "Other accounts on this computer can change files in {folder}. To keep your wallet safe, DashPay Desktop won't open it until only your account can change that folder.\n\nChange the folder's permissions so only you can write to it, then try again. Your wallet files weren't changed.",
     reason: {
       groupWritable: "Your group can write to it.",
       otherWritable: "Every account can write to it.",
@@ -39,131 +39,131 @@ export const storeUpgrade = {
     quit: "Quit",
   },
   refused: {
-    title: "Dash Wallet can't open this wallet data safely",
-    intro: "This version of Dash Wallet can't safely open the wallet data in {folder}",
+    title: "DashPay Desktop can't open this wallet data safely",
+    intro: "This version of DashPay Desktop can't safely open the wallet data in {folder}",
     unchanged:
-      "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+      "DashPay Desktop didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
     changedByUpgrade:
-      "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+      "DashPay Desktop had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
     keep: "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
     quit: "Quit",
     report: "Report a problem",
     restore: "Restore earlier data",
     recover: "Set up from recovery phrase",
     detail: {
-      forkUnsupported: "it was written by a version of Dash Wallet that this one can't upgrade from.",
+      forkUnsupported: "it was written by a version of DashPay Desktop that this one can't upgrade from.",
       shapeMismatch:
         "its layout doesn't match the version it says it is, so another program or a test build may have changed it.",
-      rehearsalFailed: "a trial upgrade on a copy of it failed, so Dash Wallet left the real data as it was.",
-      devBuild: "it was written by a development build of Dash Wallet.",
-      tooNew: "it was written by a newer version of Dash Wallet.",
+      rehearsalFailed: "a trial upgrade on a copy of it failed, so DashPay Desktop left the real data as it was.",
+      devBuild: "it was written by a development build of DashPay Desktop.",
+      tooNew: "it was written by a newer version of DashPay Desktop.",
       historyMismatch:
-        "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+        "its upgrade history doesn't match any released version of DashPay Desktop, so this version can't tell what it contains.",
       contactsTable: "it holds contact data that this version can't read yet.",
-      selfCheck: "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+      selfCheck: "a check DashPay Desktop runs on itself before it opens any wallet data didn't pass.",
       unexpected: "it's in a state this version doesn't expect.",
       damaged: "it can't be read as wallet data, so it may be damaged.",
     },
     wayOut: {
       previous:
-        "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+        "Close this version and keep using, or reinstall, the version of DashPay Desktop you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
       newer:
-        "Install that version of Dash Wallet, or a later one, to open it. Don't open it with an earlier version.",
+        "Install that version of DashPay Desktop, or a later one, to open it. Don't open it with an earlier version.",
       restore:
-        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
+        "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
       unverified:
-        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem.",
+        "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so DashPay Desktop won't restore from it. Choose Report a problem.",
       retired:
-        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Dash Wallet retired the backup from before the upgrade as part of removing a wallet. Choose Set up from recovery phrase to start again in a new data folder. Add each wallet from its own recovery phrase. Dash Wallet leaves {folder} as it is. Payment holds, in-progress operations, imported keys and other local records stay in that folder. If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+        "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. DashPay Desktop retired the backup from before the upgrade as part of removing a wallet. Choose Set up from recovery phrase to start again in a new data folder. Add each wallet from its own recovery phrase. DashPay Desktop leaves {folder} as it is. Payment holds, in-progress operations, imported keys and other local records stay in that folder. If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
       support: "Choose Report a problem.",
       supportMigrated:
-        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Choose Report a problem.",
+        "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. Choose Report a problem.",
       selfCheck:
-        "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
+        "Quit DashPay Desktop and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of DashPay Desktop. Until then, don't open this wallet data with an earlier version.",
       selfCheckNotMigrated:
-        "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+        "Quit DashPay Desktop and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of DashPay Desktop, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
       damaged:
-        "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+        "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. DashPay Desktop leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
     },
   },
   retry: {
     noSpace: {
-      title: "Dash Wallet couldn't finish upgrading your wallet data",
-      text: "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.",
+      title: "DashPay Desktop couldn't finish upgrading your wallet data",
+      text: "The disk is full, or DashPay Desktop couldn't write to it. Free up some space, then quit DashPay Desktop and open it again. Until then, don't open this wallet data with an earlier version.",
     },
   },
   notice: {
     snapshotDamaged:
-      "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+      "DashPay Desktop upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
     snapshotOther:
-      "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+      "DashPay Desktop upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
     dismiss: "Dismiss",
   },
   restored: {
-    text: "Dash Wallet is using your wallet data from before the upgrade, so anything that happened since the upgrade is missing. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent, so anything that moves your funds is paused until then.",
+    text: "DashPay Desktop is using your wallet data from before the upgrade, so anything that happened since the upgrade is missing. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent, so anything that moves your funds is paused until then.",
   },
   restore: {
     banner: "Anything that moves your funds is paused until syncing finishes.",
     waiting: {
       core: "Waiting for the wallet to finish syncing with the Dash network.",
-      platform: "Waiting for Dash Wallet's first check with Dash Platform.",
+      platform: "Waiting for DashPay Desktop's first check with Dash Platform.",
       history: "Waiting for a wallet's history to load.",
     },
     retry: "Try again",
     finishWithoutPlatform: "Finish without Dash Platform",
     finishWithoutPlatformMeaning:
-      "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
+      "DashPay Desktop reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start DashPay Desktop, and your Platform and Shielded funds stay paused until DashPay Desktop has checked them with Dash Platform.",
     platformOnly:
-      "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+      "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until DashPay Desktop has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
     platformRestored:
-      "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
+      "DashPay Desktop hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
     platformRestoredCancel: {
-      move: "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform funds are paused and this cancel wasn't sent. The earlier move can still go through. The check runs while Dash Platform is on. Once it has finished, choose Cancel again.",
-      payment: "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform funds are paused and this cancel wasn't sent. The earlier payment can still go through. The check runs while Dash Platform is on. Once it has finished, choose Cancel again.",
+      move: "DashPay Desktop hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform funds are paused and this cancel wasn't sent. The earlier move can still go through. The check runs while Dash Platform is on. Once it has finished, choose Cancel again.",
+      payment: "DashPay Desktop hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform funds are paused and this cancel wasn't sent. The earlier payment can still go through. The check runs while Dash Platform is on. Once it has finished, choose Cancel again.",
     },
-    platformOff: "Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.",
-    platformOffNotSending: "Dash Platform is off until you next start Dash Wallet, and this needs it.",
+    platformOff: "Nothing was sent: Dash Platform is off until you next start DashPay Desktop, and this needs it.",
+    platformOffNotSending: "Dash Platform is off until you next start DashPay Desktop, and this needs it.",
     finishBusy: {
-      waitBefore: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform.",
-      waitOrStopMixing: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform.",
-      waitBeforeLockStops: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform. Locking the wallet stops {stops}.",
-      waitOrStopMixingLockStops: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform. Locking the wallet stops {stops}.",
-      stopMixing: "Stop mixing before Dash Wallet can reopen without Dash Platform.",
-      busyDraining: "Dash Wallet is still finishing a request. Choose Finish without Dash Platform again once it's done.",
+      waitBefore: "Wait for {flows} to finish before DashPay Desktop can reopen without Dash Platform.",
+      waitOrStopMixing: "Wait for {flows} to finish, or stop mixing, before DashPay Desktop can reopen without Dash Platform.",
+      waitBeforeLockStops: "Wait for {flows} to finish before DashPay Desktop can reopen without Dash Platform. Locking the wallet stops {stops}.",
+      waitOrStopMixingLockStops: "Wait for {flows} to finish, or stop mixing, before DashPay Desktop can reopen without Dash Platform. Locking the wallet stops {stops}.",
+      stopMixing: "Stop mixing before DashPay Desktop can reopen without Dash Platform.",
+      busyDraining: "DashPay Desktop is still finishing a request. Choose Finish without Dash Platform again once it's done.",
     },
-    finishFailed: "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: {error}",
-    historyFailed: "Dash Wallet couldn't load the history of {wallet}, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
+    finishFailed: "DashPay Desktop couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: {error}",
+    historyFailed: "DashPay Desktop couldn't load the history of {wallet}, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
     clearFailed:
-      "Dash Wallet finished checking the wallet data it restored, but couldn't save that the check is done, so anything that moves your funds stays paused. The disk may be full, or Dash Wallet may not be able to write to it. Free up some space, then try again. If this keeps happening, report a problem.",
+      "DashPay Desktop finished checking the wallet data it restored, but couldn't save that the check is done, so anything that moves your funds stays paused. The disk may be full, or DashPay Desktop may not be able to write to it. Free up some space, then try again. If this keeps happening, report a problem.",
     confirm: {
       title: "Restore wallet data from before the upgrade?",
-      text: "Dash Wallet restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent. The wallet data recorded since the upgrade is kept in the upgrade-backups folder inside {folder}. Don't delete it: it may hold the only record of a recent payment.\n\nThis version of Dash Wallet pauses sending until syncing finishes. An earlier version doesn't. If you open the wallet with one, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.\n\nIf Dash Wallet closes before the restore finishes, start this version again before you open an earlier one.",
+      text: "DashPay Desktop restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent. The wallet data recorded since the upgrade is kept in the upgrade-backups folder inside {folder}. Don't delete it: it may hold the only record of a recent payment.\n\nThis version of DashPay Desktop pauses sending until syncing finishes. An earlier version doesn't. If you open the wallet with one, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.\n\nIf DashPay Desktop closes before the restore finishes, start this version again before you open an earlier one.",
       confirm: "Restart and restore",
       cancel: "Cancel",
     },
     refused: {
       title: "The earlier wallet data couldn't be restored",
-      text: "Dash Wallet couldn't use the wallet data it saved before the upgrade, so nothing was changed. The wallet is using the same data as before you chose to restore.",
+      text: "DashPay Desktop couldn't use the wallet data it saved before the upgrade, so nothing was changed. The wallet is using the same data as before you chose to restore.",
       ok: "OK",
     },
     noSpace: {
       title: "Not enough disk space to restore",
-      text: "Dash Wallet needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.",
+      text: "DashPay Desktop needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.",
       ok: "OK",
     },
     held: {
-      text: "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it.",
-      inFlight: "That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data.",
-      next: "To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+      text: "Nothing was restored. DashPay Desktop doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it.",
+      inFlight: "That payment was still in progress, and DashPay Desktop can check it only once it can open your current wallet data.",
+      next: "To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and DashPay Desktop leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.",
     },
     notStarted: {
-      title: "Dash Wallet couldn't start restoring your wallet data",
-      text: "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.",
+      title: "DashPay Desktop couldn't start restoring your wallet data",
+      text: "DashPay Desktop couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that DashPay Desktop can read and write {folder} and that no other program is using it, then restart DashPay Desktop to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.",
       held: {
         inFlight:
-          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore, and restarting won't change this. To stop restoring, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
+          "DashPay Desktop didn't start putting back the wallet data it saved before the upgrade, because it doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore, and restarting won't change this. To stop restoring, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
         carriedOver:
-          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know whether a Shielded payment from one of your wallets went through, or couldn't read its record of one, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet. If you see this again, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
+          "DashPay Desktop didn't start putting back the wallet data it saved before the upgrade, because it doesn't know whether a Shielded payment from one of your wallets went through, or couldn't read its record of one, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore. Check that DashPay Desktop can read and write {folder} and that no other program is using it, then restart DashPay Desktop. If you see this again, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
       },
       restart: "Restart",
       cancel: "Cancel restore",
@@ -171,19 +171,19 @@ export const storeUpgrade = {
       quit: "Quit",
     },
     incomplete: {
-      title: "Dash Wallet couldn't finish restoring your wallet data",
-      text: "Dash Wallet stopped partway through putting back the wallet data it saved before the upgrade, so it hasn't opened the wallet data in {folder}. The data saved before the upgrade and the data it was replacing are both still in the upgrade-backups folder inside {folder}: don't delete anything there. Make sure the disk has free space and that Dash Wallet can write to {folder}, then restart Dash Wallet to finish. Don't open an earlier version of Dash Wallet until this one has finished. If it still can't finish, choose Report a problem.",
+      title: "DashPay Desktop couldn't finish restoring your wallet data",
+      text: "DashPay Desktop stopped partway through putting back the wallet data it saved before the upgrade, so it hasn't opened the wallet data in {folder}. The data saved before the upgrade and the data it was replacing are both still in the upgrade-backups folder inside {folder}: don't delete anything there. Make sure the disk has free space and that DashPay Desktop can write to {folder}, then restart DashPay Desktop to finish. Don't open an earlier version of DashPay Desktop until this one has finished. If it still can't finish, choose Report a problem.",
       restart: "Restart",
       report: "Report a problem",
       quit: "Quit",
     },
     holdsUnchecked: {
-      title: "Dash Wallet couldn't finish this restore",
-      text: "A test build of Dash Wallet started restoring your wallet data from before the upgrade, and this version can't tell whether finishing it would lose track of a Shielded payment, so it hasn't opened the wallet data in {folder}. Don't delete anything in the upgrade-backups folder inside {folder}. Choose Report a problem.",
+      title: "DashPay Desktop couldn't finish this restore",
+      text: "A test build of DashPay Desktop started restoring your wallet data from before the upgrade, and this version can't tell whether finishing it would lose track of a Shielded payment, so it hasn't opened the wallet data in {folder}. Don't delete anything in the upgrade-backups folder inside {folder}. Choose Report a problem.",
     },
     foreign: {
       title: "These wallet files don't match the restore",
-      text: "Dash Wallet was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of Dash Wallet or another program may have replaced them.",
+      text: "DashPay Desktop was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of DashPay Desktop or another program may have replaced them.",
       keep: "Keep the current files",
       keepMeaning:
         "This stops the restore and opens the files in {folder} as they are now. Nothing is deleted: the wallet data saved before the upgrade, and the copy taken when the restore started, stay in the upgrade-backups folder.",
