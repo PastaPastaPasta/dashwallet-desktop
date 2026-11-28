@@ -367,6 +367,9 @@ impl NetworkSession {
                     return Err(e);
                 }
             };
+            // Buffer locks through removal so one arriving after the
+            // last wallet record or sent mark is written can still match it.
+            let _lock_replay = this.hub.begin_lock_replay(id);
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
             // Its discoveries end first, as for a removal: none may apply
@@ -391,6 +394,9 @@ impl NetworkSession {
                     .reached
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 pause.release.notified().await;
+            }
+            if let Err(error) = this.index_closed_lock_targets(id).await {
+                tracing::warn!(wallet = %id, %error, "could not index all closed-wallet InstantSend targets");
             }
             this.hub.unload_wallet(&id);
             this.hub.restore.forget_wallet_checks(id, false);
@@ -425,6 +431,7 @@ impl NetworkSession {
             // The wallet joins the shielded passes' set: not while one is in
             // flight (R1-3, `PlatformRuntime::shielded_passes`).
             let passes = this.platform.shielded_passes.write().await;
+            let _lock_replay = this.hub.begin_lock_replay(id);
             // Spends wait from before the wallet is published until its
             // stored replay is resumed (`WalletState::loading`); a store
             // SPV commits for it meanwhile ends no record
@@ -432,6 +439,8 @@ impl NetworkSession {
             // Read first so they are restored as soon as the wallet is
             // registered, not after the history load (#88).
             {
+                let _abandon = this.abandon_gate(id).write_owned().await;
+                this.persist_pending_locks_before_open(&live, id).await?;
                 let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
                 let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
                 let holds = tokio::task::spawn_blocking(move || {

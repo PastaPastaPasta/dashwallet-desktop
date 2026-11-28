@@ -733,7 +733,7 @@ impl NetworkSession {
     /// first complete load builds its holds (H3) and wakes the watcher; a
     /// failed load leaves them unbuilt and the mark held. With the residue
     /// alone the watcher looks again.
-    pub(crate) async fn load_added_wallet(&self, wallet_id: WalletId) {
+    pub(crate) async fn load_added_wallet(self: &Arc<Self>, wallet_id: WalletId) {
         let gate = &self.hub.restore;
         if gate.is_restored() {
             if let Err(e) = self.load_history_for(vec![wallet_id]).await {

@@ -1111,6 +1111,13 @@ impl NetworkSession {
         session.attach_balance_reread();
         session.attach_held_refresh();
         session.attach_lock_rerun();
+        if let Ok(live) = session.live() {
+            for wallet in live.store.unloaded().into_iter().map(WalletId) {
+                if let Err(error) = session.index_closed_lock_targets(wallet).await {
+                    tracing::warn!(%wallet, %error, "could not index all closed-wallet InstantSend targets");
+                }
+            }
+        }
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.
@@ -1607,6 +1614,7 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        self.drain_pending_locks().await;
         // A wallet closed by an operation admitted before the gate sealed
         // let drops wait on it whose own drain the sealed gate refused:
         // they run now, before the stores close.

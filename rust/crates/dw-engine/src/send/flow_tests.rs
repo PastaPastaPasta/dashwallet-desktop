@@ -89,6 +89,13 @@ fn fixture(encrypted: bool) -> Fixture {
 }
 
 impl Fixture {
+    /// The SPV header store holds `hash` at `height`, and no other header.
+    fn active_header(&self, height: u32, hash: dashcore::BlockHash) {
+        self.session.hub.attach_headers(Arc::new(move |h| {
+            Box::pin(async move { (h == height).then_some(hash) })
+        }));
+    }
+
     /// Credits a confirmed coin of `value` to a fresh receive address.
     fn credit(&self, seed: u8, value: u64) -> OutPoint {
         let session = Arc::clone(&self.session);
@@ -2646,6 +2653,7 @@ fn a_coin_our_unconfirmed_transaction_spends_is_held() {
         })
     });
     let block = TransactionContext::InBlock(BlockInfo::new(7, dashcore::BlockHash::all_zeros(), 9));
+    f.active_header(7, dashcore::BlockHash::all_zeros());
     f.own_spend(0x53, &[rival], block.clone());
     assert_eq!(f.reserved(), vec![other], "a conflicted spender frees it");
     // A spender in a block holds it, whatever the abandon flag says.
@@ -2668,6 +2676,7 @@ fn a_conflicted_transactions_descendant_frees_its_other_inputs() {
     f.own_spend(0x63, &[OutPoint::new(a, 0), q], TransactionContext::Mempool);
     assert_eq!(f.reserved(), vec![q], "B holds Q while A stands");
     let block = TransactionContext::InBlock(BlockInfo::new(7, dashcore::BlockHash::all_zeros(), 9));
+    f.active_header(7, dashcore::BlockHash::all_zeros());
     f.own_spend(0x64, &[p], block);
     assert_eq!(f.reserved(), Vec::<OutPoint>::new());
     let held = f.engine.block_on(async {

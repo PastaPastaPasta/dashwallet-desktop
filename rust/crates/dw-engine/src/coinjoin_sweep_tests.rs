@@ -883,7 +883,7 @@ fn chainlock(f: &Fixture, height: u32) {
         wallet_id: f.wallet.0,
         chain_lock: ChainLock {
             block_height: height,
-            block_hash: BlockHash::all_zeros(),
+            block_hash: f.chain.hash(height),
             signature: BLSSignature::from([0; 96]),
         },
         locked_transactions: std::collections::BTreeMap::from([(
