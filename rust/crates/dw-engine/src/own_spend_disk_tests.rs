@@ -5555,6 +5555,121 @@ fn a_dropped_payments_coin_stays_reserved_until_key_wallet_releases_it() {
     });
 }
 
+#[test]
+fn a_stale_release_after_unload_and_reload_keeps_the_new_same_txid_claim() {
+    use crate::send::SpendOwner;
+    use std::sync::atomic::Ordering;
+
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    wait_stored(&session, id, &[paid.txid()]);
+    let coin = OutPoint::new(paid.txid(), 0);
+    let prepare_payment = || {
+        prepare(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![coin]),
+            COIN,
+            true,
+            &Arc::new(Accept::default()),
+        )
+        .1
+        .unwrap()
+    };
+    let first = prepare_payment();
+    assert_eq!(first.summary().outputs.len(), 1);
+    let owner = SpendOwner::Tx(first.summary().txid.parse().unwrap());
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_release.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    drop(first);
+    assert!(pause.wait_reached(std::time::Duration::from_secs(20)));
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    engine.block_on(session.load_wallet(id)).unwrap();
+    let second = prepare_payment();
+    assert_eq!(
+        owner,
+        SpendOwner::Tx(second.summary().txid.parse().unwrap())
+    );
+    assert_eq!(session.spends.held_by(&id, owner), [coin].into());
+
+    drop(release);
+    eventually("the old release finished", || {
+        pause.done.load(Ordering::SeqCst)
+    });
+    assert_eq!(session.spends.held_by(&id, owner), [coin].into());
+}
+
+#[test]
+fn an_explicit_abandon_keeps_the_coin_reserved_until_key_wallet_releases_it() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let coin = OutPoint::new(paid.txid(), 0);
+    let prepare_payment = || {
+        prepare(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![coin]),
+            COIN / 2,
+            false,
+            &Arc::new(Accept::default()),
+        )
+    };
+    let (draft, payment) = prepare_payment();
+    let payment = payment.unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_release.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    let abandon = session
+        .rt
+        .spawn(async move { draft.abandon(payment).await });
+    assert!(pause.wait_reached(std::time::Duration::from_secs(20)));
+
+    let error = prepare_payment().1.unwrap_err();
+    assert!(
+        matches!(error, crate::EngineError::Send(crate::send::SendFailure::OutpointUnavailable(o)) if o == coin)
+    );
+    drop(release);
+    engine.block_on(abandon).unwrap().unwrap();
+    prepare_payment().1.unwrap();
+}
+
+#[test]
+fn a_dropped_payment_signals_when_the_spendable_amount_recovers() {
+    use crate::send::FeeMode;
+    let (_dir, engine, session, id, recorder) = super::engine_wallet_recorded();
+    let to = fresh_address(&engine, &session, id);
+    let paid = funding(7, &[to], COIN);
+    let coin = OutPoint::new(paid.txid(), 0);
+    let is_balance = |event: &crate::EngineEvent| matches!(event, crate::EngineEvent::Balances { wallet_id, .. } if *wallet_id == id);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    super::own_spend_balance_tests::reconciles_done(&engine, &session);
+    assert!(recorder.wait_for(0, is_balance));
+    let read = || {
+        engine
+            .block_on(session.max_spendable(id, CoinSource::Any, FeeMode::PerKb(1_000)))
+            .unwrap()
+    };
+    assert_eq!(read(), COIN);
+
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_release.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    assert!(spendable(&engine, &session, id, coin));
+    assert!(pause.wait_reached(std::time::Duration::from_secs(20)));
+    assert_eq!(read(), 0);
+    let from = recorder.len();
+
+    drop(release);
+    assert!(
+        recorder.wait_for(from, is_balance),
+        "no balance event after cleanup"
+    );
+    assert_eq!(read(), COIN);
+}
+
 /// A coin U of the wallet that only a pending payment from elsewhere
 /// spends: another device of the wallet's, or a payment with another
 /// party's input too (as a CoinJoin mix or a co-signed one is). key-wallet

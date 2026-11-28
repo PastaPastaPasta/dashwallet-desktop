@@ -26,8 +26,8 @@ const ISSUES_HINT = key("settings", "about", "links", "issuesHint");
 
 const COPY_KEYS = [
   ...["title", "intro", "unchanged"].map((name) => refused(name)),
-  ...["contactsTable", "shapeMismatch", "devBuild", "damaged"].map((name) => refused("detail", name)),
-  ...["previous", "support", "damaged", "restore"].map((name) => refused("wayOut", name)),
+  ...["contactsTable", "shapeMismatch", "devBuild", "damaged", "historyMismatch"].map((name) => refused("detail", name)),
+  ...["previous", "support", "damaged", "restore", "retired"].map((name) => refused("wayOut", name)),
   ...["quit", "report", "restore", "recover"].map((name) => refused(name)),
   ISSUES_HINT,
   ...["title", "text", "keep", "keepMeaning", "quit"].map((name) => key("storeUpgrade", "restore", "foreign", name)),
@@ -43,11 +43,11 @@ export const STORE_COPY: Readonly<Record<string, string>> = Object.fromEntries(C
 
 const button = (name: string) => ({ key: refused(name), label: english(refused(name)), destructive: false, defaultFocus: false });
 
-type Detail = "contactsTable" | "shapeMismatch" | "devBuild" | "damaged";
-type WayOut = "previous" | "support" | "restore" | "damaged";
+type Detail = "contactsTable" | "shapeMismatch" | "devBuild" | "damaged" | "historyMismatch";
+type WayOut = "previous" | "support" | "restore" | "damaged" | "retired";
 
 /** `screen_for`'s screen for a refusal with `detail`, a file this start changed nothing in, and `wayOut`:
- * its buttons Set up from recovery phrase (damaged only), Restore earlier data (restore only), Report a
+ * its buttons Set up from recovery phrase (damaged or retired), Restore earlier data (restore only), Report a
  * problem (except previous) and Quit; the issues
  * hint with Report a problem. Its text key is its way out's. */
 const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: WayOut): StoreRefusedData => {
@@ -66,7 +66,7 @@ const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: Wa
       text: text.replaceAll("{folder}", folder),
       lines,
       buttons: [
-        ...(wayOut === "damaged" ? [button("recover")] : []),
+        ...(wayOut === "damaged" || wayOut === "retired" ? [button("recover")] : []),
         ...(wayOut === "restore" ? [button("restore")] : []),
         ...(reports ? [button("report")] : []),
         button("quit"),
@@ -114,7 +114,7 @@ const SAMPLES: Samples = {
     data: { kind: "identityCredits", identity: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF", needed: "120000000", available: "4000000" },
   },
   limit: { code: "vault.quick_unlock_limit_exceeded", data: { kind: "limit", duffs: 10_000_000 } },
-  maxMinimum: { code: "credits.below_minimum", data: { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs: 10_000_100, arrivingDuffs: 0, arrivingClears: false } },
+  maxMinimum: { code: "credits.below_minimum", data: { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs: 10_000_100, arrivingDuffs: 0, arrivingClears: false, arrivingBlock: null, otherArrivingDuffs: 0 } },
   fee: { code: "send.amount_with_fee_exceeds_balance", data: { kind: "fee", fee: 374, available: 3_019_698_287 } },
   spendCap: { code: "send.grant_exceeded", data: { kind: "spendCap", maxDuffs: 100_000_000, outflow: 150_000_000 } },
   recipient: { code: "send.invalid_address", data: { kind: "recipient", index: 1 } },
@@ -194,12 +194,13 @@ export function sampleError(cls: ErrorClass): AppError {
 
 /** `screen_for`'s screens, each with the variant that gives it: a fork file this build can't read yet, for
  * the version before (Quit only); one whose layout is off (Report a problem); a migrated file with a
- * verified backup (Restore earlier data); and a damaged store (Set up from recovery phrase, Q107 C1). */
+ * verified backup (Restore earlier data); and a damaged store or retired backup (Set up from recovery phrase). */
 export const STORE_SCREENS = {
   refusedPrevious: (folder: string) => refusedScreen(folder, "RetiredPoolWithoutAdopter", "contactsTable", "previous"),
   refusedSupport: (folder: string) => refusedScreen(folder, "ForkStoreShapeMismatch", "shapeMismatch", "support"),
   refusedRestore: (folder: string) => refusedScreen(folder, "PreHistoryFork", "devBuild", "restore"),
   damaged: (folder: string) => refusedScreen(folder, "SnapshotSourceDamaged", "damaged", "damaged"),
+  retiredBackup: (folder: string) => refusedScreen(folder, "SchemaHistoryMismatch", "historyMismatch", "retired"),
 };
 
 export type StoreScreenName = keyof typeof STORE_SCREENS;
