@@ -91,9 +91,6 @@ function failedText(data: unknown): string {
 
 /** Each refusal that says no more than its code. */
 const BY_CODE: Partial<Record<ErrorCode, string>> = {
-  get "connect.mainnet_off"() {
-    return t("dashpay.connect.err.mainnetOff");
-  },
   get "connect.unsupported"() {
     return t("dashpay.connect.err.unsupported");
   },
@@ -207,7 +204,7 @@ export function tokenCostText(b: ConnectBinding): string | null {
   return b.scope.kind !== "profile" && !signsTokens(b) ? t("dashpay.connect.tokenCost") : null;
 }
 
-export type ConnectPhase = "loading" | "sheet" | "approving" | "sendFailed" | "sending" | "done" | "denied" | "refused" | "mainnetOff";
+export type ConnectPhase = "loading" | "sheet" | "approving" | "sendFailed" | "sending" | "done" | "denied" | "refused";
 
 export class ConnectFlow extends Model {
   phase: ConnectPhase = "loading";
@@ -530,11 +527,8 @@ export class ConnectFlow extends Model {
     if (this.#closed) return;
     this.#quotes++;
     this.quoting = false;
-    if (hasCode(e, "connect.mainnet_off")) this.phase = "mainnetOff";
-    else {
-      this.phase = "refused";
-      this.error = e;
-    }
+    this.phase = "refused";
+    this.error = e;
     this.changed();
   }
 }

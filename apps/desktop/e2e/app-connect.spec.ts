@@ -1,12 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { APP_ID, CONNECT_LINKS, deliverConnect, openConnect, quoted } from "./connect";
+import { APP_ID, CONNECT_HOST, CONNECT_LINKS, deliverConnect, openConnect, quoted } from "./connect";
 import { authorize, fontsReady, trackPageErrors } from "./helpers";
 
 // "Sign in to an app" (DashPay App Connect) on the fixture backend: the sheet says who asks (the
 // app's own unverified name, its App ID, where it returns to) and for what; the primary key can't be
 // left out; Deny and Approve answer the request, Approve under the passphrase every time; a send
-// that failed is retried; mainnet shows no Approve. dw-engine checks requests against Platform and
+// that failed is retried; mainnet signs in like any network. dw-engine checks requests against Platform and
 // dw-app keeps the request and its return link; the fixture stands in for both.
 
 const link = (page: Page, outcome: keyof typeof CONNECT_LINKS) =>
@@ -114,14 +114,24 @@ test("a request typed into Open URI has no way back; closing the sheet forgets t
   await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
 });
 
-test("on mainnet there is no sheet and no Approve", async ({ page }) => {
-  await openConnect(page, "mainnetOff");
-  await expect(page.getByTestId("connect-mainnet-off")).toHaveText("This version can sign in to apps on test networks only.");
-  await expect(page.getByTestId("connect-approve")).toHaveCount(0);
-  await expect(page.getByTestId("connect-claim")).toHaveCount(0);
-  await expect(page.getByTestId("connect-return")).toBeVisible();
-  await page.getByTestId("connect-close").click();
-  await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
+test("on mainnet the sheet signs in like on a test network, with the same warnings", async ({ page }) => {
+  const sheet = await openConnect(page, "ok", "light", CONNECT_HOST, "&network=mainnet");
+  await expect(page.getByTestId("connect-claim")).toHaveText("“Yappr” (name given by the app, not verified)");
+  await expect(page.getByTestId("connect-unverified")).toHaveText(
+    "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+  );
+  await expect(page.getByTestId("connect-app-id")).toHaveText(APP_ID);
+  const rows = sheet.getByTestId("connect-binding");
+  await expect(rows.nth(1).getByTestId("connect-critical")).toHaveText("This key has critical access: within what it covers, it can do anything your identity can.");
+  await expect(rows.nth(2).getByTestId("connect-critical")).toContainText("The funding limit doesn't cap tokens.");
+  await expect(rows.nth(0).getByTestId("connect-token-cost")).toHaveText(
+    "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
+  );
+  await quoted(page);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await page.getByTestId("connect-done").waitFor();
+  expect((await link(page, "ok"))?.answer).toBe("ok");
 });
 
 test("a send that failed says so; Retry sending signs in", async ({ page }) => {
