@@ -147,18 +147,18 @@ test("Home keeps a Core-only breakdown and masks pending amounts in discreet mod
   await expect(page.getByTestId("hero-amount")).toContainText("30.19698287");
   const core = page.getByTestId("breakdown-core");
   const subtitle = core.locator(".breakdown-subtitle");
-  await expect(subtitle).toHaveText("0.20 pending");
+  await expect(subtitle).toHaveText("+0.20 pending");
   await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
   await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
   await page.getByTestId("toolbar-discreet").click();
   await expect(page.getByTestId("hero-amount")).toContainText("#.##");
-  await expect(subtitle).toHaveText("Dash wallet");
+  await expect(subtitle).toBeEmpty();
   await page.getByTestId("toolbar-discreet").click();
-  await expect(subtitle).toHaveText("0.20 pending");
+  await expect(subtitle).toHaveText("+0.20 pending");
   await setCore(page, { confirmed: 125_000_000, unconfirmed: 0, immature: 0, locked: 0, total: 125_000_000 });
   await expect(page.getByTestId("hero-amount").locator(".amount-number")).toHaveText("1.25");
   await expect(page.getByTestId("hero-amount").locator(".amount-minor")).toHaveCount(0);
-  await expect(subtitle).toHaveText("Dash wallet");
+  await expect(subtitle).toBeEmpty();
 });
 
 for (const theme of THEMES) {
@@ -187,17 +187,23 @@ for (const theme of THEMES) {
 
     await setCore(page, { unconfirmed: 20_000_000, withheld: 5_000_000 });
     await setShielded(true);
-    await expect(core.locator(".breakdown-subtitle")).toHaveText("0.25 pending");
-    await expect(shielded.locator(".breakdown-subtitle")).toHaveText("0.4960919 pending");
-    await expect(platform.locator(".breakdown-subtitle")).toHaveText("Platform addresses");
+    await expect(core.locator(".breakdown-subtitle")).toHaveText("+0.25 pending");
+    await expect(shielded.locator(".breakdown-subtitle")).toBeEmpty();
+    await expect(shielded.locator("[role=tooltip]")).toHaveCount(1);
+    await expect(shielded.getByRole("tooltip")).toBeHidden();
+    await shielded.focus();
+    await expect(shielded.getByRole("tooltip")).toHaveText("Pending history (in + out): 0.4960919 tDASH");
+    await page.keyboard.press("Escape");
+    await expect(shielded.getByRole("tooltip")).toBeHidden();
+    await expect(platform.locator(".breakdown-subtitle")).toBeEmpty();
     await expect(shielded.locator(".amount-number")).toHaveText("0.00");
     await expect(hero).toHaveAccessibleName("30.59698287 tDASH");
     expect(await strip.boundingBox()).toEqual(initialBox);
 
     await setCore(page, { unconfirmed: 0, withheld: 0 });
     await setShielded(false, "49609190000");
-    await expect(core.locator(".breakdown-subtitle")).toHaveText("Dash wallet");
-    await expect(shielded.locator(".breakdown-subtitle")).toHaveText("Private balance");
+    await expect(core.locator(".breakdown-subtitle")).toBeEmpty();
+    await expect(shielded.locator(".breakdown-subtitle")).toBeEmpty();
     await expect(shielded.locator(".amount-number")).toHaveText("0.4960919");
     await expect(hero).toHaveAccessibleName("31.09307477 tDASH");
     expect(await strip.boundingBox()).toEqual(initialBox);
@@ -237,10 +243,56 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("breakdown-platform").locator(".amount-number")).toHaveText("0.00");
     await page.getByTestId("toolbar-discreet").click();
     for (const pool of ["core", "shielded", "platform"]) await expect(page.getByTestId(`breakdown-${pool}`)).toContainText("#.##");
-    await expect(page.getByTestId("breakdown-core")).toContainText("Dash wallet");
+    await expect(page.getByTestId("breakdown-core").locator(".breakdown-subtitle")).toBeEmpty();
     await expect(page.getByTestId("hero-breakdown")).not.toContainText("pending");
   });
 }
+
+test("a pending incoming Platform transfer leaves the reported balance intact", async ({ page }) => {
+  await page.goto(fixtureUrl("paddr-fund-proof-waiting", "light"));
+  const platform = page.getByTestId("breakdown-platform");
+  await expect(platform.locator(".amount-number")).toHaveText("0.40");
+  await expect(platform.locator(".breakdown-subtitle")).toHaveText("Incoming pending · cached balance");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
+});
+
+test("Shielded pending history and held notes keep their exact amounts through settlement", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-held", "light"));
+  const row = page.getByTestId("breakdown-shielded");
+  const subtitle = row.locator(".breakdown-subtitle");
+  const strip = page.getByTestId("hero-breakdown");
+  await expect(subtitle).toBeEmpty();
+  await expect(row).toHaveAttribute("tabindex", "0");
+  await row.focus();
+  const tooltip = row.getByRole("tooltip");
+  await expect(tooltip).toHaveText("0.30 tDASH held for a payment");
+  const box = await strip.boundingBox();
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    const s = f.world.pending.shielded!;
+    s.held![0].credits = s.heldCredits = "30000000999";
+    s.activity.unshift({ ...s.activity[0], id: "outgoing-pending", credits: "150", status: "pending" });
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } });
+  });
+  await expect(subtitle).toBeEmpty();
+  await expect(tooltip).toHaveText("Pending history (in + out): 150 credits · 30,000,000,999 credits held for a payment");
+  await expect(row.locator(".amount-number")).toHaveText("1.25");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
+  expect(await strip.boundingBox()).toEqual(box);
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    const s = f.world.pending.shielded!;
+    s.activity[0].status = "confirmed";
+    s.held = [];
+    s.heldCredits = "0";
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } });
+  });
+  await expect(tooltip).toHaveCount(0);
+  await expect(subtitle).toBeEmpty();
+  await expect(row.locator(".amount-number")).toHaveText("1.25");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
+  expect(await strip.boundingBox()).toEqual(box);
+});
 
 test("a failed Platform refetch after a good read keeps the last balance", async ({ page }) => {
   await page.goto(fixtureUrl("funded", "light"));

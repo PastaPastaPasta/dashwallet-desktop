@@ -45,6 +45,10 @@ test.describe("item 2: Move waits for Activity's check", () => {
 
   test("a failed Activity read holds Move back and can be tried again", async ({ page }) => {
     await open(page, "funded", "&fail=platform_activity:none");
+    const platform = page.getByTestId("breakdown-platform");
+    await expect(platform.locator(".amount-number")).toHaveText("0.40");
+    await expect(platform.locator(".breakdown-subtitle")).toHaveText("Unverified · cached balance");
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
     // The retry is an action: Unfinished transfers offers it, with no Platform card.
     const card = page.getByTestId("unfinished-card");
     await expect(card.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
@@ -175,6 +179,10 @@ test.describe("item 8: closing a wallet that cannot close says why", () => {
 test.describe("item 9: a lock that may already be applied is 'Checking'", () => {
   test("the card says Checking with the contract's words and offers Check again, and Add is not blocked", async ({ page }) => {
     await open(page, "shielded-checking");
+    const shielded = page.getByTestId("breakdown-shielded");
+    await expect(shielded.locator(".amount-number")).toHaveText("1.25");
+    await expect(shielded.locator(".breakdown-subtitle")).toBeEmpty();
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
     const row = page.getByTestId("shielded-checking");
     await expect(row).toContainText("Checking");
     await expect(row).toContainText("This amount may already be in your shielded balance. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");

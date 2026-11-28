@@ -1294,6 +1294,7 @@ input[type="radio"]:disabled {
 }
 
 .breakdown-cell {
+  position: relative;
   flex: 1 1 0;
   min-width: 0;
   display: grid;
@@ -1317,6 +1318,33 @@ input[type="radio"]:disabled {
   font-weight: var(--dw-type-caption2-weight);
   line-height: var(--dw-type-caption2-line);
   opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.breakdown-cell[aria-describedby] {
+  cursor: help;
+}
+
+.breakdown-tooltip {
+  display: none;
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-start: 0;
+  z-index: 2;
+  inline-size: max-content;
+  max-inline-size: min(280px, 100%);
+  padding: var(--dw-space-s);
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card);
+  color: var(--dw-role-text-primary);
+  box-shadow: var(--dw-shadow-card);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.breakdown-cell:is(:hover, :focus):not([data-dismissed]) .breakdown-tooltip {
+  display: block;
 }
 
 .breakdown-amount {

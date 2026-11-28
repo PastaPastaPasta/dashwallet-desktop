@@ -1,11 +1,13 @@
 // Home totals confirmed Core, spendable Shielded and movable Platform funds. The breakdown keeps
 // supported pools visible through zero balances, loading and failed reads.
 
+import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { Balances } from "../api/generated/Balances";
 import { CREDITS_PER_DUFF } from "../api/pending";
 import type { ShieldedHold } from "../api/queries";
 import type { ListArrival } from "../components/emptyStates";
 import { formatLocale, messageTable, t } from "../i18n";
+import { hasPendingMove, isPendingPlatformCredit, type MoveBlock } from "../platform/move";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -141,27 +143,43 @@ export function homeBalance(core: Balances, shielded: PoolReading, platform: Poo
   return { total: pools.core + (known(shielded) ? shielded : 0) + (known(platform) ? platform : 0), pools };
 }
 
-/** Core's pending, immature and locked amounts. */
+export function corePending(core: Balances, fmt: (duffs: number) => string): string {
+  const amount = core.unconfirmed + core.withheld;
+  return amount > 0 ? t("home.core.pending", { amount: fmt(amount) }) : "";
+}
+
+/** Details for Core's non-spendable buckets. */
 export function coreSubtitle(core: Balances, fmt: (duffs: number) => string, fallback: string): string {
-  const parts: string[] = [];
-  const pending = core.unconfirmed + core.withheld;
-  if (pending > 0) parts.push(t("home.core.pending", { amount: fmt(pending) }));
+  const parts = [corePending(core, fmt)].filter(Boolean);
   if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
   if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
   return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;
 }
 
-export function shieldedSubtitle(hold: ShieldedHold | null, fmt: (duffs: number) => string, fallback: string, pendingCredits = "0"): string {
+/** Use the display unit when it can represent the credits exactly. */
+function exactCredits(value: string, fmt: (duffs: number) => string): string {
+  const credits = BigInt(value);
+  const duffs = Number(credits / CREDITS_PER_DUFF);
+  if (credits % CREDITS_PER_DUFF === 0n && Number.isSafeInteger(duffs)) return fmt(duffs);
+  return t("home.shielded.credits", { amount: credits.toLocaleString(formatLocale(undefined)), count: Number(credits) });
+}
+
+export function shieldedDetails(hold: ShieldedHold | null, fmt: (duffs: number) => string, pendingCredits = "0"): string {
   const parts: string[] = [];
-  const credits = BigInt(pendingCredits);
-  if (credits % CREDITS_PER_DUFF !== 0n) {
-    const amount = credits.toLocaleString(formatLocale(undefined));
-    parts.push(t("home.shielded.pendingCredits", { amount, count: Number(credits) }));
-  } else if (credits > 0n) {
-    parts.push(t("home.shielded.pending", { amount: fmt(Number(credits / CREDITS_PER_DUFF)) }));
-  }
-  if (hold) parts.push(t("home.shielded.held", { amount: fmt(hold.duffs), count: hold.count }));
-  return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;
+  if (BigInt(pendingCredits) > 0n) parts.push(t("home.shielded.pending", { amount: exactCredits(pendingCredits, fmt) }));
+  if (hold) parts.push(t("home.shielded.held", { amount: exactCredits(hold.credits, fmt), count: hold.count }));
+  return parts.join(t("home.core.separator"));
+}
+
+export function platformSubtitle(activity: readonly PlatformActivity[] | null | undefined, block: MoveBlock | null): string {
+  if (block === "failed") return t("home.platform.unverified");
+  const outgoing = block === "pending" || hasPendingMove(activity);
+  const incoming = activity?.some(isPendingPlatformCredit);
+  if (outgoing && incoming) return t("home.platform.bothPending");
+  if (outgoing) return block === "pending" ? t("home.platform.outgoing") : t("home.platform.held");
+  if (incoming) return t("home.platform.incoming");
+  if (!activity || block) return t("home.platform.unverified");
+  return "";
 }
 
 const poolRow = (pool: Pool) => ({

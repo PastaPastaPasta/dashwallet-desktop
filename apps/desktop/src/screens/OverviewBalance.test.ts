@@ -29,9 +29,11 @@ it("renders the same three cells with pending on each reporting pool and when it
   const shielded = (await backend.shieldedStatus(walletId))!;
   const platform = (await backend.platformAddresses(walletId))!;
   client.setQueryData(keys.platformAddresses(walletId), { ...platform, credits: "0", movableCredits: "0", duffs: 0, addresses: [] });
+  client.setQueryData(keys.platformActivity(walletId), []);
   const home = createElement(Overview, { walletId, network: world.launch.network, onOpen: () => {} });
   const render = (pending: boolean) => {
-    client.setQueryData(keys.balance(walletId), { ...balances, unconfirmed: pending ? 10_000_000 : 0 });
+    const unconfirmed = pending ? 10_000_000 : 0;
+    client.setQueryData(keys.balance(walletId), { ...balances, unconfirmed, total: balances.confirmed + unconfirmed });
     client.setQueryData(keys.shieldedStatus(walletId), { ...shielded, balance: "0", pending: pending ? "49609190000" : "0" });
     return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(BackendContext.Provider, { value: backend }, home)));
   };
@@ -39,11 +41,13 @@ it("renders the same three cells with pending on each reporting pool and when it
   const settled = render(false);
   for (const html of [arriving, settled]) {
     expect(html).toContain('data-testid="hero-breakdown"');
+    expect(html).toContain('title="30.19698287 tDASH"');
     expect(html.match(/data-testid="breakdown-(core|shielded|platform)"/g)).toHaveLength(3);
   }
   const cell = (pool: string) => new RegExp('data-testid="breakdown-' + pool + '"[^>]*>(.*?)</div>').exec(arriving)?.[1];
-  expect(cell("core")).toContain("0.10 pending");
-  expect(cell("shielded")).toContain("0.4960919 pending");
-  expect(cell("platform")).not.toContain("pending");
-  expect(settled).not.toContain("0.4960919 pending");
+  expect(cell("core")).toContain("+0.10 pending");
+  expect(cell("shielded")).toMatch(/role="tooltip"[^>]*>Pending history \(in \+ out\): 0\.4960919 tDASH</);
+  expect(cell("shielded")).toContain('<span class="breakdown-subtitle"></span>');
+  expect(cell("platform")).toContain('<span class="breakdown-subtitle"></span>');
+  expect(settled).not.toContain("Pending history (in + out): 0.4960919");
 });

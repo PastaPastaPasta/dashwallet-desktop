@@ -15,7 +15,7 @@ import {
   homeBalance,
   newHeroWatch,
   POOL_ROWS,
-  shieldedSubtitle,
+  shieldedDetails,
   watchHero,
   type HeroReading,
   type HeroSync,
@@ -33,7 +33,7 @@ describe("Home's balance", () => {
     const b = homeBalance(withPending, 5 * COIN, COIN / 2);
     expect(b.pools.core).toBe(3 * COIN);
     expect(b.total).toBe(8.5 * COIN);
-    expect(coreSubtitle(withPending, fmt, "Dash wallet")).toBe("1.50 pending");
+    expect(coreSubtitle(withPending, fmt, "Dash wallet")).toBe("+1.50 pending");
   });
 
   it("is Core (mixed coins included) plus Shielded plus Platform", () => {
@@ -59,24 +59,24 @@ describe("Home's balance", () => {
   });
 
   it("names what is pending, immature and locked under the Core row", () => {
-    expect(coreSubtitle(core, fmt, "Dash wallet")).toBe("1.00 pending");
+    expect(coreSubtitle(core, fmt, "Dash wallet")).toBe("+1.00 pending");
     const held = { ...core, unconfirmed: 0, immature: 2 * COIN, locked: 10 * COIN };
     expect(coreSubtitle(held, fmt, "Dash wallet")).toBe("2.00 immature · 10.00 locked");
     expect(coreSubtitle({ ...held, immature: 0, locked: 0 }, fmt, "Dash wallet")).toBe("Dash wallet");
   });
 
   it("names under the Shielded row what payments that may still go through hold, and how many", () => {
-    expect(shieldedSubtitle({ count: 1, credits: "30000000000", duffs: 3 * COIN / 10 }, fmt, "Private balance")).toBe("0.30 held for a payment");
-    expect(shieldedSubtitle({ count: 2, credits: "60000000000", duffs: 6 * COIN / 10 }, fmt, "Private balance")).toBe("0.60 held for 2 payments");
-    expect(shieldedSubtitle(null, fmt, "Private balance")).toBe("Private balance");
+    expect(shieldedDetails({ count: 1, credits: "30000000000", duffs: 3 * COIN / 10 }, fmt)).toBe("0.30 held for a payment");
+    expect(shieldedDetails({ count: 2, credits: "60000000000", duffs: 6 * COIN / 10 }, fmt)).toBe("0.60 held for 2 payments");
+    expect(shieldedDetails(null, fmt)).toBe("");
   });
 
   it("names Shielded's pending credits on the Shielded row without changing its spendable amount", () => {
     const b = homeBalance(core, 0, COIN / 2);
-    expect(shieldedSubtitle(null, fmt, "Private balance", "50000000000")).toBe("0.50 pending");
-    expect(shieldedSubtitle({ count: 1, credits: "30000000000", duffs: 3 * COIN / 10 }, fmt, "Private balance", "50000000000")).toBe("0.50 pending · 0.30 held for a payment");
-    expect(shieldedSubtitle(null, fmt, "Private balance", "1")).toBe("1 credit pending");
-    expect(shieldedSubtitle(null, fmt, "Private balance", "1001")).toBe("1,001 credits pending");
+    expect(shieldedDetails(null, fmt, "50000000000")).toBe("Pending history (in + out): 0.50");
+    expect(shieldedDetails({ count: 1, credits: "30000000999", duffs: 3 * COIN / 10 }, fmt, "50000000000")).toBe("Pending history (in + out): 0.50 · 30,000,000,999 credits held for a payment");
+    expect(shieldedDetails(null, fmt, "1")).toBe("Pending history (in + out): 1 credit");
+    expect(shieldedDetails(null, fmt, "1001")).toBe("Pending history (in + out): 1,001 credits");
     expect(b.pools.shielded).toBe(0);
     expect(POOL_ROWS.find((row) => row.pool === "platform")?.subtitle).toBe("Platform addresses");
   });

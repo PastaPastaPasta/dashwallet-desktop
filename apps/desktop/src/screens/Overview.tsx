@@ -23,7 +23,7 @@ import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { heldLine, heldWayOutText } from "../format/heldUnfinished";
-import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, shieldedSubtitle, type HeroSync, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, corePending, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, platformSubtitle, shieldedDetails, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
@@ -39,6 +39,7 @@ import { DroppedNoticeBanner } from "./DroppedNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
 import { ShieldedClosedNotice } from "./ShieldedClosedNotice";
+import { usePlatformHold } from "./PlatformMoveSheet";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -50,10 +51,24 @@ const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newest
 
 
 /** `amount` null: the read failed, shown as "—" with no unit; `undefined`: still being read. */
-function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat: ReactNode }) {
+function BreakdownCell({ title, description, subtitle, detail, amount, unitName, testId, fiat }: { title: string; description: string; subtitle: string; detail: string; amount: string | null | undefined; unitName: string; testId: string; fiat: ReactNode }) {
   const tr = useT();
+  const detailId = useId();
+  const [dismissed, setDismissed] = useState(false);
   return (
-    <div className="breakdown-cell" data-testid={testId}>
+    <div
+      className="breakdown-cell"
+      data-testid={testId}
+      role="group"
+      aria-label={title}
+      aria-description={description}
+      aria-describedby={detail ? detailId : undefined}
+      tabIndex={detail ? 0 : undefined}
+      data-dismissed={dismissed || undefined}
+      onFocus={() => setDismissed(false)}
+      onPointerEnter={() => setDismissed(false)}
+      onKeyDown={(e) => { if (e.key === "Escape") setDismissed(true); }}
+    >
       <span className="breakdown-title">{title}</span>
       {amount === null || amount === undefined ? (
         <span className="breakdown-amount">
@@ -67,6 +82,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
         </span>
       )}
       <span className="breakdown-subtitle">{subtitle}</span>
+      {detail && <span className="breakdown-tooltip" role="tooltip" id={detailId}>{detail}</span>}
     </div>
   );
 }
@@ -103,7 +119,7 @@ function HeldLine({ text, walletId, awaiting }: { text: string; walletId: string
   );
 }
 
-function BalanceHero({ walletId, balances, shielded, shieldedPendingCredits, shieldedHold, platform, network, hero }: { walletId: string; balances: Balances | null; shielded: PoolReading; shieldedPendingCredits: string; shieldedHold: ShieldedHold | null; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
+function BalanceHero({ walletId, balances, shielded, shieldedPendingCredits, shieldedHold, platform, platformHold, network, hero }: { walletId: string; balances: Balances | null; shielded: PoolReading; shieldedPendingCredits: string; shieldedHold: ShieldedHold | null; platform: PoolReading; platformHold: ReturnType<typeof usePlatformHold>; network: NetworkInfo; hero: HeroSync }) {
   const tr = useT();
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
@@ -142,15 +158,25 @@ function BalanceHero({ walletId, balances, shielded, shieldedPendingCredits, shi
         <div className="hero-breakdown" data-testid="hero-breakdown">
           {breakdownRows(home.pools).map((row, i) => {
             const reading = home.pools[row.pool];
-            let subtitle = row.subtitle;
-            if (!discreet && row.pool === "core") subtitle = coreSubtitle(balances, fmt, subtitle);
-            if (!discreet && row.pool === "shielded") subtitle = shieldedSubtitle(shieldedHold, fmt, subtitle, shieldedPendingCredits);
+            let subtitle = "";
+            let detail = "";
+            if (!discreet && row.pool === "core") {
+              subtitle = corePending(balances, fmt);
+              if (balances.immature || balances.locked) detail = coreSubtitle(balances, fmt, "");
+            }
+            if (!discreet && row.pool === "shielded") detail = shieldedDetails(shieldedHold, (duffs) => `${fmt(duffs)} ${unit}`, shieldedPendingCredits);
+            if (!discreet && row.pool === "platform" && known(reading)) {
+              const status = platformHold.activity.isError ? "failed" : platformHold.block;
+              subtitle = platformSubtitle(platformHold.activity.data, status);
+            }
             return (
               <Fragment key={row.pool}>
                 {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
                 <BreakdownCell
                   title={row.title}
+                  description={row.subtitle}
                   subtitle={subtitle}
+                  detail={detail}
                   amount={known(reading) ? fmt(reading) : reading === "failed" ? null : undefined}
                   unitName={unit}
                   testId={`breakdown-${row.pool}`}
@@ -290,8 +316,9 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
   const b = useBackend();
-  const transferPools = useTransferPools(walletId, network);
   const transfer = transferFor(b, walletId);
+  const platformHold = usePlatformHold(walletId, transfer.flows.move);
+  const transferPools = useTransferPools(walletId, network, platformHold);
 
   // Cold start (U5): the first frame that shows the balance and history (`mark` is idempotent).
   useEffect(() => {
@@ -309,6 +336,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
           shieldedPendingCredits={pools.shieldedPendingCredits}
           shieldedHold={pools.shieldedHold}
           platform={pools.platform}
+          platformHold={platformHold}
           network={network}
           hero={hero}
         />
