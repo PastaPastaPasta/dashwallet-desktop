@@ -24,7 +24,7 @@ const navigate = (page: Page, route: string) => page.evaluate((r) => window.__dw
 
 async function reviewErin(page: Page) {
   await navigate(page, "pay");
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-picker-row").filter({ has: page.locator(".contact-row-name", { hasText: "Erin" }) }).click();
   await page.getByTestId("pay-amount").fill("0.01");
   await page.getByTestId("pay-fee-line").waitFor();
@@ -100,7 +100,6 @@ test("H-09 a contact payment whose data doesn't match is refused in plain words"
 test("H-09 a payment to an address reads Sending… while it is prepared, not Checking contact…", async ({ page }) => {
   await open(page, "dashpay-registered", "light", "&hold=draft_prepare");
   await navigate(page, "pay");
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(PAYEE);
   await page.getByTestId("pay-amount").fill("0.01");
   await page.getByTestId("pay-continue").and(page.locator(":enabled")).click();
@@ -159,8 +158,8 @@ for (const theme of THEMES) {
 test("H-09 Pay's found user warns before Send Contact Request to an unverified profile", async ({ page }) => {
   await open(page, "dashpay-registered");
   await navigate(page, "pay");
-  await page.getByTestId("pay-tabs-contact").click();
-  await page.getByTestId("pay-contact-search").locator("input").fill("mateo");
+  await page.getByTestId("pay-contacts").click();
+  await page.getByTestId("pay-address").fill("mateo");
   await page.getByTestId("network-row").filter({ has: page.locator(".contact-row-name", { hasText: "mateo" }) }).click();
   await expect(page.getByTestId("pay-found-unverified")).toHaveText(SEND);
   await expect(page.getByTestId("pay-found-send")).toBeEnabled();
@@ -180,7 +179,7 @@ test("H-09 the notice outlives the page: a form shown again after the refusal st
   await navigate(page, "home");
   await page.evaluate(() => window.__dwFixture!.release("draft_prepare"));
   await navigate(page, "pay");
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-picker-row").filter({ has: page.locator(".contact-row-name", { hasText: "Erin" }) }).click();
   const notice = page.getByTestId("pay-banner").and(page.locator('[data-kind="updating"]'));
   await expect(notice.getByTestId("pay-banner-text")).toHaveText(UPDATING);

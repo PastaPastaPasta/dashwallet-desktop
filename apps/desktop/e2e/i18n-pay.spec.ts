@@ -22,12 +22,11 @@ const world = (page: Page, fn: string) => page.evaluate(`(${fn})(window.__dwFixt
 async function payPage(page: Page, scenario: string, theme: Theme, lang: string) {
   await page.goto(fixtureUrl(scenario, theme, `&lang=${lang}`));
   await page.getByTestId("toolbar").waitFor();
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("sidebar-pay").click();
 }
 
 async function toAddress(page: Page, theme: Theme, lang: string, scenario = "funded") {
   await payPage(page, scenario, theme, lang);
-  await page.getByTestId("pay-tabs-address").click();
   await expect(page.getByTestId("pay-address-form")).toBeVisible();
 }
 
@@ -35,6 +34,7 @@ async function filled(page: Page, theme: Theme, lang: string, broadcast?: string
   await toAddress(page, theme, lang);
   if (broadcast) await world(page, `(w) => (w.send.broadcast = "${broadcast}")`);
   await page.getByTestId("pay-address").fill(PAYEE);
+  await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
   await page.getByTestId("pay-amount").fill("0.5");
   await page.getByTestId("pay-fee-line").waitFor();
 }
@@ -54,7 +54,7 @@ async function sent(page: Page, outcome: "sent" | "failed") {
 
 async function contactForm(page: Page, theme: Theme, lang: string) {
   await payPage(page, "dashpay-registered", theme, lang);
-  await expect(page.getByTestId("pay-contact")).toBeVisible();
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-picker-row").filter({ hasText: "Carol" }).click();
   await expect(page.getByTestId("pay-amount")).toBeVisible();
 }
@@ -171,10 +171,11 @@ const STATES: State[] = [
   },
   {
     name: "pay-contact-picker",
-    roots: ["pay-contact"],
+    roots: ["pay-recipient-popover"],
     data: CONTACTS,
     open: async (page, theme, lang) => {
       await payPage(page, "dashpay-registered", theme, lang);
+      await page.getByTestId("pay-contacts").click();
       await expect(page.getByTestId("pay-picker-contacts")).toBeVisible();
     },
   },

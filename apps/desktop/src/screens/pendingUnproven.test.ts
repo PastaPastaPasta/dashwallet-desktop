@@ -64,8 +64,8 @@ describe("a withheld coin is in no balance the app shows (condition (a))", () =>
   it("Home: the hero and the Core row leave it out, and the Core row's subtitle shows it pending", async () => {
     const b = (await cmd.balance(W))!;
     const home = homeBalance(b, "absent", "absent");
-    expect(home.total).toBe(b.confirmed + b.unconfirmed);
-    expect(home.pools.core).toBe(b.total - b.immature - b.locked);
+    expect(home.total).toBe(b.confirmed);
+    expect(home.pools.core).toBe(b.confirmed);
     expect(b.total).toBe(b.confirmed + b.unconfirmed + b.immature + b.locked);
     const fmt = (duffs: number) => String(duffs);
     expect(coreSubtitle(b, fmt, "Dash wallet")).toBe(`${b.unconfirmed + CHANGE} pending`);

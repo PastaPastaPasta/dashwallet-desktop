@@ -263,7 +263,7 @@ fn connect_errors_carry_codes_only() {
     assert!(matches!(e.data, Some(ErrorData::Credits { needed: 5, available: 1 })));
     let e: AppError = ConnectError::Platform(PlatformError::Timeout).into();
     assert_eq!(e.code.as_str(), "platform.timeout");
-    for c in [ConnectError::Network, ConnectError::MainnetOff, ConnectError::SendFailed] {
+    for c in [ConnectError::Network, ConnectError::SendFailed] {
         let code = c.code();
         assert_eq!(AppError::from(c).message, code);
     }

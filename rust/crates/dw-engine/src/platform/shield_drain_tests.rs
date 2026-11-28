@@ -793,6 +793,7 @@ fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
                 dust_locked: false,
                 reserved: false,
                 mixing_held: false,
+                coinjoin_handoff: None,
                 lock_input: false,
                 unresolved_lock: false,
                 awaiting_history: false,

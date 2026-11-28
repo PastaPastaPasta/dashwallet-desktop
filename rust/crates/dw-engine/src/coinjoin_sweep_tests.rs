@@ -1122,6 +1122,56 @@ fn start_sweep_spv(f: &Fixture) {
 }
 
 #[test]
+fn a_sweep_row_lost_during_activity_resend_is_not_confirmation() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    let first = hook(&f, 1, &[]);
+    move_to_wallet(&f).unwrap();
+    let txid = first.txs()[0].txid();
+    let wallet = f.wallet;
+    let session = Arc::clone(&f.session);
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = session.manager()?;
+            session.abandon_inner(&manager, wallet, txid).await
+        }))
+        .unwrap();
+    let wire = hook(&f, 1, &[]);
+    let outcome = within(&f, async {
+        let gate = f.session.abandon_gate(wallet).write_owned().await;
+        let session = Arc::clone(&f.session);
+        let resend = f
+            .session
+            .rt
+            .spawn(async move { session.resend_transaction(wallet, txid).await });
+        while !f
+            .session
+            .coinjoin
+            .mixers()
+            .get(&wallet)
+            .is_some_and(|m| m.resending)
+        {
+            tokio::task::yield_now().await;
+        }
+        f.session
+            .drop_sweep_outs(wallet, vec![format!("coinjoin.sweep_out.{txid}")])
+            .await?;
+        drop(gate);
+        resend.await?
+    });
+    assert!(
+        matches!(outcome, Err(EngineError::TxNotFound(ref missing)) if missing == &txid.to_string()),
+        "{outcome:?}"
+    );
+    assert!(wire.txs().is_empty());
+    assert!(
+        f.engine
+            .block_on(f.session.read_abandon_mark(wallet, txid))
+            .unwrap()
+    );
+}
+
+#[test]
 fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
     let f = fixture(false);
     for seed in [1, 2] {
@@ -1147,13 +1197,48 @@ fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
         .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(peer));
 
     let wire = hook(&f, 1, &[Outcome::Rejected]);
+    let contended = Arc::new(crate::coins::TestPause::default());
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let gate = std::sync::Mutex::new(Some((entered, release_rx)));
+    let mut hooks = f.session.coinjoin.sweep_hooks.lock().unwrap();
+    hooks.resend_contended = Some(Arc::clone(&contended));
+    let original = hooks.broadcast.take().unwrap();
+    hooks.broadcast = Some(Arc::new(move |tx| {
+        let held = gate.lock().unwrap().take();
+        if let Some((entered, release)) = held {
+            entered.send(()).unwrap();
+            release
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .unwrap();
+        }
+        original(tx)
+    }));
+    drop(hooks);
+    let outcome = std::thread::scope(|scope| {
+        let explicit = scope.spawn(|| within(&f, f.session.resend_transaction(f.wallet, txid)));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        dash_spv::EventHandler::on_network_event(
+            &*f.session.hub,
+            &dash_spv::network::NetworkEvent::PeerDisconnected(peer),
+        );
+        dash_spv::EventHandler::on_network_event(
+            &*f.session.hub,
+            &dash_spv::network::NetworkEvent::PeerConnected(peer),
+        );
+        let waiting = contended.wait_reached(std::time::Duration::from_secs(20));
+        release.send(()).unwrap();
+        assert!(waiting, "replay did not race the Activity resend");
+        explicit.join().unwrap()
+    });
     assert!(matches!(
-        within(&f, f.session.resend_transaction(f.wallet, txid)),
+        outcome,
         Err(EngineError::Send(
             crate::send::SendFailure::BroadcastUnknown { .. }
         ))
     ));
-    assert_eq!(wire.txs(), std::slice::from_ref(&chunk));
     assert!(
         !within(&f, async {
             Ok(f.session.abandon_marked(f.wallet, txid).await)
@@ -1162,18 +1247,14 @@ fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
     );
     assert!(sweep_out_keys(&f).contains(&txid));
     assert_held(&f, &chunk);
-    dash_spv::EventHandler::on_network_event(
-        &*f.session.hub,
-        &dash_spv::network::NetworkEvent::PeerDisconnected(peer),
-    );
-    dash_spv::EventHandler::on_network_event(
-        &*f.session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected(peer),
-    );
     within(&f, async {
-        while wire.txs().len() < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while wire.txs().len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the reconnect during Activity Resend did not retry the chunk");
         Ok(())
     })
     .unwrap();

@@ -88,7 +88,6 @@ async function main() {
 
     // Pay shows what the engine counts as spendable: the funding, once SPV saw its block.
     await wd.press(tid("sidebar-pay"));
-    await wd.press(tid("pay-tabs-address"));
     await poll(LOAD_WAIT_MS, "the funding in the balance", async () =>
       (await textOf(tid("pay-address-form"))).includes(`Available: ${FUNDING}.00000000`) ? true : undefined,
     );

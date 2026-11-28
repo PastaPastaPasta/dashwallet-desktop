@@ -1264,22 +1264,6 @@ input[type="radio"]:disabled {
   height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line));
 }
 
-/* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
-   the fiat row and the note of what Core has pending. */
-@media (min-width: 980px) {
-  .hero-band:has(.hero[data-breakdown="none"]) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line));
-  }
-  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
-  .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line));
-  }
-  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line));
-  }
-}
-
-.hero-note,
 .hero-held {
   margin: 0;
   font-size: var(--dw-type-footnote-size);
@@ -1287,7 +1271,6 @@ input[type="radio"]:disabled {
   line-height: var(--dw-type-footnote-line);
 }
 
-.hero-note,
 .hero-held-text {
   opacity: var(--dw-opacity-hero-secondary-text);
 }
@@ -1359,9 +1342,7 @@ input[type="radio"]:disabled {
 }
 
 .hero-breakdown {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
+  display: flex;
   width: 100%;
   max-width: var(--dw-layout-hero-strip-max-width);
   margin-top: var(--dw-space-l);
@@ -1369,25 +1350,20 @@ input[type="radio"]:disabled {
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-card) * 100%), transparent);
 }
 
-.hero-breakdown:has(> :nth-child(5)) {
-  grid-template-columns: 1fr auto 1fr auto 1fr;
-}
-
-.hero-breakdown:has(> :nth-child(7)) {
-  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+.hero:has(.hero-fiat) .hero-breakdown {
+  margin-top: var(--dw-space-s);
 }
 
 .breakdown-cell {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dw-space-s);
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr;
+  align-items: start;
+  column-gap: var(--dw-space-s);
   padding: var(--dw-space-sm) var(--dw-space-l);
-}
-
-.breakdown-text {
-  display: flex;
-  flex-direction: column;
 }
 
 .breakdown-title {
@@ -1397,10 +1373,39 @@ input[type="radio"]:disabled {
 }
 
 .breakdown-subtitle {
+  grid-column: 1 / -1;
+  min-block-size: calc(2 * var(--dw-type-caption2-line));
   font-size: var(--dw-type-caption2-size);
   font-weight: var(--dw-type-caption2-weight);
   line-height: var(--dw-type-caption2-line);
   opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.breakdown-cell[aria-describedby] {
+  cursor: help;
+}
+
+.breakdown-tooltip {
+  display: none;
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-start: 0;
+  z-index: 2;
+  inline-size: max-content;
+  max-inline-size: min(280px, 100%);
+  padding: var(--dw-space-s);
+  border: 1px solid var(--dw-role-separator);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-card);
+  color: var(--dw-role-text-primary);
+  box-shadow: var(--dw-shadow-card);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  overflow-wrap: anywhere;
+}
+
+.breakdown-cell:is(:hover, :focus):not([data-dismissed]) .breakdown-tooltip {
+  display: block;
 }
 
 .breakdown-amount {
@@ -1410,6 +1415,8 @@ input[type="radio"]:disabled {
 }
 
 .breakdown-divider {
+  flex: none;
+  align-self: center;
   width: 1px;
   height: var(--dw-space-xxl);
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-divider) * 100%), transparent);
@@ -1426,12 +1433,14 @@ input[type="radio"]:disabled {
     height: auto;
     padding-bottom: var(--dw-space-l);
   }
-  .hero-breakdown,
-  .hero-breakdown:has(> :nth-child(5)),
-  .hero-breakdown:has(> :nth-child(7)) {
-    grid-template-columns: 1fr;
+  .hero-breakdown {
+    flex-direction: column;
+  }
+  .breakdown-cell {
+    flex-basis: auto;
   }
   .breakdown-divider {
+    align-self: stretch;
     width: auto;
     height: 1px;
     margin: 0 var(--dw-space-l);
@@ -2176,7 +2185,8 @@ input[type="radio"]:disabled {
 }
 
 .field-error,
-.field-hint {
+.field-hint,
+.pay-scan-hint {
   font-size: var(--dw-type-footnote-size);
   font-weight: var(--dw-type-footnote-weight);
   line-height: var(--dw-type-footnote-line);
@@ -2187,6 +2197,7 @@ input[type="radio"]:disabled {
 }
 
 .field-hint,
+.pay-scan-hint,
 .text-secondary {
   color: var(--dw-role-text-secondary);
 }
@@ -2326,6 +2337,103 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-card);
 }
 
+.pay-recipient-entry {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+.pay-recipient-control {
+  display: flex;
+  align-items: center;
+  flex: 1 0 100%;
+  min-width: 0;
+  gap: var(--dw-space-xs);
+}
+
+.pay-recipient-control > input {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+}
+
+.pay-recipient-control.is-picked {
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-accent-tint);
+  padding-inline-end: var(--dw-space-xs);
+}
+
+.pay-recipient-control.is-picked > input {
+  border: 0;
+  background: transparent;
+}
+
+.pay-recipient-person,
+.pay-recipient-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.pay-recipient-person {
+  flex: 1;
+  min-width: 0;
+  padding: var(--dw-space-xxs) var(--dw-space-xs);
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.pay-recipient-person .pay-payee-name {
+  font-size: var(--dw-type-body-size);
+}
+
+.pay-recipient-actions {
+  flex-wrap: wrap;
+}
+
+.pay-recipient-feedback {
+  height: calc(2 * var(--dw-type-footnote-line));
+  overflow: auto;
+}
+
+.pay-recipient-popover {
+  position: absolute;
+  inset-block-start: calc(100% + var(--dw-space-xxs));
+  inset-inline: 0;
+  z-index: 4;
+  max-height: min(18rem, 45vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--dw-space-xs);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.pay-recipient-popover [role="option"] {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border-radius: var(--dw-radius-text-field);
+  cursor: pointer;
+}
+
+.pay-recipient-popover [role="option"]:is(:hover, [aria-selected="true"]) {
+  background: var(--dw-role-field-fill);
+}
+
+.pay-recipient-popover p,
+.pay-option-heading {
+  margin: 0;
+  padding: var(--dw-space-xs) var(--dw-space-s);
+}
+
+
 /* Pay ▸ added recipients (QT-052). */
 .pay-more-head {
   display: flex;
@@ -2344,15 +2452,6 @@ input[type="radio"]:disabled {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--dw-space-s);
-}
-
-.pay-scan-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dw-space-xs) var(--dw-space-m);
-  margin-top: calc(-1 * var(--dw-space-xs));
 }
 
 .amount-entry {
@@ -3062,8 +3161,8 @@ input[type="radio"]:disabled {
   min-block-size: calc(var(--dw-type-subhead-line) + 2 * var(--dw-space-sm));
 }
 
-/* A sheet's own controls stay clear: the alert waits under it until the sheet closes. */
-body:has([aria-modal="true"]) .toast-alert {
+/* A sheet opened after the alert keeps its controls clear: the alert waits until it closes. */
+.toast-alert.is-under-sheet {
   visibility: hidden;
 }
 

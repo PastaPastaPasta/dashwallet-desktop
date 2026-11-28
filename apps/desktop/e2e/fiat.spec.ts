@@ -46,6 +46,9 @@ test("fresh USD: the hero and each breakdown row show their value, from the exac
   // The band grows by the fiat line only.
   const band = await page.getByTestId("hero-band").boundingBox();
   expect(Math.round(band!.height)).toBe(236 + 18);
+  const breakdown = (await page.getByTestId("hero-breakdown").boundingBox())!;
+  const shortcuts = (await page.getByTestId("shortcut-card").boundingBox())!;
+  expect(breakdown.y + breakdown.height).toBeLessThan(shortcuts.y);
   await expect(page.getByTestId("rates-consent-card")).toHaveCount(0);
   expect(errors).toEqual([]);
 });

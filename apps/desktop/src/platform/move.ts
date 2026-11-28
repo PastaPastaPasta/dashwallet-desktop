@@ -357,6 +357,9 @@ export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded"
 const holdingKind = (a: PlatformActivity) => a.kind === "moveToCore" || a.kind === "send" || a.kind === "contactPayment" || a.kind === "toIdentity";
 export const isHeldOp = (a: PlatformActivity): boolean => holdingKind(a) && (a.state === "pending" || a.mayLand);
 
+export const isPendingPlatformCredit = (a: PlatformActivity): boolean =>
+  a.state === "pending" && (a.kind === "fromCore" || a.kind === "fromShielded" || a.kind === "recovered" || a.kind === "registrationRefund" || a.kind === "incoming");
+
 /** Whether a move or send of this wallet holds the Platform addresses: recorded `pending` or able to
  * execute still (it settles within minutes: the engine's `platform_activity` settles it). While one
  * does, the engine refuses any other move or send that is not its exact retry. */

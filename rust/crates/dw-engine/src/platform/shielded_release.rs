@@ -146,7 +146,6 @@ fn stored_height(value: &str) -> Option<u64> {
 
 /// The highest height the anchor of `wallet`'s spend `st_hash` was proved
 /// recorded at (`Some(None)`: none); `None` when it cannot be read.
-#[cfg(test)]
 pub(crate) async fn presence(
     session: &NetworkSession,
     wallet: WalletId,
@@ -232,6 +231,28 @@ pub(crate) async fn anchor_recorded_at_dispatch(
     Ok(())
 }
 
+/// Repairs a missing dispatch height only while a verified anchor proof can still show it.
+pub(super) async fn remember_orphan_anchors(
+    session: &NetworkSession,
+    manager: &Manager,
+    orphans: Vec<(WalletId, [u8; 32], [u8; 32])>,
+) -> Result<(), String> {
+    if orphans.is_empty() {
+        return Ok(());
+    }
+    let Some(anchors) = scoped(release_net(session, manager).anchors()).await else {
+        return Ok(());
+    };
+    if anchors.verified {
+        for (wallet, hash, anchor) in orphans {
+            if anchors.value.contains(&anchor) {
+                record_presence(session, wallet, hash, anchors.height).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the journal keeps the library's `Unresolved(Cancelled)` for `a`.
 pub(crate) fn disposition_is_cancelled(a: &ShieldedArtifact) -> bool {
     a.disposition
@@ -281,6 +302,23 @@ fn bundle(kind: &ShieldedDispatchKind, st_bytes: &[u8]) -> Option<([u8; 32], Vec
         ) => Some((t.anchor(), nullifiers(t.actions()))),
         _ => None,
     }
+}
+
+/// Commitments tied to the imported transition itself. A scan can confirm
+/// the imported row from one of these outputs.
+pub(super) fn spend_output_commitments(st_bytes: &[u8]) -> Vec<[u8; 32]> {
+    let Ok(st) = StateTransition::deserialize_from_bytes_trusted(st_bytes) else {
+        return Vec::new();
+    };
+    let actions = match &st {
+        StateTransition::ShieldedTransfer(t) => t.actions(),
+        StateTransition::Unshield(t) => t.actions(),
+        StateTransition::ShieldedWithdrawal(t) => t.actions(),
+        StateTransition::IdentityTopUpFromShieldedPool(t) => t.actions(),
+        StateTransition::IdentityCreateFromShieldedPool(t) => t.actions(),
+        _ => return Vec::new(),
+    };
+    actions.iter().map(|a| a.cmx).collect()
 }
 
 /// Whether the signed bytes of `payload` carry the anchor and the

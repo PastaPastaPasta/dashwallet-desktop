@@ -384,7 +384,11 @@ test("keyboard only: accept a contact request in the contacts list", async ({ pa
 
 /** Pay ▸ To a contact: Grace Hopper, 0.01, with focus on the form's Continue. */
 async function toPayReview(page: Page) {
-  await tabTo(page, namedRow(page, "pay-picker-row", "Grace Hopper"));
+  const recipient = page.getByTestId("pay-address");
+  await tabTo(page, recipient);
+  await page.keyboard.type("Grace");
+  await expect(page.getByRole("option", { name: /Grace Hopper/ })).toBeVisible();
+  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("pay-payee-name")).toHaveText("Grace Hopper");
   await tabTo(page, page.getByTestId("pay-amount"));
@@ -399,20 +403,7 @@ async function toPayReview(page: Page) {
 test("keyboard only: pay a contact", async ({ page }) => {
   const errors = await open(page, "dashpay-registered");
   await goTo(page, "pay");
-  const toContact = page.getByTestId("pay-tabs-contact");
-  const toAddress = page.getByTestId("pay-tabs-address");
-  await expect(toContact).toHaveAttribute("aria-selected", "true");
   await expectAxeClean(page);
-  // The tabs follow the arrow keys.
-  await tabTo(page, toContact);
-  await page.keyboard.press("ArrowRight");
-  await expect(toAddress).toBeFocused();
-  await expect(toAddress).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByTestId("pay-address")).toBeVisible();
-  await expectAxeClean(page);
-  await page.keyboard.press("ArrowLeft");
-  await expect(toContact).toBeFocused();
-  await expect(toContact).toHaveAttribute("aria-selected", "true");
 
   const review = await toPayReview(page);
   await expectAxeClean(page);
