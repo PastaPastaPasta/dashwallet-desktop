@@ -135,6 +135,9 @@ export function connectErrorText(e: unknown, network: string): string {
   return BY_CODE[e.code] ?? t("dashpay.connect.err.check");
 }
 
+/** A Platform error that may pass: a read of the request that failed with one keeps the sheet. */
+const temporary = (e: unknown) => hasCode(e, "platform.timeout") || hasCode(e, "platform.unavailable");
+
 /** A `connect.*` refusal answered the request, except a credit shortfall: the sheet stays open. */
 const ends = (e: unknown) => isAppError(e) && e.code.startsWith("connect.") && e.code !== "connect.credits" && !(e.code === "connect.failed" && failureName(e.data) === "notConfirmed");
 
@@ -235,6 +238,8 @@ export class ConnectFlow extends Model {
   #loads = 0;
   /** Quotes in a row that read other group facts than the sheet shows, since one that matched. */
   #mismatches = 0;
+  /** Try again reads the request first: a quote read other group facts again, or that read failed. */
+  #refresh = false;
   #closed = false;
 
   constructor(
@@ -274,17 +279,27 @@ export class ConnectFlow extends Model {
         this.#off = new Set(sheet.bindings.filter((b) => !b.primary && !earlier.selection.includes(b.index)).map((b) => b.index));
         this.limit = limitText(earlier.terms.fundingLimit);
       }
+      this.#refresh = false;
       this.phase = "sheet";
       this.changed();
       void this.requote();
     } catch (e) {
-      if (n === this.#loads) this.#fail(e);
+      if (n !== this.#loads || this.#closed) return;
+      if (!again || !temporary(e)) return this.#fail(e);
+      clearTimeout(this.#typing);
+      this.#quotes++;
+      this.quoting = false;
+      this.#refresh = true;
+      this.quoteError = e;
+      this.phase = "sheet";
+      this.changed();
     }
   }
 
-  /** The choice may still change: the sheet is open and no approval of it is outstanding. */
+  /** The choice may still change: the sheet is open, no approval of it is outstanding, and it needs
+   * no read of the request first (Try again's). */
   get editable(): boolean {
-    return this.phase === "sheet" && !this.busy && this.attempted === null;
+    return this.phase === "sheet" && !this.busy && this.attempted === null && !this.#refresh;
   }
 
   /** The limit as typed is within the sheet's maximum. */
@@ -351,10 +366,12 @@ export class ConnectFlow extends Model {
       if (n !== this.#quotes || this.#closed) return;
       if (quote.groups !== this.sheet?.groups) {
         if (this.#mismatches++ === 0) return this.#reread();
+        this.#refresh = true;
         this.quoteError = new Error("group facts changed");
         return;
       }
       this.#mismatches = 0;
+      this.#refresh = false;
       this.quote = quote;
     } catch (e) {
       if (n !== this.#quotes || this.#closed) return;
@@ -369,10 +386,11 @@ export class ConnectFlow extends Model {
     }
   }
 
-  /** The quote's Try again: a quote whose group facts disagreed again reads the request first. */
+  /** The quote's Try again: after a quote whose group facts disagreed again, or a failed read of
+   * the request, it reads the request first. */
   retryQuote() {
-    if (this.#mismatches === 0) void this.requote();
-    else this.#reread();
+    if (this.#refresh) this.#reread();
+    else void this.requote();
   }
 
   /** Approve: a fresh quote, its grant under the passphrase, then the approval. A fresh quote that
