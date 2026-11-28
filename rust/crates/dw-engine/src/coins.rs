@@ -198,6 +198,9 @@ pub(crate) struct WalletCoin {
     pub reserved: bool,
     /// Reserved only by an active CoinJoin mixing session (`SpendOwner::Mixing`).
     pub mixing_held: bool,
+    /// Handed to a coordinator. With other reservations absent, the
+    /// user may replace the possible spend with a self-payment.
+    pub coinjoin_handoff: Option<crate::coinjoin::CoinJoinHandoff>,
     /// Reserved only as the input of a tracked `Built` or `Broadcast`
     /// asset lock, or of an unresolved signed one (module doc), not by a
     /// payment of the engine.
@@ -796,6 +799,7 @@ fn collect(
             dust_locked: false,
             reserved: false,
             mixing_held: false,
+            coinjoin_handoff: None,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
@@ -1097,6 +1101,7 @@ impl NetworkSession {
         );
         let (mut snapshot, lock_inputs, unseen, applied, mut excluded) = {
             let state = crate::wallet_read::info_of(wallet).await?;
+            self.hub.detect_truncation(wallet_id, &state.core_wallet);
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
             (
@@ -1124,7 +1129,31 @@ impl NetworkSession {
             })
             .collect();
         let sweep_scope = dw_appdb::local_scope(&id);
-        let (locked, sweep_outs) = self
+        let coinjoin_outpoints: Vec<_> = self.hub.history.read(&wallet_id, |txs| {
+            let mut origins = HashMap::new();
+            snapshot
+                .coins
+                .iter()
+                .filter(|coin| coin.coinjoin_account)
+                .map(|coin| {
+                    let outpoint = coin.utxo.outpoint;
+                    let origin = *origins.entry(outpoint.txid).or_insert_with(|| {
+                        txs.get(&outpoint.txid)
+                            .map(|entry| crate::coinjoin::coinjoin_template(&entry.tx))
+                    });
+                    let may_mix = coin.counted_denomination
+                        || dw_coinjoin::rounds::is_collateral_amount(coin.utxo.value());
+                    (outpoint, origin, may_mix)
+                })
+                .collect()
+        });
+        let unconfirmed: HashSet<Txid> = snapshot
+            .coins
+            .iter()
+            .filter(|coin| !coin.utxo.is_confirmed)
+            .map(|coin| coin.utxo.outpoint.txid)
+            .collect();
+        let (locked, sweep_outs, handoffs, returning) = self
             .appdb_op(move |db| {
                 if let Some(threshold) =
                     parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?)?
@@ -1143,7 +1172,21 @@ impl NetworkSession {
                     .map(|row| ((row.txid, row.vout), row.reason))
                     .collect();
                 let sweep_outs = crate::coinjoin::SweepRows::read(db, &sweep_scope)?;
-                Ok((locked, sweep_outs))
+                let handoffs =
+                    crate::coinjoin::read_handoffs(db, &sweep_scope, &coinjoin_outpoints)?;
+                let mut returning = HashSet::new();
+                for txid in unconfirmed {
+                    if db
+                        .setting(
+                            &sweep_scope,
+                            &format!("{}{txid}", crate::coinjoin::RETURN_PREFIX),
+                        )?
+                        .is_some()
+                    {
+                        returning.insert(txid);
+                    }
+                }
+                Ok((locked, sweep_outs, handoffs, returning))
             })
             .await?;
         // A sweep chunk that may be on the network holds its inputs from
@@ -1195,14 +1238,30 @@ impl NetworkSession {
             // A lock's own input stays held as the lock's.
             let lock_held = lock_reserved || coin.unresolved_lock;
             let other_spend_reserved = swept.contains(&o)
+                || returning.contains(&o.txid)
                 || (spent.contains(&o) && !lock_held)
                 || unseen.contains(&o)
                 || restore_outputs.contains(&o.txid)
                 || restore_inputs.contains(&o);
             let spend_reserved = reserved.contains(&o) || other_spend_reserved;
+            // Keep the asset-lock input hold even when an upgraded wallet
+            // also classifies the same denomination as a legacy CoinJoin
+            // handoff. Repair's self-spend is the only path exempted from
+            // this hold, as it was before handoff records existed.
+            let handoff = handoffs.get(&o).cloned();
             coin.lock_input = !spend_reserved && lock_held;
-            coin.mixing_held = !other_spend_reserved && !lock_held && mixing_only.contains(&o);
-            coin.reserved = spend_reserved || lock_held;
+            coin.mixing_held = !other_spend_reserved
+                && !lock_held
+                && handoff.is_none()
+                && mixing_only.contains(&o);
+            coin.reserved = spend_reserved || lock_held || handoff.is_some();
+            if !other_spend_reserved
+                && !lock_held
+                && (!reserved.contains(&o) || mixing_only.contains(&o))
+                && !excluded.contains_key(&o)
+            {
+                coin.coinjoin_handoff = handoff;
+            }
             coin.awaiting_history = unseen.contains(&o);
             coin.excluded = excluded.get(&o).copied();
             if coin.excluded.is_some() {
@@ -1986,6 +2045,7 @@ mod tests {
             dust_locked: false,
             reserved: false,
             mixing_held: false,
+            coinjoin_handoff: None,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,

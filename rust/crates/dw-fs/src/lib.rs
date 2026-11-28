@@ -146,7 +146,7 @@ pub fn open_sole_file(path: &Path) -> io::Result<std::fs::File> {
 }
 
 /// Opens a regular file read-only without following its last component.
-fn open_regular_read(path: &Path) -> io::Result<std::fs::File> {
+pub fn open_regular_read(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -161,7 +161,13 @@ fn open_regular_read(path: &Path) -> io::Result<std::fs::File> {
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(path)?;
+    let file = options.open(path).map_err(|e| {
+        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            io::Error::new(io::ErrorKind::PermissionDenied, "is a symbolic link")
+        } else {
+            e
+        }
+    })?;
     let meta = file.metadata()?;
     let regular = meta.is_file();
     #[cfg(windows)]
@@ -184,17 +190,11 @@ fn open_regular_read(path: &Path) -> io::Result<std::fs::File> {
 ///
 /// Windows checks the file type. The caller restricts its ACL.
 pub fn open_owner_only(path: &Path) -> io::Result<std::fs::File> {
-    let refused = |what: String| io::Error::new(io::ErrorKind::PermissionDenied, what);
-    let file = open_regular_read(path).map_err(|e| {
-        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            refused("is a symbolic link".into())
-        } else {
-            e
-        }
-    })?;
+    let file = open_regular_read(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let refused = |what: String| io::Error::new(io::ErrorKind::PermissionDenied, what);
         let euid = rustix::process::geteuid().as_raw();
         let meta = file.metadata()?;
         if meta.uid() != euid {

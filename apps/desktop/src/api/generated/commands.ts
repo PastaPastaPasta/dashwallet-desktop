@@ -2795,7 +2795,7 @@ export function appConnectDismiss(linkId: string): Promise<null> {
 
 /**
  * Lists each app this wallet approved for `identity` that still has
- * enabled session keys on Platform. Refused on mainnet.
+ * enabled session keys on Platform.
  */
 export function appConnectList(walletId: string, identity: string): Promise<ConnectedApps> {
   return invoke<ConnectedApps>("app_connect_list", { walletId, identity });
@@ -2803,7 +2803,7 @@ export function appConnectList(walletId: string, identity: string): Promise<Conn
 
 /**
  * What disconnecting `request` on `identity` costs and the
- * `appDisconnect` grant to ask for. Refused on mainnet.
+ * `appDisconnect` grant to ask for.
  */
 export function appConnectDisconnectQuote(walletId: string, identity: string, request: string): Promise<DisconnectQuote> {
   return invoke<DisconnectQuote>("app_connect_disconnect_quote", { walletId, identity, request });
@@ -2811,7 +2811,7 @@ export function appConnectDisconnectQuote(walletId: string, identity: string, re
 
 /**
  * Disables the verified AUTHENTICATION session keys of `request` on
- * `identity` under `grant` (an `appDisconnect` grant). Refused on mainnet.
+ * `identity` under `grant` (an `appDisconnect` grant).
  */
 export function appConnectDisconnect(walletId: string, identity: string, request: string, grant: string): Promise<DisconnectDone> {
   return invoke<DisconnectDone>("app_connect_disconnect", { walletId, identity, request, grant });
@@ -5266,7 +5266,6 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "invitation.expired",
   "invitation.already_has_identity",
   "connect.network",
-  "connect.mainnet_off",
   "connect.unsupported",
   "connect.invalid",
   "connect.stale",

@@ -252,9 +252,11 @@ impl SessionHub {
                     .values()
                     .any(|h| invalid_txids(h).next().is_some())
                     || histories.get(id).is_some_and(|h| {
-                        !h.fork_kept_locks.is_empty()
+                        !h.rescan_holds.is_empty()
+                            || !h.fork_kept_locks.is_empty()
                             || !h.fork_kept_ancestor_inputs.is_empty()
                             || !h.uncertain_fork_spends.is_empty()
+                            || !h.restored_fork_inputs.is_empty()
                             || (h.txs.iter()).any(|(t, e)| {
                                 withholding_candidate(e) && spends_known_coin(h, t, e)
                             })
@@ -382,6 +384,7 @@ fn fork_kept_inputs(
     if h.fork_kept_locks.is_empty()
         && h.fork_kept_ancestor_inputs.is_empty()
         && h.uncertain_fork_spends.is_empty()
+        && h.restored_fork_inputs.is_empty()
         && (!check_mined_locks || h.session_locks.is_empty())
     {
         return BTreeSet::new();
@@ -415,6 +418,7 @@ fn fork_kept_inputs(
         .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
         .chain(h.fork_kept_ancestor_inputs.values().flatten().copied())
         .chain(h.uncertain_fork_spends.values().flatten().copied())
+        .chain(h.restored_fork_inputs.iter().copied())
         .filter(unspent)
         .collect()
 }
