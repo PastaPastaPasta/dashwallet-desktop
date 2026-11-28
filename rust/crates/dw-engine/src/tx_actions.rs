@@ -350,6 +350,52 @@ pub(crate) struct DropNotes {
     pub deaths: crate::history::Deaths,
 }
 
+/// The sweep notes of `notes` a load deletes: a note of a transaction
+/// key-wallet stores (`stored`) or the history holds live again, and one
+/// nothing names. A note is named by an origin's gone parents, a
+/// transaction of the history spending its transaction, or a transaction
+/// of the drops' chains ([`crate::history::drop_chains`]) spending it, so
+/// a chain keeps each note its walk needs.
+pub(crate) fn sweep_notes_to_prune(
+    notes: &DropNotes,
+    txs: &HashMap<Txid, crate::history::TxEntry>,
+    stored: &HashSet<Txid>,
+) -> BTreeSet<Txid> {
+    let named: HashSet<&Txid> = (notes.drops.values())
+        .filter_map(|(_, origin)| origin.as_ref())
+        .flat_map(|o| &o.gone)
+        .collect();
+    let chains = crate::history::drop_chains(&notes.drops, &notes.deaths);
+    let parents: HashSet<Txid> = (txs.values().flat_map(|e| e.tx.input.iter()))
+        .map(|i| i.previous_output)
+        .chain(chains.iter().flat_map(|t| notes.deaths.inputs_of(t)))
+        .map(|o| o.txid)
+        .collect();
+    (notes.deaths.swept_by.keys())
+        .filter(|t| {
+            stored.contains(*t)
+                || txs.get(*t).is_some_and(|e| !e.is_abandoned())
+                || (!named.contains(t) && !parents.contains(*t))
+        })
+        .copied()
+        .collect()
+}
+
+/// The coins whose spends in the history the held report reads the blocks
+/// of: those `noted`, and each input of the drops' chains
+/// ([`crate::history::drop_chains`]), whose rival's spend
+/// [`crate::history::chain_dead_for_good`] can find final.
+pub(crate) fn spends_read<'a>(
+    noted: impl Iterator<Item = &'a OutPoint>,
+    drops: &crate::history::HeldDrops,
+    deaths: &crate::history::Deaths,
+) -> HashSet<OutPoint> {
+    let chains = crate::history::drop_chains(drops, deaths);
+    (noted.copied())
+        .chain(chains.iter().flat_map(|t| deaths.inputs_of(t)))
+        .collect()
+}
+
 /// [`DropNotes`] of `wallet`: a note whose key or value does not parse is
 /// left out. A drop with no origin note is taken as an older drop
 /// ([`crate::history::older_origin`]); one whose origin note doesn't read
@@ -1459,30 +1505,19 @@ fn add_known(
     }
 }
 
-/// Adds the transactions with a verified InstantSend lock stored and no
-/// record, linked to their parents by the inputs their lock names (#611):
-/// a locked child whose record is gone still proves its parents.
-fn add_locked_without_record(
-    known: &mut HashMap<Txid, Known>,
-    lock_parents: &HashMap<Txid, Vec<Txid>>,
-) {
-    for (t, parents) in lock_parents {
+/// Adds one loaded wallet's records and verified locks to `known`.
+/// A lock proves the parents it names even without a transaction record.
+fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &ManagedWalletInfo) {
+    add_known(known, &h.txs, core);
+    for (t, parents) in h.lock_parent_links() {
         known
             .entry(*t)
             .or_insert_with(|| Known {
-                parents: parents.clone(),
+                parents: parents.to_vec(),
                 ..Known::default()
             })
             .settled = true;
     }
-}
-
-/// Adds one loaded wallet to `known`: its history and records, then its
-/// stored locks without a record. Neither clears what another wallet's
-/// entry for the same transaction set.
-fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &ManagedWalletInfo) {
-    add_known(known, &h.txs, core);
-    add_locked_without_record(known, &h.lock_parents);
 }
 
 /// The transactions something settled descends from in `known`: first
@@ -3192,8 +3227,9 @@ impl NetworkSession {
     /// Deletes, at a load that read every stored transaction (`stored`),
     /// the sweep notes no drop needs (Q81d S6): of a transaction stored or
     /// live again, and of one that no drop names as gone and whose outputs
-    /// no transaction of the history and no dropped one spends, so no load
-    /// can find a child of it orphaned. A note a drop names stays.
+    /// no transaction of the history and none of the drops' chains spends,
+    /// so no load can find a child of it orphaned and a chain's walk keeps
+    /// what it reads ([`sweep_notes_to_prune`]). A note a drop names stays.
     async fn prune_sweep_notes(&self, wallet: WalletId, stored: &HashSet<Txid>) {
         let notes = match self.appdb_op(move |db| drop_notes(db, wallet)).await {
             Ok(notes) => notes,
@@ -3202,28 +3238,8 @@ impl NetworkSession {
                 return;
             }
         };
-        let named: HashSet<&Txid> = (notes.drops.values())
-            .filter_map(|(_, origin)| origin.as_ref())
-            .flat_map(|o| &o.gone)
-            .collect();
-        let parent_of = |tx: &Transaction| -> Vec<Txid> {
-            tx.input.iter().map(|i| i.previous_output.txid).collect()
-        };
-        let dropped: HashSet<Txid> = (notes.drops.keys())
-            .filter_map(|t| notes.deaths.copies.get(t))
-            .flat_map(parent_of)
-            .collect();
         let keys: Vec<String> = (self.hub.history).read(&wallet, |txs| {
-            let parents: HashSet<Txid> = (txs.values())
-                .flat_map(|e| parent_of(&e.tx))
-                .chain(dropped)
-                .collect();
-            (notes.deaths.swept_by.keys())
-                .filter(|t| {
-                    stored.contains(*t)
-                        || txs.get(*t).is_some_and(|e| !e.is_abandoned())
-                        || (!named.contains(t) && !parents.contains(*t))
-                })
+            (sweep_notes_to_prune(&notes, txs, stored).iter())
                 .map(|t| format!("{SWEPT_BY_PREFIX}{t}"))
                 .collect()
         });
@@ -3370,7 +3386,7 @@ impl NetworkSession {
         });
         // The winners' blocks the history holds, the swept transactions
         // live again, and the blocks of the history's spends of the coins
-        // watched or noted.
+        // watched or noted, or of an input of the drops' chains.
         let (mined, live, spends): (HashMap<Txid, Block>, Vec<Txid>, Vec<Block>) =
             (self.hub.history).read(&wallet, |txs| {
                 let mined = (deaths.swept_by.values())
@@ -3383,10 +3399,8 @@ impl NetworkSession {
                     .filter(|t| txs.get(*t).is_some_and(|e| !e.is_abandoned()))
                     .copied()
                     .collect();
-                let coins: HashSet<&OutPoint> = (watched.iter())
-                    .chain(locked.keys())
-                    .chain(&locked_unread)
-                    .collect();
+                let noted = (watched.iter()).chain(locked.keys()).chain(&locked_unread);
+                let coins = spends_read(noted, &drops, &deaths);
                 let spends = (txs.values())
                     .filter(|e| (e.tx.input.iter()).any(|i| coins.contains(&i.previous_output)))
                     .filter_map(|e| e.context.block_info())
@@ -3573,6 +3587,8 @@ impl NetworkSession {
             let chain_final = |e: &crate::history::TxEntry| {
                 (e.context.block_info()).is_some_and(|b| proven((b.height(), b.block_hash())))
             };
+            // Each drop key's verdict, judged once per report.
+            let dead_keys = std::cell::RefCell::new(HashMap::new());
             let evidence = crate::history::HeldEvidence {
                 chain_final: &chain_final,
                 final_spend: &final_spend,
@@ -3585,9 +3601,14 @@ impl NetworkSession {
                 },
                 dead_for_good: &dead_for_good,
                 drop_dead: &|t| {
-                    let ancestor =
-                        |p: &Txid| drops.contains_key(p) || deaths.swept_by.contains_key(p);
-                    crate::history::chain_dead_for_good(t, &deaths, ancestor, dead_for_good)
+                    if let Some(dead) = dead_keys.borrow().get(t) {
+                        return *dead;
+                    }
+                    let ancestor = |p: &Txid| crate::history::chain_parent(p, &drops, &deaths);
+                    let dead =
+                        crate::history::chain_dead_for_good(t, &deaths, ancestor, dead_for_good);
+                    dead_keys.borrow_mut().insert(*t, dead);
+                    dead
                 },
             };
             // A coin out of `held` for a spend in a block not yet final
@@ -5226,6 +5247,118 @@ mod tests {
             assert_eq!(drop_mark_cause(Some(value)), DropCause::InvalidSource);
         }
         assert!(!never_valid(None));
+    }
+
+    /// #951: a load keeps every sweep note a drop's chain walks through, a
+    /// grandparent's too: K, dropped, builds on Q, swept, which builds on P
+    /// and P on R, both swept. With K's drop gone, nothing names the chain
+    /// and every note goes; a note of a transaction stored again goes too.
+    #[test]
+    fn a_load_keeps_each_sweep_note_a_drops_chain_reads() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let spend = |of: Txid| Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(of, 0),
+                ..Default::default()
+            }],
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let r = spend(t(1));
+        let p = spend(r.txid());
+        let q = spend(p.txid());
+        let k = spend(q.txid());
+        let swept = |tx: &Transaction| {
+            let note = crate::history::SweptBy {
+                claim: false,
+                winner: t(2),
+                block: None,
+                tx: tx.clone(),
+            };
+            (tx.txid(), note)
+        };
+        let notes = |dropped: bool| DropNotes {
+            drops: (dropped.then(|| (k.txid(), (BTreeSet::from([OutPoint::new(t(3), 0)]), None))))
+                .into_iter()
+                .collect(),
+            deaths: crate::history::Deaths {
+                swept_by: BTreeMap::from([swept(&r), swept(&p), swept(&q)]),
+                copies: BTreeMap::from([(k.txid(), k.clone())]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let none = HashMap::new();
+        let all = BTreeSet::from([r.txid(), p.txid(), q.txid()]);
+        assert_eq!(
+            sweep_notes_to_prune(&notes(true), &none, &HashSet::new()),
+            BTreeSet::new(),
+            "K's chain reads Q, P and R"
+        );
+        assert_eq!(
+            sweep_notes_to_prune(&notes(false), &none, &HashSet::new()),
+            all,
+            "no drop names the chain"
+        );
+        assert_eq!(
+            sweep_notes_to_prune(&notes(true), &none, &HashSet::from([p.txid()])),
+            BTreeSet::from([p.txid()]),
+            "P stored again"
+        );
+    }
+
+    /// #951: the held report reads the blocks of the spends of each input
+    /// of a drop's chain, not only of the coins it holds or contests: K,
+    /// dropped, holds D and builds on Q, swept, which builds on P, swept:
+    /// the coins whose rivals could kill K's chain are K's, Q's and P's
+    /// inputs. A sweep note no chain reads adds nothing.
+    #[test]
+    fn the_held_report_reads_the_spends_of_each_input_of_a_drops_chain() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let spend = |of: &[OutPoint]| Transaction {
+            version: 2,
+            lock_time: 0,
+            input: (of.iter())
+                .map(|o| dashcore::TxIn {
+                    previous_output: *o,
+                    ..Default::default()
+                })
+                .collect(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let (a, d) = (OutPoint::new(t(1), 0), OutPoint::new(t(3), 0));
+        let p = spend(&[a]);
+        let q = spend(&[OutPoint::new(p.txid(), 0)]);
+        let k = spend(&[OutPoint::new(q.txid(), 0), d]);
+        let z = spend(&[OutPoint::new(t(9), 0)]);
+        let swept = |tx: &Transaction| {
+            let note = crate::history::SweptBy {
+                claim: false,
+                winner: t(2),
+                block: None,
+                tx: tx.clone(),
+            };
+            (tx.txid(), note)
+        };
+        let deaths = crate::history::Deaths {
+            swept_by: BTreeMap::from([swept(&p), swept(&q), swept(&z)]),
+            copies: BTreeMap::from([(k.txid(), k.clone())]),
+            ..Default::default()
+        };
+        let drops = BTreeMap::from([(k.txid(), (BTreeSet::from([d]), None))]);
+        assert_eq!(
+            spends_read([d].iter(), &drops, &deaths),
+            HashSet::from([d, OutPoint::new(q.txid(), 0), OutPoint::new(p.txid(), 0), a]),
+            "K's chain: K, Q and P"
+        );
+        assert_eq!(
+            spends_read([d].iter(), &BTreeMap::new(), &deaths),
+            HashSet::from([d]),
+            "no drop"
+        );
     }
 
     /// Q81d S1-S5: a sweep notes every transaction it swept with its kind,
