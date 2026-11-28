@@ -2,7 +2,8 @@ mod account;
 mod piggy;
 mod store;
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashcore::{Network, hashes::sha256};
@@ -29,6 +30,10 @@ pub(crate) struct GiftCards {
     os: Arc<dyn OsSecretStore>,
     piggy: OnceLock<Result<Piggy, AppError>>,
     serial: tokio::sync::Mutex<()>,
+    /// Each order's quote window, on the monotonic clock from when its
+    /// quote was created: a wall-clock change neither extends nor reopens
+    /// it, and a restart forgets it, so the order needs a new quote.
+    quotes: Mutex<HashMap<[u8; 32], tokio::time::Instant>>,
 }
 
 impl Default for GiftCards {
@@ -37,7 +42,32 @@ impl Default for GiftCards {
             os: Arc::new(KeyringOsStore::new()),
             piggy: OnceLock::new(),
             serial: tokio::sync::Mutex::new(()),
+            quotes: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl GiftCards {
+    fn quotes(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], tokio::time::Instant>> {
+        self.quotes.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn start_quote(&self, key: [u8; 32]) {
+        let now = tokio::time::Instant::now();
+        let mut quotes = self.quotes();
+        quotes.retain(|_, deadline| *deadline > now);
+        quotes.insert(key, now + Duration::from_secs(INVOICE_WINDOW_SECS));
+    }
+
+    /// The order's quote deadline while it is still open.
+    fn quote_deadline(&self, key: &[u8; 32]) -> Option<tokio::time::Instant> {
+        let deadline = self.quotes().get(key).copied()?;
+        (tokio::time::Instant::now() < deadline).then_some(deadline)
+    }
+
+    fn open_quote(&self, key: &[u8; 32]) -> Result<tokio::time::Instant, AppError> {
+        self.quote_deadline(key)
+            .ok_or_else(|| fail("The gift card quote expired. Get a new quote before paying."))
     }
 }
 
@@ -310,31 +340,16 @@ impl<'a> Context<'a> {
 }
 
 impl GiftOrder {
-    async fn revalidate(
-        &self,
-        piggy: &Piggy,
-        access: &str,
-    ) -> Result<(GiftInvoice, tokio::time::Instant), AppError> {
+    /// The order's invoice, once a fresh read shows PiggyCards still awaits
+    /// exactly that payment.
+    async fn revalidate(&self, piggy: &Piggy, access: &str) -> Result<GiftInvoice, AppError> {
         let invoice = self
             .invoice
             .as_ref()
             .ok_or_else(|| fail("The gift card invoice is unavailable."))?;
         let data = piggy.order(&self.id, access).await?;
         data.verify_quote(invoice)?;
-        Ok((
-            invoice.clone(),
-            tokio::time::Instant::now() + self.remaining()?,
-        ))
-    }
-
-    fn remaining(&self) -> Result<Duration, AppError> {
-        UNIX_EPOCH
-            .checked_add(Duration::from_secs(self.expires_at))
-            .and_then(|limit| limit.duration_since(SystemTime::now()).ok())
-            .filter(|remaining| {
-                !remaining.is_zero() && *remaining <= Duration::from_secs(INVOICE_WINDOW_SECS)
-            })
-            .ok_or_else(|| fail("The gift card quote expired. Get a new quote before paying."))
+        Ok(invoice.clone())
     }
 }
 
@@ -389,7 +404,8 @@ pub(super) async fn check_before_prepare(
             "A payment was already started for this gift card order.",
         ));
     }
-    let (invoice, deadline) = order.view.revalidate(ctx.piggy, &token.access).await?;
+    let invoice = order.view.revalidate(ctx.piggy, &token.access).await?;
+    let deadline = state.gift_cards.open_quote(&key)?;
     check_active(state, &ctx.session)?;
     Ok(Some((invoice.address, invoice.duffs, deadline)))
 }
@@ -519,8 +535,10 @@ commands! {
         let view = GiftOrder {
             id: created.id, name: product.name, cents, expires_at, invoice, txid: None,
         };
+        let quote = invoice_key(&key, &view.id);
         orders.entries.push(Order { view: view.clone(), account: key, wallet: wallet_id });
         orders.save()?;
+        state.gift_cards.start_quote(quote);
         Ok(view)
     }
 
@@ -536,15 +554,15 @@ commands! {
         let data = ctx.piggy.order(&order_id, &token.access).await?;
         let status = GiftOrderStatus::from(data.status.as_str());
         check_active(&state, &ctx.session)?;
-        let expires = order.view.expires_at;
+        let quote = state.gift_cards.quote_deadline(&invoice_key(&account_key, &order_id));
         let missing_invoice = order.view.invoice.is_none() && payment.is_none()
-            && matches!(status, GiftOrderStatus::AwaitingPayment) && now() < expires;
+            && matches!(status, GiftOrderStatus::AwaitingPayment) && quote.is_some();
         if missing_invoice {
             order.view.invoice = data.pay_to.as_deref().and_then(|uri| GiftInvoice::parse(uri, Network::Mainnet).ok());
         }
         let mut view = order.view.clone();
         view.txid = payment;
-        if view.invoice.as_ref().is_some_and(|known| data.verify_quote(known).is_err()) {
+        if quote.is_none() || view.invoice.as_ref().is_some_and(|known| data.verify_quote(known).is_err()) {
             view.expires_at = 0;
         }
         if missing_invoice && view.invoice.is_some() {
@@ -574,9 +592,9 @@ commands! {
         let order = orders.find(&order_id, &account, &wallet_id)?;
         let key = invoice_key(&account, &order_id);
         let txid = ctx.session.invoice_payment(key).await?.ok_or_else(|| fail("No payment was recorded for this order."))?;
-        let (_, deadline) = order.view.revalidate(ctx.piggy, &token.access).await?;
+        order.view.revalidate(ctx.piggy, &token.access).await?;
         check_active(&state, &ctx.session)?;
-        ctx.session.resend_invoice_transaction(parse_wallet_id(&wallet_id)?, txid.parse().map_err(|_| fail("The recorded transaction ID is invalid."))?, key, deadline).await?;
+        ctx.session.resend_invoice_transaction(parse_wallet_id(&wallet_id)?, txid.parse().map_err(|_| fail("The recorded transaction ID is invalid."))?, key).await?;
         Ok(())
     }
 
@@ -608,7 +626,7 @@ commands! {
         let key = invoice_key(&account_key, &order_id);
         let mut orders = ctx.orders()?;
         let order = orders.find(&order_id, &account_key, &wallet_id)?;
-        if now() >= order.view.expires_at || order.view.invoice.is_none() {
+        if state.gift_cards.quote_deadline(&key).is_none() || order.view.invoice.is_none() {
             return Err(fail("The gift card invoice is unavailable or has expired."));
         }
         if ctx.session.invoice_payment(key).await?.is_some() {
@@ -635,11 +653,11 @@ commands! {
         if previous.as_deref().is_some_and(|id| id != tx.summary().txid) {
             return Err(fail("A payment was already started for this gift card order."));
         }
-        let (invoice, deadline) = order.view.revalidate(ctx.piggy, &token.access).await?;
+        let invoice = order.view.revalidate(ctx.piggy, &token.access).await?;
         check_active(&state, &ctx.session)?;
         let d = state.sends.for_payment(draft, Some(key))?;
         let tx = send::prepared_of(&state, draft, prepared)?;
         invoice.verify(&tx.summary().outputs)?;
-        Ok(send::broadcast(&state, d, tx, prepared, Some((key, deadline))).await?.into())
+        Ok(send::broadcast(&state, d, tx, prepared, Some(key)).await?.into())
     }
 }

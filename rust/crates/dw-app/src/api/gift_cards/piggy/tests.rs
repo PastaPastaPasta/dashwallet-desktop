@@ -326,3 +326,18 @@ async fn reopened_order_cannot_relay_when_the_provider_has_cancelled_it() {
     );
     server.join().unwrap();
 }
+
+#[test]
+fn a_quote_window_runs_on_the_monotonic_clock_and_ends_at_restart() {
+    use crate::api::gift_cards::GiftCards;
+    let cards = GiftCards::default();
+    let key = [1; 32];
+    assert!(cards.open_quote(&key).is_err(), "no quote since this process started");
+    cards.start_quote(key);
+    let deadline = cards.open_quote(&key).unwrap();
+    let window = deadline - tokio::time::Instant::now();
+    assert!(window <= Duration::from_secs(120) && window > Duration::from_secs(110));
+    cards.quotes().insert(key, tokio::time::Instant::now());
+    assert!(cards.open_quote(&key).is_err(), "a passed deadline stays passed");
+    assert!(GiftCards::default().open_quote(&key).is_err(), "a restart forgets the quote");
+}

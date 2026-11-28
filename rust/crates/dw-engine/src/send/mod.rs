@@ -851,7 +851,6 @@ const INVOICE_SCOPE: &str = "payment-invoices";
 #[derive(Clone, Copy)]
 struct InvoiceDispatch {
     key: [u8; 32],
-    deadline: tokio::time::Instant,
 }
 
 impl NetworkSession {
@@ -1700,9 +1699,8 @@ impl TxDraft {
         self: &Arc<Self>,
         prepared: Arc<PreparedTx>,
         key: [u8; 32],
-        deadline: tokio::time::Instant,
     ) -> Result<BroadcastOutcome, EngineError> {
-        self.broadcast_candidate(prepared, Some(InvoiceDispatch { key, deadline }))
+        self.broadcast_candidate(prepared, Some(InvoiceDispatch { key }))
             .await
     }
 
@@ -1786,7 +1784,6 @@ impl TxDraft {
         // claims from (#88), stored before it can leave; again for a send
         // recovered with its outcome unknown, which may be its first.
         let invoice_key = invoice.map(|i| i.key);
-        let deadline = invoice.map(|i| i.deadline);
         if let Err(e) = self.mark_sent(&prepared, true, invoice_key).await {
             let next = match first && self.drop_mark(&prepared, invoice_key).await {
                 true => Phase::Pending,
@@ -1806,12 +1803,12 @@ impl TxDraft {
         }
         let (mut outcome, mut next) = match &prepared.lease {
             Some((lease, artifact)) => {
-                self.fenced(&prepared, lease, *artifact, first, deadline)
+                self.fenced(&prepared, lease, *artifact, first, invoice.is_some())
                     .await
             }
             None => {
                 let outcome = self
-                    .dispatch(&prepared, first, deadline, invoice.is_some())
+                    .dispatch(&prepared, first, None, invoice.is_some())
                     .await;
                 let next = settle(first, &outcome);
                 (outcome, next)
@@ -1878,7 +1875,7 @@ impl TxDraft {
         lease: &Lease,
         artifact: ArtifactId,
         first: bool,
-        deadline: Option<tokio::time::Instant>,
+        invoice: bool,
     ) -> (Result<BroadcastOutcome, EngineError>, Phase) {
         let table = std::sync::Arc::clone(&lease.table);
         let wallet = self.wallet_id;
@@ -1906,20 +1903,13 @@ impl TxDraft {
                 // L5: the transport only before the permit's deadline, and
                 // under it (`dispatch`).
                 let result = self
-                    .dispatch(
-                        prepared,
-                        first,
-                        Some(deadline.map_or(permit.deadline(), |end| end.min(permit.deadline()))),
-                        deadline.is_some(),
-                    )
+                    .dispatch(prepared, first, Some(permit.deadline()), invoice)
                     .await;
                 let s = permit.finish(attempt_outcome(&result));
                 (result, s)
             }
             Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let result = self
-                    .dispatch(prepared, false, deadline, deadline.is_some())
-                    .await;
+                let result = self.dispatch(prepared, false, None, invoice).await;
                 let s = guard.finish(attempt_outcome(&result));
                 (result, s)
             }
@@ -2073,7 +2063,7 @@ impl TxDraft {
         if first && invoice && matches!(sent, Err(PlatformWalletError::StaleReservation)) {
             return Err(SendFailure::PreparedTxSpent.into());
         }
-        broadcast_result(sent, first && !invoice)
+        broadcast_result(sent, first)
     }
 
     /// Releases the inputs of `prepared`. Idempotent for a pending or

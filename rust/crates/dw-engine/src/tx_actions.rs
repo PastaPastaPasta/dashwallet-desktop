@@ -4651,7 +4651,7 @@ impl NetworkSession {
                     continue;
                 }
                 match self
-                    .resend_transaction_inner(wallet, txid, Some(generation), None)
+                    .resend_transaction_inner(wallet, txid, Some(generation), false)
                     .await
                 {
                     Ok(()) => {
@@ -4684,22 +4684,20 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
         invoice: [u8; 32],
-        deadline: tokio::time::Instant,
     ) -> Result<(), EngineError> {
-        self.resend_stored(wallet, txid, Some((invoice, deadline)))
-            .await
+        self.resend_stored(wallet, txid, Some(invoice)).await
     }
 
     async fn resend_stored(
         self: &Arc<Self>,
         wallet: WalletId,
         txid: Txid,
-        invoice: Option<([u8; 32], tokio::time::Instant)>,
+        invoice: Option<[u8; 32]>,
     ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            if let Some((key, _)) = invoice {
+            if let Some(key) = invoice {
                 if this.invoice_payment(key).await? != Some(txid.to_string())
                     || !this.is_invoice_payment(wallet, txid).await?
                 {
@@ -4712,7 +4710,7 @@ impl NetworkSession {
                     "Check the gift card order in Explore before paying it again.".into(),
                 ));
             }
-            this.resend_transaction_inner(wallet, txid, None, invoice.map(|(_, d)| d))
+            this.resend_transaction_inner(wallet, txid, None, invoice.is_some())
                 .await
         })
         .await
@@ -4723,14 +4721,14 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
         replay_generation: Option<u64>,
-        invoice: Option<tokio::time::Instant>,
+        invoice: bool,
     ) -> Result<(), EngineError> {
         self.refuse_tx_action_while_restored()?;
         let manager = self.manager()?;
         let (entry, f) = self.tx_facts(&manager, wallet, txid, false).await?;
         let peers = self.hub.tracker().snapshot().connected_peers;
         if replay_generation.is_none()
-            && invoice.is_none()
+            && !invoice
             && self.can_restart_abandoned_sweep(wallet, txid, &f).await
         {
             return self.restart_abandoned_sweep(wallet, txid).await;
@@ -4788,11 +4786,6 @@ impl NetworkSession {
         // send dash-spv refuses outright (no connection) is reported.
         let mut task = tokio::spawn(async move {
             let _gate = gate;
-            if invoice.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
-                return Err(EngineError::InvalidArgument(
-                    "The gift card quote expired. Check the order before retrying.".into(),
-                ));
-            }
             #[cfg(test)]
             if let Some(wire) = wire {
                 wire.lock().unwrap().push(transaction.txid());
@@ -4806,7 +4799,7 @@ impl NetworkSession {
                 }
             }
             match outcome {
-                Err(error) if invoice.is_some() => Err(crate::send::SendFailure::BroadcastUnknown {
+                Err(error) if invoice => Err(crate::send::SendFailure::BroadcastUnknown {
                     reason: error.to_string(),
                 }
                 .into()),

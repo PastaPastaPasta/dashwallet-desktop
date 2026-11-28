@@ -7687,11 +7687,10 @@ fn invoice_payment_and_send_record_commit_together() {
 
     // A first attempt with no peers is definitely unsent and drops both marks.
     assert_eq!(
-        send_failure(f.engine.block_on(draft.broadcast_invoice(
-            prepared,
-            invoice,
-            tokio::time::Instant::now() + Duration::from_secs(30)
-        ))),
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice))
+        ),
         SendFailure::NoPeers
     );
     assert_eq!(read(), None);
@@ -7741,12 +7740,11 @@ fn invoice_payment_recovered_in_activity_cannot_be_resent() {
         matches!(result, Err(EngineError::InvalidArgument(message)) if message.contains("gift card order"))
     );
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     assert!(
         f.engine
             .block_on(
                 f.session
-                    .resend_invoice_transaction(f.wallet, txid, [5; 32], deadline)
+                    .resend_invoice_transaction(f.wallet, txid, [5; 32])
             )
             .is_err()
     );
@@ -7767,12 +7765,10 @@ fn invoice_payment_recovered_in_activity_cannot_be_resent() {
     let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
     *f.session.hub.resend_wire.lock().unwrap() = Some(wire.clone());
     f.engine
-        .block_on(f.session.resend_invoice_transaction(
-            f.wallet,
-            txid,
-            [4; 32],
-            tokio::time::Instant::now() + Duration::from_secs(30),
-        ))
+        .block_on(
+            f.session
+                .resend_invoice_transaction(f.wallet, txid, [4; 32]),
+        )
         .unwrap();
     assert_eq!(*wire.lock().unwrap(), [txid]);
 }
@@ -7790,11 +7786,10 @@ fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
     let invoice = [2; 32];
     *prepared.phase() = Phase::Unknown;
     assert!(matches!(
-        send_failure(f.engine.block_on(draft.broadcast_invoice(
-            prepared,
-            invoice,
-            tokio::time::Instant::now() + Duration::from_secs(30)
-        ))),
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice))
+        ),
         SendFailure::BroadcastUnknown { .. }
     ));
     assert_eq!(
@@ -7806,29 +7801,34 @@ fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
     );
 }
 
+/// A first gift card broadcast the network definitely rejects was never
+/// sent: its coins are released and the order's binding dropped, so a fresh
+/// payment can be made, as for any first send.
 #[test]
-fn invoice_payment_expiring_before_handoff_clears_the_unsent_marks() {
-    struct StalledEntry;
-
-    impl super::TestBroadcaster for StalledEntry {
+fn a_definite_first_invoice_rejection_releases_the_payment() {
+    struct Rejects;
+    impl super::TestBroadcaster for Rejects {
         fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-            Box::pin(std::future::pending())
+            Box::pin(async {})
         }
 
         fn broadcast(
             &self,
-            _tx: &Transaction,
-            _first: bool,
+            _: &Transaction,
+            _: bool,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
                     + Send,
             >,
         > {
-            panic!("an expired invoice must never reach the wire")
+            Box::pin(async {
+                Err(platform_wallet::PlatformWalletError::TransactionBroadcast(
+                    "rejected: bad-txns-fixture".into(),
+                ))
+            })
         }
     }
-
     let f = fixture(false);
     f.credit(1, COIN);
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
@@ -7837,37 +7837,35 @@ fn invoice_payment_expiring_before_handoff_clears_the_unsent_marks() {
         .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
         .unwrap();
     let txid = prepared.summary().txid.clone();
-    let invoice = [3; 32];
-    *draft.broadcaster.lock().unwrap() = Some(Arc::new(StalledEntry));
-    let expires = tokio::time::Instant::now() + Duration::from_millis(100);
-    assert_eq!(
+    let key = [6; 32];
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(Rejects));
+    assert!(matches!(
         send_failure(
             f.engine
-                .block_on(draft.broadcast_invoice(prepared, invoice, expires))
+                .block_on(draft.broadcast_invoice(prepared.clone(), key))
         ),
-        SendFailure::Cancelled
-    );
+        SendFailure::BroadcastRejected { .. }
+    ));
+    assert_eq!(*prepared.phase(), Phase::Released);
     assert_eq!(
-        f.engine
-            .block_on(f.session.invoice_payment(invoice))
-            .unwrap(),
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
         None
     );
     let reverse = crate::tx_actions::invoice_tx_key(&txid);
-    let wallet = f.wallet.to_string();
-    assert_eq!(
-        f.session
-            .live()
-            .unwrap()
-            .appdb
-            .setting(&wallet, &reverse)
-            .unwrap(),
-        None
-    );
+    let db = f.session.live().unwrap().appdb;
+    assert_eq!(db.setting(&f.wallet.to_string(), &reverse).unwrap(), None);
+    let retry = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let again = f
+        .engine
+        .block_on(retry.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    f.engine
+        .block_on(retry.mark_sent(&again, true, Some(key)))
+        .unwrap();
 }
 
 #[test]
-fn invoice_entering_transport_before_expiry_remains_bound_after_restart() {
+fn invoice_entering_transport_remains_bound_after_restart() {
     struct Queued(Arc<std::sync::atomic::AtomicBool>);
     impl super::TestBroadcaster for Queued {
         fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
@@ -7899,14 +7897,13 @@ fn invoice_entering_transport_before_expiry_remains_bound_after_restart() {
     let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     *draft.broadcaster.lock().unwrap() = Some(Arc::new(Queued(entered.clone())));
     let key = [7; 32];
-    let expires = tokio::time::Instant::now() + Duration::from_secs(1);
-    assert!(matches!(
-        send_failure(
-            f.engine
-                .block_on(draft.broadcast_invoice(prepared, key, expires))
-        ),
-        SendFailure::BroadcastUnknown { .. }
-    ));
+    // The process stops while the payment is in transport.
+    let pending = draft.broadcast_invoice(prepared, key);
+    assert!(
+        f.engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(1), pending).await })
+            .is_err()
+    );
     assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
     drop(draft);
     let f = f.reopen();
