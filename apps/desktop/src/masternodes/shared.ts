@@ -351,6 +351,17 @@ export function handoffLine(s: SharedSession, refused: (code: string) => string 
   return t("masternodes.shared.row.handoffUnknown", { sentence });
 }
 
+/** Whether the last hand-off of a sent registration was refused (`REFUSED_HANDOFF`): that attempt
+ * reached no network. The stored code is the last attempt's, so an earlier one may still be out. */
+export function handoffRefused(s: SharedSession): boolean {
+  return s.stage.kind === "sent" && !!s.lastError && !s.abandonSpend && REFUSED_HANDOFF.includes(s.lastError);
+}
+
+/** Step 6's line while sent: waiting for its confirmation, unless the last hand-off was refused. */
+export function sentRowLine(s: SharedSession): string {
+  return t(handoffRefused(s) ? "masternodes.shared.row.sentRefused" : "masternodes.shared.row.sent");
+}
+
 /** D50's line for the spend back while it is pending, by its state, or while it or another spend of the
  * coins is in a block that isn't final yet (`confirming`); `null` without one. "Didn't go out" only for a
  * recorded refusal, whose `{sentence}` is the refusal's own. */

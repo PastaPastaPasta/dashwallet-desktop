@@ -2061,9 +2061,9 @@ pub(crate) enum ForkRestorations<'a> {
 pub(crate) struct EarlyInstantLocks {
     order: VecDeque<Txid>,
     inputs: HashMap<Txid, Vec<OutPoint>>,
-    spends: HashMap<OutPoint, HashSet<Txid>>,
+    pub(crate) spends: HashMap<OutPoint, HashSet<Txid>>,
     input_count: usize,
-    overflow: bool,
+    pub(crate) overflow: bool,
 }
 
 impl EarlyInstantLocks {
@@ -2398,6 +2398,17 @@ impl HistoryStore {
             .unwrap_or_else(|p| p.into_inner())
             .get(wallet)
             .and_then(|h| h.txs.get(txid).cloned())
+    }
+
+    /// Runs `f` over every wallet's history with the verified-lock buffer,
+    /// both read in [`Self::with_wallet_records`]' order.
+    pub(crate) fn read_wallets_with_locks<R>(
+        &self,
+        f: impl FnOnce(&HashMap<WalletId, WalletHistory>, &EarlyInstantLocks) -> R,
+    ) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+        f(&map, &locks)
     }
 
     /// Runs `f` over one wallet's history under the store's read lock

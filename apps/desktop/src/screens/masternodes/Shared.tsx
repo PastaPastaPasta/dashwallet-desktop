@@ -46,6 +46,7 @@ import {
   reservationNote,
   type SendAction,
   sendOffer,
+  sentRowLine,
   sessionsInProgress,
   sharedErrorText,
   setupOff,
@@ -1112,7 +1113,7 @@ function rowCopy(
     case "send":
       return s.debit === null ? "" : t(`${P}.row.everyoneSigned`, { debit });
     case "sent":
-      return t(`${P}.row.sent`);
+      return sentRowLine(s);
     case "contested":
       return s.confirming ? t(`${P}.row.contested`, { count: s.confirming.confirmations }) : t(`${P}.row.contestedPending`);
     case "confirmed":

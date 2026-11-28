@@ -451,6 +451,10 @@ for (const theme of THEMES) {
     await openSession(page, "sh-coordinator-sent-unknown", theme);
     await expect(page.getByTestId("sh-handoff")).toContainText("It may still confirm.");
     if (info.project.name === "chromium") await shot(page, "sh-handoff-unknown", theme);
+    await openSession(page, "sh-coordinator-sent-refused", theme);
+    await expect(page.getByTestId("sh-row-sent")).toHaveText("The last send didn't reach the network");
+    await expect(page.getByTestId("sh-handoff")).toContainText("couldn't hand the registration to the network");
+    if (info.project.name === "chromium") await shot(page, "sh-handoff-refused", theme);
     expect(errors).toEqual([]);
   });
 

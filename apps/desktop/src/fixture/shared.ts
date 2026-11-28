@@ -1218,6 +1218,8 @@ export function sharedScenarios(base: Base) {
     "sh-close-out-abandon-refused": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "refused"))),
     /** Sent three hours of tip time ago and still unconfirmed: the way out opens expanded (D49). */
     "sh-coordinator-sent-overdue": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ overdue: true }))),
+    /** Sent, the last hand-off refused: a selected coin was no longer available. */
+    "sh-coordinator-sent-refused": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ lastError: "send.outpoint_unavailable" }))),
     /** Sent, the hand-off's outcome unknown. */
     "sh-coordinator-sent-unknown": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ lastError: "send.broadcast_unknown" }))),
     /** Sent, then abandoned: Send again is refused. */

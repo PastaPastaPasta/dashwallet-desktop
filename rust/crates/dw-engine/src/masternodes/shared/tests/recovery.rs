@@ -409,7 +409,7 @@ fn test_recovery_refuses_a_saved_spend_back_with_a_new_hold() {
     );
 }
 
-fn fork_without_wallet_event(f: &Fx, id: &str, catch_up: bool) -> (OutPoint, Txid) {
+fn fork_without_wallet_event(f: &Fx, id: &str, catch_up: bool, locked: bool) -> (OutPoint, Txid) {
     use platform_wallet::events::WalletEvent;
     use platform_wallet::key_wallet_manager::WalletInterface;
 
@@ -439,7 +439,9 @@ fn fork_without_wallet_event(f: &Fx, id: &str, catch_up: bool) -> (OutPoint, Txi
     }
     f.session.hub.history.with_wallet(wallet, |h| {
         assert_eq!(h.txs[&txid].context.block_info().unwrap().height(), 2);
-        h.session_locks.insert(txid);
+        if locked {
+            h.session_locks.insert(txid);
+        }
     });
     assert!(f.held_coin(1, coin).is_none());
 
@@ -465,7 +467,7 @@ fn fork_without_wallet_event(f: &Fx, id: &str, catch_up: bool) -> (OutPoint, Txi
 fn test_recovery_reconciles_a_truncation_before_the_wallet_event() {
     let f = fx(3, true);
     let id = abandoned_participant(&f);
-    let (coin, _) = fork_without_wallet_event(&f, &id, false);
+    let (coin, _) = fork_without_wallet_event(&f, &id, false, true);
     assert_abandon_cannot_spend(&f, &id);
     assert_reserved_coin_excluded(&f, coin, ExclusionReason::ForkKeptLock);
 }
@@ -474,9 +476,54 @@ fn test_recovery_reconciles_a_truncation_before_the_wallet_event() {
 fn test_recovery_refuses_a_fork_kept_input_when_the_height_has_recovered() {
     let f = fx(3, true);
     let id = abandoned_participant(&f);
-    let (_, txid) = fork_without_wallet_event(&f, &id, true);
+    let (_, txid) = fork_without_wallet_event(&f, &id, true, true);
     assert_abandon_cannot_spend(&f, &id);
     f.history_edit(1, txid, |e| assert!(e.context.block_info().is_some()));
+}
+
+#[test]
+fn test_recovery_refuses_an_input_a_buffered_lock_names_before_its_spender() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    assert!(abandon_action(&f.recovery(1, &id)).is_some());
+    let txid = foreign_spend(&[coin], 1).txid();
+    let history = &f.session.hub.history;
+    history.note_instant_lock(&txid, Some(&[coin]), &HashSet::new());
+    history.read_wallet(&wallet, |h| assert!(!h.txs.contains_key(&txid)));
+    assert!(f.held_coin(1, coin).is_some());
+    assert_abandon_cannot_spend(&f, &id);
+}
+
+#[test]
+fn test_recovery_refuses_an_input_a_buffered_lock_names_after_its_spender_is_abandoned() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    let spend = foreign_spend(&[coin], 1);
+    let txid = spend.txid();
+    let history = &f.session.hub.history;
+    history.note_instant_lock(&txid, Some(&[coin]), &HashSet::new());
+    history.with_wallet(wallet, |h| h.mark_abandoned(&[(txid, spend)]));
+    history.read_wallet(&wallet, |h| assert!(h.txs[&txid].is_abandoned()));
+    assert!(f.held_coin(1, coin).is_some());
+    assert_abandon_cannot_spend(&f, &id);
+}
+
+#[test]
+fn test_recovery_refuses_a_mined_spend_after_the_lock_buffer_evicted() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let history = &f.session.hub.history;
+    for n in 0..=crate::history::EARLY_LOCK_LIMIT as u32 {
+        let mut bytes = [0xee; 32];
+        bytes[..4].copy_from_slice(&n.to_le_bytes());
+        history.note_instant_lock(&Txid::from_byte_array(bytes), Some(&[]), &HashSet::new());
+    }
+    fork_without_wallet_event(&f, &id, true, false);
+    assert_abandon_cannot_spend(&f, &id);
 }
 
 #[test]
