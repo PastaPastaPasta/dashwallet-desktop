@@ -120,6 +120,7 @@ export class ConnectedAppsModel extends Model {
   disconnectedLabel: string | null = null;
   lastDone: DisconnectDone | null = null;
   readonly grants: GrantModel;
+  readonly confirmedLegacyKeys = new Set<number>();
   #quoteSeq = 0;
 
   constructor(
@@ -132,12 +133,24 @@ export class ConnectedAppsModel extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
+  get legacyKeysConfirmed(): boolean {
+    const quote = this.quote;
+    return !quote?.needsLegacyKeyConfirmation || quote.keys.every((key) => this.confirmedLegacyKeys.has(key));
+  }
+
+  confirmLegacyKey(key: number, checked: boolean): void {
+    if (checked) this.confirmedLegacyKeys.add(key);
+    else this.confirmedLegacyKeys.delete(key);
+    this.changed();
+  }
+
   /** Opens the Disconnect confirmation sheet for `app` and reads the live Platform credit fee. */
   async openDisconnect(app: ConnectedApp): Promise<void> {
     if (this.disconnecting) return;
     const seq = ++this.#quoteSeq;
     this.target = app;
     this.quote = null;
+    this.confirmedLegacyKeys.clear();
     this.quoting = true;
     this.requoted = false;
     this.quoteError = null;
@@ -176,14 +189,17 @@ export class ConnectedAppsModel extends Model {
   async confirmDisconnect(): Promise<void> {
     const app = this.target;
     const q = this.quote;
-    if (!app || !q || this.quoting || this.disconnecting) return;
+    if (!app || !q || this.quoting || this.disconnecting || !this.legacyKeysConfirmed) return;
     this.disconnectError = null;
     this.requoted = false;
     this.changed();
     const epoch = this.grants.epoch;
     let grant;
     try {
-      grant = await this.grants.obtain(q.grant, this.walletId, epoch);
+      const purpose = q.grant.kind === "appDisconnect" && q.needsLegacyKeyConfirmation
+        ? { ...q.grant, confirmedLegacyKeys: true }
+        : q.grant;
+      grant = await this.grants.obtain(purpose, this.walletId, epoch);
     } catch (e) {
       if (this.target?.request === app.request) {
         this.disconnectError = e;
@@ -212,8 +228,9 @@ export class ConnectedAppsModel extends Model {
       const failure = isAppError(e) && e.code === "connect.failed" ? connectFailureName(e.data) : null;
       const shouldRefresh = failure === "notConfirmed" || failure === "pendingFeeTooHigh" || failure === "disconnectConflict";
       const shouldRequote =
-        (isAppError(e) && e.code === "platform.grant_exceeded") ||
+        (isAppError(e) && (e.code === "platform.grant_exceeded" || e.code === "platform.grant_invalid")) ||
         failure === "feeTooHigh" ||
+        failure === "pendingFeeTooHigh" ||
         failure === "disconnectConflict";
       if (shouldRefresh) this.onDisconnected();
       if (shouldRequote) {
@@ -227,6 +244,7 @@ export class ConnectedAppsModel extends Model {
   async #requote(app: ConnectedApp): Promise<void> {
     const seq = ++this.#quoteSeq;
     this.quote = null;
+    this.confirmedLegacyKeys.clear();
     this.quoting = true;
     this.quoteError = null;
     this.changed();

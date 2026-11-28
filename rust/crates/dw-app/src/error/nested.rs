@@ -232,7 +232,7 @@ impl From<ConsoleFailure> for AppError {
             F::AuthorizationRequired { purpose, wallet } => (
                 ConsoleCode::AuthorizationRequired.into(),
                 Some(ErrorData::Authorize {
-                    purpose: purpose.into(),
+                    purpose: Box::new(purpose.into()),
                     wallet_id: wallet.map(|w| w.to_string()),
                 }),
             ),

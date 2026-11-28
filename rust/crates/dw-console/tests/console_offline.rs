@@ -121,7 +121,7 @@ fn test_qt_145_console_answers_wallet_commands_offline() {
         Err(ConsoleFailure::AuthorizationRequired {
             purpose: GrantPurpose::SignMessage,
             wallet,
-        }) => assert_eq!(wallet, Some(w)),
+        }) => assert_eq!(wallet.as_deref(), Some(&w)),
         other => panic!("{other:?}"),
     }
     let grant = engine

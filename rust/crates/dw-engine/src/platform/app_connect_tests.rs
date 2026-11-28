@@ -136,6 +136,7 @@ pub(crate) struct FakeConnect {
     after_update: Mutex<Option<AfterUpdate>>,
     /// Every identity read returns this, as a lagging node would.
     stale: Mutex<Option<Identity>>,
+    stale_refresh_once: Mutex<Option<Identity>>,
     /// Updates are accepted but never land.
     lose_updates: AtomicBool,
     refuse_update: Mutex<Option<PlatformError>>,
@@ -219,6 +220,7 @@ impl FakeConnect {
             fail_publish: AtomicBool::new(false),
             after_update: Mutex::default(),
             stale: Mutex::default(),
+            stale_refresh_once: Mutex::default(),
             lose_updates: AtomicBool::new(false),
             refuse_update: Mutex::default(),
             refreshed: AtomicBool::new(false),
@@ -390,7 +392,12 @@ impl ConnectNet for FakeConnect {
     ) -> Result<(Identity, u64), PlatformError> {
         self.read("refresh");
         self.refreshed.store(true, Ordering::SeqCst);
-        let stale = self.stale.lock().unwrap().clone();
+        let stale = self
+            .stale_refresh_once
+            .lock()
+            .unwrap()
+            .take()
+            .or_else(|| self.stale.lock().unwrap().clone());
         // A lagging node (`stale`) serves an older proved block height than the tip.
         let height = if stale.is_some() {
             self.identity_height.lock().unwrap().saturating_sub(1)
@@ -892,17 +899,54 @@ impl Fixture {
         request: [u8; 20],
         max_credits: u64,
     ) -> String {
+        let owner = b58(&Identifier::from(identity));
+        let request_hex = hex::encode(request);
+        let prior_conflict = self
+            .engine
+            .block_on(records(&self.s, self.wallet))
+            .unwrap()
+            .iter()
+            .find(|r| r.identity == owner && r.request == request_hex)
+            .and_then(|r| disconnect_conflict_marker(r).unwrap());
         let purpose = GrantPurpose::AppDisconnect {
             max_credits,
             identity,
             request,
+            revision: self
+                .engine
+                .block_on(self.net.identity(Identifier::from(identity)))
+                .unwrap()
+                .0
+                .unwrap()
+                .revision(),
+            confirmed_legacy_keys: false,
+            prior_conflict,
         };
+        self.issue_disconnect_grant(purpose)
+    }
+
+    fn issue_disconnect_grant(&self, purpose: GrantPurpose) -> String {
         (self
             .s
             .vault
             .authorize(purpose, Some(&self.wallet.0), Credential::None))
         .unwrap()
         .id
+    }
+
+    fn disconnect_grant_from_quote(
+        &self,
+        quote: &DisconnectQuote,
+        confirmed_legacy_keys: bool,
+    ) -> String {
+        self.issue_disconnect_grant(GrantPurpose::AppDisconnect {
+            max_credits: quote.max_credits,
+            identity: quote.identity_id,
+            request: quote.request,
+            revision: quote.revision,
+            confirmed_legacy_keys,
+            prior_conflict: quote.prior_conflict,
+        })
     }
 
     fn withdraw_grant(&self, max_credits: u64) -> String {
@@ -2137,10 +2181,8 @@ fn a_renewal_that_narrows_its_bindings_disables_the_keys_it_drops() {
     assert!(f.net.me().public_keys()[&7].is_disabled());
 }
 
-/// A recorded key whose data no longer matches the key on Platform under
-/// that id, or a record with no key data, is left enabled.
 #[test]
-fn a_renewal_skips_a_recorded_key_it_cannot_match() {
+fn renewal_checks_digests_and_accepts_confirmed_legacy_keys() {
     for (corrupt, expected) in [
         (
             (|r: &mut ConnectRecord| {
@@ -2149,7 +2191,23 @@ fn a_renewal_skips_a_recorded_key_it_cannot_match() {
             vec![7],
         ),
         (
-            (|r: &mut ConnectRecord| r.session_key_data.clear()) as fn(&mut ConnectRecord),
+            (|r: &mut ConnectRecord| {
+                r.session_key_data.remove(&6);
+            }) as fn(&mut ConnectRecord),
+            vec![7],
+        ),
+        (
+            (|r: &mut ConnectRecord| {
+                r.session_key_data.clear();
+                r.state = RecordState::Confirmed;
+            }) as fn(&mut ConnectRecord),
+            vec![6, 7],
+        ),
+        (
+            (|r: &mut ConnectRecord| {
+                r.session_key_data.clear();
+                r.state = RecordState::Submitted;
+            }) as fn(&mut ConnectRecord),
             vec![],
         ),
     ] {
@@ -2160,6 +2218,14 @@ fn a_renewal_skips_a_recorded_key_it_cannot_match() {
         let mut record = first_record(&f);
         assert_eq!(record.session_key_data.len(), 2);
         corrupt(&mut record);
+        if record.session_key_data.is_empty() && record.state == RecordState::Confirmed {
+            let mut identities = f.net.identities.lock().unwrap();
+            let identity = identities.get_mut(&id(ME)).unwrap();
+            let IdentityPublicKey::V1(key) = identity.public_keys_mut().get_mut(&6).unwrap() else {
+                panic!("expected a limited session key");
+            };
+            key.expires_at = Some(record.expires_at_ms + DAY_MS);
+        }
         f.put_record(record);
         assert_eq!(renew(&f, request(), &Fixture::choice()), expected);
         let me = f.net.me();
@@ -2171,6 +2237,70 @@ fn a_renewal_skips_a_recorded_key_it_cannot_match() {
             );
         }
     }
+}
+
+#[test]
+fn legacy_published_renewal_requires_disconnect_before_replacing_the_grant() {
+    let f = Fixture::new();
+    let original = devnet(request());
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&original, &choice);
+    f.approve(&original, &choice, &grant).unwrap();
+
+    let mut renewal = original.clone();
+    renewal.request.app_eph_pub =
+        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
+    let issued = f.quoted_grant(&renewal, &choice);
+    let record = first_record(&f);
+    assert_eq!(record.state, RecordState::Published);
+    let mut legacy = serde_json::to_value(record).unwrap();
+    let fields = legacy.as_object_mut().unwrap();
+    for field in [
+        "returns_to",
+        "session_key_data",
+        "pending_disconnect",
+        "response_delivery",
+    ] {
+        fields.remove(field);
+    }
+    let legacy: ConnectRecord = serde_json::from_value(legacy).unwrap();
+    f.put_record(legacy.clone());
+
+    let refused = ConnectError::Failed {
+        failure: ConnectFailure::UnverifiedKey,
+    };
+    assert_eq!(f.approve(&renewal, &choice, &issued), Err(refused.clone()));
+    assert_eq!(f.quote(&renewal, &choice), Err(refused));
+    assert!(f.unused(&issued));
+    assert_eq!(f.net.updates.lock().unwrap().len(), 1);
+    assert_eq!(f.net.published.lock().unwrap().len(), 1);
+
+    let quote = f
+        .disconnect_quote(&legacy.identity, &legacy.request)
+        .unwrap();
+    assert!(quote.needs_legacy_key_confirmation);
+    let grant = f.disconnect_grant_from_quote(&quote, true);
+    let done = f
+        .disconnect(&legacy.identity, &legacy.request, &grant)
+        .unwrap();
+    assert_eq!(done.keys_disabled, legacy.session_keys);
+
+    let grant = f.quoted_grant(&renewal, &choice);
+    f.approve(&renewal, &choice, &grant).unwrap();
+    let identity = f.net.me();
+    assert!(
+        legacy
+            .session_keys
+            .iter()
+            .all(|id| identity.public_keys()[id].is_disabled())
+    );
+    let enabled_budget: u64 = identity
+        .public_keys()
+        .values()
+        .filter(|key| !key.is_disabled())
+        .filter_map(IdentityPublicKeyGettersV1::total_budget)
+        .sum();
+    assert_eq!(enabled_budget, choice.terms.funding_limit);
 }
 
 /// An update Platform refused says so, instead of claiming the keys may
@@ -2626,6 +2756,39 @@ fn disconnect_retry_after_unknown_result_does_not_double_spend_or_disable_other_
 }
 
 #[test]
+fn completed_disconnect_is_terminal_after_restart_with_lagging_proofs() {
+    let mut f = Fixture::new();
+    let owner = b58(&id(ME));
+    let link = devnet(request());
+    let choice = Fixture::choice();
+    let approval = f.quoted_grant(&link, &choice);
+    f.approve(&link, &choice, &approval).unwrap();
+    let before_nonce = 8;
+    f.net.nonces.lock().unwrap().insert(id(ME), before_nonce);
+    let request = hex::encode(link.request.request_hash());
+    let quote = f.disconnect_quote(&owner, &request).unwrap();
+    let first = f.disconnect_grant(quote.request, quote.max_credits);
+    let before = f.net.me();
+    let done = f.disconnect(&owner, &request, &first).unwrap();
+    assert_eq!(done.keys_disabled, quote.keys);
+    assert_eq!(first_record(&f).state, RecordState::Disconnected);
+
+    f.restart();
+    *f.net.stale.lock().unwrap() = Some(before);
+    *f.net.stale_nonce.lock().unwrap() = Some(before_nonce);
+    *f.net.nonce_height.lock().unwrap() = 99;
+    let retry = f.disconnect_grant(quote.request, quote.max_credits);
+    let signed = f.net.signed_disables.lock().unwrap().len();
+    let broadcast = f.net.broadcast_disables.lock().unwrap().len();
+    let repeated = f.disconnect(&owner, &request, &retry);
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed);
+    assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), broadcast);
+    assert!(repeated.unwrap().keys_disabled.is_empty());
+    assert_eq!(f.disconnect_quote(&owner, &request).unwrap().max_credits, 0);
+    assert!(f.disconnect_grant_unused(&retry));
+}
+
+#[test]
 fn list_quote_and_disconnect_run_on_mainnet() {
     let f = Fixture::on(true);
     let me_b58 = b58(&id(ME));
@@ -2688,6 +2851,9 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
         max_credits: q.max_credits,
         identity: id(ME).to_buffer(),
         request: req_hash,
+        revision: q.revision,
+        confirmed_legacy_keys: false,
+        prior_conflict: q.prior_conflict,
     };
     assert!(matches!(
         f.s.vault.authorize(
@@ -2736,6 +2902,9 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
                     max_credits: q.max_credits,
                     identity: id(ME).to_buffer(),
                     request: [0xee; 20],
+                    revision: q.revision,
+                    confirmed_legacy_keys: false,
+                    prior_conflict: None,
                 },
                 Some(&f.wallet.0),
                 Credential::Passphrase(b"secret-pin"),
@@ -2768,7 +2937,7 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
 }
 
 #[test]
-fn older_grant_without_key_data_lists_but_refuses_disconnect() {
+fn confirmed_legacy_keys_can_be_disconnected() {
     let f = Fixture::new();
     let me_b58 = b58(&id(ME));
     let key_id = 10;
@@ -2795,7 +2964,7 @@ fn older_grant_without_key_data_lists_but_refuses_disconnect() {
 
     let req_bytes = [0x42u8; 20];
     let req_hex = hex::encode(req_bytes);
-    f.put_record(ConnectRecord {
+    let mut record = ConnectRecord {
         request: req_hex.clone(),
         app_id: b58(&app()),
         label: "LegacyApp".into(),
@@ -2806,16 +2975,47 @@ fn older_grant_without_key_data_lists_but_refuses_disconnect() {
         selection: vec![0],
         funding_limit: 5_000_000_000,
         expires_at_ms: NOW + 30 * DAY_MS,
-        state: RecordState::Published,
+        state: RecordState::Submitted,
         created_ms: NOW - 10_000,
         returns_to: None,
         session_key_data: BTreeMap::new(),
         pending_disconnect: None,
         response_delivery: ResponseDelivery::Delivered,
         last_conflict: None,
-    });
+    };
 
-    // Still listed with whatever the older record holds.
+    f.put_record(record.clone());
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+
+    record.state = RecordState::Published;
+    record.expires_at_ms += 1;
+    f.put_record(record.clone());
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    record.expires_at_ms -= 1;
+    let extended = record.expires_at_ms + DAY_MS;
+    {
+        let mut identities = f.net.identities.lock().unwrap();
+        let identity = identities.get_mut(&id(ME)).unwrap();
+        let IdentityPublicKey::V1(key) = identity.public_keys_mut().get_mut(&key_id).unwrap()
+        else {
+            panic!("expected a limited session key");
+        };
+        key.expires_at = Some(extended);
+    }
+    f.put_record(record);
+
     let listed = f.list_apps(&me_b58).unwrap();
     assert_eq!(listed.apps.len(), 1);
     assert_eq!(listed.apps[0].label, "LegacyApp");
@@ -2823,23 +3023,29 @@ fn older_grant_without_key_data_lists_but_refuses_disconnect() {
     assert_eq!(listed.apps[0].returns_to, None);
     assert_eq!(listed.apps[0].keys.len(), 1);
     assert_eq!(listed.apps[0].keys[0].key_id, key_id);
+    assert_eq!(listed.apps[0].keys[0].expires_at_ms, Some(extended));
 
-    // Disconnect refuses because key public data cannot be proved.
+    let quote = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    assert_eq!(quote.keys, vec![key_id]);
+    assert!(quote.needs_legacy_key_confirmation);
+    let unconfirmed = f.disconnect_grant_from_quote(&quote, false);
     assert_eq!(
-        f.disconnect_quote(&me_b58, &req_hex),
-        Err(ConnectError::Failed {
-            failure: ConnectFailure::UnverifiedKey,
-        })
+        f.disconnect(&me_b58, &req_hex, &unconfirmed),
+        Err(ConnectError::Platform(PlatformError::GrantInvalid))
     );
-    let grant = f.disconnect_grant(req_bytes, DISCONNECT_FEE_BOUND);
-    assert_eq!(
-        f.disconnect(&me_b58, &req_hex, &grant),
-        Err(ConnectError::Failed {
-            failure: ConnectFailure::UnverifiedKey,
-        })
+    assert!(f.disconnect_grant_unused(&unconfirmed));
+    assert!(f.net.signed_disables.lock().unwrap().is_empty());
+    let grant = f.disconnect_grant_from_quote(&quote, true);
+    let done = f.disconnect(&me_b58, &req_hex, &grant).unwrap();
+    assert_eq!(done.keys_disabled, quote.keys);
+    assert!(f.net.me().public_keys()[&key_id].is_disabled());
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+    assert!(
+        f.disconnect_quote(&me_b58, &req_hex)
+            .unwrap()
+            .keys
+            .is_empty()
     );
-    assert!(f.net.updates.lock().unwrap().is_empty());
-    assert!(!f.net.me().public_keys()[&key_id].is_disabled());
 }
 
 fn assert_disconnect_refused_for_key(f: &Fixture, key: IdentityPublicKey, recorded_hex: String) {
@@ -3596,6 +3802,44 @@ fn disconnect_refuses_lagging_pre_approval_snapshot_with_absent_keys() {
 }
 
 #[test]
+fn disconnect_refuses_a_revision_newer_than_the_quote() {
+    let f = Fixture::new();
+    let me = b58(&id(ME));
+    let link = devnet(request());
+    let choice = Fixture::choice();
+    let approve_grant = f.quoted_grant(&link, &choice);
+    f.approve(&link, &choice, &approve_grant).unwrap();
+    let request = hex::encode(link.request.request_hash());
+    let quote = f.disconnect_quote(&me, &request).unwrap();
+    let grant = f.disconnect_grant(quote.request, quote.max_credits);
+    let quoted_identity = f.net.me();
+    {
+        let mut identities = f.net.identities.lock().unwrap();
+        let identity = identities.get_mut(&id(ME)).unwrap();
+        identity.set_revision(identity.revision() + 1);
+    }
+    *f.net.identity_height.lock().unwrap() = 101;
+    for first_read in [None, Some(quoted_identity)] {
+        *f.net.stale_refresh_once.lock().unwrap() = first_read;
+        assert_eq!(
+            f.disconnect(&me, &request, &grant),
+            Err(ConnectError::Platform(PlatformError::GrantInvalid))
+        );
+        assert!(f.net.signed_disables.lock().unwrap().is_empty());
+        assert!(f.disconnect_grant_unused(&grant));
+    }
+
+    let updated = f.disconnect_quote(&me, &request).unwrap();
+    assert_eq!(updated.revision, quote.revision + 1);
+    let grant = f.disconnect_grant(updated.request, updated.max_credits);
+    assert!(
+        !f.disconnect(&me, &request, &grant)
+            .unwrap()
+            .has_unresolved_keys
+    );
+}
+
+#[test]
 fn disconnect_grant_bound_to_identity_refuses_other_identity_in_same_wallet() {
     let f = Fixture::new();
     let id1 = id(ME);
@@ -4056,6 +4300,8 @@ fn disconnect_paid_revision_conflict_retires_pending_without_auto_resigning_or_d
     // so pending_disconnect stays saved on disk.
     let initial_balance = f.net.me().balance();
     let g1 = f.disconnect_grant(q.request, q.max_credits);
+    let pre_conflict_grant = f.disconnect_grant(q.request, DISCONNECT_FEE_BOUND);
+    let pre_conflict_retry_grant = f.disconnect_grant(q.request, DISCONNECT_FEE_BOUND);
     f.net.lose_updates.store(true, Ordering::SeqCst);
     f.net.refreshed.store(false, Ordering::SeqCst);
     assert_eq!(
@@ -4085,6 +4331,15 @@ fn disconnect_paid_revision_conflict_retires_pending_without_auto_resigning_or_d
         .engine
         .block_on(f.net.broadcast_disable_keys(&pw, id(ME), &pending_bytes));
     assert!(conflict_res.is_err());
+    let hash_prefix = hash_double(&pending_bytes)[..16].try_into().unwrap();
+    let pre_disclosure_grant = f.issue_disconnect_grant(GrantPurpose::AppDisconnect {
+        max_credits: DISCONNECT_FEE_BOUND,
+        identity: q.identity_id,
+        request: q.request,
+        revision: f.net.me().revision(),
+        confirmed_legacy_keys: false,
+        prior_conflict: Some(hash_prefix),
+    });
     assert_eq!(
         f.net.me().balance(),
         initial_balance - PAID_CONFLICT_FEE,
@@ -4093,7 +4348,10 @@ fn disconnect_paid_revision_conflict_retires_pending_without_auto_resigning_or_d
 
     // Retry MUST retire pending_disconnect, leave grant unused, return DisconnectConflict,
     // sign NOTHING anew, and NOT debit a second fee!
-    let g2 = f.disconnect_grant(q.request, q.max_credits);
+    *f.net.disconnect_fee_override.lock().unwrap() = Some(DISCONNECT_FEE_BOUND + 1);
+    let recovery = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    assert_eq!(recovery.max_credits, 0);
+    let g2 = f.disconnect_grant(recovery.request, recovery.max_credits);
     assert_eq!(
         f.disconnect(&me_b58, &req_hex, &g2),
         Err(ConnectError::Failed {
@@ -4132,6 +4390,18 @@ fn disconnect_paid_revision_conflict_retires_pending_without_auto_resigning_or_d
         .find(|r| r.request == req_hex)
         .unwrap();
     assert!(rec.pending_disconnect.is_none());
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &pre_conflict_grant),
+        Err(ConnectError::Platform(PlatformError::GrantInvalid))
+    );
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    *f.net.disconnect_fee_override.lock().unwrap() = None;
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &pre_disclosure_grant),
+        Err(ConnectError::Platform(PlatformError::GrantInvalid))
+    );
+    assert!(f.disconnect_grant_unused(&pre_disclosure_grant));
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
 
     // User explicitly starts a new, re-quoted Disconnect: discloses the known
     // prior conflict debit (PAID_CONFLICT_FEE), then signs once more and disables keys.
@@ -4145,9 +4415,19 @@ fn disconnect_paid_revision_conflict_retires_pending_without_auto_resigning_or_d
         Some(PAID_CONFLICT_FEE),
         "re-quoted Disconnect must disclose the observed earlier charge"
     );
-    let g_fresh = f.disconnect_grant(q_fresh.request, q_fresh.max_credits);
+    let g_fresh = f.disconnect_grant_from_quote(&q_fresh, false);
     f.net.refreshed.store(false, Ordering::SeqCst);
-    let done = f.disconnect(&me_b58, &req_hex, &g_fresh).unwrap();
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g_fresh),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    let done = f
+        .disconnect(&me_b58, &req_hex, &pre_conflict_retry_grant)
+        .unwrap();
     assert_eq!(done.keys_disabled, q_fresh.keys);
     assert_eq!(f.net.signed_disables.lock().unwrap().len(), 2);
     assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
@@ -4318,6 +4598,8 @@ fn disconnect_fee_matches_drive_ephemeral_cost_and_splits_oversized_batches() {
     f.net.refreshed.store(false, Ordering::SeqCst);
     let done1 = f.disconnect(&me_b58, &req_hex, &g_batch1).unwrap();
     assert_eq!(done1.keys_disabled, q_batch1.keys);
+    assert_eq!(done1.keys_remaining, 1);
+    assert!(!done1.has_unresolved_keys);
     // Second key is still enabled -> app still listed with 1 remaining key.
     let after1 = f.list_apps(&me_b58).unwrap();
     assert_eq!(after1.apps.len(), 1);
@@ -4330,6 +4612,8 @@ fn disconnect_fee_matches_drive_ephemeral_cost_and_splits_oversized_batches() {
     f.net.refreshed.store(false, Ordering::SeqCst);
     let done2 = f.disconnect(&me_b58, &req_hex, &g_batch2).unwrap();
     assert_eq!(done2.keys_disabled, q_batch2.keys);
+    assert_eq!(done2.keys_remaining, 0);
+    assert!(!done2.has_unresolved_keys);
     assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 }
 
@@ -4457,7 +4741,10 @@ fn disconnect_rebroadcast_enforces_live_fee_limits_preserves_pending_and_reuses_
 
     // Fee spikes above DISCONNECT_FEE_BOUND: refused with PendingFeeTooHigh while preserving pending_disconnect.
     *f.net.disconnect_fee_override.lock().unwrap() = Some(DISCONNECT_FEE_BOUND + 1);
-    let g_big = f.disconnect_grant(q1.request, DISCONNECT_FEE_BOUND);
+    let recovery = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    assert_eq!(recovery.keys, q1.keys);
+    assert_eq!(recovery.max_credits, 0);
+    let g_big = f.disconnect_grant(recovery.request, recovery.max_credits);
     assert_eq!(
         f.disconnect(&me_b58, &req_hex, &g_big),
         Err(ConnectError::Failed {
@@ -4523,11 +4810,17 @@ fn disconnect_rebroadcast_enforces_live_fee_limits_preserves_pending_and_reuses_
     );
     // Lag clears (keys ARE disabled on Platform), while live fee spikes above bound:
     // confirmation-only recovery MUST succeed without any fee refusal!
-    *f.net.stale.lock().unwrap() = None;
     *f.net.disconnect_fee_override.lock().unwrap() = Some(DISCONNECT_FEE_BOUND + 50_000_000);
-    let gd_recover = f.disconnect_grant(q2_app.request, 1);
+    let recovery = f.disconnect_quote(&me_b58, &req2).unwrap();
+    assert_eq!(recovery.max_credits, 0);
+    *f.net.stale.lock().unwrap() = None;
+    let apps = f.list_apps(&me_b58).unwrap().apps;
+    assert_eq!(apps.len(), 1);
+    assert!(apps[0].keys.is_empty());
+    let gd_recover = f.disconnect_grant(recovery.request, recovery.max_credits);
     let recovered = f.disconnect(&me_b58, &req2, &gd_recover).unwrap();
     assert!(recovered.keys_disabled.is_empty());
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 }
 
 #[test]
@@ -4729,8 +5022,11 @@ fn disconnect_disables_present_verified_keys_when_predicted_reapproval_key_never
         .unwrap();
     let present_keys = rec.session_keys.clone();
     assert_eq!(present_keys.len(), 2);
+    rec.state = RecordState::Submitted;
     rec.session_keys.push(99);
     rec.session_key_data.insert(99, "aa".repeat(20));
+    rec.session_keys.push(100);
+    rec.session_key_data.insert(100, "cc".repeat(20));
     f.put_record(rec);
 
     // Lagging pre-approval snapshot where ALL keys are absent still returns Unavailable.
@@ -4741,15 +5037,37 @@ fn disconnect_disables_present_verified_keys_when_predicted_reapproval_key_never
     );
     *f.net.stale.lock().unwrap() = None;
 
-    // On the real snapshot (original 2 keys present, predicted key 99 absent):
-    // Disconnect quotes & disables the 2 present verified keys, and does NOT mark
-    // RecordState::Disconnected while predicted key 99 remains absent.
     let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
     assert_eq!(q.keys, present_keys);
+    let foreign = make_session_key_v1(
+        99,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract { id: app() }),
+        vec![0xbb; 20],
+        true,
+    );
+    f.net
+        .identities
+        .lock()
+        .unwrap()
+        .get_mut(&id(ME))
+        .unwrap()
+        .public_keys_mut()
+        .insert(99, foreign);
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex).unwrap().keys,
+        present_keys
+    );
     let gd = f.disconnect_grant(q.request, q.max_credits);
     f.net.refreshed.store(false, Ordering::SeqCst);
     let done = f.disconnect(&me_b58, &req_hex, &gd).unwrap();
     assert_eq!(done.keys_disabled, present_keys);
+    assert_eq!(done.keys_remaining, 0);
+    assert!(done.has_unresolved_keys);
+    assert!(!f.net.me().public_keys().contains_key(&100));
+    assert!(!f.net.me().public_keys()[&99].is_disabled());
     let rec_after = f
         .engine
         .block_on(records(&f.s, f.wallet))
@@ -6869,9 +7187,8 @@ fn disconnect_nothing_to_disable_reservation_never_blocks_transfer_or_other_app_
 /// - Arm 1: if A's retry is refused before signing (`GrantExceeded`), the
 ///   persisted record MUST keep `last_conflict.nonce == Some(30)`; after a
 ///   restart (fresh session floor = 0, record reloaded from disk) and a lagging
-///   read at tip 29, a transfer MUST return `Unavailable`, NEVER sign at 30,
-///   and NEVER report a false `WithdrawalLanded` even after A's dead bytes
-///   consume 30.
+///   read at tip 29, the reservation blocks a transfer at nonce 30. After the
+///   dead bytes consume 30, a stale read can still offer the already-used 31.
 /// - Arm 2: after the transfer lands at 31 (`floor == 32`), A's own re-quoted
 ///   retry MUST sign at exact nonce `30`, not `32`.
 #[test]
@@ -7459,6 +7776,8 @@ fn disconnect_pending_rebroadcast_enforces_funds_gate_while_allowing_confirmatio
 
         // Arm 2: once Platform shows the pending keys disabled, confirmation-only
         // recovery still succeeds under the restored mark with ZERO broadcasts.
+        *f.net.stale_refresh_once.lock().unwrap() = Some(f.net.me());
+        *f.net.identity_height.lock().unwrap() = 101;
         {
             let mut all = f.net.identities.lock().unwrap();
             let me = all.get_mut(&id(ME)).unwrap();
@@ -7472,6 +7791,7 @@ fn disconnect_pending_rebroadcast_enforces_funds_gate_while_allowing_confirmatio
         }
         let done = f.disconnect(&me_b58, &req_hex, &gd_retry).unwrap();
         assert_eq!(done.identity, me_b58);
+        assert_eq!(done.keys_disabled, q.keys);
         assert_eq!(
             f.net.broadcast_disables.lock().unwrap().len(),
             bcast_before,
@@ -7522,6 +7842,102 @@ fn disconnect_pending_rebroadcast_enforces_funds_gate_while_allowing_confirmatio
                 .is_ok()
         );
     }
+}
+
+#[test]
+fn foreign_disable_leaves_an_admissible_nonce_reserved_without_raising_the_floor() {
+    use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
+
+    let f = Fixture::new();
+    let me = b58(&id(ME));
+    let link = devnet(request());
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&link, &choice);
+    f.approve(&link, &choice, &grant).unwrap();
+    let request = hex::encode(link.request.request_hash());
+    f.net.nonces.lock().unwrap().insert(id(ME), 29);
+    let quote = f.disconnect_quote(&me, &request).unwrap();
+    let grant = f.disconnect_grant(quote.request, quote.max_credits);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me, &request, &grant),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    {
+        let mut identities = f.net.identities.lock().unwrap();
+        let identity = identities.get_mut(&id(ME)).unwrap();
+        identity.set_revision(identity.revision() + 1);
+        for key in &quote.keys {
+            identity
+                .public_keys_mut()
+                .get_mut(key)
+                .unwrap()
+                .set_disabled_at(NOW);
+        }
+    }
+    *f.net.identity_height.lock().unwrap() = 101;
+    let grant = f.disconnect_grant(quote.request, quote.max_credits);
+    f.disconnect(&me, &request, &grant).unwrap();
+    let record = first_record(&f);
+    assert_eq!(f.s.withdrawal_nonces.floor(id(ME)), 0);
+    assert_eq!(record.state, RecordState::Disconnected);
+    assert_eq!(record.last_conflict.unwrap().nonce, Some(30));
+
+    *f.net.nonce_height.lock().unwrap() = 101;
+    let amount = 100_000_000;
+    let quote = f.transfer_quote(&me, amount).unwrap();
+    let grant = f.withdraw_grant(amount + quote.fee_credits);
+    f.transfer_to_platform(&me, &quote.to, amount, &grant)
+        .unwrap();
+    let sent = f.net.transfers_sent.lock().unwrap();
+    let dpp::state_transition::StateTransition::IdentityCreditTransferToAddresses(transfer) =
+        &sent[0]
+    else {
+        panic!("expected a transfer transition");
+    };
+    assert_eq!(transfer.nonce(), 31);
+}
+
+#[test]
+fn a_proved_spent_disconnect_nonce_is_not_reused_after_failed_cleanup() {
+    let f = Fixture::new();
+    let me = b58(&id(ME));
+    let link = devnet(request());
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&link, &choice);
+    f.approve(&link, &choice, &grant).unwrap();
+    let request = hex::encode(link.request.request_hash());
+    let mut record = first_record(&f);
+    record.last_conflict = Some(DisconnectConflictInfo {
+        transition_hash: "a1".repeat(32),
+        observed_debit: None,
+        nonce: Some(30),
+        observed_tip: Some(31),
+        observed_height: Some(100),
+    });
+    f.put_record(record);
+    let db = rusqlite::Connection::open(f.s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.execute_batch(&format!(
+        "CREATE TRIGGER fail_cleanup BEFORE UPDATE ON settings_kv \
+         WHEN NEW.key = '{RECORDS_SETTING}' BEGIN SELECT RAISE(ABORT, 'cleanup write failed'); END;"
+    ))
+    .unwrap();
+    f.engine
+        .block_on(clear_spent_conflict_nonces(&f.s, f.wallet, id(ME), 31));
+    assert_eq!(first_record(&f).last_conflict.unwrap().nonce, Some(30));
+    assert_eq!(f.s.withdrawal_nonces.floor(id(ME)), 31);
+    db.execute_batch("DROP TRIGGER fail_cleanup;").unwrap();
+
+    f.net.nonces.lock().unwrap().insert(id(ME), 31);
+    *f.net.stale_nonce.lock().unwrap() = Some(merge_fake_nonce(29, 31));
+    let quote = f.disconnect_quote(&me, &request).unwrap();
+    let grant = f.disconnect_grant(quote.request, quote.max_credits);
+    f.disconnect(&me, &request, &grant).unwrap();
+    assert_eq!(f.net.signed_disables.lock().unwrap()[0].1, 32);
+    assert!(first_record(&f).last_conflict.is_none());
 }
 
 /// Reviewer F / Opus B1 at 2545d85dc fail-first test:
@@ -7633,7 +8049,7 @@ fn disconnect_reservation_observed_height_blocks_split_read_lagging_skip() {
     // --- (a) & (b): step-2 split retire blocks lagging H-1 transfer, other-app
     //                Disconnect, and Approve G1; current H=101 read signs at 32 ---
     {
-        let (f, me_b58, _req1, req2) = setup_step2_split_retire();
+        let (f, me_b58, req1, req2) = setup_step2_split_retire();
 
         // (a) Transfer at nonce_height = 100 (tip 29) refuses Unavailable with 0 sent.
         *f.net.stale_nonce.lock().unwrap() = Some(29);
@@ -7668,6 +8084,20 @@ fn disconnect_reservation_observed_height_blocks_split_read_lagging_skip() {
         );
         assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
         assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+
+        let mut stale = f.net.me();
+        stale.set_revision(stale.revision() - 1);
+        *f.net.stale.lock().unwrap() = Some(stale);
+        let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+        let g1 = f.disconnect_grant(q1.request, q1.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req1, &g1),
+            Err(ConnectError::Platform(PlatformError::Unavailable))
+        );
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), signed_before);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), bcast_before);
+        assert!(f.disconnect_grant_unused(&g1));
+        *f.net.stale.lock().unwrap() = None;
 
         // (b2) Approve G1 at nonce_height = 100 with tip 31 (>= observed_tip 29,
         //      missing bit 30 <= tip) MUST refuse Unavailable on observed_height = 101

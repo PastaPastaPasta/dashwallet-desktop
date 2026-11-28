@@ -115,7 +115,7 @@ test("Disconnect failure shows a plain error and keeps the row in the list", asy
   expect(errors).toEqual([]);
 });
 
-test("Disconnect refuses unverified older grants with a plain error", async ({ page }) => {
+test("Disconnect refuses unverified key ownership with a plain error", async ({ page }) => {
   const errors = await openConnectedApps(page, "dashpay-connected-apps");
   await page.evaluate(() => {
     window.__dwFixture!.world.disconnectOutcome = "unverifiedKey";
@@ -126,6 +126,86 @@ test("Disconnect refuses unverified older grants with a plain error", async ({ p
   );
   await expect(page.getByTestId("disconnect-confirm")).toBeDisabled();
   expect(errors).toEqual([]);
+});
+
+test("a partial Disconnect reports the disabled keys and leaves the app reachable", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  const app = page.getByTestId("connected-app-row").first();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "partial";
+  });
+  await app.getByTestId("connected-app-disconnect").click();
+  await expect(page.getByTestId("disconnect-sheet").getByTestId("connected-app-key")).toHaveCount(1);
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("1 of 2 keys disabled. Disconnect again to finish.");
+  await expect(app.getByTestId("connected-app-key")).toHaveCount(1);
+  await expect(app.getByTestId("connected-app-disconnect")).toBeEnabled();
+});
+
+test("Disconnect reports pending confirmation when a recorded key is unresolved", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "unresolvedKey";
+  });
+  await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText(
+    "Disconnect pending for “Yappr”. Dash Wallet couldn’t confirm all keys are disabled.",
+  );
+});
+
+test("older keys require individual confirmation before Disconnect", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "legacyConfirmation";
+  });
+  await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
+  const group = page.getByRole("group", { name: "Confirm older app keys" });
+  await expect(group).toBeVisible();
+  const confirm = page.getByTestId("disconnect-confirm");
+  await expect(confirm).toBeDisabled();
+  await group.getByRole("checkbox", { name: "Key 6 belongs to this app" }).check();
+  await expect(confirm).toBeDisabled();
+  await group.getByRole("checkbox", { name: "Key 7 belongs to this app" }).check();
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
+});
+
+test("a fee increase refreshes the open Disconnect sheet to a no-fee check", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  const app = page.getByTestId("connected-app-row").first();
+  await app.getByTestId("connected-app-disconnect").click();
+  const confirm = page.getByTestId("disconnect-confirm");
+  await expect(confirm).toHaveText("Disconnect");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "pendingFeeTooHigh";
+  });
+  await confirm.click();
+  await authorize(page);
+  await expect(confirm).toHaveText("Check earlier attempt");
+  await expect(page.getByTestId("disconnect-fee")).toContainText("without sending an update or charging a fee");
+  await confirm.click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
+});
+
+test("a pending Disconnect can be checked without a new fee", async ({ page }) => {
+  await openConnectedApps(page, "dashpay-connected-apps");
+  const app = page.getByTestId("connected-app-row").first();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "checkAttempt";
+  });
+  await app.getByTestId("connected-app-disconnect").click();
+  await expect(page.getByTestId("disconnect-fee")).toContainText("without sending an update or charging a fee");
+  const check = page.getByTestId("disconnect-confirm");
+  await expect(check).toHaveText("Check earlier attempt");
+  await check.click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
 });
 
 test("lists and disconnects connected apps on mainnet", async ({ page }) => {

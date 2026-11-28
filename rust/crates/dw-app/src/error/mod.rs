@@ -336,7 +336,7 @@ pub enum ErrorData {
     /// `console.authorization_required`: the grant to ask for (`authorize`),
     /// and the wallet it is for; then run the line again with it.
     Authorize {
-        purpose: crate::api::vault::GrantPurposeSpec,
+        purpose: Box<crate::api::vault::GrantPurposeSpec>,
         wallet_id: Option<String>,
     },
     /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,

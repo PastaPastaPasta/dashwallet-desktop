@@ -204,6 +204,7 @@ pub struct DisconnectQuote {
     pub grant: crate::api::vault::GrantPurposeSpec,
     pub identity: String,
     pub keys: Vec<u32>,
+    pub needs_legacy_key_confirmation: bool,
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub fee: u64,
@@ -225,6 +226,9 @@ pub struct DisconnectQuote {
 pub struct DisconnectDone {
     pub identity: String,
     pub keys_disabled: Vec<u32>,
+    pub keys_remaining: u32,
+    /// At least one recorded key has yet to be verified on Platform.
+    pub has_unresolved_keys: bool,
     /// True when an earlier sign-in response document for this approval was
     /// still in flight or confirmed on Platform, so a decryption key may
     /// already have reached the app despite the session keys being disabled.
@@ -398,6 +402,8 @@ impl From<engine::DisconnectDone> for DisconnectDone {
         Self {
             identity: d.identity,
             keys_disabled: d.keys_disabled,
+            keys_remaining: d.keys_remaining,
+            has_unresolved_keys: d.has_unresolved_keys,
             response_may_have_landed: d.response_may_have_landed,
         }
     }
@@ -568,9 +574,13 @@ commands! {
                 max_credits: q.max_credits,
                 identity: q.identity_id,
                 request: q.request,
+                revision: q.revision,
+                confirmed_legacy_keys: false,
+                prior_conflict: q.prior_conflict,
             },
             identity: q.identity,
             keys: q.keys,
+            needs_legacy_key_confirmation: q.needs_legacy_key_confirmation,
             fee: q.fee,
             balance: q.balance,
             prior_attempt_conflict: q.prior_attempt_conflict,

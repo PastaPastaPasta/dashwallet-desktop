@@ -87,7 +87,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
       retryAfterSecs: null,
       walletsWithSecrets: [FIXTURE_WALLET_ID],
     };
-    const purpose = { kind: "appDisconnect", maxCredits: "22000000", identity: "22".repeat(32), request: "1a2b".repeat(10) } as const;
+    const purpose = { kind: "appDisconnect", maxCredits: "22000000", identity: "22".repeat(32), request: "1a2b".repeat(10), revision: "1", confirmedLegacyKeys: false, priorConflict: null } as const;
     expect(needsPassphrase(purpose, unlocked, false)).toBe(true);
     expect(needsPassphrase(purpose, { ...unlocked, encrypted: false }, false)).toBe(false);
   });
@@ -158,7 +158,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     expect(model.quote?.priorAttemptDebit).toBeNull();
   });
 
-  it("shows plain errors, refreshes on notConfirmed/pendingFeeTooHigh, and auto-requotes on grant_exceeded, feeTooHigh and disconnectConflict", async () => {
+  it("shows plain errors and refreshes the list or quote after a failed Disconnect", async () => {
     const { fixture, backend, model, refreshed } = setup("dashpay-connected-apps");
     const { apps } = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
     const yappr = apps[0];
@@ -235,7 +235,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     expect(model.quote).toBeNull();
     expect(model.quoteError).not.toBeNull();
 
-    // Pending fee too high at disconnect time: refreshes list and does not say nothing was changed.
+    // Replace a paid quote with a confirmation-only quote in the open sheet.
     fixture.world.disconnectOutcome = "ok";
     await model.openDisconnect(yappr);
     fixture.world.disconnectOutcome = "pendingFeeTooHigh";
@@ -245,6 +245,8 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     await pendingFeeRun;
 
     expect(refreshed()).toBe(3);
+    expect(quoteSpy).toHaveBeenCalledTimes(5);
+    expect(model.quote?.fee).toBe("0");
     expect(disconnectErrorText(model.disconnectError)).toContain("earlier attempt may still be in flight");
     expect(disconnectErrorText(model.disconnectError).toLowerCase()).not.toContain("nothing was changed");
   });

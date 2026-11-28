@@ -19,6 +19,10 @@ import { FIXTURE_NOW } from "./wallet";
 /** Scripted outcome for `app_connect_disconnect_quote` / `app_connect_disconnect` in the fixture. */
 export type DisconnectFixtureOutcome =
   | "ok"
+  | "partial"
+  | "unresolvedKey"
+  | "legacyConfirmation"
+  | "checkAttempt"
   | "responseInFlight"
   | "notConfirmed"
   | "unverifiedKey"
@@ -370,16 +374,21 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const outcome = world.disconnectOutcome ?? "ok";
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
-      const fee = BigInt(DISCONNECT_FEE);
+      const fee = outcome === "checkAttempt" || outcome === "pendingFeeTooHigh" ? 0n : BigInt(DISCONNECT_FEE);
       const balance = outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
+      const priorAttemptConflict = outcome === "priorChargeKnown" || outcome === "priorChargePossible";
       return {
-        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request },
+        grant: {
+          kind: "appDisconnect", maxCredits: String(fee), identity, request, revision: "1",
+          confirmedLegacyKeys: false, priorConflict: priorAttemptConflict ? "c1".repeat(16) : null,
+        },
         identity,
-        keys: app.keys.map((k) => k.keyId),
+        keys: (outcome === "partial" ? app.keys.slice(0, 1) : app.keys).map((k) => k.keyId),
+        needsLegacyKeyConfirmation: outcome === "legacyConfirmation",
         fee: String(fee),
         balance: String(balance),
-        priorAttemptConflict: outcome === "priorChargeKnown" || outcome === "priorChargePossible",
+        priorAttemptConflict,
         priorAttemptDebit: outcome === "priorChargeKnown" ? "500000" : null,
       };
     },
@@ -394,9 +403,14 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       if (!g || g.grant.purpose.kind !== "appDisconnect" || g.grant.purpose.identity !== identity || g.grant.purpose.request !== request)
         throw fail("platform.grant_invalid", "grant invalid");
       const outcome = world.disconnectOutcome ?? "ok";
+      if (outcome === "legacyConfirmation" && !g.grant.purpose.confirmedLegacyKeys) {
+        throw fail("platform.grant_invalid", "grant invalid");
+      }
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
-      if (outcome === "pendingFeeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingFeeTooHigh" });
+      if (outcome === "pendingFeeTooHigh" && g.grant.purpose.maxCredits !== "0") {
+        throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingFeeTooHigh" });
+      }
       if (outcome === "pendingWrite") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingWrite" });
       if (outcome === "grantExceeded")
         throw fail("platform.grant_exceeded", "platform.grant_exceeded", { kind: "budget", purpose: "credits", needed: "25000000", remaining: DISCONNECT_FEE });
@@ -405,8 +419,19 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       useGrant(world, id);
       if (outcome === "notConfirmed") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
       if (outcome === "error") throw fail("platform.unavailable", "platform.unavailable");
-      const [removed] = apps.splice(idx, 1);
-      return { identity, keysDisabled: removed.keys.map((k) => k.keyId), responseMayHaveLanded: outcome === "responseInFlight" };
+      const app = apps[idx];
+      const count = outcome === "partial" ? 1 : app.keys.length;
+      const keysDisabled = app.keys.slice(0, count).map((k) => k.keyId);
+      const remaining = app.keys.slice(count);
+      if (remaining.length > 0) apps[idx] = { ...app, keys: remaining };
+      else apps.splice(idx, 1);
+      return {
+        identity,
+        keysDisabled,
+        keysRemaining: remaining.length,
+        hasUnresolvedKeys: outcome === "unresolvedKey",
+        responseMayHaveLanded: outcome === "responseInFlight",
+      };
     },
   };
 }

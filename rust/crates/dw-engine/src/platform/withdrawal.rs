@@ -43,7 +43,7 @@
 //! nonce while Platform would still take it, so at most one of them
 //! executes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
@@ -259,7 +259,10 @@ fn settled(result: Result<StateTransitionProofResult, dash_sdk::Error>) -> Resul
 /// state (D24), one entry per identity it withdrew or transferred from (the
 /// one record of both, C6-6). Not kept across a restart.
 #[derive(Default)]
-pub(crate) struct WithdrawalNonces(Mutex<HashMap<Identifier, Nonces>>);
+pub(crate) struct WithdrawalNonces {
+    nonces: Mutex<HashMap<Identifier, Nonces>>,
+    spent_disconnect_nonces: Mutex<HashSet<(Identifier, u64)>>,
+}
 
 #[derive(Debug, Default, Clone)]
 struct Nonces {
@@ -321,6 +324,21 @@ impl WithdrawalNonces {
         });
     }
 
+    pub(super) fn note_disconnect_nonce_spent(&self, id: Identifier, nonce: u64) {
+        self.advance_floor(id, nonce);
+        self.spent_disconnect_nonces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((id, nonce));
+    }
+
+    pub(super) fn disconnect_nonce_spent(&self, id: Identifier, nonce: u64) -> bool {
+        self.spent_disconnect_nonces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(id, nonce))
+    }
+
     /// Highest nonce floor recorded for `id` in this session (one past every
     /// write seen executed or proven spent).
     pub(crate) fn floor(&self, id: Identifier) -> u64 {
@@ -374,12 +392,12 @@ impl WithdrawalNonces {
     }
 
     fn get(&self, id: Identifier) -> Nonces {
-        let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let map = self.nonces.lock().unwrap_or_else(PoisonError::into_inner);
         map.get(&id).cloned().unwrap_or_default()
     }
 
     fn update(&self, id: Identifier, change: impl FnOnce(&mut Nonces)) {
-        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut map = self.nonces.lock().unwrap_or_else(PoisonError::into_inner);
         change(map.entry(id).or_default());
     }
 }
