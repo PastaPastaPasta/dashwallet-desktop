@@ -207,7 +207,6 @@ test("a release build has no context menu on the page, and keeps a text field's"
     }, selector);
   expect(await prevented("[data-testid=hero]")).toBe(true);
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   expect(await prevented("[data-testid=pay-address]")).toBe(false);
 });
 
@@ -215,9 +214,9 @@ test.describe("balances", () => {
   for (const theme of THEMES) {
     test(`Home shows every balance exactly, never cut to two decimals (${theme})`, async ({ page }) => {
       await open(page, "funded", theme);
-      await expect(page.getByTestId("hero")).toContainText("32.04698287");
-      await expect(page.getByTestId("hero")).toContainText("30.39698287");
-      await expect(page.getByTestId("hero")).not.toHaveText(/(^|[^\d.])32\.04([^\d]|$)/);
+      await expect(page.getByTestId("hero")).toContainText("31.84698287");
+      await expect(page.getByTestId("hero")).toContainText("30.19698287");
+      await expect(page.getByTestId("hero")).not.toHaveText(/(^|[^\d.])31\.84([^\d]|$)/);
       await shot(page, `${theme}-home-exact-balance`);
     });
   }
@@ -712,7 +711,6 @@ test.describe("Export CSV", () => {
     await expect(alert).toBeVisible();
 
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill("yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
     await page.getByTestId("pay-amount").fill("0.5");
     await page.getByTestId("pay-fee-line").waitFor();
@@ -735,6 +733,32 @@ test.describe("Export CSV", () => {
     // Closing the sheet brings the alert back.
     await page.getByTestId("pay-confirm-cancel").click();
     await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    await expect(alert).toBeVisible();
+  });
+
+  test("an alert raised while a sheet is open shows over it; a sheet opened after it hides it", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("save_file_as"));
+    await page.evaluate(() => window.__dwFixture!.fail("save_file_as", "call"));
+    await page.getByTestId("tx-export-csv").click();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    const about = page.getByTestId("about");
+    await expect(about).toBeVisible();
+    await release.evaluate((resume) => resume());
+    const alert = page.getByTestId("toast-alert");
+    await expect(alert).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("The history could not be exported.");
+
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
+    await expect(alert).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    await expect(about).toBeVisible();
+    await expect(alert).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
     await expect(alert).toBeVisible();
   });
 
@@ -857,9 +881,7 @@ test.describe("Move to Dash wallet", () => {
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
     await expectFundOpens(page);
-    // Nothing movable on Platform: Home has no Platform row.
-    await expect(page.getByTestId("hero-amount")).toBeVisible();
-    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
+    await expect(page.getByTestId("breakdown-platform").locator(".amount-number")).toHaveText("0.00");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     await expect(page.getByText("Moved to Dash wallet")).toBeVisible();
@@ -1235,8 +1257,8 @@ test.describe("Home balance", () => {
       await expect(page.getByTestId("breakdown-core")).toContainText("Core");
       await expect(page.getByTestId("breakdown-shielded")).toContainText("Shielded");
       await expect(page.getByTestId("breakdown-platform")).toContainText("Platform");
-      // Core 30.39698287 + Shielded 1.25 + Platform 0.4 (the fixture's), the exact sum.
-      await expect(page.getByTestId("hero-amount")).toContainText("32.04698287");
+      // Core 30.19698287 + Shielded 1.25 + Platform 0.4 (the fixture's), the exact sum.
+      await expect(page.getByTestId("hero-amount")).toContainText("31.84698287");
       await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
       await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
       await shot(page, `${theme}-home-pools`);
@@ -1247,10 +1269,9 @@ test.describe("Home balance", () => {
 
   test("leaves a pool without a command out of the hero and the breakdown", async ({ page }) => {
     await open(page, "pools-absent");
-    await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
-    // Core alone would repeat the hero: no breakdown, and what is pending under the hero.
-    await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
-    await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
+    await expect(page.getByTestId("hero-amount")).toContainText("30.19698287");
+    await expect(page.getByTestId("hero-breakdown").locator(".breakdown-cell")).toHaveCount(1);
+    await expect(page.getByTestId("breakdown-core")).toContainText("0.20 pending");
     await shot(page, "light-home-pools-absent");
   });
 

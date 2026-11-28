@@ -1095,7 +1095,7 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen, applied, excluded) = {
+        let (mut snapshot, lock_inputs, unseen, applied, mut excluded) = {
             let state = crate::wallet_read::info_of(wallet).await?;
             self.hub.detect_truncation(wallet_id, &state.core_wallet);
             let snapshot = read_coins(&state.core_wallet);
@@ -1178,6 +1178,14 @@ impl NetworkSession {
                     h.restore_held_coins(),
                 )
             });
+        // A sweep publishes its retry hold before removing the old history.
+        for outpoint in self.hub.rebroadcast_held(&wallet_id) {
+            use crate::withhold::ExclusionReason;
+            let reason = excluded
+                .entry(outpoint)
+                .or_insert(ExclusionReason::RescanHold);
+            *reason = (*reason).max(ExclusionReason::RescanHold);
+        }
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));

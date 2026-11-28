@@ -64,7 +64,6 @@ test.describe("Shielded spends off", () => {
       expect(await reasonOf(page, "shielded-send")).toBe(REASON);
       await shot(page, `${theme}-pay-send-off`);
 
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-amount").fill("0.2");
       await page.getByTestId("pay-address").fill(SHIELDED_ADDRESS);
       expect(await reasonOf(page, "pay-shielded-route")).toBe(REASON);
@@ -177,6 +176,7 @@ test.describe("Shielded spends off", () => {
       await page.goto(fixtureUrl(scenario, "light"));
       await page.getByTestId("toolbar").waitFor();
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+      await page.getByTestId("pay-contacts").click();
       await page.getByTestId("pay-frequent-chip").first().click();
       await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText("Not available in this version");
       await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Shielded balance/ })).toBeDisabled();
@@ -187,7 +187,6 @@ test.describe("Shielded spends off", () => {
   test("an added Shielded recipient isn't pointed to Send from Shielded", async ({ page }) => {
     const errors = await open(page, "shielded-spends-off", "light");
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill("yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
     await page.getByTestId("pay-add-recipient").click();
     await page.getByTestId("pay-more-2-address").fill(SHIELDED_ADDRESS);

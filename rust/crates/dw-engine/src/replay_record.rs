@@ -289,6 +289,9 @@ impl ReplayRecords {
             .is_some_and(|s| s.replay_cancelled.is_some() || s.loading)
             || (hub.rescan().as_ref()).is_some_and(|r| r.replaying(&wallet))
             || hub.abandon_batch_pending(&wallet)
+            || hub
+                .history
+                .read_wallet(&wallet, |h| h.rescan_holds.values().any(|hold| !hold.armed))
     }
 
     /// After a clean shutdown of the manager, whose persistence adapter

@@ -45,6 +45,7 @@ test("F15 history rows and the home frequent strip show pictures", async ({ page
 test("F15 the pay-to-contact picker, its frequent strip and the payee show pictures", async ({ page }) => {
   await open(page);
   await go(page, "pay");
+  await page.getByTestId("pay-contacts").click();
   const bob = page.getByTestId("pay-picker-row").filter({ has: page.locator(".contact-row-name", { hasText: "Bob Builder" }) });
   await expect(pictured(bob)).toHaveCount(1);
   await expect(pictured(page.getByTestId("pay-frequent-chip").first())).toHaveCount(1);
@@ -84,8 +85,9 @@ test("D13 with Load contact pictures off only the wallet's own picture shows, an
   await contactRow(page, "Bob Builder").click();
   await expect(page.getByTestId("contact-detail")).toBeVisible();
   await go(page, "pay");
+  await page.getByTestId("pay-contacts").click();
   await expect(page.getByTestId("pay-picker-row").first()).toBeVisible();
-  await expect(pictured(page.getByTestId("pay-contact"))).toHaveCount(0);
+  await expect(pictured(page.getByTestId("pay-recipient-popover"))).toHaveCount(0);
   await page.getByTestId("toolbar-bell").click();
   await expect(page.getByTestId("bell-request").first()).toBeVisible();
   await page.keyboard.press("Escape");

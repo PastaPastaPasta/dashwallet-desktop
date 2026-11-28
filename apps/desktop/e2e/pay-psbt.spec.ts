@@ -19,7 +19,6 @@ async function open(page: Page, scenario: string, theme: Theme) {
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await fontsReady(page);
   return errors;
 }

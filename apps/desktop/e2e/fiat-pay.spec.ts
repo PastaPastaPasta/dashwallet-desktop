@@ -26,7 +26,6 @@ const world = <T>(page: Page, read: (w: World) => T) => page.evaluate(`(${read.t
 
 async function payToAddress(page: Page) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(MAIN_PAYEE);
 }
 
@@ -227,6 +226,7 @@ test("discreet mode: no toggle and no value line", async ({ page }) => {
 test("paying a contact takes the amount in fiat too", async ({ page }) => {
   await open(page, "fiat-contacts");
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-frequent-chip").first().click();
   await page.getByTestId("pay-amount-toggle").click();
   await expect(page.getByText("Amount (USD)")).toBeVisible();
@@ -271,6 +271,7 @@ for (const [scenario, text] of TOO_LARGE) {
 test("C5b: paying a contact refuses a fiat amount too large to convert", async ({ page }) => {
   await open(page, "fiat-contacts");
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-frequent-chip").first().click();
   await page.getByTestId("pay-amount-toggle").click();
   await page.getByTestId("pay-amount").fill("5000000000");

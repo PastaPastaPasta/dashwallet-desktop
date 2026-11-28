@@ -79,14 +79,14 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its ref's running CI, main included: the newest main commit's run covers the merges
-# before it, so a burst of merges no longer queues behind a superseded ~100-minute run. The event is in the
-# group, so a merge never cancels the 02:47 UTC run or a dispatch. A re-run (attempt 2+) gets its own group,
-# so re-running an older commit never cancels the newest commit's run. main-result.yml reports a cancelled
-# main run that already had a failed job as red.
+# Superseded runs are cancelled on every ref except main. On main the running run always finishes, so
+# main gets a complete result even on a busy merge day; GitHub keeps one pending run per group, so a burst of
+# merges queues a single run for the newest head behind it. The event is in the group, so a merge never waits
+# on the 02:47 UTC run or a dispatch. A re-run (attempt 2+) gets its own group. main-result.yml reports a
+# cancelled main run that already had a failed job as red.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.run_attempt > 1 && format('-rerun-{0}', github.run_id) || '' }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always

@@ -21,7 +21,6 @@ const world = <T>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"
 
 async function fillPayment(page: Page, address: string, amount: string) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(address);
   await page.getByTestId("pay-amount").fill(amount);
 }
@@ -819,7 +818,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
@@ -859,7 +858,7 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after a rescan. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the payment still goes through, it counts again, so sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.",
     );
     expect(errors).toEqual([]);
   });
@@ -980,7 +979,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If you sent this payment, check that it can no longer confirm before paying again. Using different coins could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");

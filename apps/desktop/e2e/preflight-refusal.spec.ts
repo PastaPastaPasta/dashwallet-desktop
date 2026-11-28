@@ -83,7 +83,6 @@ for (const theme of THEMES) {
     test(`a send to a Platform address the pre-check refuses: ${kind} (${theme})`, async ({ page }) => {
       const errors = await open(page, "funded", theme);
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-address").fill(PAYEE);
       await page.getByTestId("platform-send-intro").waitFor();
       await page.getByTestId("pay-amount").fill("0.01");
@@ -125,7 +124,6 @@ for (const theme of THEMES) {
     test(`the retry of a held send the pre-check refuses: ${kind} (${theme})`, async ({ page }) => {
       const errors = await open(page, "platform-send-failed-may-land", theme);
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-address").fill(PAYEE);
       await page.getByTestId("platform-send-intro").waitFor();
       await page.getByTestId("pay-amount").fill("0.01");
