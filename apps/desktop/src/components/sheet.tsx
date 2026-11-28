@@ -33,6 +33,24 @@ export function useLayeredSheet(): boolean {
   );
 }
 
+/** Every sheet, in place or in the layer, numbered as it opens: the newest number given and the
+ * ones open now. A toast alert hides under a sheet opened after it (toast.tsx). */
+let sheetSeq = 0;
+const openSheets = new Set<number>();
+const sheetWatchers = new Set<() => void>();
+const sheetsChanged = () => sheetWatchers.forEach((w) => w());
+
+/** The number the newest sheet opened so far was given (0: none yet). */
+export const lastSheetOpened = () => sheetSeq;
+
+/** The number of the newest sheet open now (0: none open). */
+export const newestOpenSheet = () => (openSheets.size ? Math.max(...openSheets) : 0);
+
+export function watchSheets(w: () => void) {
+  sheetWatchers.add(w);
+  return () => void sheetWatchers.delete(w);
+}
+
 /** A scrim press this soon after a sheet opens is the rest of the click that opened it (a quick
  * second click on the button the sheet replaced), not a dismissal. */
 const CARRIED_PRESS_MS = 600;
@@ -82,6 +100,15 @@ export function Sheet({
     hold(1);
     return () => hold(-1);
   }, [layer]);
+  useEffect(() => {
+    const id = ++sheetSeq;
+    openSheets.add(id);
+    sheetsChanged();
+    return () => {
+      openSheets.delete(id);
+      sheetsChanged();
+    };
+  }, []);
   useEffect(() => {
     // The opener first: the effect below moves focus away from it.
     const opener = document.activeElement as HTMLElement | null;

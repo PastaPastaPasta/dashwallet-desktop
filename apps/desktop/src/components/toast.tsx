@@ -1,11 +1,13 @@
 // Toast (UX-SPEC C21): bottom-centre, 24 pt above the status bar, auto-dismiss. An actionable
 // failure is an alert in the same stack: it stays until Dismiss or the next attempt's outcome, and
 // a toast shows under it rather than over it. An alert's region comes with it: role=alert is said
-// when it is inserted, unlike the status region a toast fills (issue 291). While a sheet is open the
-// alert is hidden, not dropped: it would cover the sheet's buttons.
+// when it is inserted, unlike the status region a toast fills (issue 291). A sheet opened after the
+// alert hides it until the sheet closes, so it never covers that sheet's buttons; one raised while a
+// sheet is open (that sheet's own refusal) shows over it.
 
 import { useEffect, useRef, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useUi } from "../app/ui";
+import { lastSheetOpened, newestOpenSheet, watchSheets } from "./sheet";
 import { t, useT } from "../i18n";
 import { motion } from "../styles/tokens.generated";
 
@@ -26,6 +28,8 @@ interface Alert {
   text: string;
   /** What had focus when it showed: Dismiss gives focus back there. */
   back: Element | null;
+  /** `lastSheetOpened()` when it showed: a newer sheet open hides it. */
+  sheet: number;
 }
 
 let current: Toast | null = null;
@@ -52,7 +56,7 @@ function show(toast: Omit<Toast, "id">, seconds: number) {
 /** Shows `text` as the alert until Dismiss or `clearAlert(key)`; it replaces the alert up. */
 export function showAlert(text: string, key: string) {
   if (held) return;
-  alert = { id: ++seq, key, text, back: document.activeElement };
+  alert = { id: ++seq, key, text, back: document.activeElement, sheet: lastSheetOpened() };
   notify();
 }
 
@@ -116,6 +120,7 @@ function dropAlertOnSwitch(walletId: string | null) {
 export function ToastHost() {
   const toast = useSyncExternalStore(subscribe, () => current);
   const shown = useSyncExternalStore(subscribe, () => alert);
+  const underSheet = useSyncExternalStore(watchSheets, newestOpenSheet) > (shown?.sheet ?? Infinity);
   const discreet = useUi((u) => u.discreet);
   dropAlertOnSwitch(useUi((u) => u.walletId));
   const tr = useT();
@@ -136,7 +141,7 @@ export function ToastHost() {
   return (
     <div className={shown ? "toast-stack has-alert" : "toast-stack"}>
       {shown && (
-        <div className="toast-alert" role="alert" key={shown.id} ref={host} data-testid="toast-alert" onKeyDown={(e) => onKey(e, shown)}>
+        <div className={underSheet ? "toast-alert is-under-sheet" : "toast-alert"} role="alert" key={shown.id} ref={host} data-testid="toast-alert" onKeyDown={(e) => onKey(e, shown)}>
           <span className="toast-alert-text" data-testid="toast-alert-text">
             {shown.text}
           </span>
