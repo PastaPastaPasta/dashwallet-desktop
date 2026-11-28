@@ -151,7 +151,9 @@ fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, Engine
     let found = std::cell::Cell::new(None);
     let probe_failed = std::cell::Cell::new(None);
     let holds = |dir: &Path, snapshot: &dw_store_upgrade::SnapshotInfo| {
-        if let Err(e) = crate::platform::shielded_pool::refuse_missing_store(dir, false) {
+        if dir == network_dir
+            && let Err(e) = crate::platform::shielded_pool::refuse_missing_store(dir, false)
+        {
             let detail = e.to_string();
             probe_failed.set(Some(e));
             return Err(detail);
@@ -498,13 +500,20 @@ pub(crate) fn map_error(
         "store upgrade: open stopped");
     if e.is_refusal() {
         return match screen_for(&e, ProvedState::read(network_dir, wrote)) {
-            Some(screen) => EngineError::StoreRefused(Box::new(StoreRefusal {
-                screen,
-                folder: network_dir.to_path_buf(),
-                cause,
-                stage,
-                detail: e.to_string(),
-            })),
+            Some(mut screen) => {
+                if screen.way_out == copy::WayOut::Unverified
+                    && dw_store_upgrade::snapshot_retired_for_wallet_removal(network_dir)
+                {
+                    screen.offer_recover_after_wallet_removal();
+                }
+                EngineError::StoreRefused(Box::new(StoreRefusal {
+                    screen,
+                    folder: network_dir.to_path_buf(),
+                    cause,
+                    stage,
+                    detail: e.to_string(),
+                }))
+            }
             None => EngineError::Internal(format!("{NO_SCREEN}{cause}")),
         };
     }

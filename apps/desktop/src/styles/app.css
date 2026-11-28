@@ -2537,8 +2537,10 @@ input[type="radio"]:disabled {
 /* ------------------------------------------------------------------ receive (§4.8) */
 
 .receive-columns {
+  container: receive / inline-size;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /* Leave room for the address actions and the request's amount and unit controls. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
   gap: var(--dw-space-l);
   margin-bottom: var(--dw-layout-section-gap);
 }
@@ -2577,6 +2579,27 @@ input[type="radio"]:disabled {
 
 .request-form[inert] {
   visibility: hidden;
+}
+
+/* Below the 760 px content maximum, keep the form inside its grid track. */
+@container receive (inline-size < 760px) {
+  .receive-columns > *,
+  .receive-request > * {
+    min-width: 0;
+  }
+
+  .request-form .form-field input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .request-form .amount-entry {
+    flex-wrap: wrap;
+  }
+
+  .request-form .amount-entry input {
+    flex-basis: 8em;
+  }
 }
 
 .request-unavailable p {
@@ -3927,12 +3950,14 @@ input[type="radio"]:disabled {
 
 .contact-row-item.has-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--dw-space-xs);
 }
 
 .contact-row-item.has-actions > .contact-row {
-  flex: 1;
+  /* Keep room for the contact name before wrapping the request actions to the next line. */
+  flex: 1 1 260px;
   min-width: 0;
 }
 
@@ -3940,6 +3965,7 @@ input[type="radio"]:disabled {
   display: flex;
   flex: none;
   gap: var(--dw-space-xs);
+  margin-inline-start: auto;
   padding-inline-end: var(--dw-space-s);
 }
 
