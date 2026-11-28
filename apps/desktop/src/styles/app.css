@@ -691,7 +691,7 @@ input[type="radio"]:disabled {
 }
 
 .add-contact-search-results.has-space {
-  block-size: calc(3 * var(--dw-layout-tx-row-min-height));
+  block-size: calc(2 * var(--dw-layout-tx-row-min-height));
 }
 
 .add-contact-my-qr .qr,
