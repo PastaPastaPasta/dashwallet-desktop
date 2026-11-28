@@ -2037,6 +2037,12 @@ impl HistoryStore {
         unconfirmed: &[Txid],
     ) -> Vec<Txid> {
         self.with_wallet_records(wallet, |history, locks| {
+            history.session_locks.extend(
+                removed
+                    .iter()
+                    .filter(|txid| locks.inputs.contains_key(*txid))
+                    .copied(),
+            );
             history.truncate(removed, unconfirmed, locks.overflow)
         })
     }

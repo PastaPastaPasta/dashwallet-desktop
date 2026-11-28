@@ -300,6 +300,28 @@ fn a_wallet_that_learns_an_input_after_the_lock_match_still_keeps_the_lock() {
 }
 
 #[test]
+fn a_lock_match_racing_with_a_fork_keeps_the_payment_across_the_fork() {
+    let s = scenario();
+    s.mined();
+    let history = &s.session.hub.history;
+    let lock = s.lock();
+    let (reached, matched) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel();
+    *history.pause_after_lock_match.lock().unwrap() = Some((reached, release));
+    std::thread::scope(|scope| {
+        let hearing =
+            scope.spawn(|| history.note_instant_lock(&lock.txid, Some(&lock.inputs), |_| false));
+        matched
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        s.fork();
+        resume.send(()).unwrap();
+        hearing.join().unwrap();
+    });
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
 fn an_evicted_lock_still_holds_its_input_when_the_wallet_later_forks() {
     use dash_spv::EventHandler;
     let (s, funding) = before_funding();
