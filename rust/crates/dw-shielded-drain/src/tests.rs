@@ -920,8 +920,30 @@ fn shielded_drain_retries_after_wallet_removal_retires_the_snapshot() {
     assert!(wallet.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'dw_fork_schema_history_retired')", [], |r| r.get::<_, bool>(0)).unwrap());
     let id = id.try_into().unwrap();
     dw_store_upgrade::retire_snapshot_for_wallet_removal(&d.net, &id).unwrap();
+    let marker = snapshot.dir().join(dw_store_upgrade::NOT_THIS_WALLET);
+    let removal_marker = std::fs::read(&marker).unwrap();
+    std::fs::write(&marker, b"dw-store-upgrade not this wallet\nformat 1\n").unwrap();
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    std::fs::write(&marker, &removal_marker).unwrap();
+
+    let shielded_copy = snapshot.dir().join(SHIELDED_STORE_FILE);
+    let original = std::fs::read(&shielded_copy).unwrap();
+    let mut damaged = original.clone();
+    damaged[100] ^= 1;
+    std::fs::write(&shielded_copy, damaged).unwrap();
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    std::fs::write(&shielded_copy, original).unwrap();
+
     // A same-phrase import recreates the original wallet ID.
-    wallet.execute_batch("CREATE TEMP TABLE reimported AS SELECT * FROM wallets; DELETE FROM wallets; INSERT INTO wallets SELECT * FROM reimported;").unwrap();
+    wallet
+        .execute_batch(
+            "CREATE TEMP TABLE reimported AS SELECT * FROM wallets; DELETE FROM wallets;",
+        )
+        .unwrap();
+    assert!(upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    wallet
+        .execute_batch("INSERT INTO wallets SELECT * FROM reimported;")
+        .unwrap();
     drop(wallet);
     assert!(dw_store_upgrade::request_restore(&d.net, &snapshot).is_err());
     d.open_persister();
