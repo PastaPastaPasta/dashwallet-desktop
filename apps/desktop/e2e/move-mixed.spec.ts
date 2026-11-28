@@ -226,3 +226,84 @@ test("MIX-SHIELD Unlock fully on the card lets Shielded sync, and the card waits
   await expect(page.locator(".dash-button-why", { hasText: "Shielded is still syncing. Try again when it finishes." })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+for (const theme of THEMES) {
+  test(`Return to Core from CoinJoin page ${theme}: held coins with zero free CoinJoin balance, confirm amount and destination, authorize, done; 0 serious axe issues`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("coinjoin-held", theme));
+    await openCoinJoin(page);
+    await expect(page.getByTestId("coinjoin-move")).toBeVisible();
+    await expect(page.getByTestId("coinjoin-move-open")).toHaveCount(0);
+    await expect(page.getByTestId("coinjoin-held-note")).toContainText("0.200402");
+    await page.getByTestId("coinjoin-return-open").click();
+    await expect(page.getByTestId("return-to-core-sheet")).toBeVisible();
+    await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-step", "confirm");
+    await expect(page.getByTestId("return-to-core-amount")).toContainText("0.200402");
+    await expect(page.getByTestId("return-to-core-destination")).toHaveText("Core wallet");
+    await expect(page.getByTestId("return-to-core-fee")).toBeVisible();
+    await expect(page.getByTestId("return-to-core-receive")).toBeVisible();
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("return-to-core-confirm").click();
+    await expect(page.getByTestId("grant-sheet")).toBeVisible();
+    await authorize(page);
+    await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-outcome", "done");
+    await expect(page.getByTestId("return-to-core-outcome-title")).toHaveText("Coins returning to Core");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("return-to-core-close").click();
+    await expect(page.getByTestId("return-to-core-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("coinjoin-move")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`Return to Core from Settings ▸ CoinJoin ${theme}: held coins card, confirm, authorize, done; 0 serious axe issues`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("coinjoin-held", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-tabs").getByRole("tab", { name: "CoinJoin" }).click();
+    await expect(page.getByTestId("settings-coinjoin-return")).toBeVisible();
+    await expect(page.getByTestId("settings-coinjoin-held-note")).toContainText("0.200402");
+    await page.getByTestId("settings-coinjoin-return-open").click();
+    await expect(page.getByTestId("return-to-core-sheet")).toBeVisible();
+    await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-step", "confirm");
+    await expect(page.getByTestId("return-to-core-amount")).toContainText("0.200402");
+    await expect(page.getByTestId("return-to-core-destination")).toHaveText("Core wallet");
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("return-to-core-confirm").click();
+    await expect(page.getByTestId("grant-sheet")).toBeVisible();
+    await authorize(page);
+    await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-outcome", "done");
+    await page.getByTestId("return-to-core-close").click();
+    await expect(page.getByTestId("settings-coinjoin-return")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("Return to Core while mixing offers Stop Mixing first", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("coinjoin-held-mixing", "light"));
+  await openCoinJoin(page);
+  await page.getByTestId("coinjoin-return-open").click();
+  await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-step", "mixing");
+  await page.getByTestId("return-to-core-stop").click();
+  await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-step", "confirm");
+  await expect(page.getByTestId("return-to-core-amount")).toContainText("0.200402");
+  expect(errors).toEqual([]);
+});
+
+test("Return to Core with unknown outcome offers Try again (resend)", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("coinjoin-held-unknown", "light"));
+  await openCoinJoin(page);
+  await page.getByTestId("coinjoin-return-open").click();
+  await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-step", "confirm");
+  await page.getByTestId("return-to-core-confirm").click();
+  await expect(page.getByTestId("grant-sheet")).toBeVisible();
+  await authorize(page);
+  await expect(page.getByTestId("return-to-core-body")).toHaveAttribute("data-outcome", "unknown");
+  await page.getByTestId("return-to-core-resend").click();
+  await expect(page.getByTestId("return-to-core-resent")).toHaveAttribute("data-state", "unknown");
+  expect(errors).toEqual([]);
+});
