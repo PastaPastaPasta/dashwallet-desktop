@@ -180,6 +180,32 @@ test("a group that changed between the sheet's read and the quote's is read agai
   await expect(page.getByTestId("connect-done")).toBeVisible();
 });
 
+test("a temporary Platform error when refreshing after a group mismatch keeps Try again and recovers", async ({ page }) => {
+  await openConnect(page, "groupRefreshOffline");
+  await expect(page.getByTestId("connect-plan-changed")).toBeVisible();
+  await expect(page.getByTestId("connect-quote-error")).toHaveText("Couldn't check this request with Platform. Try again.");
+  await expect(page.getByTestId("connect-quote-retry")).toBeVisible();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+
+  await page.getByTestId("connect-quote-retry").click();
+  await expect(page.getByTestId("connect-body")).toHaveAttribute("data-phase", "sheet");
+  await expect(page.getByTestId("connect-refusal")).toHaveCount(0);
+  await expect(page.getByTestId("connect-quote-error")).toHaveText("Dash Platform is unavailable for this request. Make sure Dash Platform is on and connected, then try again.");
+  await expect(page.getByTestId("connect-quote-retry")).toBeVisible();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await expect(page.getByTestId("connect-limit")).toBeDisabled();
+  await expect(page.getByTestId("connect-binding").nth(1).getByTestId("connect-binding-check")).toBeDisabled();
+
+  await page.getByTestId("connect-quote-retry").click();
+  await quoted(page);
+  await expect(page.getByTestId("connect-quote-error")).toHaveCount(0);
+  await expect(page.getByTestId("connect-quote-retry")).toHaveCount(0);
+  await expect(page.getByTestId("connect-approve")).toBeEnabled();
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
 test("keys not confirmed in time leave the sheet open, and approving again finishes", async ({ page }) => {
   await openConnect(page, "notConfirmed");
   await quoted(page);
