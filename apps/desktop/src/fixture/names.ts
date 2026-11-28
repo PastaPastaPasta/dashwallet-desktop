@@ -40,6 +40,7 @@ export const FIXTURE_NAMES: ContestedNames = {
     {
       label: "a11ce",
       endsAt: 1_800_003_600,
+      own: false,
       contenders: [
         { identity: ID_1, votes: 9, name: "Alice" },
         // No document came back for it: it shows by its id (MG-11 F1).
@@ -52,6 +53,7 @@ export const FIXTURE_NAMES: ContestedNames = {
     {
       label: "dash-pay",
       endsAt: 1_800_090_000,
+      own: false,
       contenders: [{ identity: ID_2, votes: 0, name: "Dash-Pay" }],
       lockVotes: 0,
       abstainVotes: 4,
@@ -230,6 +232,16 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
     /** MG-07's fixture as it is: two contests, three voters (one evonode at its vote limit on a11ce, one
      * banned masternode with an attached key). */
     names: (t: ThemeName | null) => base(t),
+    "names-owned": (t: ThemeName | null) => base(t, (n) => {
+      const [alice, dashPay] = n.names.contests;
+      const identity = "B".repeat(43);
+      n.names.contests = [
+        { ...alice, label: "c0ra", own: true, endsAt: NOW, contenders: [{ identity, votes: 9, name: "Cora" }] },
+        { ...alice, endsAt: NOW + 3600 },
+        { ...alice, label: "mara", own: true, endsAt: NOW + 3 * 3600, contenders: [{ identity, votes: 9, name: "Mara" }] },
+        { ...dashPay, own: true, contenders: [{ identity, votes: 0, name: "Dash-Pay" }] },
+      ];
+    }),
     /** No open contest. */
     "names-empty": (t: ThemeName | null) => base(t, (n) => (n.names.contests = [])),
     /** No masternode whose voting key the wallet holds: browsing only. */

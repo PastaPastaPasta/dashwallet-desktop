@@ -39,6 +39,7 @@ fn facts(reserved: &[OutPoint], held: &[(OutPoint, u64)]) -> CoinFacts {
     CoinFacts {
         reserved: reserved.to_vec(),
         held,
+        excluded: Default::default(),
         pending: HashSet::new(),
         own: Vec::new(),
         latest: None,

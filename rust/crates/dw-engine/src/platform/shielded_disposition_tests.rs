@@ -286,6 +286,25 @@ fn a_spent_create_with_no_consumed_proof_holds_the_close_and_the_removal() {
     }
 }
 
+#[test]
+fn an_unreadable_registration_proof_refuses_close_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let st_hash = spent_create(&engine, &session, wallet);
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, CAST(X'ff' AS TEXT))",
+        rusqlite::params![scope, key],
+    )
+    .unwrap();
+    assert!(session.live().unwrap().appdb.setting(&scope, &key).is_err());
+    refused(engine.block_on(session.unload_wallet(wallet)));
+    assert!(session.require_wallet(&wallet).is_ok());
+}
+
 /// Where a removal of the wallet is cut (#976): after its app rows are
 /// gone, the consumed proof with them, and before the journal archives its
 /// artifacts.

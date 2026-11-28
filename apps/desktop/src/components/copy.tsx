@@ -1,9 +1,10 @@
 // Copy buttons that answer on the button itself (DEC-1058 #3): a check mark and "Copied" for
 // about 1.5 s after the copy worked. The toast stays (copyWithToast).
 
-import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentProps, type CSSProperties, type ReactNode } from "react";
 import { useT } from "../i18n";
-import { DashButton, Icon } from "./basics";
+import { DashButton } from "./basics";
+import { iconFiles } from "./icons";
 import { copyWithToast } from "./toast";
 
 /** How long the button says "Copied". */
@@ -47,12 +48,15 @@ export function CopyDashButton({ text, children, ...rest }: { text: string | nul
   );
 }
 
-/** The small icon button beside a value; "Copied" shows beside it for a moment. */
+/** The small icon button beside a value. Copy confirmation also uses the shared toast. */
 export function CopyIconButton({ text, label, title, size = 20 }: { text: string; label: string; title?: string; size?: number }) {
   const { copied, copy } = useCopy();
+  const style = { width: size, height: size, "--copy-icon-url": `url("${iconFiles.copy.light}")` } as CSSProperties;
   return (
     <button type="button" className="copy-button" aria-label={label} title={title ?? label} data-copied={copied || undefined} onClick={() => void copy(text)}>
-      {copied ? <CopiedLabel /> : <Icon id="copy" size={size} />}
+      <span className={copied ? "copy-icon-check" : "copy-icon"} style={style} aria-hidden="true">
+        {copied ? "✓" : null}
+      </span>
     </button>
   );
 }

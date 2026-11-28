@@ -333,6 +333,153 @@ fn test_recovery_rechecks_a_rescan_hold_before_signing() {
 }
 
 #[test]
+fn test_recovery_refuses_a_hold_arriving_after_signing() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.net.pause_before_entry.lock().unwrap() = Some(Arc::clone(&pause));
+    let (mn, grant, session_id) = (f.mn(), f.grant(1, COIN), id.clone());
+    let spending = f
+        .session
+        .rt
+        .spawn(async move { mn.abandon_shared_session(wallet, session_id, grant).await });
+    assert!(pause.wait_reached(std::time::Duration::from_secs(10)));
+    let row = f.row(1, &id);
+    let signed: Transaction =
+        dashcore::consensus::deserialize(row.abandon_tx.as_deref().unwrap()).unwrap();
+    assert!(!signed.input[0].script_sig.is_empty());
+    f.session.hub.history.with_wallet(wallet, |h| {
+        h.rescan_holds
+            .insert(coin, crate::rescan_hold::RescanHold::new(0, 100));
+    });
+    pause.release.notify_one();
+    let result = f.run(spending).unwrap();
+    assert!(
+        f.net.sent().is_empty(),
+        "the signed spend did not reach transport"
+    );
+    assert_eq!(send_code(&result.unwrap_err()), "send.outpoint_unavailable");
+    assert_eq!(
+        abandon_log(&f.row(1, &id))[0].1.as_deref(),
+        Some("not_sent")
+    );
+    assert_eq!(f.locked(1), HashSet::from([coin]));
+    assert!(!f.session.spends.snapshot(&wallet).contains(&coin));
+}
+
+#[test]
+fn test_recovery_refuses_a_saved_spend_back_with_a_new_hold() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    f.spv(true, 1);
+    f.net.unconfirm_next();
+    f.abandon(1, &id).unwrap();
+    let original = f.row(1, &id);
+    assert_eq!(abandon_log(&original)[0].1.as_deref(), Some("maybe_sent"));
+    let replay = RecoveryAction::ResendAbandon {
+        charge: spend_fee(1),
+    };
+    assert!(f.recovery(1, &id).actions.contains(&replay));
+    f.session.hub.history.with_wallet(wallet, |h| {
+        h.rescan_holds
+            .insert(coin, crate::rescan_hold::RescanHold::new(0, 100));
+    });
+    let result = f.resend_abandon(1, &id, COIN);
+    assert!(
+        f.net.sent().is_empty(),
+        "the replay did not reach transport"
+    );
+    assert_eq!(send_code(&result.unwrap_err()), "send.outpoint_unavailable");
+    let row = f.row(1, &id);
+    assert_eq!(row.abandon_tx, original.abandon_tx);
+    assert_eq!(abandon_log(&row)[0].1.as_deref(), Some("maybe_sent"));
+    assert!(!f.recovery(1, &id).actions.contains(&replay));
+
+    f.session.hub.history.with_wallet(wallet, |h| {
+        h.rescan_holds.remove(&coin);
+    });
+    f.resend_abandon(1, &id, COIN).unwrap();
+    assert_eq!(
+        original.abandon_tx.unwrap(),
+        dashcore::consensus::serialize(&f.net.sent()[0])
+    );
+}
+
+fn fork_without_wallet_event(f: &Fx, id: &str, catch_up: bool) -> (OutPoint, Txid) {
+    use platform_wallet::events::WalletEvent;
+    use platform_wallet::key_wallet_manager::WalletInterface;
+
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(f, 1, id)[0];
+    let mut spend = foreign_spend(&[coin], 1);
+    spend.output[0].script_pubkey = f.coin_of(1, coin).1.script_pubkey();
+    let txid = spend.txid();
+    let mut block = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest);
+    block.txdata = vec![spend];
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
+    let manager = f.session.manager().unwrap();
+    let wm = manager.wallet_manager_arc();
+    let mined = f.run(async {
+        let mut wm = wm.write().await;
+        let mut events = wm.subscribe_events();
+        wm.process_block_for_wallets(&block, block.block_hash(), 2, &[wallet.0].into())
+            .await;
+        std::iter::from_fn(|| events.try_recv().ok())
+            .find(|event| matches!(event, WalletEvent::BlockProcessed { .. }))
+            .unwrap()
+    });
+    f.session.hub.apply_wallet_event(&mined);
+    let reconciles = std::mem::take(&mut *f.session.hub.reconciles.lock().unwrap());
+    for reconcile in reconciles {
+        f.run(reconcile).unwrap();
+    }
+    f.session.hub.history.with_wallet(wallet, |h| {
+        assert_eq!(h.txs[&txid].context.block_info().unwrap().height(), 2);
+        h.session_locks.insert(txid);
+    });
+    assert!(f.held_coin(1, coin).is_none());
+
+    f.run(async {
+        let mut wm = wm.write().await;
+        let mut events = wm.subscribe_events();
+        wm.truncate_above(1).unwrap();
+        assert!(std::iter::from_fn(|| events.try_recv().ok()).any(|event| {
+            matches!(event, WalletEvent::ChainTruncated { txids, restored_outpoints, .. }
+                if txids.contains(&txid) && restored_outpoints.contains(&coin))
+        }));
+        if catch_up {
+            wm.update_wallet_last_processed_height(&wallet.0, 2);
+        }
+    });
+    assert!(f.held_coin(1, coin).is_some());
+    f.history_edit(1, txid, |e| assert!(e.context.block_info().is_some()));
+    f.chainlock(2);
+    (coin, txid)
+}
+
+#[test]
+fn test_recovery_reconciles_a_truncation_before_the_wallet_event() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let (coin, _) = fork_without_wallet_event(&f, &id, false);
+    assert_abandon_cannot_spend(&f, &id);
+    assert_reserved_coin_excluded(&f, coin, ExclusionReason::ForkKeptLock);
+}
+
+#[test]
+fn test_recovery_refuses_a_fork_kept_input_when_the_height_has_recovered() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let (_, txid) = fork_without_wallet_event(&f, &id, true);
+    assert_abandon_cannot_spend(&f, &id);
+    f.history_edit(1, txid, |e| assert!(e.context.block_info().is_some()));
+}
+
+#[test]
 fn test_recovery_excludes_a_reservation_held_by_a_fork_kept_lock() {
     let f = fx(3, true);
     let id = three_approved(&f);

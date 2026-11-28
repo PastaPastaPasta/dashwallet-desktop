@@ -87,12 +87,10 @@ public actor EngineClient: EngineProtocol {
         sessions[network]?.isOpen() ?? false
     }
 
-    public nonisolated func directory(for network: DashNetwork) -> URL {
-        if let path = try? core.peek()?.networkDir(network: network.ffi) {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        // After shutdown: the engine's layout is `<dataRoot>/<network>`.
-        return dataRoot.appendingPathComponent(network.description, isDirectory: true)
+    public nonisolated func directory(for network: DashNetwork) throws(DashKitError) -> URL {
+        let engine = try core.get()
+        let path = try mapped { try engine.networkDir(network: network.ffi) }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     public func startSPV(on network: DashNetwork) async throws(DashKitError) {

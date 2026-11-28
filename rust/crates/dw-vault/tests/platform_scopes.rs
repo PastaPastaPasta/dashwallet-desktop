@@ -762,6 +762,35 @@ async fn identity_signatures_need_the_named_key_and_verify() {
 }
 
 #[tokio::test]
+async fn platform_address_signatures_pass_the_pinned_witness_check() {
+    use dashcore::ecdsa::EcdsaSignature;
+    use dpp::address_funds::{AddressWitness, PlatformAddress};
+    use dpp::version::PlatformVersion;
+    use dpp::version::v15::PLATFORM_V15;
+
+    let fx = Fixture::new();
+    let vault = unencrypted_vault(&fx);
+    let signer = platform_signer(&vault, SignerScope::PlatformAddress);
+    let path = path("m/9'/1'/17'/0'/0'/0");
+    let public = signer.public_key(&path).await.unwrap();
+    let hash = hash160::Hash::hash(&public.to_compressed()).to_byte_array();
+    let data = b"Platform address transition signable bytes";
+    let signature = signer.sign_platform_address(&path, &hash, data).unwrap();
+    assert!((31..=34).contains(&signature[0]));
+    let compact = signature[1..].try_into().unwrap();
+    assert!(EcdsaSignature::from_bytes(compact).unwrap().is_low_s());
+    let witness = AddressWitness::P2pkh {
+        signature: signature.to_vec().into(),
+    };
+    let address = PlatformAddress::P2pkh(hash);
+    for version in [&PLATFORM_V15, PlatformVersion::latest()] {
+        address
+            .verify_bytes_against_witness(&witness, data, version)
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn contact_info_opens_what_it_seals_and_refuses_foreign_ciphertext() {
     let fx = Fixture::new();
     let v = unencrypted_vault(&fx);

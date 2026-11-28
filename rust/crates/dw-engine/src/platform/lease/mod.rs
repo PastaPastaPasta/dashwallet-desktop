@@ -301,7 +301,7 @@ impl From<LeaseError> for PlatformError {
         match e {
             LeaseError::Locked => PlatformError::Cancelled,
             LeaseError::Restored => PlatformError::Restored,
-            LeaseError::PlatformUnavailable => PlatformError::Unavailable,
+            LeaseError::PlatformUnavailable => PlatformError::SessionOff,
             LeaseError::Revoked(cause) => PlatformError::LeaseRevoked { cause },
             LeaseError::Ended => PlatformError::LeaseExpired,
             LeaseError::Parked(purpose) | LeaseError::NeedsGrant(purpose) => {
