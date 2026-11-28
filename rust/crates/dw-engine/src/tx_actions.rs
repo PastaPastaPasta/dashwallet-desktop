@@ -1641,25 +1641,9 @@ fn add_known(
     }
 }
 
-/// Adds the transactions with a verified InstantSend lock stored and no
-/// record, linked to their parents by the inputs their lock names (#611):
-/// a locked child whose record is gone still proves its parents.
-fn add_locked_without_record(
-    known: &mut HashMap<Txid, Known>,
-    lock_parents: &HashMap<Txid, Vec<Txid>>,
-) {
-    for (t, parents) in lock_parents {
-        let k = known.entry(*t).or_default();
-        if k.parents.is_empty() {
-            k.parents.clone_from(parents);
-        }
-        k.settled = true;
-    }
-}
-
-/// Adds one loaded wallet to `known`: its history and records, then its
-/// stored locks without a record. Neither clears what another wallet's
-/// entry for the same transaction set.
+/// Adds one loaded wallet's records and verified locks to `known`.
+/// A lock proves the parents it names even without a transaction record.
+/// Neither clears what another wallet's entry for the same transaction set.
 fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &ManagedWalletInfo) {
     add_known(known, &h.txs, core);
     for t in &h.session_locks {
@@ -1670,7 +1654,13 @@ fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &Manage
             known.entry(*t).or_default().settled = true;
         }
     }
-    add_locked_without_record(known, &h.lock_parents);
+    for (t, parents) in h.lock_parent_links() {
+        let k = known.entry(*t).or_default();
+        if k.parents.is_empty() {
+            k.parents.extend_from_slice(parents);
+        }
+        k.settled = true;
+    }
 }
 
 /// The transactions something settled descends from in `known`: first
