@@ -39,6 +39,10 @@ One dispatch, two jobs:
 Only the repository owner can do these. Every secret goes straight from the owner's machine into GitHub; none is
 sent to anyone, and no agent handles one. `R` below is `PastaPastaPasta/dashwallet-desktop`.
 
+**Run the blocks in bash.** On macOS type `bash` first. zsh, the default there, passes a `# note` after a command
+to the command as arguments, and it cuts `$NAME:e…` short. The blocks are written for bash, the macOS one
+included.
+
 ### 1. The `release-signing` environment (3 minutes)
 
 ```sh
@@ -154,20 +158,22 @@ Microsoft's steps are in <https://learn.microsoft.com/azure/artifact-signing/qui
    az login
    APP_ID=$(az ad app create --display-name dashwallet-desktop-release-signing --query appId --output tsv)
    az ad sp create --id "$APP_ID"
-   if PREFIX=$(gh api "repos/$R/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty') && [[ "$PREFIX" == repo:*/* ]]; then
-     SUBJECT="$PREFIX:environment:release-signing"
-     echo "$SUBJECT"   # repo:PastaPastaPasta@6443210/dashwallet-desktop@1409635492:environment:release-signing
+   if OIDC_PREFIX=$(gh api "repos/$R/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty') &&
+      [[ "${OIDC_PREFIX}" == repo:*/* ]]; then
+     SUBJECT="${OIDC_PREFIX}:environment:release-signing"
+     echo "${SUBJECT}"   # repo:PastaPastaPasta@6443210/dashwallet-desktop@1409635492:environment:release-signing
      az ad app federated-credential create --id "$APP_ID" --parameters "{
        \"name\": \"dashwallet-desktop-release-signing\",
        \"issuer\": \"https://token.actions.githubusercontent.com\",
-       \"subject\": \"$SUBJECT\",
+       \"subject\": \"${SUBJECT}\",
        \"audiences\": [\"api://AzureADTokenExchange\"]}"
    else
      echo "STOP: GitHub returned no OIDC subject for $R, so no credential was created."
    fi
    ```
 
-   Only when that printed the subject and created the credential:
+   Only when that printed the subject, in full and exactly as in the comment beside it, and created the
+   credential:
 
    ```sh
    SUB=$(az account show --query id --output tsv)
@@ -295,12 +301,24 @@ removed here (issue #1156).
   if its key leaked: Gatekeeper then refuses every app signed with it.
 - **Windows:** delete the federated credential or the role assignment and CI can no longer sign. Nothing in GitHub
   needs changing.
-- **PGP:** make a new key as in step 3 and pin its fingerprint; from then on the old key verifies nothing. To
-  tell people who kept the old key, import its revocation certificate from your backup into a keyring that
-  holds it (the saved file has a colon in front of its `-----BEGIN` line; remove it first) and commit both keys,
-  the revoked one and the new one, to `main`: `gpg --armor --export "$OLD_FPR" "$CI_FPR" > ci-release-key.asc`.
-  The publish job still accepts only the pinned one. The key expires two years after it was made; replace it the
-  same way before then.
+- **PGP:** make a new key as in step 3, writing its public key somewhere else than the repository (`NEW_KEY`
+  below), and pin its fingerprint; from then on the old key verifies nothing. `docs/release/ci-release-key.asc`
+  on `main` then gains the new key and keeps every earlier one with its revocation, so people who kept an old
+  key learn it was revoked. From a checkout of `main`, with `OLD_FPR` the outgoing key's fingerprint:
+
+  ```sh
+  ROT=$(mktemp -d) && chmod 700 "$ROT"
+  gpg --homedir "$ROT" --import docs/release/ci-release-key.asc             # every CI key so far, revocations included
+  sed 's/^:-----BEGIN/-----BEGIN/' "$BACKUP/dashwallet-ci-$OLD_FPR.rev" | gpg --homedir "$ROT" --import
+  gpg --homedir "$ROT" --import "$NEW_KEY"
+  gpg --homedir "$ROT" --armor --export > docs/release/ci-release-key.asc   # all of them, nothing dropped
+  gpg --show-keys docs/release/ci-release-key.asc     # one key without "revoked": the new one; every earlier one revoked
+  gpgconf --homedir "$ROT" --kill all && rm -rf "$ROT"
+  ```
+
+  The saved revocation certificate has a colon in front of its `-----BEGIN` line, which the `sed` removes. The
+  publish job still accepts only the pinned key. The key expires two years after it was made; replace it the same
+  way before then.
 - **Shutting CI signing down:** first cut Azure off and confirm it; only then delete the `release-signing`
   environment, which removes every secret at once. Deleting the federated credential stops the sign-in itself:
   confirm with `az ad app federated-credential list --id "$APP_ID"` that none is left. Removing the role

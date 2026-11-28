@@ -82,10 +82,23 @@ offline, so `gpg` prints both the primary key fingerprint and the signing subkey
 A release candidate whose signatures were made in CI ([`CI-SIGNING.md`](CI-SIGNING.md)) is the one exception: its
 `SHA256SUMS.asc` is signed by a key of CI's own, `docs/release/ci-release-key.asc` at the candidate's tag, whose
 fingerprint is `ci_pgp_fingerprint` in `docs/release/signing-identities.json`. That key signs candidates only. A
-stable release is never signed by it, and the publish workflow refuses one that is. So compare the
-`Primary key fingerprint:` gpg prints: a candidate may show either of the two pinned fingerprints, a stable
-release only `pgp_fingerprint`. `docs/release/ci-release-key.asc` on `main` also carries any CI key that was
-revoked since; import it as well to learn of a revocation.
+stable release is never signed by it, and the publish workflow refuses one that is.
+
+Which of the two keys a candidate must carry follows from how it was signed, and its attestation says which:
+
+```sh
+gh attestation verify SHA256SUMS.asc --repo PastaPastaPasta/dashwallet-desktop \
+  --signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release-publish-signed.yml \
+  --format json --jq '.[0].verificationResult.signature.certificate.buildConfigURI'
+```
+
+- `…/.github/workflows/release-sign.yml@refs/tags/<tag>`: signed in CI. `Primary key fingerprint:` must be
+  `ci_pgp_fingerprint`.
+- `…/.github/workflows/release-publish-signed.yml@refs/tags/<tag>`: signed by the release signer.
+  `Primary key fingerprint:` must be `pgp_fingerprint`, as for a stable release.
+
+The other fingerprint is not a pass: the publish workflow refuses it too. `docs/release/ci-release-key.asc` on
+`main` also carries every CI key that was revoked since; import it as well to learn of a revocation.
 
 ## Check the macOS signature and notarization
 
