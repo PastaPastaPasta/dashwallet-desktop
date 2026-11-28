@@ -246,13 +246,13 @@ impl SessionHub {
     pub(crate) fn may_withhold(&self, id: &WalletId) -> bool {
         let excluded = (self.wallet_state(id)).is_some_and(|s| s.excluded.total() > 0);
         excluded
+            || !self.rescan_held(id).is_empty()
             || self.history.read_wallets(|histories| {
                 histories
                     .values()
                     .any(|h| invalid_txids(h).next().is_some())
                     || histories.get(id).is_some_and(|h| {
-                        !h.rescan_holds.is_empty()
-                            || !h.fork_kept_locks.is_empty()
+                        !h.fork_kept_locks.is_empty()
                             || !h.fork_kept_ancestor_inputs.is_empty()
                             || !h.uncertain_fork_spends.is_empty()
                             || (h.txs.iter()).any(|(t, e)| {

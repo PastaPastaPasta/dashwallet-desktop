@@ -661,6 +661,8 @@ pub(crate) struct SessionHub {
     /// report last ran (`NetworkSession::refresh_held`): the spend notes
     /// above it that are not final go.
     held_forks: Mutex<HashMap<WalletId, u32>>,
+    /// Coins given back by a sweep while the current client's retry map exists.
+    rebroadcast_holds: Mutex<Option<HashMap<WalletId, BTreeSet<dashcore::OutPoint>>>>,
     /// Held through each drop of dead transactions
     /// (`NetworkSession::drop_dead`).
     pub(crate) drop_gate: tokio::sync::Mutex<()>,
@@ -732,6 +734,8 @@ pub(crate) struct SessionHub {
     /// transaction, before its hand-off.
     #[cfg(test)]
     pub(crate) pause_resend: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_rebroadcast_rearm: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: each txid an abandon stopped dash-spv rebroadcasting, with
     /// whether its abandon mark was already written then.
     #[cfg(test)]
@@ -1054,6 +1058,7 @@ impl SessionHub {
             dropped_holds: Mutex::new(HashMap::new()),
             held_locks: Mutex::new(HashMap::new()),
             held_forks: Mutex::new(HashMap::new()),
+            rebroadcast_holds: Mutex::new(None),
             drop_gate: tokio::sync::Mutex::new(()),
             restore: Default::default(),
             #[cfg(test)]
@@ -1081,6 +1086,8 @@ impl SessionHub {
             pause_ops_read: Mutex::new(None),
             #[cfg(test)]
             pause_resend: Mutex::new(None),
+            #[cfg(test)]
+            pause_rebroadcast_rearm: Mutex::new(None),
             #[cfg(test)]
             stopped_rebroadcasts: Mutex::new(Vec::new()),
             #[cfg(test)]
@@ -1993,6 +2000,55 @@ impl SessionHub {
         self.drain_drops();
     }
 
+    pub(crate) fn begin_rebroadcast_holds(&self) {
+        let mut holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        holds.get_or_insert_with(HashMap::new);
+    }
+
+    pub(crate) fn end_rebroadcast_holds(&self) {
+        let holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(holds) = holds {
+            for id in holds.into_keys() {
+                if let Some(reread) = self.balance_reread.get() {
+                    reread(id);
+                }
+                self.pump.mark_history(id, None);
+            }
+        }
+    }
+
+    pub(crate) fn hold_rebroadcast_coins(&self, id: WalletId, coins: &[dashcore::OutPoint]) {
+        if coins.is_empty() {
+            return;
+        }
+        let mut holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(wallets) = holds.as_mut() {
+            wallets.entry(id).or_default().extend(coins);
+        }
+    }
+
+    pub(crate) fn rebroadcast_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        holds
+            .as_ref()
+            .and_then(|wallets| wallets.get(id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn set_spv_running(&self, running: bool) {
         if self.tracker().set_running(running) {
             self.pump.mark_sync();
@@ -2201,10 +2257,13 @@ impl SessionHub {
         let _ = self.settle_rescan_holds(id, None);
     }
 
-    /// The coins of wallet `id` given back that still wait for their
-    /// rescan (`crate::rescan_hold`): neither counted nor offered.
+    /// Coins of wallet `id` that still wait for the rescan or the old
+    /// SPV client to stop: neither counted nor offered.
     pub(crate) fn rescan_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
-        (self.history).read_wallet(id, |h| h.rescan_holds.keys().copied().collect())
+        let mut coins = self.rebroadcast_held(id);
+        self.history
+            .read_wallet(id, |h| coins.extend(h.rescan_holds.keys()));
+        coins
     }
 
     /// Lets go of wallet `id`'s holds whose rescan is back, and reads its
@@ -2225,7 +2284,9 @@ impl SessionHub {
         }
         let state = self.wallet_state(&id);
         let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(&id));
-        let back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
+        let mut back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
+        let retrying = self.rebroadcast_held(&id);
+        back.retain(|o| !retrying.contains(o));
         if back.is_empty() {
             return BTreeSet::new();
         }
@@ -2592,6 +2653,7 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
+                self.hold_rebroadcast_coins(id, released_outpoints);
                 // Read before the history forgets them: what is built on
                 // them is checked against their bytes (#739).
                 let (swept, own): (Vec<Transaction>, Vec<_>) =

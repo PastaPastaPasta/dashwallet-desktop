@@ -674,6 +674,139 @@ fn the_final_pass_drops_a_late_descendant_of_a_store_dropped_claim() {
     assert!(dropped(&engine, &session, id, child.txid()));
 }
 
+#[test]
+fn a_live_relay_drops_a_late_descendant_of_a_store_dropped_claim_before_the_final_pass() {
+    use super::store_repair_tests::{claim_on_a_held_coin, dropped, stored};
+
+    let (_dir, engine, session, id) = super::engine_wallet();
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let funding_out = OutPoint::new(funding.txid(), 0);
+    let funding_value = funding.output[0].value;
+    let (vout, output) = (1, &claim.output[1]);
+    let claim_out = OutPoint::new(claim.txid(), vout);
+    let owner =
+        dashcore::Address::from_script(&output.script_pubkey, dashcore::Network::Regtest).unwrap();
+    let receive = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let child = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(
+            claim_out,
+            vec![(receive.script_pubkey(), output.value - 1_000)],
+        ),
+    );
+    let child_out = OutPoint::new(child.txid(), 0);
+    let fee = crate::send::FeeMode::PerKb(1_000);
+
+    let assert_not_offered = |session: &Arc<NetworkSession>, stage: &str, check_prepare: bool| {
+        eventually("balance counts only the funding coin", || {
+            let b = balances(session, id);
+            b.confirmed == funding_value
+                && b.unconfirmed == 0
+                && b.withheld == 0
+                && b.total == funding_value
+        });
+        let max = engine
+            .block_on(session.max_spendable(id, CoinSource::Any, fee))
+            .unwrap();
+        assert_eq!(max, funding_value, "{stage}: Max offered another coin");
+        let listed: BTreeSet<OutPoint> = engine
+            .block_on(session.utxos(id, crate::CoinFilter::default()))
+            .unwrap()
+            .into_iter()
+            .map(|c| c.outpoint)
+            .collect();
+        assert!(
+            !listed.contains(&child_out) && !listed.contains(&claim_out),
+            "{stage}: dropped output listed in coin control: {listed:?}"
+        );
+        assert_eq!(
+            listed,
+            BTreeSet::from([funding_out]),
+            "{stage}: coin control listed another coin"
+        );
+        assert!(
+            engine
+                .block_on(session.max_spendable(id, CoinSource::Outpoints(vec![child_out]), fee))
+                .is_err(),
+            "{stage}: child output offered to coin control"
+        );
+        assert!(
+            engine
+                .block_on(session.max_spendable(id, CoinSource::Outpoints(vec![claim_out]), fee))
+                .is_err(),
+            "{stage}: claim output offered to coin control"
+        );
+        if check_prepare {
+            let (_draft, prepared) = prepare(
+                &engine,
+                session,
+                id,
+                CoinSource::Any,
+                max,
+                true,
+                &Arc::new(super::own_spend_disk_tests::Accept::default()),
+            );
+            let inputs: BTreeSet<OutPoint> = prepared
+                .unwrap()
+                .summary()
+                .inputs
+                .iter()
+                .map(|i| i.outpoint)
+                .collect();
+            assert_eq!(
+                inputs,
+                BTreeSet::from([funding_out]),
+                "{stage}: Max spend selected another input"
+            );
+            assert!(
+                !spendable_for(&engine, session, id, child_out, 10_000),
+                "{stage}: child output spendable via coin control"
+            );
+            assert!(
+                !spendable_for(&engine, session, id, claim_out, 10_000),
+                "{stage}: claim output spendable via coin control"
+            );
+        }
+    };
+
+    let session = restored_with(&engine, session, "");
+    assert!(!stored(session.data_dir(), id, claim.txid()));
+    assert!(
+        !session
+            .hub
+            .skip_dead_hook
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "relay hook must be live"
+    );
+
+    mempool(&engine, &session, id, &child);
+    eventually(
+        "the live relay hook drops the late child before the final pass",
+        || {
+            dropped(&engine, &session, id, child.txid())
+                && abandoned_marks(&session, id).contains(&child.txid())
+        },
+    );
+    assert!(
+        session.restored() && mark_present(&session),
+        "dropped before the final pass"
+    );
+    assert_not_offered(&session, "before the final pass", false);
+
+    cleared(&session);
+    assert!(dropped(&engine, &session, id, child.txid()));
+    assert!(abandoned_marks(&session, id).contains(&child.txid()));
+    assert_not_offered(&session, "after cleared()", true);
+
+    let session = reopen(&engine, session);
+    assert!(dropped(&engine, &session, id, child.txid()));
+    assert!(abandoned_marks(&session, id).contains(&child.txid()));
+    assert_not_offered(&session, "after reopen", true);
+}
+
 /// H4: the mark stays while the services aren't synced.
 #[test]
 fn the_mark_stays_until_all_synced() {

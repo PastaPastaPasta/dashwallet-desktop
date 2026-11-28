@@ -31,6 +31,7 @@ export const home = {
   /** The Core row's subtitle: what is still arriving, and what is held. Parts joined by `separator`. */
   core: {
     pending: "{amount} pending",
+    pendingDetail: "Unconfirmed, including change from your sends",
     immature: "{amount} immature",
     locked: "{amount} locked",
     separator: " · ",
@@ -72,10 +73,19 @@ export const home = {
   /** The Shielded row's subtitle while a payment that may still go through holds part of it.
    * `amount` is the held total with its unit; `count` the payments holding it. */
   shielded: {
+    pending: "Pending history (in + out): {amount}",
+    credits: { one: "{amount} credit", other: "{amount} credits" },
     held: {
       one: "{amount} held for a payment",
       other: "{amount} held for {count} payments",
     },
+  },
+  platform: {
+    outgoing: "Outgoing pending · cached balance",
+    held: "Outgoing unconfirmed · cached balance",
+    incoming: "Incoming pending · cached balance",
+    bothPending: "Transfers pending · cached balance",
+    unverified: "Unverified · cached balance",
   },
   shortcuts: {
     label: "Shortcuts",

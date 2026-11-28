@@ -12,6 +12,7 @@ use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use dash_sdk::sdk::AddressList;
 use dash_spv::{ClientConfig, DevnetConfig};
+use dashcore::Txid;
 use dpp::version::PlatformVersion;
 use dw_appdb::{APP_DB_FILE, APP_DB_LOCK_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
@@ -33,6 +34,7 @@ use crate::platform::trust::{self, SharedContext, TrustProvider};
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NoticeCode};
 
 pub(crate) type Manager = PlatformWalletManager<crate::store::WalletStore>;
+type AssetLockGates = std::collections::HashMap<(WalletId, Txid), Weak<tokio::sync::RwLock<()>>>;
 
 fn configure_spv_masternodes(
     config: &mut ClientConfig,
@@ -519,6 +521,8 @@ pub struct NetworkSession {
     /// marked.
     pub(crate) abandon_gates:
         Mutex<std::collections::HashMap<WalletId, Arc<tokio::sync::RwLock<()>>>>,
+    /// An asset-lock resume fences only Repair of that funding transaction.
+    asset_lock_gates: Mutex<AssetLockGates>,
     /// Other crates' tests: the next write of that setting fails.
     #[cfg(all(debug_assertions, feature = "test-support"))]
     pub(crate) payment_auth_fault: std::sync::atomic::AtomicBool,
@@ -530,6 +534,7 @@ pub struct NetworkSession {
     pub(crate) resends: Mutex<Vec<tokio::task::AbortHandle>>,
     /// The replacement client's run that needs pending-send replay, or zero.
     pub(crate) rebroadcast_replay: AtomicU64,
+    pub(crate) rebroadcast_replay_gate: tokio::sync::Mutex<()>,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
     /// The masternode follower and its event (MG-03, `masternodes/`).
@@ -559,6 +564,25 @@ impl NetworkSession {
     pub(crate) fn abandon_gate(&self, wallet: WalletId) -> Arc<tokio::sync::RwLock<()>> {
         let mut gates = self.abandon_gates.lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(gates.entry(wallet).or_default())
+    }
+
+    pub(crate) fn asset_lock_gate(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Arc<tokio::sync::RwLock<()>> {
+        let mut gates = self
+            .asset_lock_gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        let entry = gates.entry((wallet, txid)).or_default();
+        if let Some(gate) = entry.upgrade() {
+            return gate;
+        }
+        let gate = Arc::new(tokio::sync::RwLock::new(()));
+        *entry = Arc::downgrade(&gate);
+        gate
     }
 
     /// Opens the session. Must run on the engine runtime: the manager spawns
@@ -1023,10 +1047,12 @@ impl NetworkSession {
             backups: Default::default(),
             payment_auth: tokio::sync::Mutex::new(()),
             abandon_gates: Mutex::default(),
+            asset_lock_gates: Mutex::default(),
             #[cfg(all(debug_assertions, feature = "test-support"))]
             payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),
             rebroadcast_replay: AtomicU64::new(0),
+            rebroadcast_replay_gate: tokio::sync::Mutex::new(()),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,
             platform: crate::platform::runtime::PlatformRuntime::new(
@@ -1420,6 +1446,7 @@ impl NetworkSession {
         create_owned_dir(&self.data_dir, Path::new(SPV_DIR))?;
         let spv = manager.spv_arc();
         spv.start(config).await?;
+        self.hub.begin_rebroadcast_holds();
         self.hub.set_spv_running(true);
         spv.spawn_run_loop();
         // E0-04 H6 part 2: the catch-up's resume pass, spawned.
@@ -1438,6 +1465,9 @@ impl NetworkSession {
         self.leases.spv_stopped();
         self.abort_resends();
         let stopped = manager.spv().stop().await;
+        if stopped.is_ok() {
+            self.hub.end_rebroadcast_holds();
+        }
         self.hub.set_spv_running(false);
         self.sink.emit(EngineEvent::SpvStateChanged {
             network: self.network.clone(),
@@ -1470,8 +1500,9 @@ impl NetworkSession {
         let weak = Arc::downgrade(self);
         if let Ok(live) = self.live() {
             let weak = weak.clone();
-            live.store.notify_sweep(move || {
+            live.store.notify_sweep(move |wallet, released| {
                 if let Some(session) = weak.upgrade() {
+                    session.hub.hold_rebroadcast_coins(wallet, released);
                     session.request_rebroadcast_rebuild();
                 }
             });
@@ -1513,6 +1544,7 @@ impl NetworkSession {
         if let Err(error) = self.stop_spv_inner(manager).await {
             tracing::debug!(%error, "joining SPV teardown before restarting");
             manager.spv().stop().await?;
+            self.hub.end_rebroadcast_holds();
         }
         // Coalesce more durable drops after the old timer has stopped.
         // Repair holds the wallet lifecycle through its batch and rewind.

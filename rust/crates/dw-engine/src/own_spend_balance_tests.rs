@@ -2972,6 +2972,285 @@ fn a_rebuilt_spv_retries_an_unrelated_pending_send() {
     assert_eq!(*wire.lock().unwrap(), [other.txid()]);
 }
 
+fn ready_replay(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+) -> Arc<std::sync::Mutex<Vec<Txid>>> {
+    start_offline_spv(engine, session);
+    session
+        .hub
+        .tracker()
+        .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(
+            "127.0.0.1:9".parse().unwrap(),
+        ));
+    session.rebroadcast_replay.store(
+        session.manager().unwrap().spv().run_session(),
+        std::sync::atomic::Ordering::Release,
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    wire
+}
+
+#[test]
+fn replay_after_a_failed_sent_mark_read_retries_without_another_peer() {
+    let (_dir, engine, session, _, payment, _, _) = pending_payment_of_one_coin();
+    let wire = ready_replay(&engine, &session);
+    dw_appdb::fault::arm(
+        &session.data_dir().join(dw_appdb::APP_DB_FILE),
+        "settings.read_sent:",
+        dw_appdb::fault::Stage::Before,
+    );
+    engine.block_on(session.resume_rebroadcasts());
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn replay_after_a_failed_wallet_record_read_keeps_the_generation_for_reconnect() {
+    let (_dir, engine, session, _, payment, _, _) = pending_payment_of_one_coin();
+    let wire = ready_replay(&engine, &session);
+    let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
+        .unwrap();
+    conn.execute_batch("ALTER TABLE core_transactions RENAME TO offline_transactions")
+        .unwrap();
+    engine.block_on(session.resume_rebroadcasts());
+    assert!(wire.lock().unwrap().is_empty());
+    conn.execute_batch("ALTER TABLE offline_transactions RENAME TO core_transactions")
+        .unwrap();
+    engine.block_on(session.resume_rebroadcasts());
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn a_peer_up_during_rebroadcast_rearm_retries_the_saved_payment() {
+    let (_dir, engine, session, _id, payment, _, _) = pending_payment_of_one_coin();
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    session.rebroadcast_replay.store(
+        manager.spv().run_session(),
+        std::sync::atomic::Ordering::Release,
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_rebroadcast_rearm.lock().unwrap() = Some(Arc::clone(&pause));
+
+    let s = Arc::clone(&session);
+    engine
+        .block_on(session.on_runtime(async move {
+            let first = Arc::clone(&s);
+            let first = tokio::spawn(async move { first.resume_rebroadcasts().await });
+            while !pause.reached.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+            let peer = "127.0.0.1:9".parse().unwrap();
+            s.hub
+                .tracker()
+                .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(peer));
+            let replay = s.resume_rebroadcasts();
+            tokio::pin!(replay);
+            let early = tokio::time::timeout(std::time::Duration::from_millis(50), &mut replay)
+                .await
+                .is_ok();
+            pause.release.notify_one();
+            first.await?;
+            if !early {
+                replay.await;
+            }
+            Ok(())
+        }))
+        .unwrap();
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn abandon_keeps_its_input_out_while_an_in_flight_send_delays_spv_stop() {
+    use dashcore::Network;
+    use dashcore::network::address::Address as NetAddress;
+    use dashcore::network::constants::ServiceFlags;
+    use dashcore::network::message::{NetworkMessage, RawNetworkMessage, RawNetworkMessageCodec};
+    use dashcore::network::message_network::VersionMessage;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_util::codec::Framed;
+
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let peer = socket.local_addr().unwrap();
+    let mut options = super::offline();
+    options.spv_peers = vec![peer.to_string()];
+    let (_dir, engine, session, id, _) = super::engine_wallet_recorded_with_options(options);
+    let recipient = fresh_address(&engine, &session, id);
+    let paid = funding(7, &[recipient], COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let (sent, sent_rx) = std::sync::mpsc::channel();
+    let server = session.rt.spawn(async move {
+        let socket = TcpListener::from_std(socket).unwrap();
+        let (mut v2, _) = socket.accept().await.unwrap();
+        v2.read_exact(&mut [0]).await.unwrap();
+        v2.shutdown().await.unwrap();
+        drop(v2);
+        let (stream, _) = socket.accept().await.unwrap();
+        let mut stream = Framed::new(stream, RawNetworkMessageCodec);
+        let wrap = |payload| RawNetworkMessage {
+            magic: Network::Regtest.magic(),
+            payload,
+        };
+        while let Some(Ok(message)) = stream.next().await {
+            match message.payload {
+                NetworkMessage::Version(_) => {
+                    let services =
+                        ServiceFlags::NETWORK | ServiceFlags::COMPACT_FILTERS | ServiceFlags::BLOOM;
+                    let address = NetAddress::new(&peer, services);
+                    let version = VersionMessage::new(
+                        services,
+                        0,
+                        address.clone(),
+                        address,
+                        7,
+                        "/proof-fixture/".into(),
+                        TIP as i32,
+                        true,
+                        [0; 32],
+                    );
+                    stream
+                        .send(wrap(NetworkMessage::Version(version)))
+                        .await
+                        .unwrap();
+                    stream.send(wrap(NetworkMessage::Verack)).await.unwrap();
+                }
+                NetworkMessage::Ping(nonce) => {
+                    stream
+                        .send(wrap(NetworkMessage::Pong(nonce)))
+                        .await
+                        .unwrap();
+                }
+                NetworkMessage::Tx(tx) => {
+                    let _ = sent.send(tx.txid());
+                }
+                _ => {}
+            }
+        }
+    });
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    eventually("the test peer connected", || {
+        session.sync_snapshot().unwrap().connected_peers == 1
+    });
+
+    let wallet = engine.block_on(session.wallet(&id)).unwrap();
+    let send_on_wire = |tx: Transaction| {
+        let txid = tx.txid();
+        let wallet = Arc::clone(&wallet);
+        let task = session
+            .rt
+            .spawn(async move { wallet.core().broadcast_transaction(&tx).await });
+        assert_eq!(
+            sent_rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .unwrap(),
+            txid
+        );
+        task
+    };
+    let old = send_on_wire(payment.clone());
+    old.abort();
+    let _ = engine.block_on(old);
+    let broadcast = send_on_wire(Transaction {
+        lock_time: 1,
+        ..foreign()
+    });
+    assert!(
+        !broadcast.is_finished(),
+        "the client read lock must still be held"
+    );
+
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let offered = spendable(&engine, &session, id, a);
+    let max = || {
+        engine.block_on(session.max_spendable(
+            id,
+            CoinSource::Outpoints(vec![a]),
+            crate::send::FeeMode::Recommended { target_blocks: 6 },
+        ))
+    };
+    let max_offered = max().is_ok_and(|value| value > 0);
+    let listed = listed_coins(&engine, &session, id).contains(&a);
+    let still_waiting = !broadcast.is_finished() && session.sync_snapshot().unwrap().running;
+    broadcast.abort();
+    let _ = engine.block_on(broadcast);
+    assert!(still_waiting, "the old client had already stopped");
+    assert!(
+        !offered && !max_offered && !listed,
+        "A came back while the old retry map still existed"
+    );
+
+    eventually("the old client stopped and A is spendable", || {
+        manager.spv().run_session() > run && spendable(&engine, &session, id, a)
+    });
+    assert!(listed_coins(&engine, &session, id).contains(&a));
+    assert_eq!(max().unwrap(), COIN);
+    server.abort();
+}
+
+#[test]
+fn a_key_wallet_sweep_keeps_the_given_back_coin_out_until_spv_stops() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let a = OutPoint::new(paid.txid(), 0);
+    let b = OutPoint::new(paid.txid(), 1);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    let lifecycle = engine.block_on(session.platform.lifecycle.lock());
+
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined_under_its_chainlock(&engine, &session, id, TIP + 1, vec![winner]);
+    eventually("key-wallet swept the payment", || {
+        session
+            .hub
+            .history
+            .read_wallet(&id, |h| h.swept.contains(&payment.txid()))
+    });
+    assert_eq!(manager.spv().run_session(), run);
+    assert!(
+        !spendable(&engine, &session, id, b),
+        "B came back before stop"
+    );
+    assert!(!listed_coins(&engine, &session, id).contains(&b));
+
+    drop(lifecycle);
+    eventually("the old client stopped and B is spendable", || {
+        manager.spv().run_session() > run && spendable(&engine, &session, id, b)
+    });
+    assert!(!spendable(&engine, &session, id, a));
+}
+
 #[test]
 fn a_durable_abandon_stops_the_old_spv_before_the_batch_ends() {
     let (_dir, engine, session, id, payment, _, _) = pending_payment_of_one_coin();

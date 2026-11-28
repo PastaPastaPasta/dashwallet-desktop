@@ -1,13 +1,13 @@
-// Home's balance (0.1 release plan, the iOS model): the hero is everything the wallet can spend,
-// the Core balance that can be spent (confirmed + unconfirmed, mixed coins included; immature and
-// locked funds are not) plus the shielded one plus the Platform addresses'; the breakdown names the
-// pools. Only a pool's known balance counts in the hero: one still being read or whose read failed
-// keeps its row ("…" or "—"), so the hero is never lower than it looks without saying why.
+// Home totals confirmed Core, spendable Shielded and movable Platform funds. The breakdown keeps
+// supported pools visible through zero balances, loading and failed reads.
 
+import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { Balances } from "../api/generated/Balances";
+import { CREDITS_PER_DUFF } from "../api/pending";
 import type { ShieldedHold } from "../api/queries";
 import type { ListArrival } from "../components/emptyStates";
-import { messageTable, t } from "../i18n";
+import { formatLocale, messageTable, t } from "../i18n";
+import { hasPendingMove, isPendingPlatformCredit, type MoveBlock } from "../platform/move";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -139,27 +139,57 @@ export function heroSyncLine(balances: Balances | null, s: HeroSync): string {
 }
 
 export function homeBalance(core: Balances, shielded: PoolReading, platform: PoolReading): HomeBalance {
-  const pools = { core: core.confirmed + core.unconfirmed, shielded, platform };
+  const pools = { core: core.confirmed, shielded, platform };
   return { total: pools.core + (known(shielded) ? shielded : 0) + (known(platform) ? platform : 0), pools };
 }
 
-/**
- * The Core row's subtitle: what is still arriving (already in the row's number, and the coins the
- * engine withholds, which are not: a payment they come from may never confirm), then what is in
- * the wallet but not spendable (not in it): immature rewards and locked coins.
- */
+export function corePending(core: Balances, fmt: (duffs: number) => string): string {
+  const amount = core.unconfirmed + core.withheld;
+  return amount > 0 ? t("home.core.pending", { amount: fmt(amount) }) : "";
+}
+
+/** Details for Core's non-spendable buckets. */
 export function coreSubtitle(core: Balances, fmt: (duffs: number) => string, fallback: string): string {
-  const parts: string[] = [];
-  const pending = core.unconfirmed + core.withheld;
-  if (pending > 0) parts.push(t("home.core.pending", { amount: fmt(pending) }));
+  const parts = [corePending(core, fmt)].filter(Boolean);
   if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
   if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
   return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;
 }
 
-/** The Shielded row's subtitle while payments that may still go through hold part of it. */
-export const shieldedSubtitle = (hold: ShieldedHold | null, fmt: (duffs: number) => string, fallback: string): string =>
-  hold ? t("home.shielded.held", { amount: fmt(hold.duffs), count: hold.count }) : fallback;
+/** Details for Core's pending and non-spendable buckets. */
+export function coreDetails(core: Balances, fmt: (duffs: number) => string): string {
+  const parts: string[] = [];
+  if (core.unconfirmed + core.withheld > 0) parts.push(t("home.core.pendingDetail"));
+  if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
+  if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
+  return parts.join(t("home.core.separator"));
+}
+
+/** Use the display unit when it can represent the credits exactly. */
+function exactCredits(value: string, fmt: (duffs: number) => string): string {
+  const credits = BigInt(value);
+  const duffs = Number(credits / CREDITS_PER_DUFF);
+  if (credits % CREDITS_PER_DUFF === 0n && Number.isSafeInteger(duffs)) return fmt(duffs);
+  return t("home.shielded.credits", { amount: credits.toLocaleString(formatLocale(undefined)), count: Number(credits) });
+}
+
+export function shieldedDetails(hold: ShieldedHold | null, fmt: (duffs: number) => string, pendingCredits = "0"): string {
+  const parts: string[] = [];
+  if (BigInt(pendingCredits) > 0n) parts.push(t("home.shielded.pending", { amount: exactCredits(pendingCredits, fmt) }));
+  if (hold) parts.push(t("home.shielded.held", { amount: exactCredits(hold.credits, fmt), count: hold.count }));
+  return parts.join(t("home.core.separator"));
+}
+
+export function platformSubtitle(activity: readonly PlatformActivity[] | null | undefined, block: MoveBlock | null): string {
+  if (block === "failed") return t("home.platform.unverified");
+  const outgoing = block === "pending" || hasPendingMove(activity);
+  const incoming = activity?.some(isPendingPlatformCredit);
+  if (outgoing && incoming) return t("home.platform.bothPending");
+  if (outgoing) return block === "pending" ? t("home.platform.outgoing") : t("home.platform.held");
+  if (incoming) return t("home.platform.incoming");
+  if (!activity || block) return t("home.platform.unverified");
+  return "";
+}
 
 const poolRow = (pool: Pool) => ({
   pool,
@@ -173,17 +203,8 @@ const poolRow = (pool: Pool) => ({
 
 export const POOL_ROWS: readonly { pool: Pool; readonly title: string; readonly subtitle: string }[] = [poolRow("core"), poolRow("shielded"), poolRow("platform")];
 
-/**
- * The breakdown's rows under the hero. Shielded and Platform show unless the wallet has no such
- * pool or it is known to be empty; one still being read, or whose read failed, keeps its row. Core
- * shows with them. Alone it would only repeat the hero, so there is no breakdown, and a line under
- * the hero names what is pending, immature or locked instead (`coreSubtitle`). In discreet mode
- * the rows don't depend on what holds money: Core and every pool the wallet has. An empty Shielded
- * balance keeps its row while a payment holds part of it (`shieldedHeld`), to say so.
- */
-export function breakdownRows(pools: HomeBalance["pools"], discreet: boolean, shieldedHeld = false): Pool[] {
-  const others = (["shielded", "platform"] as const).filter((p) => pools[p] !== "absent" && (discreet || pools[p] !== 0 || (p === "shielded" && shieldedHeld)));
-  return others.length > 0 ? ["core", ...others] : [];
+export function breakdownRows(pools: HomeBalance["pools"]) {
+  return POOL_ROWS.filter(({ pool }) => pools[pool] !== "absent");
 }
 
 /**

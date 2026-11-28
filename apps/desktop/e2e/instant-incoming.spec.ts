@@ -36,8 +36,10 @@ for (const theme of THEMES) {
     test(`${scenario} (${theme}): Home and Activity show the payment and its balance while syncing`, async ({ page }) => {
       const errors = await openHome(page, scenario, theme);
       const hero = page.getByTestId("hero");
-      await expect(hero.getByTestId("hero-amount")).toContainText("26.65", { timeout: 15_000 });
-      await expect(hero.getByTestId("breakdown-core")).toContainText("25.00");
+      const core = hero.getByTestId("breakdown-core");
+      await expect(hero.getByTestId("hero-amount")).toContainText(chip === "InstantSend" ? "26.65" : "1.65", { timeout: 15_000 });
+      await expect(core.locator(".amount-number")).toHaveText(chip === "InstantSend" ? "25.00" : "0.00");
+      if (chip === "Pending") await expect(core).toContainText("25.00 pending");
       await expect(hero).not.toContainText("Balance unavailable");
       await expectLine(page, SYNCING);
       const homeRow = page.getByTestId(ROW);
@@ -63,9 +65,9 @@ for (const theme of THEMES) {
   });
 
   for (const [scenario, line, amount, history] of [
-    ["wallet-behind-stopped", STOPPED, "32.04", null],
+    ["wallet-behind-stopped", STOPPED, "31.84", null],
     ["wallet-behind-stopped-empty", STOPPED, "0.00", "Syncing has stopped"],
-    ["wallet-behind-at-tip", SYNCING, "32.04", null],
+    ["wallet-behind-at-tip", SYNCING, "31.84", null],
     ["wallet-behind-at-tip-empty", SYNCING, "0.00", "Your history is still syncing"],
   ] as const) {
     test(`${scenario} (${theme}): a wallet behind the tip keeps a caveat on its balance`, async ({ page }) => {
@@ -131,7 +133,7 @@ test("a payment delivered while Home is open updates the balance and the row in 
 
 test("a new block on a synced wallet does not touch the hero line while the scan catches up", async ({ page }) => {
   const errors = await openHome(page, "funded", "light");
-  await expect(page.getByTestId("hero-amount")).toContainText("32.04", { timeout: 15_000 });
+  await expect(page.getByTestId("hero-amount")).toContainText("31.84", { timeout: 15_000 });
   const line = page.getByTestId("hero-sync-line");
   await expect(line).toHaveText("");
   await page.evaluate(() => {
@@ -192,7 +194,7 @@ test("a synced wallet's hero is empty for 2 s while its first scan-height read i
   const scanReads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "wallet_scan_height").length);
 
   await page.goto(fixtureUrl("funded", "light", "&hold=wallet_scan_height"));
-  await expect(page.getByTestId("hero-amount")).toContainText("32.04", { timeout: 15_000 });
+  await expect(page.getByTestId("hero-amount")).toContainText("31.84", { timeout: 15_000 });
   expect(await scanReads()).toBe(1);
   await expectLine(page, SYNCING);
   expect(await scanReads()).toBe(1);
