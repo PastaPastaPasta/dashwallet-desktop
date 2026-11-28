@@ -1127,7 +1127,8 @@ fn mainnet_sheet_and_approval_run_with_bounded_authentication_keys() {
     let f = Fixture::on(true);
     let main = link(request(), NetworkSel::Mainnet);
     let sheet = f.sheet(&main).unwrap();
-    assert!(sheet.terms.funding_limit <= sheet.max_funding_limit);
+    assert_eq!(sheet.terms.funding_limit, 51_000_000_000);
+    assert_eq!(sheet.max_funding_limit, MAX_FUNDING);
     let choice = Fixture::choice();
     let grant = f.quoted_grant(&main, &choice);
     let done = f.approve(&main, &choice, &grant).unwrap();
@@ -1144,6 +1145,20 @@ fn mainnet_sheet_and_approval_run_with_bounded_authentication_keys() {
         assert!(k.expires_at().is_some());
     }
     assert_eq!(add[2].purpose(), Purpose::ENCRYPTION);
+}
+
+#[test]
+fn a_mainnet_wallet_refuses_a_test_network_request_before_anything_is_read() {
+    let f = Fixture::on(true);
+    for network in [NetworkSel::Testnet, NetworkSel::Devnet] {
+        let wrong = link(request(), network);
+        assert_eq!(f.sheet(&wrong), Err(ConnectError::Network));
+        assert_eq!(
+            f.quote(&wrong, &Fixture::choice()),
+            Err(ConnectError::Network)
+        );
+    }
+    assert_eq!(f.net.reads(), 0);
 }
 
 #[test]
