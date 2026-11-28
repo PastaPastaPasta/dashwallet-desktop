@@ -326,7 +326,7 @@ test("keyboard only: accept a contact request from the bell", async ({ page }) =
 
   // Shown inline while the popover is open (that a reader hears it is the "bell" test below);
   // focus goes to the request now in heidi's place.
-  const outcome = page.getByTestId("bell-outcome");
+  const outcome = page.locator(".toast-host");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
   await expect(outcome).toHaveAttribute("role", "status");
   await expect(heidi).toHaveCount(0);
@@ -372,7 +372,7 @@ test("keyboard only: accept a contact request in the contacts list", async ({ pa
 
   // The pane shows what happened (that a reader hears it is the "contact pane" test below) and
   // takes focus at what it offers now.
-  const outcome = page.getByTestId("contact-pane-outcome");
+  const outcome = page.locator(".toast-host");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
   await expect(outcome).toHaveAttribute("role", "status");
   await expect(page.getByTestId("contact-pane-actions")).toBeFocused();
@@ -945,20 +945,20 @@ const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page
     reach: async (page) => (await toSendRequest(page)).send,
   },
   {
-    where: "bell popover ▸ Accept (bell-outcome)",
-    region: '[data-testid="bell-outcome"]',
+    where: "bell popover ▸ Accept (shared toast)",
+    region: ".toast-host",
     said: "You and heidi are now contacts.",
     reach: async (page) => (await toBellAccept(page)).accept,
   },
   {
-    where: "contact pane ▸ Accept (contact-pane-outcome)",
-    region: '[data-testid="contact-pane-outcome"]',
+    where: "contact pane ▸ Accept (shared toast)",
+    region: ".toast-host",
     said: "You and heidi are now contacts.",
     reach: toPaneAccept,
   },
   {
-    where: "Notifications page ▸ Accept (notifications-outcome)",
-    region: '[data-testid="notifications-outcome"]',
+    where: "Notifications page ▸ Accept (shared toast)",
+    region: ".toast-host",
     said: "You and heidi are now contacts.",
     reach: async (page) => {
       const { popover } = await openBell(page);

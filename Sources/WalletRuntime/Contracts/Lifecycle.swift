@@ -25,7 +25,7 @@ public protocol WalletHosting: AnyObject, Sendable {
     /// Stops SPV and closes the session. Idempotent.
     func stop() async throws(ServiceError)
     /// Data directory of `network` ("Open data folder").
-    func dataDirectory(for network: DashNetwork) -> URL
+    func dataDirectory(for network: DashNetwork) throws(ServiceError) -> URL
 }
 
 /// A lifecycle operation in progress, for the overlay (IOS-018).

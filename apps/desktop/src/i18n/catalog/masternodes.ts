@@ -964,6 +964,7 @@ export const masternodes = {
     intro:
       "When more than one identity asks for the same username, masternodes vote on who gets it. When voting ends, the contender with the most votes gets the name, unless Lock has more votes: then nobody does.",
     search: "Search usernames",
+    yourUsername: "Your username",
     browsingOnly: "Browsing only.",
     browsingOnlyText: "This wallet holds no masternode voting keys, so it can read these votes but not cast them.",
     watchOnly: "Watch-only wallet.",

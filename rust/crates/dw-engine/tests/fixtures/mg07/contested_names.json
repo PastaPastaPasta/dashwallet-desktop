@@ -3,6 +3,7 @@
     {
       "label": "a11ce",
       "ends_at": 1800003600,
+      "own": false,
       "contenders": [
         {
           "identity": "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P",
@@ -22,6 +23,7 @@
     {
       "label": "dash-pay",
       "ends_at": 1800090000,
+      "own": false,
       "contenders": [
         {
           "identity": "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF",

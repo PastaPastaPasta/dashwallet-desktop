@@ -1,142 +1,15 @@
-//! Whether a pending spend carries its coin owner's authorization.
+//! Pending spend authorization comes from the pinned key-wallet verifier.
 
-use dashcore::ecdsa::EcdsaSignature;
-use dashcore::hashes::hash160;
-use dashcore::script::{Instruction, PushBytes};
+pub(crate) use dashcore::blockdata::constants::MAX_SCRIPT_SIZE;
+pub(crate) use key_wallet::transaction_checking::verify_input_authorization;
+
+#[cfg(test)]
+pub(crate) use key_wallet::transaction_checking::SpendAuthorizationError;
+
+#[cfg(test)]
 use dashcore::sighash::{EcdsaSighashType, SighashCache};
+#[cfg(test)]
 use dashcore::{PublicKey, Transaction, TxOut};
-use std::collections::BTreeMap;
-use std::slice;
-
-/// Dash Core's `MAX_SCRIPT_SIZE`, the largest script it executes (consensus rule).
-pub(crate) const MAX_SCRIPT_SIZE: usize = 10_000;
-
-/// A pending spend whose authorization cannot be decided by the wallet signer contract.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SpendAuthorizationError {
-    /// The transaction has no input at this index.
-    InputIndexOutOfRange(usize),
-    /// The funding script requires a different authorization verifier.
-    UnsupportedScript,
-    /// The input script carries instructions besides the owner's signature and public key.
-    UnsupportedScriptSig,
-    /// The signature does not commit to the complete transaction.
-    UnsupportedSighash(u8),
-}
-
-impl core::fmt::Display for SpendAuthorizationError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::InputIndexOutOfRange(index) => {
-                write!(f, "pending spend has no input at index {}", index)
-            }
-            Self::UnsupportedScript => {
-                write!(f, "pending spend uses an unsupported funding script")
-            }
-            Self::UnsupportedScriptSig => {
-                write!(f, "pending spend uses an unsupported input script")
-            }
-            Self::UnsupportedSighash(mode) => {
-                write!(
-                    f,
-                    "pending spend uses unsupported signature hash type {:#x}",
-                    mode
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for SpendAuthorizationError {}
-
-/// Whether input `input_index` carries the owner's P2PKH `SIGHASH_ALL` signature for `prevout`.
-/// The caller takes `prevout` from the funding transaction of that input's outpoint.
-/// An unsupported form or a missing input returns an error, so a pending hold is not released.
-/// A signature or key built at run time, for example by `OP_CAT`, returns `false`.
-pub(crate) fn verify_input_authorization(
-    transaction: &Transaction,
-    input_index: usize,
-    prevout: &TxOut,
-) -> Result<bool, SpendAuthorizationError> {
-    let Some(input) = transaction.input.get(input_index) else {
-        return Err(SpendAuthorizationError::InputIndexOutOfRange(input_index));
-    };
-    if transaction
-        .input
-        .iter()
-        .filter(|candidate| candidate.previous_output == input.previous_output)
-        .count()
-        != 1
-    {
-        return Ok(false);
-    }
-    let Some(public_key_hash) = prevout.script_pubkey.p2pkh_public_key_hash_bytes() else {
-        return Err(SpendAuthorizationError::UnsupportedScript);
-    };
-    if input.script_sig.len() > MAX_SCRIPT_SIZE {
-        return Ok(false);
-    }
-    let Ok(instructions) = input
-        .script_sig
-        .instructions()
-        .collect::<Result<Vec<_>, _>>()
-    else {
-        return Ok(false);
-    };
-    let pushes = instructions
-        .iter()
-        .filter_map(Instruction::push_bytes)
-        .map(PushBytes::as_bytes)
-        .collect::<Vec<_>>();
-    let push_only = pushes.len() == instructions.len();
-    let is_owner_key =
-        |bytes: &&[u8]| hash160::Hash::hash(bytes).as_byte_array().as_slice() == public_key_hash;
-    // A push-only input script leaves the owner's signature and key as its last two pushes.
-    // Other opcodes can reorder the stack, so then any push can hold the signature.
-    let (signatures, public_key) = if push_only {
-        let [.., signature, public_key] = pushes.as_slice() else {
-            return Ok(false);
-        };
-        (
-            slice::from_ref(signature),
-            Some(*public_key).filter(is_owner_key),
-        )
-    } else {
-        (pushes.as_slice(), pushes.iter().copied().find(is_owner_key))
-    };
-    let Some(Ok(public_key)) = public_key.map(PublicKey::from_slice) else {
-        return Ok(false);
-    };
-    // Signatures with the same hash type share a digest, which bounds the hashing per script.
-    let mut digests = BTreeMap::new();
-    let Some(mode) = signatures.iter().find_map(|signature| {
-        let (&mode, der) = signature.split_last()?;
-        let signature = EcdsaSignature::from_der(der).ok()?;
-        let digest = digests.entry(mode).or_insert_with(|| {
-            SighashCache::new(transaction)
-                .legacy_signature_hash(input_index, &prevout.script_pubkey, u32::from(mode))
-                .ok()
-                .map(|hash| hash.to_byte_array())
-        });
-        // Consensus accepts a high-S signature; the owner signed it all the same.
-        // EcdsaPublicKey::verify checks a high-S signature as its low-S twin.
-        public_key.inner.verify(&(*digest)?, signature).ok()?;
-        Some(mode)
-    }) else {
-        return Ok(false);
-    };
-    // Other modes can authorize only part of a transaction; SINGLE can even
-    // produce a constant digest. They cannot authorize this durable reservation.
-    if u32::from(mode) != EcdsaSighashType::All.to_u32() {
-        return Err(SpendAuthorizationError::UnsupportedSighash(mode));
-    }
-    // The signature hash does not commit to the input script, so anyone can add
-    // instructions to an owner's signature without invalidating it.
-    if !push_only || pushes.len() != 2 {
-        return Err(SpendAuthorizationError::UnsupportedScriptSig);
-    }
-    Ok(true)
-}
 
 /// `tx` with every input signed as its coin's owner signs it, where the coin
 /// pays an address of `info`'s funds accounts. A coin is looked up in
@@ -212,13 +85,15 @@ mod tests {
     use dashcore::blockdata::transaction::special_transaction::{
         TransactionPayload, asset_lock::AssetLockPayload,
     };
-    use dashcore::ecdsa::EcdsaSecretKey;
+    use dashcore::ecdsa::{EcdsaSecretKey, EcdsaSignature};
+    use dashcore::hashes::hash160;
     use dashcore::opcodes::all::{OP_DROP, OP_SWAP};
     use dashcore::script::{Builder, PushBytesBuf};
     use dashcore::{OutPoint, PubkeyHash, ScriptBuf, TxIn, Txid};
     use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
     use key_wallet::test_utils::TestWalletContext;
     use key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionSigner;
+    use std::slice;
 
     /// The order of the secp256k1 group, big-endian.
     const CURVE_ORDER: [u8; 32] = [
@@ -471,6 +346,19 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_a_non_push_only_spend_with_unproven_authorization() {
+        let (mut tx, prevout) = signed(false);
+        let mut script = tx.input[0].script_sig.as_bytes().to_vec();
+        script.push(0x61); // OP_NOP
+        tx.input[0].script_sig = ScriptBuf::from_bytes(script);
+        tx.output[0].value -= 1;
+        assert_eq!(
+            verify_input_authorization(&tx, 0, &prevout),
+            Err(SpendAuthorizationError::RuntimeAuthorization)
+        );
+    }
+
+    #[test]
     fn should_bind_asset_lock_payload_to_authorization() {
         let (mut tx, prevout) = signed(false);
         let key = secret(7);
@@ -554,7 +442,12 @@ mod tests {
                 Err(SpendAuthorizationError::UnsupportedScriptSig)
             );
             padded.output[0].value -= 1;
-            assert_eq!(verify_input_authorization(&padded, 0, &prevout), Ok(false));
+            let expected = if crate::tx_actions::push_only(&padded.input[0].script_sig) {
+                Ok(false)
+            } else {
+                Err(SpendAuthorizationError::RuntimeAuthorization)
+            };
+            assert_eq!(verify_input_authorization(&padded, 0, &prevout), expected);
         }
     }
 }
