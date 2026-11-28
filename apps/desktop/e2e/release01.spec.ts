@@ -679,6 +679,26 @@ test.describe("Export CSV", () => {
     expect(await lines(received)).toBeLessThan(await lines(all));
   });
 
+  test("a failed export stays in an alert until the retry; a wallet switch drops it", async ({ page }) => {
+    await open(page, "dashpay-two-wallets");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const alert = page.getByTestId("toast-alert-text");
+    await page.evaluate(() => (window.__dwFixture!.world.tools.files.dialogFails = true));
+    await page.getByTestId("tx-export-csv").click();
+    await expect(alert).toContainText("The history could not be exported.");
+    // The retry clears it, and its result is the toast.
+    await page.getByTestId("tx-export-csv").click();
+    await expect(page.locator(".toast-host")).toContainText("Exported to ");
+    await expect(alert).toHaveCount(0);
+
+    await page.evaluate(() => (window.__dwFixture!.world.tools.files.dialogFails = true));
+    await page.getByTestId("tx-export-csv").click();
+    await expect(alert).toContainText("The history could not be exported.");
+    await page.getByTestId("toolbar-wallet-picker").selectOption({ index: 1 });
+    await expect(alert).toHaveCount(0);
+  });
+
   test("a cancelled dialog says nothing", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();

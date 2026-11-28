@@ -196,6 +196,9 @@ test("IOS-072 D10 without DashPay keys the banner offers Enable with its fee, an
 });
 
 test("D4 a refused accept stays in an alert until dismissed; a toast shows under it, not over it", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => undefined } });
+  });
   await openContacts(page, "dashpay-low-credits");
   await row(page, "heidi").click();
   await page.getByTestId("contact-accept").click();
@@ -203,17 +206,23 @@ test("D4 a refused accept stays in an alert until dismissed; a toast shows under
   const alert = page.getByTestId("toast-alert");
   const why = "Not enough credits. Top up your credits and try again.";
   await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
-  await expect(page.locator(".toast-alert-host")).toHaveAttribute("role", "alert");
+  await expect(alert).toHaveAttribute("role", "alert");
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
 
   await page.getByRole("button", { name: "Copy identity" }).click();
   await expect(page.locator(".toast")).toHaveText("Copied");
   await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
-  // Past the toast's 3 s the alert is still up.
-  await page.waitForTimeout(3_500);
-  await expect(page.locator(".toast")).toHaveCount(0);
+  // A toast coming and going under the alert does not move it.
+  const box = await alert.boundingBox();
+  await expect(page.locator(".toast")).toHaveCount(0, { timeout: 5_000 });
   await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+  expect(await alert.boundingBox()).toEqual(box);
 
-  await page.getByTestId("toast-alert-dismiss").click();
+  // Escape on Dismiss takes it down, and focus goes back where it was.
+  const accept = page.getByTestId("contact-accept");
+  await accept.focus();
+  await page.getByTestId("toast-alert-dismiss").focus();
+  await page.keyboard.press("Escape");
   await expect(alert).toHaveCount(0);
+  await expect(page.getByTestId("toast-alert-dismiss")).toHaveCount(0);
 });

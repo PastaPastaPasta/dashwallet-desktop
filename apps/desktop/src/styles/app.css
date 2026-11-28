@@ -3056,6 +3056,12 @@ input[type="radio"]:disabled {
   pointer-events: none;
 }
 
+/* While an alert is up the toast row under it keeps one line's room, so a toast that comes and
+   goes does not move the alert. */
+.toast-stack.has-alert .toast-host {
+  min-block-size: calc(var(--dw-type-footnote-medium-line) + 2 * var(--dw-space-sm));
+}
+
 .toast-alert {
   display: flex;
   align-items: center;

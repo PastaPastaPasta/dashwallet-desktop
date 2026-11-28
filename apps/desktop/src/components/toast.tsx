@@ -1,8 +1,9 @@
 // Toast (UX-SPEC C21): bottom-centre, 24 pt above the status bar, auto-dismiss. An actionable
 // failure is an alert in the same stack: it stays until Dismiss or the next attempt's outcome, and
-// a toast shows under it rather than over it.
+// a toast shows under it rather than over it. An alert's region comes with it: role=alert is said
+// when it is inserted, unlike the status region a toast fills (#291).
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useUi } from "../app/ui";
 import { t, useT } from "../i18n";
 import { motion } from "../styles/tokens.generated";
@@ -22,6 +23,8 @@ interface Alert {
   id: number;
   key: string;
   text: string;
+  /** What had focus when it showed: Dismiss gives focus back there. */
+  back: Element | null;
 }
 
 let current: Toast | null = null;
@@ -48,7 +51,7 @@ function show(toast: Omit<Toast, "id">, seconds: number) {
 /** Shows `text` as the alert until Dismiss or `clearAlert(key)`; it replaces the alert up. */
 export function showAlert(text: string, key: string) {
   if (held) return;
-  alert = { id: ++seq, key, text };
+  alert = { id: ++seq, key, text, back: document.activeElement };
   notify();
 }
 
@@ -97,25 +100,50 @@ const subscribe = (l: () => void) => {
   return () => void listeners.delete(l);
 };
 
+/** Another wallet's alert would read as this one's: a switch drops it. */
+function dropAlertOnSwitch(walletId: string | null) {
+  const seen = useRef(walletId);
+  useEffect(() => {
+    if (seen.current === walletId) return;
+    seen.current = walletId;
+    if (!alert) return;
+    alert = null;
+    notify();
+  }, [walletId]);
+}
+
 export function ToastHost() {
   const toast = useSyncExternalStore(subscribe, () => current);
   const shown = useSyncExternalStore(subscribe, () => alert);
   const discreet = useUi((u) => u.discreet);
+  dropAlertOnSwitch(useUi((u) => u.walletId));
   const tr = useT();
+  const host = useRef<HTMLDivElement>(null);
+  const dismiss = (a: Alert) => {
+    const hadFocus = host.current?.contains(document.activeElement) ?? false;
+    clearAlert(a.key);
+    if (!hadFocus) return;
+    const back = a.back instanceof HTMLElement && a.back.isConnected && a.back !== document.body ? a.back : document.querySelector<HTMLElement>(".app-body > main h1");
+    if (back && !back.matches("button, a[href], input, select, textarea, [tabindex]")) back.tabIndex = -1;
+    back?.focus({ preventScroll: true });
+  };
+  const onKey = (e: KeyboardEvent, a: Alert) => {
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
+    dismiss(a);
+  };
   return (
-    <div className="toast-stack">
-      <div className="toast-alert-host" role="alert">
-        {shown && (
-          <div className="toast-alert" key={shown.id} data-testid="toast-alert">
-            <span className="toast-alert-text" data-testid="toast-alert-text">
-              {shown.text}
-            </span>
-            <button type="button" className="toast-alert-dismiss" data-testid="toast-alert-dismiss" onClick={() => clearAlert(shown.key)}>
-              {tr("components.toast.dismiss")}
-            </button>
-          </div>
-        )}
-      </div>
+    <div className={shown ? "toast-stack has-alert" : "toast-stack"}>
+      {shown && (
+        <div className="toast-alert" role="alert" key={shown.id} ref={host} data-testid="toast-alert" onKeyDown={(e) => onKey(e, shown)}>
+          <span className="toast-alert-text" data-testid="toast-alert-text">
+            {shown.text}
+          </span>
+          <button type="button" className="toast-alert-dismiss" data-testid="toast-alert-dismiss" onClick={() => dismiss(shown)}>
+            {tr("components.toast.dismiss")}
+          </button>
+        </div>
+      )}
       <div className="toast-host" role="status" aria-live="polite">
         {toast && (
           <div className="toast" key={toast.id}>

@@ -99,15 +99,16 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
     pickHit(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true, readSeq: 0 }, query);
   }, [model, link, intent, searchHits.data]);
   const typed = networkPrefix(text);
+  const stale = model.candidate?.source === "search" && typed !== pickedFor.current;
   useEffect(() => {
-    if (model.candidate?.source === "search" && typed !== pickedFor.current) model.clear();
-  }, [model, typed]);
+    if (stale) model.clear();
+  }, [model, stale]);
   // Leaving stops a screen capture still waiting.
   useEffect(() => () => model.cancelScreen(), [model]);
 
   const scan = model.scan;
   const linkState = (scan.kind === "verifying" || scan.kind === "failed") && scan.source === "link" ? scan : null;
-  const candidate = model.candidate;
+  const candidate = stale ? null : model.candidate;
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     if (candidate) focusInView(heading.current);
