@@ -7883,7 +7883,13 @@ fn invoice_entering_transport_remains_bound_after_restart() {
             >,
         > {
             self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(std::future::pending())
+            Box::pin(async {
+                Err(
+                    platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(
+                        "no acceptance seen".into(),
+                    ),
+                )
+            })
         }
     }
     let f = fixture(false);
@@ -7897,13 +7903,12 @@ fn invoice_entering_transport_remains_bound_after_restart() {
     let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     *draft.broadcaster.lock().unwrap() = Some(Arc::new(Queued(entered.clone())));
     let key = [7; 32];
-    // The process stops while the payment is in transport.
-    let pending = draft.broadcast_invoice(prepared, key);
-    assert!(
-        f.engine
-            .block_on(async { tokio::time::timeout(Duration::from_secs(1), pending).await })
-            .is_err()
-    );
+    // The payment entered transport and no acceptance was seen: it may
+    // have left, so it stays bound to its order, across a restart too.
+    assert!(matches!(
+        send_failure(f.engine.block_on(draft.broadcast_invoice(prepared, key))),
+        SendFailure::BroadcastUnknown { .. }
+    ));
     assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
     drop(draft);
     let f = f.reopen();
