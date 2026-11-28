@@ -1289,6 +1289,28 @@ pub(crate) fn dead_for_good(
         || deaths.inputs_of(parent).any(spent_finally)
 }
 
+/// Whether `t` is a parent a drop's chain walks through: a dropped
+/// transaction (a key of `drops`) or a swept one (a `swept_by:` note).
+pub(crate) fn chain_parent(t: &Txid, drops: &HeldDrops, deaths: &Deaths) -> bool {
+    drops.contains_key(t) || deaths.swept_by.contains_key(t)
+}
+
+/// Every transaction the drops' chains hold: each drop key of `drops`, and
+/// each parent it builds on through [`Deaths::inputs_of`] that is a
+/// [`chain_parent`], to a fixpoint. What [`chain_dead_for_good`] can walk.
+pub(crate) fn drop_chains(drops: &HeldDrops, deaths: &Deaths) -> BTreeSet<Txid> {
+    let mut seen = BTreeSet::new();
+    let mut next: Vec<Txid> = drops.keys().copied().collect();
+    while let Some(u) = next.pop() {
+        if seen.insert(u) {
+            next.extend(
+                (deaths.inputs_of(&u).map(|o| o.txid)).filter(|p| chain_parent(p, drops, deaths)),
+            );
+        }
+    }
+    seen
+}
+
 /// Whether the dropped transaction `t` can never confirm: it, or a
 /// transaction it builds on through a chain of parents `ancestor` names
 /// (dropped or swept, [`Deaths::inputs_of`]), is dead for good (`dead`,
@@ -1521,11 +1543,14 @@ pub(crate) struct WalletHistory {
     /// Verified locks whose transaction or one of its inputs belongs to
     /// this wallet. In memory only.
     pub(crate) session_locks: HashSet<Txid>,
+    session_lock_parents: HashMap<Txid, Vec<Txid>>,
     /// Of [`Self::session_locks`], those a fork took out of their block
     /// that key-wallet removed: the history keeps them out of a block,
     /// locked, and the coins key-wallet gave back for them stay out of
     /// spending (`crate::withhold`) until key-wallet records them again.
     pub(crate) fork_kept_locks: HashSet<Txid>,
+    /// Inputs of removed ancestors of locked transactions, held for this session.
+    pub(crate) fork_kept_ancestor_inputs: HashMap<Txid, Vec<OutPoint>>,
     /// Own spends removed by a fork after the early-lock buffer evicted
     /// evidence. Their inputs stay held for this session irrespective of
     /// later changes to the history entry.
@@ -1630,9 +1655,30 @@ impl WalletHistory {
     }
 
     pub(crate) fn remember_if_buffered(&mut self, txid: &Txid, locks: &EarlyInstantLocks) {
-        if locks.inputs.contains_key(txid) && self.txs.contains_key(txid) {
-            self.session_locks.insert(*txid);
+        if let Some(inputs) = locks.inputs.get(txid)
+            && self.txs.contains_key(txid)
+        {
+            self.remember_session_lock(*txid, inputs);
         }
+    }
+
+    fn remember_session_lock(&mut self, txid: Txid, inputs: &[OutPoint]) {
+        self.session_locks.insert(txid);
+        self.session_lock_parents
+            .entry(txid)
+            .or_insert_with(|| inputs.iter().map(|o| o.txid).collect());
+    }
+
+    pub(crate) fn lock_parent_links(&self) -> impl Iterator<Item = (&Txid, &[Txid])> {
+        let live = self.session_lock_parents.iter().filter(|&(t, _)| {
+            self.txs
+                .get(t)
+                .is_none_or(|e| self.knows_instant_lock(t, e))
+        });
+        self.lock_parents
+            .iter()
+            .chain(live)
+            .map(|(t, parents)| (t, parents.as_slice()))
     }
 
     pub(crate) fn upsert_with_locks(
@@ -1652,8 +1698,9 @@ impl WalletHistory {
             .filter(|o| matches!(o.role, OutputRole::Received | OutputRole::Change))
         {
             let outpoint = OutPoint::new(record.txid, output.index);
-            self.session_locks
-                .extend(locks.spends.get(&outpoint).into_iter().flatten());
+            for txid in locks.spends.get(&outpoint).into_iter().flatten() {
+                self.remember_session_lock(*txid, &locks.inputs[txid]);
+            }
         }
         new
     }
@@ -1693,7 +1740,9 @@ impl WalletHistory {
         self.own_outputs.remove(txid);
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
+        self.session_lock_parents.remove(txid);
         self.fork_kept_locks.remove(txid);
+        self.fork_kept_ancestor_inputs.remove(txid);
         self.fork_removed_spends.remove(txid);
     }
 
@@ -2054,6 +2103,66 @@ impl EarlyInstantLocks {
     }
 }
 
+fn forked_ancestor_inputs(
+    wallets: &HashMap<WalletId, WalletHistory>,
+    wallet: WalletId,
+    height: u32,
+    removed: &[Txid],
+    unconfirmed: &[Txid],
+) -> Vec<(Txid, Vec<OutPoint>)> {
+    let mut held = Vec::new();
+    if removed.is_empty() {
+        return held;
+    }
+    let removed: HashSet<_> = removed.iter().copied().collect();
+    let mut parents: Vec<_> = wallets
+        .values()
+        .flat_map(WalletHistory::lock_parent_links)
+        .flat_map(|(_, parents)| parents.iter().copied())
+        .chain(
+            wallets
+                .get(&wallet)
+                .into_iter()
+                .flat_map(|h| unconfirmed.iter().filter_map(move |t| h.txs.get(t)))
+                .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output.txid)),
+        )
+        .collect();
+    let mut walked = HashSet::new();
+    while let Some(parent) = parents.pop() {
+        if !walked.insert(parent) {
+            continue;
+        }
+        let forked = removed.contains(&parent);
+        // A different wallet may still show the old block, or may already
+        // have removed this record and kept its inputs.
+        for h in wallets.values() {
+            if let Some(inputs) = h.fork_kept_ancestor_inputs.get(&parent) {
+                parents.extend(inputs.iter().map(|o| o.txid));
+                if forked {
+                    held.push((parent, inputs.clone()));
+                }
+                break;
+            }
+            if let Some(entry) = h.txs.get(&parent)
+                && (forked
+                    || (!entry.is_abandoned()
+                        && entry
+                            .context
+                            .block_info()
+                            .is_none_or(|b| b.height() > height)))
+            {
+                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
+                parents.extend(inputs.clone().map(|o| o.txid));
+                if forked {
+                    held.push((parent, inputs.collect()));
+                }
+                break;
+            }
+        }
+    }
+    held
+}
+
 impl HistoryStore {
     pub fn with_wallet<R>(&self, wallet: WalletId, f: impl FnOnce(&mut WalletHistory) -> R) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
@@ -2082,36 +2191,40 @@ impl HistoryStore {
     pub(crate) fn truncate(
         &self,
         wallet: WalletId,
+        height: u32,
         removed: &[Txid],
         unconfirmed: &[Txid],
         restored: ForkRestorations<'_>,
     ) -> Vec<Txid> {
-        self.with_wallet_records(wallet, |history, locks| {
-            let changed = history.truncate(removed, unconfirmed, locks.overflow);
-            match restored {
-                ForkRestorations::Reported(coins) => {
-                    history.detected_fork_coins.extend(coins);
-                    locks.hold_restorations(history, coins);
-                }
-                ForkRestorations::Detected(unspent) => {
-                    history.detected_fork_coins.extend(unspent);
-                    history.restored_fork_inputs.extend(
-                        locks
-                            .spends
-                            .iter()
-                            .filter(|(coin, spenders)| {
-                                history.detected_fork_coins.contains(*coin)
-                                    && spenders.iter().any(|txid| {
-                                        history.session_locks.contains(txid)
-                                            && !history.txs.contains_key(txid)
-                                    })
-                            })
-                            .map(|(coin, _)| *coin),
-                    );
-                }
+        let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+        let held = forked_ancestor_inputs(&wallets, wallet, height, removed, unconfirmed);
+        let history = wallets.entry(wallet).or_default();
+        history.fork_kept_ancestor_inputs.extend(held);
+        let changed = history.truncate(removed, unconfirmed, locks.overflow);
+        match restored {
+            ForkRestorations::Reported(coins) => {
+                history.detected_fork_coins.extend(coins);
+                locks.hold_restorations(history, coins);
             }
-            changed
-        })
+            ForkRestorations::Detected(unspent) => {
+                history.detected_fork_coins.extend(unspent);
+                history.restored_fork_inputs.extend(
+                    locks
+                        .spends
+                        .iter()
+                        .filter(|(coin, spenders)| {
+                            history.detected_fork_coins.contains(*coin)
+                                && spenders.iter().any(|txid| {
+                                    history.session_locks.contains(txid)
+                                        && !history.txs.contains_key(txid)
+                                })
+                        })
+                        .map(|(coin, _)| *coin),
+                );
+            }
+        }
+        changed
     }
 
     pub(crate) fn hold_fork_restorations(&self, wallet: WalletId, restored: &[OutPoint]) -> bool {
@@ -2261,12 +2374,12 @@ impl HistoryStore {
         let mut withheld = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
             let restored = verified_inputs.is_some() && h.restore_fork_removed_spend(*txid);
-            let entry = h.txs.get(txid);
-            if verified_inputs
-                .is_some_and(|inputs| entry.is_some() || inputs.iter().any(|o| h.owns_output(o)))
+            if let Some(inputs) = verified_inputs
+                && (h.txs.contains_key(txid) || inputs.iter().any(|o| h.owns_output(o)))
             {
-                h.session_locks.insert(*txid);
+                h.remember_session_lock(*txid, inputs);
             }
+            let entry = h.txs.get(txid);
             let mut held = restored;
             if let Some(inputs) = verified_inputs
                 && entry.is_none()
@@ -3518,6 +3631,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
         store.truncate(
             wallet,
+            0,
             &[removed.txid()],
             &[kept.txid()],
             ForkRestorations::Reported(&[]),
@@ -4964,7 +5078,7 @@ mod tests {
                     .collect();
             let no_notes = BTreeMap::new();
             let dead = |u: &Txid| dead_for_good(u, deaths, &txs, &no_notes, proven);
-            let ancestor = |u: &Txid| drops.contains_key(u) || deaths.swept_by.contains_key(u);
+            let ancestor = |u: &Txid| chain_parent(u, &drops, deaths);
             let drop_dead = |u: &Txid| chain_dead_for_good(u, deaths, ancestor, dead);
             let evidence = HeldEvidence {
                 chain_final: &chain_final,
