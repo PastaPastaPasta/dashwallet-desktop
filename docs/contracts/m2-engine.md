@@ -154,7 +154,8 @@ returned or the detection read. Without the event or
 verified lock evidence, Desktop cannot identify the restored outpoint. For a recorded own spend that was
 removed before its lock verified, the
 removed record stays in memory for the session. A subsequent verified lock restores the pending row and
-excludes its inputs that are still unspent.
+excludes its inputs that are still unspent. It also excludes, for the session, the unspent inputs of the
+removed own spends it descends from, whose rows stay out of the history.
 
 ### 2.3 Fees and coin control (`fees.rs`) — owner R1
 

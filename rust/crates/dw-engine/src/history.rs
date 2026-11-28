@@ -2163,6 +2163,44 @@ fn forked_ancestor_inputs(
     held
 }
 
+/// The fork-removed own spends `inputs` descend from, with their inputs,
+/// by the loaded wallet that removed each. A verified lock naming `inputs`
+/// proves them, so their restored coins stay held for the session.
+fn fork_removed_ancestors(
+    wallets: &HashMap<WalletId, WalletHistory>,
+    skip: &HashSet<WalletId>,
+    inputs: &[OutPoint],
+) -> Vec<(WalletId, Txid, Vec<OutPoint>)> {
+    let mut parents: Vec<_> = inputs.iter().map(|o| o.txid).collect();
+    let mut walked = HashSet::new();
+    let mut held = Vec::new();
+    while let Some(parent) = parents.pop() {
+        if !walked.insert(parent) {
+            continue;
+        }
+        for (id, h) in wallets.iter().filter(|(id, _)| !skip.contains(*id)) {
+            let spent: Vec<_> = if let Some(removed) = h.fork_removed_spends.get(&parent) {
+                let spent: Vec<_> = (removed.entry.tx.input.iter())
+                    .map(|i| i.previous_output)
+                    .collect();
+                held.push((*id, parent, spent.clone()));
+                spent
+            } else if let Some(kept) = h.fork_kept_ancestor_inputs.get(&parent) {
+                kept.clone()
+            } else if let Some(entry) = h.txs.get(&parent)
+                && entry.context.block_info().is_none()
+                && !entry.is_abandoned()
+            {
+                (entry.tx.input.iter()).map(|i| i.previous_output).collect()
+            } else {
+                continue;
+            };
+            parents.extend(spent.iter().map(|o| o.txid));
+        }
+    }
+    held
+}
+
 impl HistoryStore {
     pub fn with_wallet<R>(&self, wallet: WalletId, f: impl FnOnce(&mut WalletHistory) -> R) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
@@ -2370,6 +2408,9 @@ impl HistoryStore {
                 .unwrap_or_else(|p| p.into_inner())
                 .remember(*txid, inputs);
         }
+        let mut ancestors = (verified_inputs)
+            .map(|inputs| fork_removed_ancestors(&map, skip, inputs))
+            .unwrap_or_default();
         let mut marked = Vec::new();
         let mut withheld = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
@@ -2381,6 +2422,14 @@ impl HistoryStore {
             }
             let entry = h.txs.get(txid);
             let mut held = restored;
+            for (_, parent, spent) in ancestors.extract_if(.., |(owner, ..)| owner == id) {
+                if let std::collections::hash_map::Entry::Vacant(v) =
+                    h.fork_kept_ancestor_inputs.entry(parent)
+                {
+                    v.insert(spent);
+                    held = true;
+                }
+            }
             if let Some(inputs) = verified_inputs
                 && entry.is_none()
             {

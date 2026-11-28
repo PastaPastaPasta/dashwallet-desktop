@@ -421,6 +421,64 @@ fn a_child_lock_in_another_wallet_protects_the_senders_forked_input() {
     s.assert_fork_holds_funding_coin();
 }
 
+/// P and C, its child spending P's change, are mined and forked out before
+/// any lock is heard; C's lock verifies afterward.
+fn forked_parent_and_late_locked_child(s: &Scenario) -> Transaction {
+    let change = OutPoint::new(s.p.txid(), 1);
+    let child = super::spend_of(change, vec![(super::elsewhere(), CHANGE / 2)]);
+    let payments = vec![s.p.clone(), child.clone()];
+    mined(&s.engine, &s.session, s.id, TIP + 1, payments);
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the parent's funding coin");
+    assert!(s.max().1.contains(&s.a));
+    s.hear_verified_lock(InstantLock {
+        txid: child.txid(),
+        inputs: vec![change],
+        ..InstantLock::default()
+    });
+    s.session.hub.settle_rereads();
+    child
+}
+
+fn child_row(s: &Scenario, child: &Transaction) -> Option<(TxStatusKind, bool)> {
+    let txid = child.txid().to_string();
+    (rows(&s.engine, &s.session, s.id).into_iter())
+        .find(|r| r.0 == txid)
+        .map(|r| (r.1, r.2))
+}
+
+#[test]
+fn a_child_recovered_by_a_late_lock_keeps_its_forked_parents_funding_coin_unavailable() {
+    let s = scenario();
+    let child = forked_parent_and_late_locked_child(&s);
+    assert_eq!(
+        child_row(&s, &child),
+        Some((TxStatusKind::Unconfirmed, true))
+    );
+    s.assert_fork_holds_funding_coin();
+}
+
+#[test]
+fn a_child_recovered_by_a_late_lock_stays_locked_across_a_later_fork() {
+    let s = scenario();
+    let child = forked_parent_and_late_locked_child(&s);
+    s.overflow_early_locks();
+    mined(
+        &s.engine,
+        &s.session,
+        s.id,
+        TIP + 1,
+        vec![s.p.clone(), child.clone()],
+    );
+    assert!(!s.a_held(), "the parent spends its coin again");
+    s.fork();
+    assert_eq!(
+        child_row(&s, &child),
+        Some((TxStatusKind::Unconfirmed, true))
+    );
+    s.assert_fork_holds_funding_coin();
+}
+
 fn assert_recordless_child_protects_pending_parent(buffered: bool) {
     let (mut s, funding) = before_funding();
     s.fund(funding.clone());
