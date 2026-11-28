@@ -497,6 +497,22 @@ fn test_recovery_refuses_an_input_a_buffered_lock_names_before_its_spender() {
 }
 
 #[test]
+fn test_recovery_refuses_an_input_a_buffered_lock_names_after_its_spender_is_abandoned() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let wallet = f.wallets[1];
+    let coin = reserved_coins(&f, 1, &id)[0];
+    let spend = foreign_spend(&[coin], 1);
+    let txid = spend.txid();
+    let history = &f.session.hub.history;
+    history.note_instant_lock(&txid, Some(&[coin]), &HashSet::new());
+    history.with_wallet(wallet, |h| h.mark_abandoned(&[(txid, spend)]));
+    history.read_wallet(&wallet, |h| assert!(h.txs[&txid].is_abandoned()));
+    assert!(f.held_coin(1, coin).is_some());
+    assert_abandon_cannot_spend(&f, &id);
+}
+
+#[test]
 fn test_recovery_refuses_a_mined_spend_after_the_lock_buffer_evicted() {
     let f = fx(3, true);
     let id = abandoned_participant(&f);

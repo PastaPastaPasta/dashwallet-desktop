@@ -291,7 +291,8 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// Also includes restored inputs from removed ancestors and from spends
 /// whose lock may have been evicted. With `recovery`'s lock buffer, it also
 /// holds what a truncation the history has not applied yet would: coins a
-/// buffered verified lock spends whose spender key-wallet does not record,
+/// buffered verified lock spends whose spender key-wallet does not record
+/// (even one the history abandoned: the lock outranks it),
 /// inputs of a session lock still mined in the history and, once the buffer
 /// has evicted evidence, inputs of any mined spender key-wallet does not
 /// record.
@@ -338,10 +339,10 @@ fn fork_kept_inputs(
     });
     let buffered = recovery.into_iter().flat_map(|locks| {
         let spent = move |o: &&OutPoint| {
-            locks.spends.get(*o).is_some_and(|by| {
-                by.iter()
-                    .any(|t| !recorded(t) && h.txs.get(t).is_none_or(|e| !e.is_abandoned()))
-            })
+            locks
+                .spends
+                .get(*o)
+                .is_some_and(|by| by.iter().any(|t| !recorded(t)))
         };
         (funding.iter())
             .flat_map(|a| a.utxos.keys())
