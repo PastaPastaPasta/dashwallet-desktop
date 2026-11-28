@@ -280,6 +280,45 @@ pub fn insecure_ancestor(dir: &Path) -> io::Result<Option<InsecureAncestor>> {
     }
 }
 
+/// Moves an entry on Windows with write-through semantics. `replace` allows
+/// an existing file to be replaced. Directory moves require a free target.
+#[cfg(windows)]
+pub fn rename_write_through(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    fn wide(path: &Path) -> io::Result<Vec<u16>> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let path = std::fs::canonicalize(parent.unwrap_or(Path::new(".")))?.join(name);
+        let mut wide: Vec<_> = path.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NUL in file name",
+            ));
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    let (from, to) = (wide(from)?, wide(to)?);
+    let flags = if replace {
+        MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING
+    } else {
+        MOVEFILE_WRITE_THROUGH
+    };
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers live for the call.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), flags) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Renames `from` to `to` unless something is at `to`, atomically: an
 /// existing `to` (a symlink too) is never replaced, and the error's kind is
 /// `AlreadyExists`. Linux `renameat2(RENAME_NOREPLACE)`, macOS

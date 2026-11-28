@@ -1190,7 +1190,7 @@ impl NetworkSession {
                         &dead,
                         crate::tx_actions::DeadSource::Restore,
                     )
-                    .await;
+                    .await?;
                     #[cfg(test)]
                     (self.hub.restore.pass_runs.lock().unwrap())
                         .push((wallet, dead.keys().copied().collect()));

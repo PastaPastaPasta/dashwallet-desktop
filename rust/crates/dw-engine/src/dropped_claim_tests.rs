@@ -1243,7 +1243,7 @@ fn a_settled_dead_tree_keeps_its_pending_child(settle_claim: bool) {
                 .core_wallet
                 .restore_dismissed(dead.keys().copied(), []);
             s.abandon_on_dead(&manager, id, &dead, crate::tx_actions::DeadSource::Restore)
-                .await;
+                .await?;
             Ok(())
         }))
         .unwrap();
@@ -1396,7 +1396,7 @@ fn dead_parent_drop_order(first_parent_first: bool, settle_second: bool) {
                     &crate::tx_actions::Dead::from([(t, DropCause::InvalidSource)]),
                     crate::tx_actions::DeadSource::Restore,
                 )
-                .await;
+                .await?;
                 if settle_second {
                     break;
                 }
