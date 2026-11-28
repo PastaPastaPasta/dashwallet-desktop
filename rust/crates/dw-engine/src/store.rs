@@ -37,7 +37,7 @@ pub(crate) struct WalletStore {
     replay: std::sync::OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
     /// Each wallet's filter checkpoint as `load` last read it.
     loaded_at: std::sync::Mutex<HashMap<RawWalletId, u32>>,
-    sweep_committed: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    sweep_committed: std::sync::OnceLock<Box<SweepCommitted>>,
     /// Tests: a store the predicate matches fails (`LockPoisoned`) and
     /// reaches neither the SQLite persister nor the tap.
     #[cfg(test)]
@@ -50,6 +50,8 @@ pub(crate) struct WalletStore {
     #[cfg(test)]
     pub(crate) hold_store: std::sync::Mutex<Option<StoreHold>>,
 }
+
+type SweepCommitted = dyn Fn(WalletId, &[dashcore::OutPoint]) + Send + Sync;
 
 #[cfg(test)]
 pub(crate) type StoreHold = (StoreFailure, Arc<(std::sync::Barrier, std::sync::Barrier)>);
@@ -93,7 +95,10 @@ impl WalletStore {
         let _ = self.replay.set(Arc::downgrade(replay));
     }
 
-    pub(crate) fn notify_sweep(&self, committed: impl Fn() + Send + Sync + 'static) {
+    pub(crate) fn notify_sweep(
+        &self,
+        committed: impl Fn(WalletId, &[dashcore::OutPoint]) + Send + Sync + 'static,
+    ) {
         let _ = self.sweep_committed.set(Box::new(committed));
     }
 
@@ -216,6 +221,12 @@ impl PlatformWalletPersistence for WalletStore {
                 .core
                 .as_ref()
                 .is_some_and(|c| c.sweeps.iter().any(|s| !s.txids.is_empty()));
+        let released: Vec<_> = changeset
+            .core
+            .iter()
+            .flat_map(|c| &c.sweeps)
+            .flat_map(|s| s.released_outpoints.iter().copied())
+            .collect();
         // Committed when the call returns `Ok` (SQLite's `Immediate` mode).
         let committed = (changeset.core.as_ref())
             .and_then(|c| c.synced_height)
@@ -242,7 +253,7 @@ impl PlatformWalletPersistence for WalletStore {
             return Err(e);
         }
         if swept && let Some(notify) = self.sweep_committed.get() {
-            notify();
+            notify(WalletId(wallet_id), &released);
         }
         if let Some(height) = committed
             && let Some(replay) = replay()

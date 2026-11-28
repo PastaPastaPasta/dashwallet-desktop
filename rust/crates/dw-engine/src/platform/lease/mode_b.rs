@@ -2211,12 +2211,12 @@ impl Resumer for SessionTracked {
 
 impl NetworkSession {
     /// A saved abandon leaves the row tracked for Repair and SPV events.
-    async fn asset_lock_resume_gate(
+    pub(crate) async fn asset_lock_resume_gate(
         &self,
         wallet: WalletId,
         txid: Txid,
     ) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, crate::EngineError> {
-        let gate = self.abandon_gate(wallet).read_owned().await;
+        let gate = self.asset_lock_gate(wallet, txid).read_owned().await;
         Ok((!self.read_abandon_mark(wallet, txid).await?).then_some(gate))
     }
 
