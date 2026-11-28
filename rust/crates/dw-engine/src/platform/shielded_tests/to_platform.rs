@@ -191,7 +191,8 @@ fn the_facade_refuses_unshield_to_platform_on_mainnet_before_opening_the_pool() 
     let dashpay = s.dashpay(crate::WalletId([0x5c; 32]));
     let quote = engine.block_on(dashpay.unshield_to_platform_quote(NOTE, None));
     assert_eq!(code(quote), "platform.feature_off");
-    let call = engine.block_on(dashpay.unshield_to_platform(NOTE, None, "grant".into(), true));
+    let call =
+        engine.block_on(dashpay.unshield_to_platform(NOTE, None, "grant".into(), true, None));
     assert_eq!(code(call), "platform.feature_off");
     assert!(
         !s.data_dir().join(pool::SHIELDED_DB_FILE).exists(),

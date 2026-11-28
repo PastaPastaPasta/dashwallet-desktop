@@ -1193,7 +1193,8 @@ fn marked_spend_after_a_relaunch(on: bool, want: impl Fn(bool) -> (&'static str,
     for confirmed in [false, true] {
         let sent =
             engine.block_on(dp.shielded_send(to.clone(), 1_000, None, "g".into(), confirmed));
-        let unshielded = engine.block_on(dp.unshield_to_core(1_000, None, "g".into(), confirmed));
+        let unshielded =
+            engine.block_on(dp.unshield_to_core(1_000, None, "g".into(), confirmed, None));
         assert_eq!((code(sent), code(unshielded)), want(confirmed));
     }
     let shield = engine

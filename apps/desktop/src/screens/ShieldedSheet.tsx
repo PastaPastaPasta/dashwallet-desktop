@@ -9,7 +9,7 @@ import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending
 import { keys, shieldedDuffs, shieldedHold, useBackend, useShieldedBind, useRereadWhenBound, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { ui, useUi } from "../app/ui";
-import { DashButton } from "../components/basics";
+import { DashButton, VisuallyHidden } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
@@ -22,7 +22,6 @@ import { sendMax, sendMaxLine } from "../shielded/sendMax";
 import { SHIELDED_SPENDS_COPY, shieldedSpendsOff, spendsOffText } from "../shielded/spends";
 import { SHIELDED_SYNC_COPY, scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText } from "../shielded/syncing";
 import { coreMaxNotes, TRANSFER_COPY } from "../transfer/model";
-import { preparingText } from "../transfer/preparing";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
@@ -319,7 +318,32 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
   );
 }
 
-function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof useFormats> }) {
+function MoveSteps({ steps, refusal }: { steps: ShieldedFlow["moveSteps"]; refusal?: string }) {
+  const tr = useT();
+  const marks = { done: "✓", current: "●", upcoming: "○", waiting: "…", failed: "×" };
+  if (!steps.length) return null;
+  return (
+    <ol role="list" aria-label={tr("transfer.shielded.progress.label")} aria-live="polite" className="shielded-move-steps" data-testid="shielded-progress">
+      {steps.map((step) => (
+        <li key={step.stage} data-stage={step.stage} data-state={step.state} aria-current={step.state === "current" ? "step" : undefined}>
+          <span className="shielded-move-mark" aria-hidden="true">{marks[step.state]}</span>
+          <div>
+            <span>{tr(`transfer.shielded.progress.stage.${step.stage}`)}</span>
+            <VisuallyHidden>{tr(`transfer.shielded.progress.state.${step.state}`)}</VisuallyHidden>
+            {step.state === "failed" && (
+              <p className="form-problem" role="alert" data-testid={refusal ? "shielded-refusal" : undefined}>
+                {refusal ?? tr("transfer.shielded.progress.errorCode", { code: step.code })}
+              </p>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function Outcome({ flow, fmt, steps }: { flow: ShieldedFlow; fmt: ReturnType<typeof useFormats>; steps: ShieldedFlow["moveSteps"] }) {
+  const tr = useT();
   const r = flow.result;
   if (!r) return null;
   let title: string;
@@ -329,9 +353,13 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     if (s.kind === "applied") ({ title, text } = { title: C.done.add.title, text: C.done.add.text(fmt.credits(s.balance)) });
     else if (s.kind === "proofWaiting") ({ title, text } = C.done.waiting);
     else if (s.kind === "consumptionUnknown") ({ title, text } = C.done.checking);
-    else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
+    else {
+      title = C.done.notApplied.title;
+      text = steps.some((step) => step.state === "failed") ? tr("transfer.shielded.progress.finishLock") : C.done.notApplied.text(s.error);
+    }
   } else if (r.outcome.state === "pending") {
-    ({ title, text } = C.done.unconfirmed);
+    title = C.done.unconfirmed.title;
+    text = flow.kind === "send" ? C.done.unconfirmed.text : tr("transfer.shielded.done.moveUnconfirmed");
   } else if (flow.kind === "toPlatform") {
     ({ title } = C.done.toPlatform);
     text = C.done.toPlatform.text(r.outcome.to);
@@ -343,13 +371,16 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
     text = C.done.send.text(fmt.credits(r.outcome.credits));
   }
   return (
-    <div role="status">
-      <p className="topup-title" data-testid="shielded-outcome-title">
-        {title}
-      </p>
-      <p className="sheet-text shielded-outcome-text" data-testid="shielded-outcome-text">
-        {text}
-      </p>
+    <div>
+      <div role="status">
+        <p className="topup-title" data-testid="shielded-outcome-title">
+          {title}
+        </p>
+        <p className="sheet-text shielded-outcome-text" data-testid="shielded-outcome-text">
+          {text}
+        </p>
+      </div>
+      <MoveSteps steps={steps} />
       <div className="sheet-actions">
         <DashButton variant="filledBlue" size="large" data-testid="shielded-done" onClick={() => flow.close()}>
           {C.close}
@@ -362,34 +393,46 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
 /** The steps of a Shielded move: its form, confirmation, progress and outcome. */
 export function ShieldedBody({ flow, walletId, network, status }: { flow: ShieldedFlow; walletId: string; network: NetworkInfo; status: ShieldedStatus | null }) {
   useModel(flow);
+  const tr = useT();
   const fmt = useFormats(network);
-  const { step } = flow;
+  const step = flow.displayStep;
+  const steps = flow.moveSteps;
+  const refusal = step === "refused"
+    ? shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedWait(status), flow.request?.kind === "add" && !!flow.request.all, shieldedSpendsOff(status))
+    : undefined;
   return (
     <div data-testid="shielded-body" data-step={step} data-kind={flow.kind}>
       {step === "form" && <FormStep flow={flow} network={network} status={status} />}
       {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} status={status} fmt={fmt} />}
-      {step === "running" && (
-        <div role="status" className="topup-running">
-          <p className="topup-title">
+      {step === "running" && (steps.length > 0 ? <MoveSteps steps={steps} /> : (
+        <div className="topup-running">
+          <p className="topup-title" role="status">
             {C.running.title}
             <span className="spinner" aria-hidden="true" />
           </p>
-          <p className="sheet-text" data-testid="shielded-progress">
-            {flow.kind === "add" || flow.kind === "resume" ? C.running.lock : C.running.prove}
-          </p>
-          {flow.preparing.shown && (
-            <p className="sheet-text" data-testid="transfer-preparing">
-              {preparingText()}
+          {(flow.kind === "send" || flow.kind === "resume") && (
+            <p className="sheet-text" data-testid="shielded-progress">
+              {flow.kind === "resume" ? C.running.lock : C.running.prove}
             </p>
           )}
         </div>
+      ))}
+      {step === "done" && <Outcome flow={flow} fmt={fmt} steps={steps} />}
+      {(step === "checkActivity" || step === "balanceUnavailable") && (
+        <>
+          <p role="status" className="sheet-text">{tr(step === "balanceUnavailable" ? "transfer.shielded.progress.balanceUnavailable" : "transfer.shielded.progress.checkActivity")}</p>
+          {step === "balanceUnavailable" && <MoveSteps steps={steps} />}
+          <div className="sheet-actions">
+            <DashButton variant="filledBlue" size="large" onClick={() => flow.close()}>{C.close}</DashButton>
+          </div>
+        </>
       )}
-      {step === "done" && <Outcome flow={flow} fmt={fmt} />}
       {step === "refused" && (
         <>
-          <p className="form-problem" role="alert" data-testid="shielded-refusal">
-            {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedWait(status), flow.request?.kind === "add" && !!flow.request.all, shieldedSpendsOff(status))}
-          </p>
+          <MoveSteps steps={steps} refusal={refusal} />
+          {!steps.some((step) => step.state === "failed") && (
+            <p className="form-problem" role="alert" data-testid="shielded-refusal">{refusal}</p>
+          )}
           <div className="sheet-actions">
             {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (
               <DashButton variant="tintedGray" size="large" data-testid="shielded-refused-back" onClick={() => flow.back()}>

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { authorize, fixtureUrl, openTransfer, trackPageErrors } from "./helpers";
-import { amountsInClear, callsOf, FEE_ON_NEXT_STEP, hold, lastGrant, release, TRANSFER_STATES } from "./transfer";
+import { amountsInClear, callsOf, FEE_ON_NEXT_STEP, hold, lastGrant, moveProgressAt, release, TRANSFER_STATES } from "./transfer";
 
 // Transfer (POLISH 25): one sheet over the four routes' own flows. Each state of transfer.ts with
 // no serious axe violation and no page error; each route's grant as its own sheet asked for it.
@@ -22,6 +22,56 @@ test.describe("Transfer states", () => {
       expect(errors).toEqual([]);
     });
   }
+});
+
+test.describe("Live transfer steps", () => {
+  for (const route of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) {
+    test(`${route} keeps its checklist through confirmation`, async ({ page }) => {
+      await open(page, "funded");
+      await moveProgressAt(page, route, "platformSubmission");
+      const list = page.getByRole("list", { name: "Transfer steps" });
+      await expect(list.locator('[data-state="done"]')).toHaveCount(route === "coreToShielded" ? 3 : 2);
+      await expect(list.locator('[data-stage="refreshShielded"]')).toHaveAttribute("data-state", "upcoming");
+      await release(page);
+      await expect(page.getByTestId("shielded-outcome-title")).toBeVisible();
+      await expect(list.locator('[data-state="done"]')).toHaveCount(route === "coreToShielded" ? 5 : 4);
+    });
+  }
+
+  test("a network refusal attaches its error to the step that failed", async ({ page }) => {
+    const state = TRANSFER_STATES.find((state) => state.id === "shieldedToCore-failed")!;
+    await open(page, state.scenario);
+    await state.go(page);
+    const failed = page.getByTestId("shielded-progress").locator('[data-state="failed"]');
+    await expect(failed).toHaveAttribute("data-stage", "platformSubmission");
+    await expect(failed.getByRole("alert")).toHaveText("Dash Platform did not answer. Try again.");
+  });
+
+  test("a Core lock without a proof keeps that step waiting", async ({ page }) => {
+    const state = TRANSFER_STATES.find((state) => state.id === "coreToShielded-pending")!;
+    await open(page, state.scenario);
+    await state.go(page);
+    const list = page.getByTestId("shielded-progress");
+    await expect(list.locator('[data-stage="coreAssetLock"]')).toHaveAttribute("data-state", "waiting");
+    await expect(list.locator('[data-stage="shieldedProof"]')).toHaveAttribute("data-state", "upcoming");
+  });
+
+  test("the successful command reply cannot reveal a final amount before the settlement event", async ({ page }) => {
+    await open(page, "funded");
+    await page.evaluate(() => {
+      (window as unknown as { __settleMove: () => void }).__settleMove = window.__dwFixture!.holdMoveSettlement();
+    });
+    await moveProgressAt(page, "coreToShielded", "refreshShielded");
+    await expect(page.getByTestId("shielded-outcome-text")).toHaveCount(0);
+    // Let the command answer but keep the settled event held.
+    await release(page);
+    await page.evaluate(() => window.__dwFixture!.emit({ kind: "eventsOverflowed" }));
+    await expect(page.getByTestId("shielded-body")).toHaveAttribute("data-step", "checkActivity");
+    await expect(page.getByTestId("shielded-outcome-text")).toHaveCount(0);
+    await page.evaluate(() => (window as unknown as { __settleMove: () => void }).__settleMove());
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+    await expect(page.getByTestId("shielded-outcome-text")).toContainText("Your Shielded balance is now");
+  });
 });
 
 /** Through the route's confirmation to its passphrase sheet; the grant asked for, once answered. */

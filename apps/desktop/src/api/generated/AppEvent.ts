@@ -5,6 +5,8 @@ import type { DispatchSettled } from "./DispatchSettled";
 import type { Lease } from "./Lease";
 import type { LockProgress } from "./LockProgress";
 import type { LockStateName } from "./LockStateName";
+import type { MoveProgressStatus } from "./MoveProgressStatus";
+import type { MoveStage } from "./MoveStage";
 import type { NoticeCodeName } from "./NoticeCodeName";
 import type { PlatformChangeName } from "./PlatformChangeName";
 import type { SyncStatus } from "./SyncStatus";
@@ -27,4 +29,4 @@ live: Array<boolean>,
 /**
  * The batch's size.
  */
-count: number, catchUp: boolean, } | { "kind": "walletLoadChanged", network: string, walletId: string, loaded: boolean, } | { "kind": "coinJoin", network: string, walletId: string, } | { "kind": "platform", network: string, walletId: string, change: PlatformChangeName, } | { "kind": "masternodes", network: string, } | { "kind": "leaseChanged", network: string, lease: Lease, } | { "kind": "lockProgress", network: string, progress: LockProgress, } | { "kind": "dispatchResolved", network: string, settled: DispatchSettled, } | { "kind": "dashPayNews", network: string, walletId: string, identity: string, events: Array<DashPayEventInfo>, more: number, } | { "kind": "governance", network: string, } | { "kind": "rates" } | { "kind": "backups", network: string, };
+count: number, catchUp: boolean, } | { "kind": "walletLoadChanged", network: string, walletId: string, loaded: boolean, } | { "kind": "coinJoin", network: string, walletId: string, } | { "kind": "platform", network: string, walletId: string, change: PlatformChangeName, } | { "kind": "masternodes", network: string, } | { "kind": "leaseChanged", network: string, lease: Lease, } | { "kind": "lockProgress", network: string, progress: LockProgress, } | { "kind": "moveProgress", network: string, walletId: string, progressId: number, stage: MoveStage, status: MoveProgressStatus, } | { "kind": "dispatchResolved", network: string, settled: DispatchSettled, } | { "kind": "dashPayNews", network: string, walletId: string, identity: string, events: Array<DashPayEventInfo>, more: number, } | { "kind": "governance", network: string, } | { "kind": "rates" } | { "kind": "backups", network: string, };

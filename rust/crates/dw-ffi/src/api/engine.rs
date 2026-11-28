@@ -267,6 +267,7 @@ impl EngineEvent {
             // (MG-02 D95). Backups too: the Swift host re-reads its backups
             // list itself.
             E::Platform { .. }
+            | E::MoveProgress { .. }
             | E::Masternodes { .. }
             | E::DashPayNews { .. }
             | E::LeaseChanged { .. }

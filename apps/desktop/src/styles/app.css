@@ -560,6 +560,43 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+.shielded-move-steps {
+  display: grid;
+  gap: var(--dw-space-xs);
+  margin: var(--dw-space-m) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shielded-move-steps li {
+  display: grid;
+  grid-template-columns: var(--dw-space-l) minmax(0, 1fr);
+  gap: var(--dw-space-xs);
+  color: var(--dw-role-text-secondary);
+}
+
+.shielded-move-mark {
+  text-align: center;
+  font-weight: var(--dw-type-headline-weight);
+}
+
+.shielded-move-steps [data-state="current"] {
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-headline-weight);
+}
+
+.shielded-move-steps [data-state="current"] .shielded-move-mark {
+  color: var(--dw-role-accent);
+}
+
+.shielded-move-steps [data-state="done"] .shielded-move-mark {
+  color: var(--dw-role-success-text);
+}
+
+.shielded-move-steps [data-state="failed"] {
+  color: var(--dw-role-danger);
+}
+
 /* Max from the Dash wallet on Confirm: what it moves, then what stays behind, each its own line. */
 .core-max-confirm {
   display: flex;

@@ -866,9 +866,10 @@ commands! {
         wallet_id: String,
         amount: FundAmount,
         grant: String,
+        progress_id: Option<u32>,
     ) -> ShieldOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.shield_from_core(amount.into(), grant).await?.into())
+        Ok(dashpay.shield_from_core(amount.into(), grant, progress_id).await?.into())
     }
 
     /// What "Move mixed coins" to Shielded would move: the CoinJoin
@@ -958,11 +959,12 @@ commands! {
         to: Option<String>,
         grant: String,
         confirm_unrecorded: bool,
+        progress_id: Option<u32>,
     ) -> ShieldedSpendOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let credits = shielded::parse_credits(&credits)?;
         Ok(dashpay
-            .unshield_to_core(credits, to, grant, confirm_unrecorded)
+            .unshield_to_core(credits, to, grant, confirm_unrecorded, progress_id)
             .await?
             .into())
     }
@@ -991,11 +993,12 @@ commands! {
         to: Option<String>,
         grant: String,
         confirm_unrecorded: bool,
+        progress_id: Option<u32>,
     ) -> UnshieldToPlatformOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let credits = shielded::parse_credits(&credits)?;
         Ok(dashpay
-            .unshield_to_platform(credits, to, grant, confirm_unrecorded)
+            .unshield_to_platform(credits, to, grant, confirm_unrecorded, progress_id)
             .await?
             .into())
     }

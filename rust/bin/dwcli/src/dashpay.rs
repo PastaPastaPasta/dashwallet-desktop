@@ -1799,7 +1799,7 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.shield_from_core(amount, grant))?;
+            let outcome = ctx.block_on(dp.shield_from_core(amount, grant, None))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::ShieldResume { txid } => {
@@ -1842,7 +1842,7 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome =
-                ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded))?;
+                ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded, None))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::UnshieldToPlatform {
@@ -1856,8 +1856,13 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome =
-                ctx.block_on(dp.unshield_to_platform(credits, to, grant, confirm_unrecorded))?;
+            let outcome = ctx.block_on(dp.unshield_to_platform(
+                credits,
+                to,
+                grant,
+                confirm_unrecorded,
+                None,
+            ))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::History { offset, limit } => {

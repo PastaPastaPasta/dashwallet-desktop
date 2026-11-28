@@ -304,7 +304,7 @@ export interface Backend {
   shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
   /** Core → Shielded: what `duffs` cost and buy. */
   shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote>;
-  shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome>;
+  shieldFromCore(walletId: string, amount: FundAmount, grant: string, progressId?: number): Promise<ShieldOutcome>;
   /** Applies a pending lock. */
   resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
   /** The Core → Shielded locks Platform is not known to have applied; `null` while dw-app has no such command. */
@@ -322,11 +322,11 @@ export interface Backend {
   shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
   /** Shielded → Core; `to` null: the wallet's next receive address. */
   unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
-  unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean, progressId?: number): Promise<ShieldedSpendOutcome>;
   /** Shielded → one of the wallet's own Platform addresses; `to` null: its receive address. Off on
    * mainnet (`platform.feature_off`). */
   unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
-  unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean, progressId?: number): Promise<ShieldedSpendOutcome>;
   /** The account's activity, pending first (`offset`, `limit` ≤ 500). */
   shieldedHistory(walletId: string, offset: number, limit: number): Promise<ShieldedActivity[] | null>;
   /** The wallet's Platform addresses (`platform_addresses`, contract §2.12). */

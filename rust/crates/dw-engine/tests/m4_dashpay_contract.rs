@@ -344,6 +344,7 @@ const NOT_FACADE: &[&str] = &[
     "shield_drain.rs",
     "shield_drain_lib_tests.rs",
     "shield_drain_tests.rs",
+    "shielded",
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_disposition_tests.rs",
@@ -1716,7 +1717,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shield_quote(FundAmount::Duffs { duffs: 1 })
                 .await
                 .map(drop),
-            dp.shield_from_core(FundAmount::Duffs { duffs: 1 }, s())
+            dp.shield_from_core(FundAmount::Duffs { duffs: 1 }, s(), None)
                 .await
                 .map(drop),
             dp.resume_shield(s(), s()).await.map(drop),
@@ -1726,9 +1727,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_send_quote(s(), 1).await.map(drop),
             dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),
-            dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.unshield_to_core(1, None, s(), false, None)
+                .await
+                .map(drop),
             dp.unshield_to_platform_quote(1, None).await.map(drop),
-            dp.unshield_to_platform(1, None, s(), false).await.map(drop),
+            dp.unshield_to_platform(1, None, s(), false, None)
+                .await
+                .map(drop),
             dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");

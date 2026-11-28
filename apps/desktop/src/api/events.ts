@@ -19,7 +19,7 @@ import { HeldNews } from "../payments/heldNews";
 import { announceReceived, forgetReceived, LOOKUP_TIMEOUT_MS, sealReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
-import { onShieldedSettled } from "../shielded/flow";
+import { moveEventsOverflowed, onShieldedSettled, recordMoveProgress } from "../shielded/flow";
 import { closeWalletGate, confirmLockState, disposeConfirm, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
 import { keys, scanHeightsStale } from "./queries";
 import { showShellToast } from "../components/toast";
@@ -141,6 +141,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.backupsAll];
     // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
+    case "moveProgress":
       return [];
     default:
       return unreachable(event);
@@ -221,6 +222,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (ofOtherNetwork(event, network)) return;
+    if (event.kind === "moveProgress") {
+      recordMoveProgress(event);
+      return;
+    }
     // The lock is the engine's word: the gate closes before anything below reads again, and no
     // status read or lock answer from before this event counts.
     if (event.kind === "vaultLockState") {
@@ -228,7 +233,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
       if (event.state === "locked") closeWalletGate(client);
     }
     // Lost events may have held a lock: the gate closes until a status read says otherwise.
-    if (event.kind === "eventsOverflowed") confirmLockState(client, () => backend.lockStatus());
+    if (event.kind === "eventsOverflowed") {
+      moveEventsOverflowed();
+      confirmLockState(client, () => backend.lockStatus());
+    }
     if (event.kind === "walletRemoved") {
       heldNews.drop(event.walletId);
       forgetReceived(event.walletId);

@@ -1207,7 +1207,7 @@ test.describe("Shielded", () => {
     await page.getByTestId("shielded-go").click();
     await authorize(page);
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
-    await expect(page.getByTestId("shielded-outcome-text")).toContainText("Do not send it again");
+    await expect(page.getByTestId("shielded-outcome-text")).toContainText("Do not try this move again while it is pending.");
     await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
     await page.getByTestId("shielded-done").click();
     // Home has no card for it while the engine lists the spend: Activity shows it pending.

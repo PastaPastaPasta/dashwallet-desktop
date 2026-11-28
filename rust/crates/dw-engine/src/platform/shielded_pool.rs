@@ -61,7 +61,7 @@
 //!   transition by Platform's hash of it; a spend stored before any hook was
 //!   set is recorded in the 0.1 dispatch journal, while a spend stored under
 //!   the hook has its artifact written before its first send. Nothing here
-//!   resends. Every pass goes through [`guarded_pass`]: admitted only while
+//!   resends. Every pass goes through [`pass`]: admitted only while
 //!   the session is open (the supervisor's kick, or [`on_pool`]), only with
 //!   the hook set, only while each wallet holding a spend stored before any
 //!   hook was set holds its background lease, and only once each such spend
@@ -140,7 +140,7 @@ use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
 use platform_wallet::manager::shielded_sync::{
-    HostHeightlessSpend, ShieldedPassEvidence, WalletShieldedOutcome,
+    HostHeightlessSpend, ShieldedPassEvidence, ShieldedSyncPassSummary, WalletShieldedOutcome,
 };
 use platform_wallet::wallet::asset_lock::AssetLockFunding;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
@@ -172,11 +172,11 @@ use super::shielded::{
     ShieldedAccount, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
     ShieldedAddress, ShieldedDirection, ShieldedRefusal, ShieldedScanProgress,
     ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo,
-    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome, move_progress,
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
-use crate::{NetworkSession, PlatformChange, WalletId};
+use crate::{MoveStage, NetworkSession, PlatformChange, WalletId};
 
 /// The coordinator's commitment tree, in the network directory.
 pub(crate) const SHIELDED_DB_FILE: &str = "shielded.sqlite";
@@ -268,6 +268,7 @@ pub(crate) trait ShieldedLib: Send + Sync {
     ) -> impl Future<Output = Result<Vec<ShieldedActivityEntry>, PlatformError>> + Send;
     /// A sync pass of every bound wallet now, past the caught-up cooldown,
     /// Returns the pass outcome, including a local history hold.
+    /// `PassOutcome::Ran` means this pass scanned this wallet.
     fn sync_now(&self) -> impl Future<Output = PassOutcome> + Send;
     fn sync_state(&self) -> SyncState;
     fn prover_ready(&self) -> bool;
@@ -1483,6 +1484,15 @@ async fn balance(lib: &impl ShieldedLib) -> u64 {
     (lib.ledger().await.ok().flatten()).map_or(0, |l| l.spendable)
 }
 
+async fn refresh_balance(lib: &impl ShieldedLib) -> u64 {
+    let scanned = lib.sync_now().await == PassOutcome::Ran;
+    let ledger = lib.ledger().await.ok().flatten();
+    if scanned && ledger.is_some() {
+        move_progress::balance_refreshed();
+    }
+    ledger.map_or(0, |l| l.spendable)
+}
+
 /// Writes the engine's marker of the spend the library just could not
 /// confirm and kept no record of (DEC-1057): the reservations it made for
 /// it before its broadcast, those of an activity not reserved before, give
@@ -1646,6 +1656,7 @@ pub(super) async fn send_armed(
         _ => None,
     };
     let sent = leased(&lease, async {
+        move_progress::advance(MoveStage::ShieldedProof);
         match to {
             To::Shielded(address, _) => lib.transfer(&permit, address, quote.credits, memo).await,
             To::Core(address) => lib.withdraw(&permit, address, quote.credits).await,
@@ -1662,11 +1673,11 @@ pub(super) async fn send_armed(
         .mark_platform(wallet, [PlatformChange::Shielded]);
     match sent {
         Ok(()) => {
+            move_progress::advance(MoveStage::RefreshShielded);
             drop(hold);
             // The change note is the library's once a pass finds it.
-            lib.sync_now().await;
             Ok(Spent {
-                balance: balance(lib).await,
+                balance: refresh_balance(lib).await,
                 state: ShieldedSpendState::Done,
                 unresolved: None,
                 record,
@@ -2230,6 +2241,7 @@ pub(crate) async fn shield(
     let signer = lease
         .uncounted_funding_signer()
         .map_err(PlatformError::from)?;
+    move_progress::advance(MoveStage::CoreAssetLock);
     let funded = lease
         .scope_step(Some(step.clone()), async {
             let (permit, funded) = match max {
@@ -2352,6 +2364,7 @@ pub(super) async fn apply(
     signer: &VaultSigner,
     outpoint: OutPoint,
 ) -> ShieldState {
+    move_progress::advance(MoveStage::ShieldedProof);
     let applied = lease
         .scope(async {
             let permit = lease.call_permit("shield", None)?;
@@ -2366,13 +2379,13 @@ pub(super) async fn apply(
         .mark_platform(wallet, [PlatformChange::Shielded]);
     match applied {
         Ok(Applied::Done) => {
+            move_progress::advance(MoveStage::RefreshShielded);
             if let Err(e) = lib.settle(outpoint.txid).await {
                 tracing::warn!(%outpoint, error = %e, "could not record a shield's lock settled");
             }
             // The shielded note is the library's once a pass finds it.
-            lib.sync_now().await;
             ShieldState::Applied {
-                balance: balance(lib).await,
+                balance: refresh_balance(lib).await,
             }
         }
         // Neither settles (SR1): the lock pends, checking, until a proved
@@ -3389,6 +3402,7 @@ impl ShieldedDispatch for EngineDispatch {
     /// outcome the journal has not recorded yet ([`undecided_import_note`]),
     /// and its artifact is in the dispatch journal when this returns `Ok`.
     async fn dispatch(&self, payload: ShieldedDispatchPayload) -> Result<(), DispatchRefused> {
+        move_progress::advance(MoveStage::PlatformSubmission);
         let (session, coordinator) = self.open()?;
         let subwallet = Self::account(payload.wallet_id, payload.account_index)?;
         if transition_hash(&payload.st_bytes) != payload.st_hash {
@@ -3769,7 +3783,7 @@ where
 {
     let session = Arc::clone(session);
     let rt = session.rt.clone();
-    rt.spawn(async move {
+    rt.spawn(move_progress::inherit(async move {
         if signing {
             session.refuse_platform_funds(wallet_id)?;
         }
@@ -3789,7 +3803,7 @@ where
         }
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
-    })
+    }))
     .await
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
@@ -4117,7 +4131,14 @@ impl ShieldedLib for PwShielded {
     }
 
     async fn sync_now(&self) -> PassOutcome {
-        pass(&self.pw.session, &self.manager, true, None, &|_| true).await
+        match pass(&self.pw.session, &self.manager, true, None, &|_| true).await {
+            PassRun::Ran(Some(summary)) if wallet_scanned(&summary, self.pw.wallet_id) => {
+                PassOutcome::Ran
+            }
+            PassRun::Ran(_) => PassOutcome::RanUnscanned,
+            PassRun::HeldImports => PassOutcome::HeldImports,
+            PassRun::Stopped => PassOutcome::Stopped,
+        }
     }
 
     /// `last_sync_at`: the last pass's end, or a later skip's proof that
@@ -4739,6 +4760,7 @@ impl<S: key_wallet::Signer<Error = dw_vault::SignerError>> key_wallet::Signer fo
         ),
         Self::Error,
     > {
+        move_progress::advance(MoveStage::PlatformSubmission);
         let signature = self.inner.sign_ecdsa(path, sighash).await?;
         self.signed.store(true, Ordering::SeqCst);
         Ok(signature)
@@ -5939,6 +5961,13 @@ pub(super) const IMPORT_HISTORY_UNAVAILABLE: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PassOutcome {
     Ran,
+    RanUnscanned,
+    HeldImports,
+    Stopped,
+}
+
+enum PassRun {
+    Ran(Option<ShieldedSyncPassSummary>),
     HeldImports,
     Stopped,
 }
@@ -5957,14 +5986,17 @@ pub(crate) async fn guarded_pass(
     manager: &Manager,
     force: bool,
 ) -> bool {
-    pass(session, manager, force, None, &|_| true).await == PassOutcome::Ran
+    matches!(
+        pass(session, manager, force, None, &|_| true).await,
+        PassRun::Ran(_)
+    )
 }
 
 /// The supervisor's periodic pass (#178): Platform's note count is read
 /// first, by a task holding only the SDK, so neither a close nor a stop
 /// waits for it. Then, while the session is open and `runs` says the loops
 /// that kicked it still do (checked again under the pass's locks),
-/// [`guarded_pass`]'s pass, which skips the library's pass while
+/// [`pass`], which skips the library's pass while
 /// [`pool_is_idle`]. `false` when it did not run or was held back.
 pub(crate) async fn periodic_pass(
     session: Arc<NetworkSession>,
@@ -6010,7 +6042,10 @@ pub(crate) async fn periodic_pass(
     }
     bind_new_tip_accounts(&session, &manager).await;
     let runs = |s: &NetworkSession| runs(s) && s.try_enter().is_ok();
-    pass(&session, &manager, false, count, &runs).await == PassOutcome::Ran
+    matches!(
+        pass(&session, &manager, false, count, &runs).await,
+        PassRun::Ran(_)
+    )
 }
 
 async fn bind_new_tip_accounts(session: &Arc<NetworkSession>, manager: &Manager) {
@@ -6049,7 +6084,7 @@ async fn pass(
     force: bool,
     count: Option<(u64, u64)>,
     runs: &(dyn Fn(&NetworkSession) -> bool + Sync),
-) -> PassOutcome {
+) -> PassRun {
     #[cfg(test)]
     if let Some(queued) = session.platform.spends_queued.lock().unwrap().take() {
         let _ = queued.send(());
@@ -6058,7 +6093,7 @@ async fn pass(
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
     if !runs(session) {
-        return PassOutcome::Stopped;
+        return PassRun::Stopped;
     }
     #[cfg(test)]
     if let Some(admitting) = session.platform.admitting.lock().unwrap().take() {
@@ -6068,7 +6103,7 @@ async fn pass(
         Ok(coordinator) => coordinator,
         Err(held) => {
             tracing::info!(?held, "a shielded sync pass is held back");
-            return PassOutcome::Stopped;
+            return PassRun::Stopped;
         }
     };
     #[cfg(test)]
@@ -6094,7 +6129,7 @@ async fn pass(
             wallets.into_iter().map(WalletId),
             IMPORT_HISTORY_UNAVAILABLE,
         );
-        return PassOutcome::HeldImports;
+        return PassRun::HeldImports;
     }
     let orphaned = orphaned_dispatches(session, &coordinator, &wallets).await;
     let heightless = orphaned
@@ -6118,12 +6153,12 @@ async fn pass(
             "the shielded pool is unchanged; the periodic pass is skipped"
         );
         (session.platform.shielded_checked_at).fetch_max(proved_at, Ordering::AcqRel);
-        return PassOutcome::Ran;
+        return PassRun::Ran(None);
     }
     // Again with no await until `sync_now` takes its slot: a stop moves the
     // epoch before its quiesce, which waits for a pass in the slot.
     if !runs(session) {
-        return PassOutcome::Stopped;
+        return PassRun::Stopped;
     }
     prepare_drained_pass(session, &coordinator, !orphaned.is_empty()).await;
     #[cfg(test)]
@@ -6190,7 +6225,15 @@ async fn pass(
             }
         }
     }
-    PassOutcome::Ran
+    PassRun::Ran(Some(summary))
+}
+
+pub(super) fn wallet_scanned(summary: &ShieldedSyncPassSummary, wallet: WalletId) -> bool {
+    matches!(
+        summary.wallet_results.get(&wallet.0),
+        Some(WalletShieldedOutcome::Ok(scan))
+            if !scan.is_cooldown_skip && scan.balances.contains_key(&SHIELDED_ACCOUNT)
+    )
 }
 
 /// Whether a periodic pass would find nothing (#178): Platform's proved
@@ -6292,7 +6335,7 @@ const NOTES_COUNT_BUDGET: Duration = Duration::from_secs(10);
 /// (`bringup.rs`): on an active network, the coordinator, each of
 /// `wallets` bound (where its key is at hand), and the prover's key built
 /// in the background. The library's own sync loop never runs (its passes
-/// would skip [`admit_pass`]): the supervisor runs [`guarded_pass`] every
+/// would skip [`admit_pass`]): the supervisor runs [`pass`] every
 /// interval while the loops are on, and the stop quiesces a pass in flight
 /// with the other loops.
 pub(crate) async fn start(
