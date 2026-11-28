@@ -250,8 +250,11 @@ fn same_dir(network_dir: &Path, opened: &PersisterOpened) -> bool {
 /// alone: its `journaled` marker proves an earlier drain met this, and the
 /// copy may since have been pruned.
 fn precondition(network_dir: &Path, opened: &PersisterOpened) -> Result<()> {
-    if !same_dir(network_dir, opened)
-        || !upgrade_copy_present(network_dir, SHIELDED_STORE_FILE).unwrap_or(false)
+    if !same_dir(network_dir, opened) {
+        return Err(ShieldedDrainError::Precondition);
+    }
+    if !upgrade_copy_present(network_dir, SHIELDED_STORE_FILE)
+        .map_err(|e| ShieldedDrainError::Io(format!("check upgrade copy: {e}")))?
     {
         return Err(ShieldedDrainError::Precondition);
     }

@@ -926,6 +926,16 @@ fn shielded_drain_retries_after_wallet_removal_retires_the_snapshot() {
     assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
     std::fs::write(&marker, &removal_marker).unwrap();
 
+    // Changing a parseable metadata field alters the manifest digest while
+    // keeping store files intact and must fail the UPGRADED-FROM check.
+    let complete = snapshot.dir().join("SNAPSHOT-COMPLETE");
+    let original_complete = std::fs::read_to_string(&complete).unwrap();
+    let changed_complete = original_complete.replacen("build ", "build tampered-", 1);
+    assert_ne!(changed_complete, original_complete);
+    std::fs::write(&complete, &changed_complete).unwrap();
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    std::fs::write(&complete, &original_complete).unwrap();
+
     let shielded_copy = snapshot.dir().join(SHIELDED_STORE_FILE);
     let original = std::fs::read(&shielded_copy).unwrap();
     let mut damaged = original.clone();
@@ -951,6 +961,21 @@ fn shielded_drain_retries_after_wallet_removal_retires_the_snapshot() {
     assert_eq!(
         d.journal().shielded_drained_holds(&W).unwrap(),
         vec![(0, n(1))]
+    );
+}
+
+#[test]
+fn shielded_drain_propagates_upgrade_copy_io_error() {
+    let mut d = between(BeforeSnapshot::Present, false);
+    d.open_persister();
+    drop(d.journal());
+    let backups = d.net.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);
+    std::fs::remove_dir_all(&backups).unwrap();
+    std::fs::write(&backups, b"not a directory").unwrap();
+    let err = d.drain(None).unwrap_err();
+    assert!(
+        matches!(err, ShieldedDrainError::Io(_)),
+        "expected Io error when upgrade-backups check fails, got {err:?}"
     );
 }
 
