@@ -1110,6 +1110,16 @@ fn an_answer_without_the_nonce_stays_pending() {
     w.net.then(Act::AnswersOnly);
     let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
     assert_eq!(out.state, PlatformActivityState::Pending);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_dispatch"],
+        "broadcast"
+    );
+    let activity = w.activity();
+    let row = find(&activity, PlatformActivityKind::MoveToCore);
+    assert_eq!(
+        serde_json::to_value(row).unwrap()["pending_dispatch"],
+        "broadcast"
+    );
     let grant = w.f.grant(3 * DASH);
     assert_eq!(
         w.move_all(&grant).unwrap_err().code(),
@@ -1177,7 +1187,24 @@ fn an_unconfirmed_move_is_pending_and_holds_its_inputs() {
     w.net.then(Act::Unconfirmed);
     let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
     assert_eq!(out.state, PlatformActivityState::Pending);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_dispatch"],
+        "queued"
+    );
     let moves = w.moves();
+    let mut preparing = moves[0].clone();
+    preparing.signed = false;
+    preparing.answered = false;
+    assert_eq!(
+        serde_json::to_value(preparing.activity()).unwrap()["pending_dispatch"],
+        "preparing"
+    );
+    let activity = w.activity();
+    let row = find(&activity, PlatformActivityKind::MoveToCore);
+    assert_eq!(
+        serde_json::to_value(row).unwrap()["pending_dispatch"],
+        "queued"
+    );
     assert!(moves[0].signed && moves[0].can_land && moves[0].holds());
     assert_eq!(
         w.move_all(&w.f.grant(3 * DASH)).unwrap_err().code(),
@@ -3702,7 +3729,7 @@ fn the_rise_after_an_applied_fund_is_no_incoming_row() {
     );
     let s2 = Arc::clone(&s);
     (w.f.engine)
-        .block_on(async move { record_fund(&s2, id, (at, 1_000_000), a, 999).await })
+        .block_on(async move { record_fund(&s2, id, (at, 1_000_000), a, 999, true).await })
         .unwrap();
     // The apply executes on Platform while a read runs: not compared.
     let hold = FundHold::new(&s.platform.fund_holds, id, to.clone());

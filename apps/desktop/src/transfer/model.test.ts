@@ -19,6 +19,9 @@ import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNote
 import { fakeVault } from "../tools/testApi";
 import { SHIELDED_SPENDS_COPY } from "../shielded/spends";
 import { canSwap, coreMaxNotes, defaultRoute, feeText, heldExitRest, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
+import { showToast } from "../components/toast";
+
+vi.mock("../components/toast", () => ({ showToast: vi.fn() }));
 
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
@@ -84,7 +87,7 @@ function flows() {
     resumePlatformFund: vi.fn(),
     platformMoveToCore: vi.fn(),
   };
-  return { shielded: new ShieldedFlow(api, WALLET_A), fund: new PlatformFundFlow(api, WALLET_A), move: new PlatformMoveFlow(api, WALLET_A) };
+  return { api, shielded: new ShieldedFlow(api, WALLET_A), fund: new PlatformFundFlow(api, WALLET_A), move: new PlatformMoveFlow(api, WALLET_A) };
 }
 
 function model() {
@@ -94,9 +97,75 @@ function model() {
 }
 
 afterEach(() => {
+  vi.clearAllMocks();
   resetShielded();
   resetPlatformFunds();
   resetPlatformMoves();
+});
+
+describe("pending transfers", () => {
+  it.each([
+    ["broadcast", "Sent"],
+    ["queued", "Sending…"],
+    ["preparing", "Sending…"],
+  ])("closes a %s Shielded withdrawal and shows %s", async (pendingDispatch, label) => {
+    const { t, shielded, api } = model();
+    api.unshieldToCore.mockResolvedValue({ state: "pending", pendingDispatch, credits: "1000", balance: "2000", to: "fixture", unresolved: null });
+    t.start("shieldedToCore");
+    shielded.next({ kind: "out", credits: "1000" });
+
+    await shielded.run({ maxDuffs: 0, maxCredits: "1000" });
+
+    expect(api.unshieldToCore).toHaveBeenCalledOnce();
+    expect(t.shown).toBe(false);
+    expect(showToast).toHaveBeenCalledExactlyOnceWith(label);
+  });
+
+  it("closes a broadcast Platform move while keeping its restart hold", async () => {
+    const { t, move, api } = model();
+    api.platformMoveToCore.mockResolvedValue({ id: "move", credits: "1000", state: "pending", pendingDispatch: "broadcast", expectedDuffs: 1, to: "fixture", feeCredits: null });
+    t.start("platformToCore");
+    t.review();
+
+    await move.move({ grant: { maxDuffs: 0, maxCredits: "1000" }, to: "fixture", exitOf: null, credits: "1000", feeCredits: "0" });
+
+    expect(t.shown).toBe(false);
+    expect(showToast).toHaveBeenCalledExactlyOnceWith("Sent");
+    t.start("platformToCore");
+    expect(t.begunRoute).toBeNull();
+    expect(routeWhy("platformToCore", POOLS, t.flows)).toBe(POOLS.platform!.waitingText);
+    expect(api.platformMoveToCore).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["shielded.spend_refused", true],
+    ["shielded.unrecorded_spend", false],
+    ["platform.unavailable", false],
+    ["platform.broadcast_unknown", false],
+  ] as const)("keeps a %s refusal open and only toasts a known failure", async (code, toast) => {
+    const { t, shielded, api } = model();
+    api.unshieldToCore.mockRejectedValue(appError(code));
+    t.start("shieldedToCore");
+    shielded.next({ kind: "out", credits: "1000" });
+
+    await shielded.run({ maxDuffs: 0, maxCredits: "1000" });
+
+    expect(t.shown).toBe(true);
+    expect(shielded.step).toBe("refused");
+    if (toast) expect(showToast).toHaveBeenCalledExactlyOnceWith("Transfer failed");
+    else expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refused resume available without reporting a failed transfer", async () => {
+    const { shielded, api } = model();
+    api.resumeShield.mockRejectedValue(appError("platform.unavailable"));
+
+    await shielded.resume("lock1");
+
+    expect(shielded.open).toBe(true);
+    expect(shielded.step).toBe("refused");
+    expect(showToast).not.toHaveBeenCalled();
+  });
 });
 
 describe("routes", () => {

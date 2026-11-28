@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::credits::{FundAmount, WithdrawAmount};
 use super::dashpay::DashPay;
 use super::errors::{CreditsError, PlatformError};
-use super::flows::GrantRequest;
+use super::flows::{GrantRequest, PendingDispatch};
 use super::platform_fund;
 use super::platform_moves;
 use super::shielded_pool;
@@ -131,6 +131,9 @@ pub struct PlatformActivity {
     pub id: String,
     pub kind: PlatformActivityKind,
     pub state: PlatformActivityState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_dispatch: Option<PendingDispatch>,
     /// The credits the change or the move took or added.
     pub credits: u64,
     /// The Platform address an `Incoming` or `Outgoing` row changed;
@@ -218,6 +221,9 @@ pub struct MoveToCoreOutcome {
     /// `Pending` until then (the library's answer is no such proof);
     /// `Replaced` when another move of the group carries the outcome.
     pub state: PlatformActivityState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_dispatch: Option<PendingDispatch>,
     /// Done: the fee taken, as [`PlatformActivity::fee_credits`].
     pub fee_credits: Option<u64>,
     /// As [`PlatformActivity::unattributed`].
@@ -435,6 +441,9 @@ pub struct PlatformFundOutcome {
     /// The asset lock's txid (hex, display order).
     pub txid: String,
     pub state: PlatformFundState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_dispatch: Option<PendingDispatch>,
 }
 
 /// An "Add from Dash wallet" asset lock of this install not applied yet.

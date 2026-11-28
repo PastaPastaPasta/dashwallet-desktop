@@ -115,6 +115,7 @@ function Outcome({ flow, fmt, pending }: { flow: PlatformFundFlow; fmt: Formats;
   const o = flow.outcome;
   if (!o) return null;
   const s = o.state;
+  if (s.kind === "proofWaiting") return null;
   const r = flow.request;
   // A Max's lock is what the drain credited, known from its pending row; an amount's is the amount.
   const duffs = r?.kind === "add" && !r.all ? r.duffs : pending?.find((p) => p.txid === o.txid)?.duffs;
@@ -122,11 +123,9 @@ function Outcome({ flow, fmt, pending }: { flow: PlatformFundFlow; fmt: Formats;
   const { title, text } =
     s.kind === "applied"
       ? { title: C.done.applied.title, text: C.done.applied.text(fmt.credits(s.credits)) }
-      : s.kind === "proofWaiting"
-        ? C.done.waiting
-        : s.kind === "consumptionUnknown"
-          ? C.done.checking
-          : { title: C.done.notApplied.title, text: ended ?? C.done.notApplied.text(s.error) };
+      : s.kind === "consumptionUnknown"
+        ? C.done.checking
+        : { title: C.done.notApplied.title, text: ended ?? C.done.notApplied.text(s.error) };
   return (
     <div role="status">
       <p className="topup-title" data-testid="platform-fund-outcome-title">

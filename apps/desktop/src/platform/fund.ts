@@ -17,6 +17,7 @@ import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
+import { toastPendingTransfer } from "../transfer/dispatch";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 import { moveErrorText, onMoveSettledNotify } from "./move";
 import { platformHoldText } from "../api/platformHold";
@@ -125,14 +126,6 @@ export const FUND_COPY = {
         return t("transfer.fund.done.applied.title");
       },
       text: (amount: string) => t("transfer.fund.done.applied.text", { amount }),
-    },
-    waiting: {
-      get title() {
-        return t("transfer.fund.done.waiting.title");
-      },
-      get text() {
-        return t("transfer.fund.done.waiting.text");
-      },
     },
     checking: {
       get title() {
@@ -397,7 +390,9 @@ export class PlatformFundFlow extends Model {
       this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) onMoveSettledNotify();
-      this.changed();
+      if (this.step === "done" && this.outcome?.state.kind === "proofWaiting") {
+        toastPendingTransfer(this.outcome.pendingDispatch, () => this.close());
+      } else this.changed();
     }
   }
 }

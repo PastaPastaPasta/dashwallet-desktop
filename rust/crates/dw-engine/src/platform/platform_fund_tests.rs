@@ -904,6 +904,10 @@ fn a_lock_waiting_for_its_proof_pends_and_blocks_the_next_fund() {
     *lib.funding.lock().unwrap() = Script::Unproved;
     let out = fund_of(&fx, &lib).unwrap();
     assert_eq!(out.state, PlatformFundState::ProofWaiting);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_dispatch"],
+        "broadcast"
+    );
     assert_eq!(pending_of(&fx, &lib), [(out.txid.clone(), false, false)]);
     assert_eq!(
         quote_of(&fx, &lib, 1_000_000).unwrap_err(),

@@ -224,6 +224,22 @@ pub enum DispatchState {
     NotSent,
 }
 
+/// Broadcast evidence for a transfer that has not settled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingDispatch {
+    Broadcast,
+    #[default]
+    Queued,
+    Preparing,
+}
+
+impl PendingDispatch {
+    pub(crate) fn from_broadcast_evidence(sent: bool) -> Self {
+        if sent { Self::Broadcast } else { Self::Queued }
+    }
+}
+
 /// The payload of the event sent when a provisional outcome settles, from
 /// any of E0-04 §4.6's sources: a Resend accepted or the transaction seen,
 /// a reload that cleans up an `Unsent` row, a row-less artifact settled

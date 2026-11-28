@@ -372,6 +372,11 @@ pub(crate) async fn fund_evidence(
             .collect(),
         reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Used).await,
         tracked: rows.iter().map(|l| l.info.outpoint).collect(),
+        sent: rows
+            .iter()
+            .filter(|l| l.info.status.has_proof())
+            .map(|l| l.info.outpoint)
+            .collect(),
         caught_up: super::registration_flow::wallet_synced(session, wallet),
     }
 }

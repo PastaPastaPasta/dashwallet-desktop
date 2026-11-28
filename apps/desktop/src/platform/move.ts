@@ -17,6 +17,7 @@ import { contactName, shortAddress } from "../format/tx";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { toastPendingTransfer } from "../transfer/dispatch";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 import { platformHoldText } from "../api/platformHold";
 
@@ -86,12 +87,13 @@ export const MOVE_COPY = {
       return t("transfer.status.settledUnknown.text");
     },
   },
-  pending: {
+  checkingOutcome: {
     get title() {
-      return t("transfer.move.pending.title");
+      return t("transfer.move.checkingOutcome.title");
     },
-    text: (amount: string) => t("transfer.move.pending.text", { amount }),
-    debitOnly: (taken: string) => t("transfer.move.pending.debitOnly", { taken }),
+    get text() {
+      return t("transfer.move.checkingOutcome.text");
+    },
   },
   /** A move that cannot execute: the top-up it exits, or an earlier exit, took its credits. */
   failed: {
@@ -261,7 +263,7 @@ export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, cre
   const exited = outcome.state === "done" && exit !== null ? exitOutcomeText(exit, false) : null;
   if (exited !== null) return { title: C.done.title, text: exited };
   if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
-  return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
+  return C.checkingOutcome;
 }
 
 /** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
@@ -519,7 +521,9 @@ export class PlatformMoveFlow extends Model {
       this.running = false;
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) onMoveSettledNotify();
-      this.changed();
+      if (this.pending) {
+        toastPendingTransfer(this.outcome?.pendingDispatch, () => this.close());
+      } else this.changed();
     }
   }
 }

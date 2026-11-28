@@ -282,7 +282,8 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "transfer-shield-waiting",
     go: async (page) => {
       await run(page, "coreToShielded");
-      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Locked, not applied yet");
+      await expect(page.locator(".toast")).toHaveText("Sending…");
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     },
   },
 
@@ -382,7 +383,8 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "transfer-fund-waiting",
     go: async (page) => {
       await run(page, "coreToPlatform");
-      await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Locked, not applied yet");
+      await expect(page.locator(".toast")).toHaveText("Sending…");
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     },
   },
 
@@ -449,6 +451,7 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await run(page, "shieldedToCore");
       await expect(page.getByTestId("shielded-refusal")).toBeVisible();
+      await expect(page.getByTestId("toast")).toHaveText("Transfer failed");
     },
   },
   {
@@ -457,7 +460,8 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await page.evaluate(() => void (window.__dwFixture!.world.pending.shielded!.next = "unknown"));
       await run(page, "shieldedToCore");
-      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
+      await expect(page.locator(".toast")).toHaveText("Sending…");
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     },
   },
 
@@ -549,9 +553,8 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await page.evaluate(() => void (window.__dwFixture!.world.pending.shielded!.next = "unknown"));
       await run(page, "shieldedToPlatform");
-      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
-      // No retry: the outcome's only action is Close.
-      await expect(page.getByTestId("shielded-body").getByRole("button")).toHaveText(["Close"]);
+      await expect(page.locator(".toast")).toHaveText("Sending…");
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     },
   },
   {
@@ -670,7 +673,8 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "transfer-move-pending",
     go: async (page) => {
       await run(page, "platformToCore");
-      await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+      await expect(page.locator(".toast")).toHaveText("Sending…");
+      await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     },
   },
 

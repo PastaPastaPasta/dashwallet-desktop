@@ -25,7 +25,7 @@ function show(toast: Omit<Toast, "id">, seconds: number) {
   const id = ++seq;
   current = { id, ...toast };
   listeners.forEach((l) => l());
-  window.setTimeout(() => {
+  globalThis.setTimeout(() => {
     if (current?.id === id) {
       current = null;
       listeners.forEach((l) => l());
@@ -75,7 +75,7 @@ export function ToastHost() {
   return (
     <div className="toast-host" role="status" aria-live="polite">
       {toast && (
-        <div className="toast" key={toast.id}>
+        <div className="toast" data-testid="toast" key={toast.id}>
           {discreet && toast.discreetText !== undefined ? toast.discreetText : toast.text}
         </div>
       )}

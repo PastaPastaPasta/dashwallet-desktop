@@ -24,6 +24,31 @@ test.describe("Transfer states", () => {
   }
 });
 
+for (const theme of ["light", "dark"] as const) {
+  test(`a broadcast move shows Sent and still blocks a repeat in ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.evaluate(() => { window.__dwFixture!.world.pending.platform!.nextMove = "broadcast"; });
+    await openTransfer(page, "platformToCore");
+    await page.getByTestId("transfer-continue").click();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    await expect(page.locator(".toast")).toHaveText("Sent");
+    await page.getByTestId("sidebar-activity").click();
+    const row = page.locator('[data-txid^="platform:moveToCore:"]').first();
+    await expect(row.locator(".tx-row-title")).toHaveText("Sent");
+    await expect(row).toContainText("Pending");
+
+    await page.getByTestId("sidebar-home").click();
+    await openTransfer(page, "platformToCore");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveText("This transfer is already in progress.");
+    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+    expect(await callsOf(page, "platform_move_to_core")).toBe(1);
+  });
+}
+
 /** Through the route's confirmation to its passphrase sheet; the grant asked for, once answered. */
 async function grantOf(page: Page, go: string) {
   await page.getByTestId("transfer-continue").click();

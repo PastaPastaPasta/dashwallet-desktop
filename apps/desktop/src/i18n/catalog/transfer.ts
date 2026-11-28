@@ -64,6 +64,9 @@ export const transfer = {
   },
   /** An Activity row whose group settled with no evidence of which payment or move went through. */
   status: {
+    sent: "Sent",
+    sending: "Sending…",
+    failed: "Transfer failed",
     settledUnknown: {
       title: "Settled with another payment or move",
       text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
@@ -121,11 +124,7 @@ export const transfer = {
       /** `debitOnly` when nothing says which member of its group went through. */
       debitUnknown: "{taken} left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     },
-    pending: {
-      title: "Not confirmed yet",
-      text: "Dash Platform has not said whether the move of about {amount} went through. Activity shows it when it does. Do not move again until it does.",
-      debitOnly: "Dash Platform has not said whether the move of {taken} went through. Activity shows it when it does. Do not move again until it does.",
-    },
+    checkingOutcome: { title: "Checking…", text: "Checking Activity for the result." },
     replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
     /** The move is the way out of a payment from Platform that may still go through: only one of the two goes through. */
     exitSend: {
@@ -160,7 +159,7 @@ export const transfer = {
     failed: { title: "The move did not go through", text: "Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again." },
     unseen: "Your move has an update.",
     waiting: {
-      text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",
+      text: "This transfer is already in progress.",
       held: "An earlier payment or move from Platform may still go through. Wait for it to finish, then move again.",
       sendHeld: "A payment from Platform may still go through. Moving waits until it settles.",
       heldSend: "An earlier payment from your Platform balance may still go through. Wait for it to finish, or open it in Activity and move the same funds to your Dash wallet instead. If the move goes through, that payment isn't made.",
@@ -368,7 +367,6 @@ export const transfer = {
       /** `why` is the engine's error code. */
       notApplied: { title: "Locked, not applied", text: "Your Dash is locked but Dash Platform did not add it yet ({why}). Finish it from Unfinished transfers on Home: nothing is lost." },
       send: { title: "Sent", text: "{amount} was sent privately." },
-      unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
       out: { title: "Moved", text: "About {amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined." },
       toPlatform: { text: "Moved to your Platform address {addr}." },
     },
@@ -410,6 +408,7 @@ export const transfer = {
     },
     error: {
       poolTooSmall: "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",
+      spendRefused: "The Shielded payment was refused.",
       invalidAddress: "Enter a Shielded address of this network.",
       insufficient: "Not enough in Shielded: {needed} needed with the fee, {available} available.",
       insufficientShort: "Not enough in Shielded.",

@@ -3,7 +3,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
-import { filterExtra, findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, SourceRowText, sourceRowTitle } from "./sourceRows";
+import { activityRowTitle, filterExtra, findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, SourceRowText, sourceRowTitle } from "./sourceRows";
 import { creditsToDuffs } from "../api/pending";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
@@ -52,6 +52,28 @@ const core = (txid: string, timestamp: number, amount = 5): TxRow => ({
 });
 
 const ids = (rows: TxRow[]) => rows.map((r) => r.txid);
+
+describe("pending transfer labels", () => {
+  it.each([
+    ["broadcast", "Sent"],
+    ["queued", "Sending…"],
+    ["preparing", "Sending…"],
+  ] as const)("labels a %s move %s and keeps its pending marker", (pendingDispatch, label) => {
+    const platform = { ...act("p", { kind: "moveToCore", state: "pending" }), pendingDispatch };
+    const shielded = { ...shield("s", { kind: "withdrawal", status: "pending", direction: "selfTransfer" }), pendingDispatch };
+    for (const row of [platformRow(platform), shieldedRow(shielded)]) {
+      expect(activityRowTitle(row)).toBe(label);
+      expect(row.status.kind).toBe("unconfirmed");
+    }
+  });
+
+  it("uses the failed row after a pending withdrawal is released", () => {
+    const failed = { ...shield("s", { kind: "withdrawal", status: "failed", direction: "selfTransfer", refusal: "released" }), pendingDispatch: "broadcast" as const };
+    const row = shieldedRow(failed);
+    expect(activityRowTitle(row)).toBe(SourceRowText.moveToCore);
+    expect(row.status.kind).toBe("notAccepted");
+  });
+});
 
 describe("platform activity rows", () => {
   it("shows an add from the Dash wallet as a receipt on Platform", () => {

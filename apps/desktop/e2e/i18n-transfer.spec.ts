@@ -71,11 +71,14 @@ async function maxBelow(page: Page, route: "coreToShielded" | "coreToPlatform", 
 }
 
 /** Confirm, the passphrase, and the route's result. */
-async function run(page: Page, route: TransferRoute) {
+async function run(page: Page, route: TransferRoute, toast = false) {
   await confirm(page, route);
   await page.getByTestId(GO[route]).click();
   await authorize(page);
-  await expect(page.getByTestId(BODY[route])).toHaveAttribute("data-step", /^(done|refused)$/);
+  if (toast) {
+    await expect(page.getByTestId("toast")).toBeVisible();
+    await page.mouse.move(0, 0);
+  } else await expect(page.getByTestId(BODY[route])).toHaveAttribute("data-step", /^(done|refused)$/);
 }
 
 interface State {
@@ -188,7 +191,11 @@ const STATES: Record<string, State> = {
   "shielded-max-none": { scenario: "transfer-max-none", routeHeader: true, go: async (page) => { await openTransfer(page, "coreToShielded"); await expect(page.getByTestId("transfer-max")).toBeDisabled(); } },
   "shielded-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-refused": { scenario: "transfer-shielded-refused", routeHeader: true, go: (page) => run(page, "coreToShielded") },
-  "shielded-waiting": { scenario: "transfer-shield-waiting", routeHeader: true, go: (page) => run(page, "coreToShielded") },
+  "shielded-waiting": {
+    scenario: "transfer-shield-waiting",
+    roots: ["toast"],
+    go: (page) => run(page, "coreToShielded", true),
+  },
   "out-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToCore") },
   "out-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToCore") },
   "toPlatform-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToPlatform") },
@@ -232,7 +239,7 @@ const STATES: Record<string, State> = {
   "move-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "platformToCore") },
   "move-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "platformToCore") },
   "move-refused": { scenario: "transfer-move-refused", routeHeader: true, go: (page) => run(page, "platformToCore") },
-  "move-pending": { scenario: "transfer-move-pending", routeHeader: true, go: (page) => run(page, "platformToCore") },
+  "move-pending": { scenario: "transfer-move-pending", roots: ["toast"], go: (page) => run(page, "platformToCore", true) },
   "running-line": {
     scenario: "funded",
     go: async (page) => {

@@ -19,20 +19,21 @@ import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShows
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { filterExtra, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
-import { contactName, DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
+import { activityRowTitle, filterExtra, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, type ActivityRow } from "../history/sourceRows";
+import { contactName, DATE_CHOICES, dateRange, isProblem, TxTitle, type DateChoice } from "../format/tx";
+import { pendingDispatchLabel } from "../transfer/dispatch";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
 
 /** A Platform or Shielded row among the Core ones: titled and tagged; it opens its own details. */
-const decorateSource = (row: TxRow): RowDecor => {
+const decorateSource = (row: ActivityRow): RowDecor => {
   const source = rowSource(row);
   if (!source) return {};
   const replaced = isReplacedRow(row);
   const party = contactName(row.counterparty);
   return {
-    title: sourceRowTitle(row),
+    title: activityRowTitle(row),
     ...(party ? { party } : {}),
     tag: SOURCE_TAG[source],
     ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isSettledUnknownRow(row) ? (row.amount === 0 ? { hideAmount: true } : {}) : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
@@ -96,6 +97,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
   const shieldedStatus = useShieldedStatus(walletId);
+  const pendingShields = useMemo(() => new Map(shieldedStatus.data?.pendingShields.map((lock) => [lock.txid, lock.pendingDispatch ?? "queued"])), [shieldedStatus.data?.pendingShields]);
+  const decorate = (row: TxRow): RowDecor => {
+    const dispatch = pendingShields.get(row.txid);
+    if (row.txType === "assetLock" && dispatch !== undefined && !isProblem(row.status)) {
+      return { title: pendingDispatchLabel(dispatch), note: TxTitle.chipPending };
+    }
+    return decorateSource(row);
+  };
   const extra = useMemo(() => {
     const held = heldActivities(shieldedStatus.isError ? undefined : shieldedStatus.data);
     return [...(platform.data ?? []).map((a, _, all) => platformRow(a, all)), ...(shielded.data ?? []).map((a) => shieldedRow(a, held))];
@@ -299,7 +308,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
           <LoadingState testId="tx-loading" text="Loading transactions" />
         ) : historyList.kind === "rows" && mode === "list" ? (
           <div data-testid="tx-list">
-            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorateSource} />
+            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorate} />
           </div>
         ) : historyList.kind === "rows" ? (
           <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />

@@ -91,7 +91,7 @@ describe("the move out of a held send", () => {
   });
 
   it("says nothing of the payment while neither is known", () => {
-    expect(moveOutcomeCopy({ ...outcome, state: "pending" }, false, credits, amount, moveExit([contactSend], "ps-1")).title).toBe(MOVE_COPY.pending.title);
+    expect(moveOutcomeCopy({ ...outcome, state: "pending" }, false, credits, amount, moveExit([contactSend], "ps-1")).title).toBe(MOVE_COPY.checkingOutcome.title);
   });
 
   it("does not name the payment after an exit failed unless Activity confirms it", () => {

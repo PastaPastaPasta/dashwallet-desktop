@@ -2516,6 +2516,10 @@ fn resume_refuses_an_unknown_lock_and_waits_for_a_proof() {
     });
     assert_eq!(unknown, "invalid_argument");
     assert_eq!(waiting.state, super::shielded::ShieldState::ProofWaiting);
+    assert_eq!(
+        serde_json::to_value(&waiting).unwrap()["pending_dispatch"],
+        "queued"
+    );
     assert!(fx.unused(&grant));
 }
 

@@ -13,9 +13,25 @@ export function DetailRow({ label, children, testId }: { label: string; children
   );
 }
 
+export function middleTruncate(value: string): string {
+  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-7)}` : value;
+}
+
 export function Identifier({ value, mono = false }: { value: string; mono?: boolean }) {
-  const shown = value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-7)}` : value;
-  return <bdi className={mono ? "identifier mono" : "identifier"} title={value}>{shown}</bdi>;
+  const shown = middleTruncate(value);
+  if (shown === value) {
+    return (
+      <bdi className={mono ? "identifier mono" : "identifier"} title={value}>
+        {value}
+      </bdi>
+    );
+  }
+  return (
+    <bdi className={mono ? "identifier mono" : "identifier"} title={value}>
+      <span aria-hidden="true">{shown}</span>
+      <span className="sr-only">{value}</span>
+    </bdi>
+  );
 }
 
 /** `value` with a copy button; `display` is shown in its place when given (a shortened id). The

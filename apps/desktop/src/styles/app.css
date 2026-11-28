@@ -1499,6 +1499,12 @@ input[type="radio"]:disabled {
   background: var(--dw-role-accent-tint);
 }
 
+/* Keep info chips on the card's opaque backing so row hover or fade transitions never double the tint. */
+.tx-row .chip-info {
+  background-color: var(--dw-role-accent-tint);
+  background-image: linear-gradient(var(--dw-role-accent-tint), var(--dw-role-accent-tint)), linear-gradient(var(--dw-role-card), var(--dw-role-card));
+}
+
 .tx-row-icon {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);

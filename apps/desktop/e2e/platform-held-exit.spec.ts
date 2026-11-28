@@ -92,7 +92,7 @@ test.describe("A held payment from Platform: Move to Dash wallet", () => {
       await expect(page.getByTestId("platform-move-outcome-title")).toBeVisible();
       await fontsReady(page);
       await page.screenshot({ path: artifactPath(info, `exit-result-checking-${theme}.png`) });
-      await expect.soft(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet", { timeout: 1500 });
+      await expect.soft(page.getByTestId("platform-move-outcome-title")).toHaveText("Checking…", { timeout: 1500 });
       await expect.soft(page.getByTestId("platform-move-outcome-text")).not.toContainText("was paid", { timeout: 1500 });
       await page.evaluate((rows) => {
         const f = window.__dwFixture!;
@@ -196,7 +196,7 @@ test.describe("A held move or contact payment from Platform: Cancel", () => {
     await page.getByTestId("source-detail-cancel").click();
     await expect(page.getByTestId("platform-cancel-confirm")).toContainText("Cancel this payment?");
     await expect(page.getByTestId("platform-cancel-body")).toContainText("this payment of 0.04000000 tDASH to Bob Builder will go through");
-    await expect(page.getByTestId("source-detail-to")).toContainText("yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
+    await expect(page.getByTestId("source-detail-to").locator("bdi[title]")).toHaveAttribute("title", "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
     await page.getByTestId("platform-cancel-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-cancel-outcome")).toContainText("Payment cancelled. Bob Builder wasn't paid, and the amount is in your Platform balance, minus the fee.");

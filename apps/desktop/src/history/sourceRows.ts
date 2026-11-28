@@ -6,13 +6,16 @@
 // transaction), and CSV export stays the Core history.
 
 import type { TxRow } from "../api/generated/TxRow";
+import type { PendingDispatch } from "../api/generated/PendingDispatch";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { creditsToDuffs } from "../api/pending";
 import { t } from "../i18n";
+import { pendingDispatchLabel } from "../transfer/dispatch";
 
 export type RowSource = "platform" | "shielded";
+export type ActivityRow = TxRow & { pendingDispatch?: PendingDispatch };
 
 export const SOURCE_TAG: Record<RowSource, string> = { platform: "Platform", shielded: "Shielded" };
 
@@ -113,7 +116,7 @@ function rowKind(a: PlatformActivity, all: readonly PlatformActivity[] | null | 
  * problem row, unless it may still execute (`mayLand`): that one is unconfirmed, with its amount. A
  * cancel is a send to the wallet's own address: its amount out, what arrives an incoming row. `all`:
  * the activity the row is in, which names what a cancel cancels. */
-export function platformRow(a: PlatformActivity, all?: readonly PlatformActivity[] | null): TxRow {
+export function platformRow(a: PlatformActivity, all?: readonly PlatformActivity[] | null): ActivityRow {
   const move = a.kind === "moveToCore";
   const unknown = a.winnerKnown === false;
   const replaced = a.state === "replaced" && !unknown;
@@ -130,6 +133,7 @@ export function platformRow(a: PlatformActivity, all?: readonly PlatformActivity
     txType: move ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : received ? "received" : "sent",
     address: move || a.kind === "send" || a.kind === "contactPayment" ? a.to : a.address,
+    ...(a.state === "pending" && !unknown && (move || a.kind === "fromCore" || a.kind === "fromShielded") ? { pendingDispatch: a.pendingDispatch ?? "queued" } : {}),
     ...(a.contact ? { counterparty: a.contact } : {}),
   };
 }
@@ -140,7 +144,7 @@ export function platformRow(a: PlatformActivity, all?: readonly PlatformActivity
  * spend the engine holds open (`refusal: held`: refused, or its outcome not known yet), or with no refusal whose
  * notes are held (`held`, the status's `heldSpends`), may still go through: unconfirmed, with its
  * amount, never "Not accepted". A released refusal reads as released whatever `held` says. */
-export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): TxRow {
+export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): ActivityRow {
   const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "withdrawal" || a.direction === "selfTransfer";
   const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
@@ -156,6 +160,7 @@ export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): Tx
     category: internal ? "platform" : received ? "received" : "sent",
     address: a.counterparty,
     label: a.memo,
+    ...(a.status === "pending" && !mayLand && (internal || a.kind === "sent" || a.kind === "unshield") ? { pendingDispatch: a.pendingDispatch ?? "queued" } : {}),
   };
 }
 
@@ -185,6 +190,10 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
     return record ? { source, row: shieldedRow(record, held), record } : null;
   }
   return null;
+}
+
+export function activityRowTitle(row: ActivityRow): string {
+  return row.pendingDispatch ? pendingDispatchLabel(row.pendingDispatch) : sourceRowTitle(row);
 }
 
 export function sourceRowTitle(row: TxRow): string {

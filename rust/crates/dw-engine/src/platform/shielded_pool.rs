@@ -1957,6 +1957,9 @@ async fn pending_shields(lib: &impl ShieldedLib) -> Result<Vec<PendingShield>, S
             txid: o.lock.outpoint.txid.to_string(),
             duffs: o.lock.amount,
             proved: o.lock.status.has_proof(),
+            pending_dispatch: super::flows::PendingDispatch::from_broadcast_evidence(
+                o.lock.status.has_proof(),
+            ),
             consumption_unknown: o.consumption_unknown,
         })
         .collect();
@@ -2321,10 +2324,18 @@ pub(super) async fn finish_lock(
         return Ok(ShieldOutcome {
             txid,
             state: ShieldState::ProofWaiting,
+            pending_dispatch: Some(super::flows::PendingDispatch::from_broadcast_evidence(
+                funded.as_ref().is_ok_and(|at| *at == lock.outpoint),
+            )),
         });
     }
     let state = apply(session, wallet, lib, lease, signer, lock.outpoint).await;
-    Ok(ShieldOutcome { txid, state })
+    Ok(ShieldOutcome {
+        txid,
+        pending_dispatch: matches!(state, ShieldState::ProofWaiting)
+            .then_some(super::flows::PendingDispatch::Broadcast),
+        state,
+    })
 }
 
 /// Applies the proved lock at `outpoint` under a call permit of `lease`.
@@ -2444,6 +2455,9 @@ pub(crate) async fn resume(
         .ok_or_else(|| invalid("no pending shield has that txid"))?;
     let outcome = |state| ShieldOutcome {
         txid: txid.to_string(),
+        pending_dispatch: matches!(state, ShieldState::ProofWaiting).then(|| {
+            super::flows::PendingDispatch::from_broadcast_evidence(pending.status.has_proof())
+        }),
         state,
     };
     if !pending.status.has_proof()

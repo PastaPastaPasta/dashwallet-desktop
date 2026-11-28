@@ -24,8 +24,8 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
-    await page.getByTestId("platform-move-done").click();
+    await expect(page.locator(".toast")).toHaveText("Sending…");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await page.evaluate(() => window.__dwFixture!.relaunch());
     await page.getByTestId("lock-field").waitFor();
     await page.getByTestId("lock-field").fill("demo");
@@ -39,7 +39,7 @@ test.describe("item 2: Move waits for Activity's check", () => {
     expect(await page.getByTestId("transfer-unavailable").textContent()).toContain("Checking for an unfinished move");
     await page.getByTestId("transfer-cancel").click();
     await page.evaluate(`window.__dwFixture.release("platform_activity")`);
-    expect(await platformMoveWhy(page)).toContain("Do not move again");
+    expect(await platformMoveWhy(page)).toContain("This transfer is already in progress.");
     await expect(page.getByTestId("platform-card")).toHaveCount(0);
   });
 
@@ -70,7 +70,7 @@ test.describe("item 2: Move waits for Activity's check", () => {
       p.activity = [{ id: "pm-9", kind: "moveToCore", state: "pending", credits: "40000000000", address: null, to: "y", expectedDuffs: null, feeCredits: null, at: 1, mayLand: true, estimated: false }, ...p.activity];
     });
     await refreshPlatform(page);
-    await expect(page.getByTestId("platform-move-blocked")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-move-blocked")).toContainText("This transfer is already in progress.");
     await expect(page.getByTestId("platform-move-go")).toHaveCount(0);
     await page.getByTestId("platform-move-blocked-view").click();
     await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);

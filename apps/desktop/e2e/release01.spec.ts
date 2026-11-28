@@ -804,13 +804,10 @@ test.describe("Move to Dash wallet", () => {
     await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
-    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("Do not move again");
-    // Dismissed, it stays in Transfer: the warning, and "View in Activity" in place of "Move". Home has no card.
-    await page.getByTestId("platform-move-done").click();
+    await expect(page.locator(".toast")).toHaveText("Sending…");
     await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await expect(page.getByTestId("platform-card")).toHaveCount(0);
-    expect(await platformMoveWhy(page)).toContain("Do not move again");
+    expect(await platformMoveWhy(page)).toContain("This transfer is already in progress.");
     await shot(page, "light-platform-move-pending-card");
     // After a restart the card follows Activity's record.
     await page.evaluate(() => window.__dwFixture!.relaunch());
@@ -818,7 +815,7 @@ test.describe("Move to Dash wallet", () => {
     await page.keyboard.press("Enter");
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("platform-card")).toHaveCount(0);
-    expect(await platformMoveWhy(page)).toContain("Do not move again");
+    expect(await platformMoveWhy(page)).toContain("This transfer is already in progress.");
     await openTransfer(page, "platformToCore");
     await page.getByTestId("platform-move-view").click();
     await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
@@ -844,8 +841,9 @@ test.describe("Move to Dash wallet", () => {
     await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
-    // Settled while the sheet is still open: it takes Activity's answer.
+    await expect(page.locator(".toast")).toHaveText("Sending…");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    // Activity settles the move after the sheet closes.
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const p = f.world.pending.platform!;
@@ -853,8 +851,6 @@ test.describe("Move to Dash wallet", () => {
       p.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
-    await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
     await expectFundOpens(page);
@@ -975,8 +971,8 @@ test.describe("Shielded", () => {
     await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
-    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Locked, not applied yet");
-    await page.getByTestId("shielded-done").click();
+    await expect(page.locator(".toast")).toHaveText("Sending…");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await expect(page.getByTestId("shielded-unfinished")).toContainText("not applied yet");
     await page.getByTestId("shielded-finish").click();
     await authorize(page);
@@ -1107,16 +1103,15 @@ test.describe("Shielded", () => {
     await page.getByTestId("transfer-continue").click();
     await page.getByTestId("shielded-go").click();
     await authorize(page);
-    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
-    await expect(page.getByTestId("shielded-outcome-text")).toContainText("Do not send it again");
-    await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
-    await page.getByTestId("shielded-done").click();
+    await expect(page.locator(".toast")).toHaveText("Sending…");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     // Home has no card for it while the engine lists the spend: Activity shows it pending.
     await expect(page.getByTestId("hero")).toBeVisible();
     await expect(page.getByTestId("shielded-unresolved")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await page.getByTestId("sidebar-activity").click();
     const row = page.locator('[data-txid^="shielded:withdrawal:"]').first();
+    await expect(row).toContainText("Sending…");
     await expect(row).toContainText("Pending");
     await expect(row).not.toContainText("Not accepted");
     await row.click();

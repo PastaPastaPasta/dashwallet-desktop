@@ -610,12 +610,14 @@ pub(crate) async fn fund(
     };
     let (outpoint, duffs) = (lock.info.outpoint, lock.info.amount);
     let txid = outpoint.txid.to_string();
+    let sent = lock.info.status.has_proof() || funded.as_ref().is_ok_and(|at| *at == outpoint);
     if let Err(e) = platform_moves::record_fund(
         session,
         wallet,
         (outpoint, duffs),
         plan.to.clone(),
         credits_of(duffs, plan.fee_credits),
+        sent,
     )
     .await
     {
@@ -626,6 +628,7 @@ pub(crate) async fn fund(
         return Ok(PlatformFundOutcome {
             txid,
             state: PlatformFundState::ProofWaiting,
+            pending_dispatch: Some(super::flows::PendingDispatch::from_broadcast_evidence(sent)),
         });
     }
     // The runner takes the fund lock itself; a fund in between finds this
@@ -635,7 +638,12 @@ pub(crate) async fn fund(
         Ok(held)
     })
     .await?;
-    Ok(PlatformFundOutcome { txid, state })
+    Ok(PlatformFundOutcome {
+        txid,
+        pending_dispatch: matches!(state, PlatformFundState::ProofWaiting)
+            .then_some(super::flows::PendingDispatch::Broadcast),
+        state,
+    })
 }
 
 /// Applies the pending fund lock `txid` again ("Pending — finish", "Check
@@ -664,20 +672,25 @@ pub(crate) async fn resume(
             detail: "no pending fund has that txid".into(),
         })?;
     let outpoint = OutPoint::new(txid, pending.vout);
-    let outcome = |state| PlatformFundOutcome {
-        txid: txid.to_string(),
-        state,
-    };
     if pending.state == UnfinishedState::Confirming
         && !session
             .proved_unless_closed(lib.wait_proof(outpoint, RESUME_PROOF_WAIT))
             .await
     {
-        return Ok(outcome(PlatformFundState::ProofWaiting));
+        return Ok(PlatformFundOutcome {
+            txid: txid.to_string(),
+            state: PlatformFundState::ProofWaiting,
+            pending_dispatch: Some(super::flows::PendingDispatch::Queued),
+        });
     }
     let lease_of = || authority(session, wallet, grant);
     let state = finish(session, wallet, lib, (outpoint, pending.duffs), lease_of).await?;
-    Ok(outcome(state))
+    Ok(PlatformFundOutcome {
+        txid: txid.to_string(),
+        pending_dispatch: matches!(state, PlatformFundState::ProofWaiting)
+            .then_some(super::flows::PendingDispatch::Broadcast),
+        state,
+    })
 }
 
 /// The wallet's fund lock at `outpoint` of `duffs` finished through the

@@ -12,6 +12,7 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { exitUnresolved, hasUnansweredOp, moveBlock, moveExit, moveExitLine, sendHolds, moveCanRetry, moveErrorText, moveOutcomeCopy, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { platformHoldText } from "../api/platformHold";
+import { toastTransferFailure } from "../transfer/dispatch";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -129,6 +130,10 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   // Activity's final answer replaces what the move returned: done, replaced, or failed and unable to land.
   const final = row && (row.state === "done" || row.state === "replaced" || (row.state === "failed" && !row.mayLand));
   const { step } = flow;
+  const failedId = step === "done" && row?.state === "failed" && !row.mayLand ? row.id : null;
+  useEffect(() => {
+    if (failedId !== null) toastTransferFailure();
+  }, [failedId]);
   const outcome = final && flow.outcome ? { ...flow.outcome, state: row.state, credits: row.credits, expectedDuffs: row.expectedDuffs, feeCredits: row.feeCredits, winnerKnown: row.winnerKnown } : flow.outcome;
   // A failed move that may still execute is shown as not confirmed; one that cannot found its credits used.
   const failed = outcome?.state === "failed" && !row?.mayLand && (flow.exitOf === null || row?.state === "failed");
