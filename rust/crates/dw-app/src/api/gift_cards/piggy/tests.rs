@@ -2,10 +2,67 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
-use dw_vault::MemoryOsStore;
+use std::sync::Arc;
+
+use dw_engine::{NetworkSession, WalletId};
+use dw_vault::{MemoryOsStore, OsSecretStore};
 
 use super::*;
-use crate::api::gift_cards::{GiftAccount, GiftInvoice, store::Secrets};
+use crate::api::gift_cards::store::{Account, Change, Order, WalletStore};
+use crate::api::gift_cards::{Context, GiftAccount, GiftCards, GiftInvoice, GiftOrder};
+use crate::ipc_tests::Demo;
+
+/// A regtest session holding one wallet with a seed; the gift card code
+/// under test does not check the network.
+fn wallet_session() -> (Demo, Arc<NetworkSession>, WalletId) {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    let wallet: WalletId = created["walletId"].as_str().unwrap().parse().unwrap();
+    let (session, _) = tauri::async_runtime::block_on(demo.state().session_and_epoch()).unwrap();
+    (demo, session, wallet)
+}
+
+fn context<'a>(
+    cards: &'a GiftCards,
+    piggy: &'a Piggy,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+) -> Context<'a> {
+    Context {
+        _guard: cards.serial.try_lock().unwrap(),
+        session: Arc::clone(session),
+        epoch: 0,
+        store: WalletStore::new(Arc::clone(session), wallet),
+        cards,
+        piggy,
+    }
+}
+
+fn profile(email: &str) -> GiftSignup {
+    GiftSignup {
+        first_name: "Fixture".into(),
+        last_name: "Buyer".into(),
+        email: email.into(),
+        state: "CA".into(),
+    }
+}
+
+fn fixture_order(id: &str, account: &str, created_at: u64) -> Order {
+    Order {
+        view: GiftOrder {
+            id: id.into(),
+            name: "Fixture card".into(),
+            cents: 2500,
+            invoice: Some(GiftInvoice::parse(INVOICE, dashcore::Network::Mainnet).unwrap()),
+            expires_at: 0,
+            txid: None,
+        },
+        account: account.into(),
+        created_at,
+    }
+}
 
 const INVOICE: &str = "dash:Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T?amount=0.12345678";
 
@@ -68,8 +125,8 @@ fn get(request_line: &'static str, response: &'static str) -> Mock {
     }
 }
 
-#[tokio::test]
-async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
+#[test]
+fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
     let login = || Mock {
         request_line: "POST /dash/v1/login HTTP/1.1",
         authorization: None,
@@ -121,67 +178,189 @@ async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
         login(),
     ]);
 
-    let folder = tempfile::tempdir().unwrap();
-    let os = std::sync::Arc::new(MemoryOsStore::default());
-    let secrets = Secrets::new(folder.path(), os.clone()).unwrap();
-    let profile = GiftSignup {
-        first_name: "Fixture".into(),
-        last_name: "Buyer".into(),
-        email: "fixture@example.invalid".into(),
-        state: "CA".into(),
-    };
-    assert!(matches!(
-        secrets.signup(&piggy, profile).await.unwrap(),
-        GiftAccount::CodeSent { .. }
-    ));
-    assert!(matches!(
-        secrets
-            .verify_email(&piggy, Zeroizing::new("123456".into()))
+    let (_demo, session, wallet) = wallet_session();
+    let cards = GiftCards::default();
+    tauri::async_runtime::block_on(async {
+        let ctx = context(&cards, &piggy, &session, wallet);
+        assert!(matches!(
+            ctx.signup(profile("fixture@example.invalid")).await.unwrap(),
+            GiftAccount::CodeSent { .. }
+        ));
+        assert!(matches!(
+            ctx.verify_email(Zeroizing::new("123456".into())).await.unwrap(),
+            GiftAccount::SignedIn { .. }
+        ));
+        let (account, access) = ctx.active_session().await.unwrap();
+        let brands = piggy.brands(&access).await.unwrap();
+        let brand = &brands[0];
+        assert_eq!(brand.name, "Fixture Groceries");
+        let products = piggy.products(&brand.id, &access).await.unwrap();
+        assert_eq!(products[0].values, [2500, 5050]);
+        let order = piggy
+            .create_order(&access, products[0].id, 2500, &account.signup)
             .await
-            .unwrap(),
-        GiftAccount::SignedIn { .. }
-    ));
-    let (account, token) = secrets.session(&piggy).await.unwrap();
-    let brands = piggy.brands(&token.access).await.unwrap();
-    let brand = &brands[0];
-    assert_eq!(brand.name, "Fixture Groceries");
-    let products = piggy.products(&brand.id, &token.access).await.unwrap();
-    assert_eq!(products[0].values, [2500, 5050]);
-    let order = piggy
-        .create_order(&token.access, products[0].id, 2500, &account.signup)
-        .await
-        .unwrap();
-    assert!(order.pay_to.is_none());
-    let unpaid = piggy.order(&order.id, &token.access).await.unwrap();
-    assert_eq!(unpaid.pay_to.as_deref(), Some(INVOICE));
-    assert_eq!(
-        GiftInvoice::parse(INVOICE, dashcore::Network::Mainnet)
-            .unwrap()
-            .duffs,
-        12_345_678
-    );
-    let fulfilled = piggy.order(&order.id, &token.access).await.unwrap();
-    assert_eq!(
-        fulfilled.cards[0].claim_code.as_deref(),
-        Some("FIXTURE-CODE")
-    );
-    assert_eq!(fulfilled.cards[0].claim_pin.as_deref(), Some("0000"));
-    let link = fulfilled.cards[1].claim_link.as_deref().unwrap();
-    assert_eq!(
-        crate::api::gift_cards::claim_url(link).unwrap().domain(),
-        Some("redeem.fixture.invalid")
-    );
-    assert!(matches!(
-        secrets.sign_out().await.unwrap(),
-        GiftAccount::CanSignIn { .. }
-    ));
-    let reopened = Secrets::new(folder.path(), os).unwrap();
-    assert!(matches!(
-        reopened.sign_in(&piggy).await.unwrap(),
-        GiftAccount::SignedIn { .. }
-    ));
-    assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
+            .unwrap();
+        assert!(order.pay_to.is_none());
+        let unpaid = piggy.order(&order.id, &access).await.unwrap();
+        assert_eq!(unpaid.pay_to.as_deref(), Some(INVOICE));
+        assert_eq!(
+            GiftInvoice::parse(INVOICE, dashcore::Network::Mainnet)
+                .unwrap()
+                .duffs,
+            12_345_678
+        );
+        let fulfilled = piggy.order(&order.id, &access).await.unwrap();
+        assert_eq!(
+            fulfilled.cards[0].claim_code.as_deref(),
+            Some("FIXTURE-CODE")
+        );
+        assert_eq!(fulfilled.cards[0].claim_pin.as_deref(), Some("0000"));
+        let link = fulfilled.cards[1].claim_link.as_deref().unwrap();
+        assert_eq!(
+            crate::api::gift_cards::claim_url(link).unwrap().domain(),
+            Some("redeem.fixture.invalid")
+        );
+        assert!(matches!(
+            ctx.sign_out().await.unwrap(),
+            GiftAccount::CanSignIn { .. }
+        ));
+        drop(ctx);
+        // A restart keeps no token, only the sealed account and its password.
+        let restarted = GiftCards::default();
+        let ctx = context(&restarted, &piggy, &session, wallet);
+        assert!(matches!(
+            ctx.account_status().await.unwrap(),
+            GiftAccount::CanSignIn { .. }
+        ));
+        assert!(matches!(
+            ctx.sign_in(None).await.unwrap(),
+            GiftAccount::SignedIn { .. }
+        ));
+    });
+    let rows = tauri::async_runtime::block_on(session.gift_card_rows(wallet)).unwrap();
+    assert!(rows.iter().all(|(_, value)| !value.contains("fixture-password")
+        && !value.contains("fixture@example.invalid")));
+    assert!(!session.data_dir().join("gift-card-orders.json").exists());
     server.join().unwrap();
+}
+
+/// Signing up with another account keeps the earlier one, and its orders
+/// stay listed and reachable: every account of the wallet is stored.
+#[test]
+fn another_account_keeps_the_earlier_account_and_its_orders() {
+    let (_demo, session, wallet) = wallet_session();
+    let (piggy, server) = mock_piggy(vec![Mock {
+        request_line: "POST /dash/v1/signup HTTP/1.1",
+        authorization: None,
+        body: Some(
+            json!({"firstName":"Fixture","lastName":"Buyer","email":"second@example.invalid","country":"US","state":"CA"}),
+        ),
+        response: r#"{"userId":"second-user"}"#,
+    }]);
+    let cards = GiftCards::default();
+    tauri::async_runtime::block_on(async {
+        let ctx = context(&cards, &piggy, &session, wallet);
+        let first = Account {
+            signup: profile("first@example.invalid"),
+            user_id: "first-user".into(),
+            password: Some(Zeroizing::new("first-password".into())),
+        };
+        let old = fixture_order("first-order", &first.key(), 10);
+        ctx.store
+            .write(&[
+                Change::Account(&first),
+                Change::Active(Some(first.key())),
+                Change::Order(&old),
+            ])
+            .await
+            .unwrap();
+        assert!(matches!(
+            ctx.signup(profile("second@example.invalid")).await.unwrap(),
+            GiftAccount::CodeSent { .. }
+        ));
+        let second = Account {
+            signup: profile("second@example.invalid"),
+            user_id: "second-user".into(),
+            password: Some(Zeroizing::new("second-password".into())),
+        };
+        ctx.store
+            .write(&[
+                Change::Account(&second),
+                Change::Pending(None),
+                Change::Active(Some(second.key())),
+                Change::Order(&fixture_order("second-order", &second.key(), 20)),
+            ])
+            .await
+            .unwrap();
+        let accounts = ctx.stored_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts.iter().any(|a| a.email == "first@example.invalid" && !a.active));
+        assert!(accounts.iter().any(|a| a.email == "second@example.invalid" && a.active));
+        let book = ctx.store.read().await.unwrap();
+        let ids: Vec<_> = book.orders.iter().map(|o| o.view.id.as_str()).collect();
+        assert_eq!(ids, ["second-order", "first-order"]);
+        let earlier = book.order("first-order").unwrap();
+        assert_eq!(
+            book.account(&earlier.account).unwrap().signup.email,
+            "first@example.invalid"
+        );
+    });
+    server.join().unwrap();
+}
+
+#[cfg(unix)]
+/// Earlier builds' account (OS secure store) and order journal move into
+/// the wallet that made the orders, once, and the old copies are deleted.
+#[test]
+fn earlier_builds_account_and_orders_move_into_the_wallet_once() {
+    let (_demo, session, wallet) = wallet_session();
+    let root = tempfile::tempdir().unwrap();
+    let os: Arc<dyn OsSecretStore> = Arc::new(MemoryOsStore::default());
+    let account = Account {
+        signup: profile("legacy@example.invalid"),
+        user_id: "legacy-user".into(),
+        password: Some(Zeroizing::new("legacy-password".into())),
+    };
+    let key = account.key();
+    let journal = json!([
+        { "view": fixture_order("legacy-order", &key, 0).view, "account": key, "wallet": wallet.to_string() },
+        { "view": fixture_order("gone-order", &key, 0).view, "account": key, "wallet": "11".repeat(32) },
+    ]);
+    let path = session.data_dir().join("gift-card-orders.json");
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let piggy = Piggy::at(Url::parse("http://127.0.0.1:1/dash/v1/").unwrap()).unwrap();
+    tauri::async_runtime::block_on(async {
+        let legacy = super::super::legacy::Secrets::new(root.path(), Arc::clone(&os)).unwrap();
+        legacy.save_for_test("piggy-account", &account).await;
+        legacy.save_for_test("piggy-access", &json!({"access":"old","expires_at":1})).await;
+        legacy.save_for_test("piggy-pending", &json!({"user_id":"pending-user"})).await;
+        assert!(
+            super::super::legacy::migrate(root.path(), &os, &session)
+                .await
+                .unwrap()
+        );
+        let cards = GiftCards::default();
+        let ctx = context(&cards, &piggy, &session, wallet);
+        let book = ctx.store.read().await.unwrap();
+        assert_eq!(book.accounts.len(), 1);
+        assert_eq!(book.active.as_deref(), Some(key.as_str()));
+        assert!(book.pending.is_none(), "a pending signup has no wallet to go to");
+        let ids: Vec<_> = book.orders.iter().map(|o| o.view.id.as_str()).collect();
+        assert_eq!(ids, ["legacy-order"]);
+        assert!(legacy.is_empty_for_test().await);
+        assert!(!path.exists());
+        assert!(
+            super::super::legacy::migrate(root.path(), &os, &session)
+                .await
+                .unwrap()
+        );
+        assert_eq!(ctx.store.read().await.unwrap().orders.len(), 1);
+    });
 }
 
 #[test]
@@ -290,33 +469,11 @@ fn refreshed_order_must_still_authorize_the_confirmed_payment() {
 
 #[tokio::test]
 async fn reopened_order_cannot_relay_when_the_provider_has_cancelled_it() {
-    use crate::api::gift_cards::{
-        GiftOrder,
-        store::{Order, Orders},
-    };
-    let dir = tempfile::tempdir().unwrap();
-    {
-        let mut orders = Orders::open(dir.path()).unwrap();
-        orders.entries.push(Order {
-            view: GiftOrder {
-                id: "fixture".into(),
-                name: "Fixture card".into(),
-                cents: 2500,
-                invoice: Some(GiftInvoice::parse(INVOICE, dashcore::Network::Mainnet).unwrap()),
-                expires_at: crate::api::gift_cards::now() + 120,
-                txid: None,
-            },
-            account: "account".into(),
-            wallet: "wallet".into(),
-        });
-        orders.save().unwrap();
-    }
+    let order = fixture_order("fixture", "account", 0);
     let (provider, server) = mock_piggy(vec![get(
         "GET /dash/v1/orders/fixture HTTP/1.1",
         r#"{"code":200,"data":{"orderId":"fixture","status":"Cancelled","payTo":"dash:Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T?amount=0.12345678"}}"#,
     )]);
-    let mut orders = Orders::open(dir.path()).unwrap();
-    let order = orders.find("fixture", "account", "wallet").unwrap();
     assert!(
         order
             .view
@@ -329,7 +486,6 @@ async fn reopened_order_cannot_relay_when_the_provider_has_cancelled_it() {
 
 #[test]
 fn a_quote_window_runs_on_the_monotonic_clock_and_ends_at_restart() {
-    use crate::api::gift_cards::GiftCards;
     let cards = GiftCards::default();
     let key = [1; 32];
     assert!(cards.open_quote(&key).is_err(), "no quote since this process started");

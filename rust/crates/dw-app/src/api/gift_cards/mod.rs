@@ -1,13 +1,15 @@
 mod account;
+mod legacy;
 mod piggy;
 mod store;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashcore::{Network, hashes::sha256};
-use dw_engine::{DashNetwork, NetworkSession, PreparedOutput};
+use dw_engine::{DashNetwork, NetworkSession, PreparedOutput, WalletId};
 use dw_uri::core::handle_uri;
 use dw_vault::{KeyringOsStore, LockState, OsSecretStore};
 use serde::{Deserialize, Serialize};
@@ -20,7 +22,7 @@ use crate::ipc::commands;
 use crate::settings;
 use crate::state::{AppState, parse_wallet_id};
 use piggy::Piggy;
-use store::{Order, Orders, Secrets};
+use store::{Change, Order, WalletStore};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 const INVOICE_WINDOW_SECS: u64 = 120;
@@ -34,6 +36,26 @@ pub(crate) struct GiftCards {
     /// quote was created: a wall-clock change neither extends nor reopens
     /// it, and a restart forgets it, so the order needs a new quote.
     quotes: Mutex<HashMap<[u8; 32], tokio::time::Instant>>,
+    /// Access tokens by wallet and account, never stored: a restart signs
+    /// in again with the account's stored password.
+    tokens: Mutex<HashMap<(WalletId, String), Token>>,
+    /// Earlier builds' account and orders were moved into the wallets.
+    migrated: AtomicBool,
+}
+
+struct Token {
+    access: Zeroizing<String>,
+    expires: tokio::time::Instant,
+}
+
+impl Token {
+    fn new(access: Zeroizing<String>, expires_in: u64) -> Self {
+        let lifetime = Duration::from_secs(expires_in.saturating_sub(15));
+        Self {
+            access,
+            expires: tokio::time::Instant::now() + lifetime,
+        }
+    }
 }
 
 impl Default for GiftCards {
@@ -43,6 +65,8 @@ impl Default for GiftCards {
             piggy: OnceLock::new(),
             serial: tokio::sync::Mutex::new(()),
             quotes: Mutex::new(HashMap::new()),
+            tokens: Mutex::new(HashMap::new()),
+            migrated: AtomicBool::new(false),
         }
     }
 }
@@ -65,13 +89,31 @@ impl GiftCards {
         (tokio::time::Instant::now() < deadline).then_some(deadline)
     }
 
+    fn tokens(&self) -> std::sync::MutexGuard<'_, HashMap<(WalletId, String), Token>> {
+        self.tokens.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn token(&self, wallet: WalletId, account: &str) -> Option<Zeroizing<String>> {
+        let tokens = self.tokens();
+        let token = tokens.get(&(wallet, account.to_owned()))?;
+        (tokio::time::Instant::now() < token.expires).then(|| token.access.clone())
+    }
+
+    fn keep_token(&self, wallet: WalletId, account: String, token: Token) {
+        self.tokens().insert((wallet, account), token);
+    }
+
+    fn forget_tokens(&self, wallet: WalletId) {
+        self.tokens().retain(|(w, _), _| *w != wallet);
+    }
+
     fn open_quote(&self, key: &[u8; 32]) -> Result<tokio::time::Instant, AppError> {
         self.quote_deadline(key)
             .ok_or_else(|| fail("The gift card quote expired. Get a new quote before paying."))
     }
 }
 
-#[derive(Deserialize, Serialize, TS)]
+#[derive(Clone, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GiftSignup {
     first_name: String,
@@ -116,6 +158,15 @@ pub enum GiftAccount {
     CodeSent { email: String },
     CanSignIn { email: String },
     SignedIn { email: String },
+}
+
+/// A PiggyCards account stored for the wallet; `id` names it for
+/// `giftCardSignIn`.
+#[derive(Serialize, TS)]
+pub struct GiftStoredAccount {
+    id: String,
+    email: String,
+    active: bool,
 }
 
 #[derive(Deserialize, Serialize, TS)]
@@ -306,36 +357,62 @@ struct Context<'a> {
     _guard: tokio::sync::MutexGuard<'a, ()>,
     session: Arc<NetworkSession>,
     epoch: u64,
-    secrets: Secrets,
+    store: WalletStore,
+    cards: &'a GiftCards,
     piggy: &'a Piggy,
 }
 
 impl<'a> Context<'a> {
-    async fn open(state: &'a AppState) -> Result<Self, AppError> {
-        let guard = state.gift_cards.serial.lock().await;
+    async fn open(state: &'a AppState, wallet_id: &str) -> Result<Self, AppError> {
+        Self::open_wallet(state, parse_wallet_id(wallet_id)?).await
+    }
+
+    async fn open_wallet(state: &'a AppState, wallet: WalletId) -> Result<Self, AppError> {
+        let cards = &state.gift_cards;
+        let guard = cards.serial.lock().await;
         let (session, epoch) = active(state).await?;
-        let secrets = Secrets::new(&state.data_root, Arc::clone(&state.gift_cards.os))?;
-        let piggy = state
-            .gift_cards
+        if session.wallet_info(&wallet).is_err() || !session.vault().has_wallet_secret(&wallet.0) {
+            return Err(fail("Choose a wallet that can send DASH to buy a gift card."));
+        }
+        let piggy = cards
             .piggy
             .get_or_init(Piggy::new)
             .as_ref()
             .map_err(Clone::clone)?;
+        if !cards.migrated.load(Ordering::Acquire)
+            && legacy::migrate(&state.data_root, &cards.os, &session).await?
+        {
+            cards.migrated.store(true, Ordering::Release);
+        }
         Ok(Self {
             _guard: guard,
+            store: WalletStore::new(Arc::clone(&session), wallet),
             session,
             epoch,
-            secrets,
+            cards,
             piggy,
         })
     }
 
-    fn orders(&self) -> Result<Orders, AppError> {
-        Orders::open(self.session.data_dir())
+    /// The order, its account and an access token for that account.
+    async fn order(&self, id: &str) -> Result<(Order, Zeroizing<String>), AppError> {
+        let book = self.store.read().await?;
+        let order = book.order(id)?.clone();
+        let account = book
+            .account(&order.account)
+            .ok_or_else(|| fail("The PiggyCards account of this order is unavailable."))?;
+        let access = self.access(account).await?;
+        Ok((order, access))
     }
 
-    async fn credentials(&self) -> Result<(store::Account, store::Token), AppError> {
-        self.secrets.session(self.piggy).await
+    /// The order as the renderer sees it: a quote this process did not
+    /// start, or one past its window, shows as expired.
+    fn shown(&self, order: &Order) -> GiftOrder {
+        let mut view = order.view.clone();
+        if self.cards.quote_deadline(&order.key()).is_none() {
+            view.expires_at = 0;
+        }
+        view
     }
 }
 
@@ -383,28 +460,22 @@ pub(super) async fn check_before_prepare(
     let Some(key) = state.sends.invoice_key(draft)? else {
         return Ok(None);
     };
-    let ctx = Context::open(state).await?;
-    let (account, token) = ctx.credentials().await?;
-    let account = account.key();
-    let wallet = state
-        .sends
-        .for_payment(draft, Some(key))?
-        .wallet_id()
-        .to_string();
-    let orders = ctx.orders()?;
-    let order = orders
-        .entries
+    let wallet = state.sends.for_payment(draft, Some(key))?.wallet_id();
+    let ctx = Context::open_wallet(state, wallet).await?;
+    let book = ctx.store.read().await?;
+    let id = book
+        .orders
         .iter()
-        .find(|o| {
-            o.wallet == wallet && o.account == account && invoice_key(&account, &o.view.id) == key
-        })
+        .find(|o| o.key() == key)
+        .map(|o| o.view.id.clone())
         .ok_or_else(|| fail("Refresh the gift card order before paying."))?;
+    let (order, access) = ctx.order(&id).await?;
     if ctx.session.invoice_payment(key).await?.is_some() {
         return Err(fail(
             "A payment was already started for this gift card order.",
         ));
     }
-    let invoice = order.view.revalidate(ctx.piggy, &token.access).await?;
+    let invoice = order.view.revalidate(ctx.piggy, &access).await?;
     let deadline = state.gift_cards.open_quote(&key)?;
     check_active(state, &ctx.session)?;
     Ok(Some((invoice.address, invoice.duffs, deadline)))
@@ -442,131 +513,130 @@ fn invoice_key(account: &str, order: &str) -> [u8; 32] {
 }
 
 commands! {
-    /// The PiggyCards sign-in state. The OS secure store owns the credentials.
-    #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_account(state) -> GiftAccount {
-        let ctx = Context::open(&state).await?;
-        let account = ctx.secrets.account_status().await?;
+    /// The wallet's PiggyCards sign-in state. Its accounts are sealed rows
+    /// of the wallet: its backup carries them and removing it deletes them.
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::gift_card_rows", "Vault::open_wallet_data")]
+    fn gift_card_account(state, wallet_id: String) -> GiftAccount {
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let account = ctx.account_status().await?;
         check_active(&state, &ctx.session)?;
         Ok(account)
     }
 
+    /// The PiggyCards accounts stored for the wallet.
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::gift_card_rows", "Vault::open_wallet_data")]
+    fn gift_card_accounts(state, wallet_id: String) -> Vec<GiftStoredAccount> {
+        let ctx = Context::open(&state, &wallet_id).await?;
+        ctx.stored_accounts().await
+    }
+
     /// Creates a PiggyCards account and starts email verification if required.
-    #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_signup(state, info: GiftSignup) -> GiftAccount {
-        let ctx = Context::open(&state).await?;
-        ctx.secrets.signup(ctx.piggy, info).await
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::write_gift_card_rows", "Vault::seal_wallet_data")]
+    fn gift_card_signup(state, wallet_id: String, info: GiftSignup) -> GiftAccount {
+        let ctx = Context::open(&state, &wallet_id).await?;
+        ctx.signup(info).await
     }
 
     /// Verifies the email code, saves the generated password, and signs in.
-    #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_verify_email(state, code: String) -> GiftAccount {
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::write_gift_card_rows", "Vault::seal_wallet_data")]
+    fn gift_card_verify_email(state, wallet_id: String, code: String) -> GiftAccount {
         let code = Zeroizing::new(code);
-        let ctx = Context::open(&state).await?;
-        ctx.secrets.verify_email(ctx.piggy, code).await
+        let ctx = Context::open(&state, &wallet_id).await?;
+        ctx.verify_email(code).await
     }
 
-    /// Signs in again with the password stored for this PiggyCards account.
-    #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_sign_in(state) -> GiftAccount {
-        let ctx = Context::open(&state).await?;
-        ctx.secrets.sign_in(ctx.piggy).await
+    /// Signs in with a stored account's password: `account` (an id from
+    /// `giftCardAccounts`) becomes the active one, or the active one.
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::write_gift_card_rows")]
+    fn gift_card_sign_in(state, wallet_id: String, account: Option<String>) -> GiftAccount {
+        let ctx = Context::open(&state, &wallet_id).await?;
+        ctx.sign_in(account).await
     }
 
-    /// Clears the current PiggyCards session.
-    #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_sign_out(state) -> GiftAccount {
-        let ctx = Context::open(&state).await?;
-        ctx.secrets.sign_out().await
+    /// Ends the wallet's PiggyCards session; its accounts stay stored.
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::write_gift_card_rows")]
+    fn gift_card_sign_out(state, wallet_id: String) -> GiftAccount {
+        let ctx = Context::open(&state, &wallet_id).await?;
+        ctx.sign_out().await
     }
 
     /// PiggyCards merchants for the US catalog.
     #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_brands(state) -> Vec<GiftBrand> {
-        let ctx = Context::open(&state).await?;
-        let (_, token) = ctx.credentials().await?;
-        ctx.piggy.brands(&token.access).await
+    fn gift_card_brands(state, wallet_id: String) -> Vec<GiftBrand> {
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let (_, access) = ctx.active_session().await?;
+        ctx.piggy.brands(&access).await
     }
 
     /// In-stock USD products and denominations for a PiggyCards merchant.
     #[facade("NetworkSession::vault", "Vault::status")]
-    fn gift_card_products(state, brand: String) -> Vec<GiftCardProduct> {
+    fn gift_card_products(state, wallet_id: String, brand: String) -> Vec<GiftCardProduct> {
         checked_id(&brand)?;
-        let ctx = Context::open(&state).await?;
-        let (_, token) = ctx.credentials().await?;
-        ctx.piggy.products(&brand, &token.access).await
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let (_, access) = ctx.active_session().await?;
+        ctx.piggy.products(&brand, &access).await
     }
 
-    /// Gift card orders for the selected wallet and PiggyCards account.
-    #[facade("NetworkSession::vault", "Vault::status")]
+    /// The wallet's gift card orders, of every account it stores, newest first.
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::gift_card_rows")]
     fn gift_card_orders(state, wallet_id: String) -> Vec<GiftOrder> {
-        let ctx = Context::open(&state).await?;
-        let (account, _) = ctx.credentials().await?;
-        let key = account.key();
-        Ok(ctx.orders()?.entries.into_iter().rev()
-            .filter(|o| o.account == key && o.wallet == wallet_id)
-            .map(|o| o.view).collect())
+        let ctx = Context::open(&state, &wallet_id).await?;
+        ctx.active_session().await?;
+        let book = ctx.store.read().await?;
+        Ok(book.orders.iter().map(|o| ctx.shown(o)).collect())
     }
 
-    /// Creates a single-card order, recording its ID before any wallet payment.
-    #[facade("NetworkSession::vault", "Vault::status")]
+    /// Creates a single-card order, recording it in the wallet before any payment.
+    #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::write_gift_card_rows")]
     fn gift_card_create_order(state, wallet_id: String, brand: String, product_id: u32, cents: u32) -> GiftOrder {
         checked_id(&brand)?;
-        let id = parse_wallet_id(&wallet_id)?;
-        let ctx = Context::open(&state).await?;
-        if !ctx.session.vault().has_wallet_secret(&id.0) {
-            return Err(fail("Select a wallet that can send DASH."));
-        }
-        let (account, token) = ctx.credentials().await?;
-        let product = ctx.piggy.products(&brand, &token.access).await?.into_iter()
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let (account, access) = ctx.active_session().await?;
+        let product = ctx.piggy.products(&brand, &access).await?.into_iter()
             .find(|p| p.id == product_id && p.allows(cents))
             .ok_or_else(|| fail("This gift card value is unavailable."))?;
-        let mut orders = ctx.orders()?;
+        let book = ctx.store.read().await?;
         check_active(&state, &ctx.session)?;
-        let created = ctx.piggy.create_order(&token.access, product.id, cents, &account.signup).await?;
+        let created = ctx.piggy.create_order(&access, product.id, cents, &account.signup).await?;
         checked_id(&created.id)?;
-        let key = account.key();
-        if orders.entries.iter().any(|o| o.view.id == created.id && o.account == key) {
+        if book.orders.iter().any(|o| o.view.id == created.id) {
             return Err(fail("PiggyCards returned an order that already exists. Check My gift cards."));
         }
-        let expires_at = now() + INVOICE_WINDOW_SECS;
         let invoice = created.pay_to.as_deref()
             .and_then(|uri| GiftInvoice::parse(uri, Network::Mainnet).ok());
+        let created_at = now();
         let view = GiftOrder {
-            id: created.id, name: product.name, cents, expires_at, invoice, txid: None,
+            id: created.id, name: product.name, cents,
+            expires_at: created_at + INVOICE_WINDOW_SECS, invoice, txid: None,
         };
-        let quote = invoice_key(&key, &view.id);
-        orders.entries.push(Order { view: view.clone(), account: key, wallet: wallet_id });
-        orders.save()?;
-        state.gift_cards.start_quote(quote);
+        let order = Order { view: view.clone(), account: account.key(), created_at };
+        ctx.store.write(&[Change::Order(&order)]).await?;
+        state.gift_cards.start_quote(order.key());
         Ok(view)
     }
 
     /// Reads fulfillment for a known order. Codes and PINs are fetched on demand.
     #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::invoice_payment")]
     fn gift_card_details(state, wallet_id: String, order_id: String) -> GiftOrderDetails {
-        let ctx = Context::open(&state).await?;
-        let (account, token) = ctx.credentials().await?;
-        let mut orders = ctx.orders()?;
-        let account_key = account.key();
-        let order = orders.find(&order_id, &account_key, &wallet_id)?;
-        let payment = ctx.session.invoice_payment(invoice_key(&account_key, &order_id)).await?;
-        let data = ctx.piggy.order(&order_id, &token.access).await?;
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let (mut order, access) = ctx.order(&order_id).await?;
+        let payment = ctx.session.invoice_payment(order.key()).await?;
+        let data = ctx.piggy.order(&order_id, &access).await?;
         let status = GiftOrderStatus::from(data.status.as_str());
         check_active(&state, &ctx.session)?;
-        let quote = state.gift_cards.quote_deadline(&invoice_key(&account_key, &order_id));
+        let quote = state.gift_cards.quote_deadline(&order.key());
         let missing_invoice = order.view.invoice.is_none() && payment.is_none()
             && matches!(status, GiftOrderStatus::AwaitingPayment) && quote.is_some();
         if missing_invoice {
             order.view.invoice = data.pay_to.as_deref().and_then(|uri| GiftInvoice::parse(uri, Network::Mainnet).ok());
+            if order.view.invoice.is_some() {
+                ctx.store.write(&[Change::Order(&order)]).await?;
+            }
         }
-        let mut view = order.view.clone();
+        let mut view = ctx.shown(&order);
         view.txid = payment;
-        if quote.is_none() || view.invoice.as_ref().is_some_and(|known| data.verify_quote(known).is_err()) {
+        if view.invoice.as_ref().is_some_and(|known| data.verify_quote(known).is_err()) {
             view.expires_at = 0;
-        }
-        if missing_invoice && view.invoice.is_some() {
-            orders.save()?;
         }
         let cards = if matches!(status, GiftOrderStatus::Complete) {
             data.cards.into_iter().map(|c| GiftCardSecret {
@@ -585,26 +655,23 @@ commands! {
     /// Revalidates an order before manually relaying its previously signed payment.
     #[facade("NetworkSession::resend_invoice_transaction", "NetworkSession::invoice_payment")]
     fn gift_card_resend(state, wallet_id: String, order_id: String) -> () {
-        let ctx = Context::open(&state).await?;
-        let (account, token) = ctx.credentials().await?;
-        let account = account.key();
-        let mut orders = ctx.orders()?;
-        let order = orders.find(&order_id, &account, &wallet_id)?;
-        let key = invoice_key(&account, &order_id);
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let (order, access) = ctx.order(&order_id).await?;
+        let key = order.key();
         let txid = ctx.session.invoice_payment(key).await?.ok_or_else(|| fail("No payment was recorded for this order."))?;
-        order.view.revalidate(ctx.piggy, &token.access).await?;
+        order.view.revalidate(ctx.piggy, &access).await?;
         check_active(&state, &ctx.session)?;
-        ctx.session.resend_invoice_transaction(parse_wallet_id(&wallet_id)?, txid.parse().map_err(|_| fail("The recorded transaction ID is invalid."))?, key).await?;
+        let txid = txid.parse().map_err(|_| fail("The recorded transaction ID is invalid."))?;
+        ctx.session.resend_invoice_transaction(ctx.store.wallet(), txid, key).await?;
         Ok(())
     }
 
     /// Opens a completed card's provider-issued HTTPS redemption link.
     #[facade("NetworkSession::vault", "Vault::status")]
     fn gift_card_open_claim(state, wallet_id: String, order_id: String, card: u32, host: String) -> () {
-        let ctx = Context::open(&state).await?;
-        let (account, token) = ctx.credentials().await?;
-        ctx.orders()?.find(&order_id, &account.key(), &wallet_id)?;
-        let data = ctx.piggy.order(&order_id, &token.access).await?;
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let (_, access) = ctx.order(&order_id).await?;
+        let data = ctx.piggy.order(&order_id, &access).await?;
         if !matches!(GiftOrderStatus::from(data.status.as_str()), GiftOrderStatus::Complete) {
             return Err(fail("PiggyCards has not completed this gift card."));
         }
@@ -620,12 +687,10 @@ commands! {
     /// Opens a normal Pay draft bound to a known PiggyCards order.
     #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::invoice_payment", "NetworkSession::new_tx_draft")]
     fn gift_card_draft(state, wallet_id: String, order_id: String) -> u64 {
-        let ctx = Context::open(&state).await?;
-        let (account, _) = ctx.credentials().await?;
-        let account_key = account.key();
-        let key = invoice_key(&account_key, &order_id);
-        let mut orders = ctx.orders()?;
-        let order = orders.find(&order_id, &account_key, &wallet_id)?;
+        let ctx = Context::open(&state, &wallet_id).await?;
+        let book = ctx.store.read().await?;
+        let order = book.order(&order_id)?;
+        let key = order.key();
         if state.gift_cards.quote_deadline(&key).is_none() || order.view.invoice.is_none() {
             return Err(fail("The gift card invoice is unavailable or has expired."));
         }
@@ -633,27 +698,27 @@ commands! {
             return Err(fail("A payment was already started for this gift card order."));
         }
         check_active(&state, &ctx.session)?;
-        let draft = ctx.session.new_tx_draft(parse_wallet_id(&wallet_id)?)?;
+        let draft = ctx.session.new_tx_draft(ctx.store.wallet())?;
         state.sends.insert_send_draft(ctx.epoch, draft, Some(key))
     }
 
     /// Broadcasts an ordinary Pay draft bound to a PiggyCards invoice.
     #[facade("NetworkSession::vault", "Vault::status", "TxDraft::wallet_id", "PreparedTx::summary", "NetworkSession::invoice_payment", "TxDraft::broadcast_invoice")]
     fn gift_card_broadcast(state, order_id: String, draft: u64, prepared: u64) -> BroadcastOutcome {
-        let ctx = Context::open(&state).await?;
-        let (account, token) = ctx.credentials().await?;
-        let account_key = account.key();
-        let key = invoice_key(&account_key, &order_id);
-        let d = state.sends.for_payment(draft, Some(key))?;
+        let key = state.sends.invoice_key(draft)?
+            .ok_or_else(|| fail("This draft belongs to a different payment flow."))?;
+        let wallet = state.sends.for_payment(draft, Some(key))?.wallet_id();
+        let ctx = Context::open_wallet(&state, wallet).await?;
+        let (order, access) = ctx.order(&order_id).await?;
+        if order.key() != key {
+            return Err(fail("This draft belongs to a different payment flow."));
+        }
         let tx = send::prepared_of(&state, draft, prepared)?;
-        let wallet = d.wallet_id().to_string();
-        let mut orders = ctx.orders()?;
-        let order = orders.find(&order_id, &account_key, &wallet)?;
         let previous = ctx.session.invoice_payment(key).await?;
         if previous.as_deref().is_some_and(|id| id != tx.summary().txid) {
             return Err(fail("A payment was already started for this gift card order."));
         }
-        let invoice = order.view.revalidate(ctx.piggy, &token.access).await?;
+        let invoice = order.view.revalidate(ctx.piggy, &access).await?;
         check_active(&state, &ctx.session)?;
         let d = state.sends.for_payment(draft, Some(key))?;
         let tx = send::prepared_of(&state, draft, prepared)?;

@@ -21,6 +21,13 @@
   margin-top: 5px;
 }
 
+.gift-stored {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .gift-actions,
 .gift-fields,
 .gift-checkout {

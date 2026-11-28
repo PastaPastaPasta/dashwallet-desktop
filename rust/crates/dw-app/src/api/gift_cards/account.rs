@@ -1,45 +1,59 @@
 use zeroize::Zeroizing;
 
-use super::piggy::Piggy;
-use super::store::{Account, Secrets, Token};
-use super::{GiftAccount, GiftSignup, fail, now};
+use super::store::{Account, Book, Change};
+use super::{Context, GiftAccount, GiftSignup, GiftStoredAccount, Token, fail};
 use crate::error::AppError;
 
-const PENDING: &str = "piggy-pending";
-const ACCOUNT: &str = "piggy-account";
-const ACCESS: &str = "piggy-access";
-
-impl Secrets {
-    pub async fn account_status(&self) -> Result<GiftAccount, AppError> {
-        if let Some(pending) = self.load::<Account>(PENDING).await? {
-            return Ok(GiftAccount::CodeSent {
-                email: pending.signup.email,
-            });
-        }
-        let Some(account) = self.load::<Account>(ACCOUNT).await? else {
-            return Ok(GiftAccount::SignedOut);
-        };
-        let signed_in = self
-            .load::<Token>(ACCESS)
-            .await?
-            .is_some_and(|token| token.account == account.key());
-        Ok(if signed_in {
-            GiftAccount::SignedIn {
-                email: account.signup.email,
-            }
-        } else {
-            GiftAccount::CanSignIn {
-                email: account.signup.email,
-            }
-        })
+impl Context<'_> {
+    fn signed_in(&self, account: &str) -> bool {
+        self.cards.token(self.store.wallet(), account).is_some()
     }
 
-    pub async fn signup(&self, piggy: &Piggy, info: GiftSignup) -> Result<GiftAccount, AppError> {
+    pub async fn account_status(&self) -> Result<GiftAccount, AppError> {
+        Ok(self.status_of(&self.store.read().await?))
+    }
+
+    fn status_of(&self, book: &Book) -> GiftAccount {
+        if let Some(pending) = &book.pending {
+            return GiftAccount::CodeSent {
+                email: pending.signup.email.clone(),
+            };
+        }
+        let Some(account) = book.active_account() else {
+            return GiftAccount::SignedOut;
+        };
+        let email = account.signup.email.clone();
+        if self.signed_in(&account.key()) {
+            GiftAccount::SignedIn { email }
+        } else {
+            GiftAccount::CanSignIn { email }
+        }
+    }
+
+    pub async fn stored_accounts(&self) -> Result<Vec<GiftStoredAccount>, AppError> {
+        let book = self.store.read().await?;
+        let active = book.active.as_deref();
+        Ok(book
+            .accounts
+            .iter()
+            .map(|a| {
+                let id = a.key();
+                GiftStoredAccount {
+                    active: active == Some(id.as_str()),
+                    email: a.signup.email.clone(),
+                    id,
+                }
+            })
+            .collect())
+    }
+
+    pub async fn signup(&self, info: GiftSignup) -> Result<GiftAccount, AppError> {
         let info = info.checked()?;
-        if self.load::<Token>(ACCESS).await?.is_some() {
+        let book = self.store.read().await?;
+        if book.active.as_deref().is_some_and(|key| self.signed_in(key)) {
             return Err(fail("Sign out of PiggyCards before changing accounts."));
         }
-        let created = piggy.signup(&info).await?;
+        let created = self.piggy.signup(&info).await?;
         if created.user_id.trim().is_empty() || created.user_id.len() > 128 {
             return Err(fail("PiggyCards did not return a user ID."));
         }
@@ -49,86 +63,97 @@ impl Secrets {
             password: created.generated_password,
         };
         if account.password.is_some() {
-            self.activate(piggy, account).await
+            self.activate(account).await
         } else {
-            self.save(PENDING, &account).await?;
+            self.store.write(&[Change::Pending(Some(&account))]).await?;
             Ok(GiftAccount::CodeSent {
                 email: account.signup.email,
             })
         }
     }
 
-    pub async fn verify_email(
-        &self,
-        piggy: &Piggy,
-        code: Zeroizing<String>,
-    ) -> Result<GiftAccount, AppError> {
-        let mut pending: Account = self
-            .load(PENDING)
-            .await?
+    pub async fn verify_email(&self, code: Zeroizing<String>) -> Result<GiftAccount, AppError> {
+        let mut pending = (self.store.read().await?.pending)
             .ok_or_else(|| fail("Request an email code first."))?;
         let code = code.trim();
         if !(4..=12).contains(&code.len()) || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(fail("Enter the code from your PiggyCards email."));
         }
-        pending.password = Some(piggy.verify(&pending.signup.email, code).await?);
-        self.activate(piggy, pending).await
+        pending.password = Some(self.piggy.verify(&pending.signup.email, code).await?);
+        self.activate(pending).await
     }
 
-    async fn activate(&self, piggy: &Piggy, account: Account) -> Result<GiftAccount, AppError> {
-        self.save(ACCOUNT, &account).await?;
-        self.delete(PENDING).await?;
-        self.login(piggy, &account).await?;
+    async fn activate(&self, account: Account) -> Result<GiftAccount, AppError> {
+        self.store
+            .write(&[
+                Change::Account(&account),
+                Change::Pending(None),
+                Change::Active(Some(account.key())),
+            ])
+            .await?;
+        self.login(&account).await?;
         Ok(GiftAccount::SignedIn {
             email: account.signup.email,
         })
     }
 
-    async fn login(&self, piggy: &Piggy, account: &Account) -> Result<Token, AppError> {
+    async fn login(&self, account: &Account) -> Result<Zeroizing<String>, AppError> {
         let password = account
             .password
             .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| fail("Verify your PiggyCards email before signing in."))?;
-        let (access, expires_in) = piggy.login(&account.user_id, password).await?;
-        let token = Token {
-            account: account.key(),
-            access,
-            expires_at: now().saturating_add(expires_in),
-        };
-        self.save(ACCESS, &token).await?;
-        Ok(token)
+        let (access, expires_in) = self.piggy.login(&account.user_id, password).await?;
+        let token = Token::new(access, expires_in);
+        let access = token.access.clone();
+        self.cards.keep_token(self.store.wallet(), account.key(), token);
+        Ok(access)
     }
 
-    pub async fn sign_in(&self, piggy: &Piggy) -> Result<GiftAccount, AppError> {
-        let account: Account = self
-            .load(ACCOUNT)
-            .await?
+    /// Signs in to the active account, or to `account` (one of this
+    /// wallet's stored accounts), which becomes the active one.
+    pub async fn sign_in(&self, account: Option<String>) -> Result<GiftAccount, AppError> {
+        let book = self.store.read().await?;
+        let key = account
+            .or(book.active.clone())
             .ok_or_else(|| fail("Set up a PiggyCards account first."))?;
-        self.delete(PENDING).await?;
-        self.login(piggy, &account).await?;
+        let account = book
+            .account(&key)
+            .ok_or_else(|| fail("Set up a PiggyCards account first."))?;
+        self.store
+            .write(&[Change::Pending(None), Change::Active(Some(key))])
+            .await?;
+        self.login(account).await?;
         Ok(GiftAccount::SignedIn {
-            email: account.signup.email,
+            email: account.signup.email.clone(),
         })
     }
 
     pub async fn sign_out(&self) -> Result<GiftAccount, AppError> {
-        self.delete(ACCESS).await?;
-        self.delete(PENDING).await?;
+        self.cards.forget_tokens(self.store.wallet());
+        self.store.write(&[Change::Pending(None)]).await?;
         self.account_status().await
     }
 
-    pub async fn session(&self, piggy: &Piggy) -> Result<(Account, Token), AppError> {
-        let signed_out = || fail("Sign in to PiggyCards first.");
-        let account: Account = self.load(ACCOUNT).await?.ok_or_else(signed_out)?;
-        let mut token: Token = self
-            .load::<Token>(ACCESS)
-            .await?
-            .filter(|token| token.account == account.key())
-            .ok_or_else(signed_out)?;
-        if token.expires_at.saturating_sub(15) <= now() {
-            token = self.login(piggy, &account).await?;
+    /// The active account and an access token for it.
+    pub async fn active_session(&self) -> Result<(Account, Zeroizing<String>), AppError> {
+        let book = self.store.read().await?;
+        let account = book
+            .active_account()
+            .filter(|a| self.signed_in(&a.key()))
+            .ok_or_else(|| fail("Sign in to PiggyCards first."))?
+            .clone();
+        let access = self.access(&account).await?;
+        Ok((account, access))
+    }
+
+    /// An access token for `account`, signing in again with its stored
+    /// password when the last one expired or this process has none: an
+    /// order of an account that is not the active one stays reachable.
+    pub async fn access(&self, account: &Account) -> Result<Zeroizing<String>, AppError> {
+        match self.cards.token(self.store.wallet(), &account.key()) {
+            Some(access) => Ok(access),
+            None => self.login(account).await,
         }
-        Ok((account, token))
     }
 }

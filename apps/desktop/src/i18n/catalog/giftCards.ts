@@ -19,6 +19,8 @@ export const giftCards = {
   signIn: "Sign in to PiggyCards",
   signOut: "Sign out",
   anotherAccount: "Use another account",
+  storedAccounts: "Accounts saved in this wallet",
+  signInAs: "Sign in as {email}",
   account: "Signed in as {email}",
   merchants: "Merchants",
   search: "Search merchants",

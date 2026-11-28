@@ -164,6 +164,7 @@ export class IpcBackend implements Backend {
   draftPrepare = cmd.draftPrepare;
   draftBroadcast = cmd.draftBroadcast;
   giftCardAccount = cmd.giftCardAccount;
+  giftCardAccounts = cmd.giftCardAccounts;
   giftCardSignup = cmd.giftCardSignup;
   giftCardVerifyEmail = cmd.giftCardVerifyEmail;
   giftCardSignIn = cmd.giftCardSignIn;

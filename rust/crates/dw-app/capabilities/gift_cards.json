@@ -6,6 +6,7 @@
   "local": true,
   "permissions": [
     "allow-gift-card-account",
+    "allow-gift-card-accounts",
     "allow-gift-card-signup",
     "allow-gift-card-verify-email",
     "allow-gift-card-sign-in",

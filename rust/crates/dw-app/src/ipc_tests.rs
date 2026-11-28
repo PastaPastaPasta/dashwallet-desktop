@@ -3300,5 +3300,9 @@ fn a_gift_card_draft_cannot_use_the_ordinary_broadcast_or_psbt_commands() {
         .unwrap();
     assert!(state.sends.for_payment(ordinary, None).is_ok());
     assert!(state.sends.for_payment(ordinary, Some(bound)).is_err());
-    demo.err("gift_card_account", json!({}), "invalid_argument");
+    demo.err(
+        "gift_card_account",
+        json!({ "walletId": wallet.to_string() }),
+        "invalid_argument",
+    );
 }

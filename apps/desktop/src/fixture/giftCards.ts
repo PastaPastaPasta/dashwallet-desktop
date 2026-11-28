@@ -2,13 +2,15 @@
 import type { AppError } from "../api/generated/AppError";
 import type { GiftAccount } from "../api/generated/GiftAccount";
 import type { GiftOrder } from "../api/generated/GiftOrder";
+import type { GiftStoredAccount } from "../api/generated/GiftStoredAccount";
 import type { Handlers } from "./handlers";
 import type { World } from "./scenarios";
 
 const ADDRESS = "Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T";
 const BRANDS = [{ id: "45", name: "Fixture Groceries" }, { id: "88", name: "Fixture Books" }];
 const fail = (message: string): AppError => ({ code: "invalid_argument", message, data: null });
-const states = new WeakMap<World, { account: GiftAccount; orders: (GiftOrder & { walletId: string; paid: boolean })[]; drafts: Map<number, string> }>();
+type Wallet = { account: GiftAccount; accounts: GiftStoredAccount[] };
+const states = new WeakMap<World, { wallets: Map<string, Wallet>; orders: (GiftOrder & { walletId: string; paid: boolean })[]; drafts: Map<number, string> }>();
 
 function giftCards(world: World) {
   if (world.launch.network.kind !== "mainnet" || !world.settings.ui.giftCardsNetworks.includes("mainnet")) {
@@ -16,48 +18,66 @@ function giftCards(world: World) {
   }
   let state = states.get(world);
   if (!state) {
-    state = { account: { kind: "signedOut" }, orders: [], drafts: new Map() };
+    state = { wallets: new Map(), orders: [], drafts: new Map() };
     states.set(world, state);
   }
   return state;
 }
 
-function signedIn(world: World) {
-  const state = giftCards(world);
-  if (state.account.kind !== "signedIn") throw fail("Sign in to PiggyCards first.");
-  return state;
+function walletOf(world: World, walletId: string): Wallet {
+  const wallets = giftCards(world).wallets;
+  let wallet = wallets.get(walletId);
+  if (!wallet) {
+    wallet = { account: { kind: "signedOut" }, accounts: [] };
+    wallets.set(walletId, wallet);
+  }
+  return wallet;
+}
+
+function signedIn(world: World, walletId: string) {
+  if (walletOf(world, walletId).account.kind !== "signedIn") throw fail("Sign in to PiggyCards first.");
+  return giftCards(world);
+}
+
+function activate(wallet: Wallet, email: string): GiftAccount {
+  wallet.accounts = [...wallet.accounts.filter((a) => a.email !== email).map((a) => ({ ...a, active: false })),
+    { id: `fixture-${email}`, email, active: true }];
+  return (wallet.account = { kind: "signedIn", email });
 }
 
 export function giftCardsHandlers(send: Handlers): Handlers {
   return {
-    gift_card_account: (_, { world }) => giftCards(world).account,
-    gift_card_signup: ({ info }, { world }) => (giftCards(world).account = { kind: "codeSent", email: info.email }),
-    gift_card_verify_email: ({ code }, { world }) => {
-      const state = giftCards(world);
-      if (state.account.kind !== "codeSent" || code !== "123456") throw fail("Check the email code.");
-      return (state.account = { kind: "signedIn", email: state.account.email });
+    gift_card_account: ({ walletId }, { world }) => walletOf(world, walletId).account,
+    gift_card_accounts: ({ walletId }, { world }) => walletOf(world, walletId).accounts,
+    gift_card_signup: ({ walletId, info }, { world }) => (walletOf(world, walletId).account = { kind: "codeSent", email: info.email }),
+    gift_card_verify_email: ({ walletId, code }, { world }) => {
+      const wallet = walletOf(world, walletId);
+      if (wallet.account.kind !== "codeSent" || code !== "123456") throw fail("Check the email code.");
+      return activate(wallet, wallet.account.email);
     },
-    gift_card_sign_in: (_, { world }) => {
-      const state = giftCards(world);
-      if (state.account.kind !== "canSignIn") throw fail("Set up a PiggyCards account first.");
-      return (state.account = { kind: "signedIn", email: state.account.email });
+    gift_card_sign_in: ({ walletId, account }, { world }) => {
+      const wallet = walletOf(world, walletId);
+      const chosen = account === null ? wallet.accounts.find((a) => a.active) : wallet.accounts.find((a) => a.id === account);
+      if (!chosen) throw fail("Set up a PiggyCards account first.");
+      return activate(wallet, chosen.email);
     },
-    gift_card_sign_out: (_, { world }) => {
-      const state = giftCards(world);
-      return (state.account = state.account.kind === "signedIn" ? { kind: "canSignIn", email: state.account.email } : { kind: "signedOut" });
+    gift_card_sign_out: ({ walletId }, { world }) => {
+      const wallet = walletOf(world, walletId);
+      const active = wallet.accounts.find((a) => a.active);
+      return (wallet.account = active ? { kind: "canSignIn", email: active.email } : { kind: "signedOut" });
     },
-    gift_card_brands: (_, { world }) => {
-      signedIn(world);
+    gift_card_brands: ({ walletId }, { world }) => {
+      signedIn(world, walletId);
       return BRANDS;
     },
-    gift_card_products: ({ brand }, { world }) => {
-      signedIn(world);
+    gift_card_products: ({ walletId, brand }, { world }) => {
+      signedIn(world, walletId);
       const found = BRANDS.find((b) => b.id === brand);
       return found ? [{ id: Number(brand), name: found.name, values: [2500, 5000, 10000], min: null, max: null }] : [];
     },
-    gift_card_orders: ({ walletId }, { world }) => signedIn(world).orders.filter((o) => o.walletId === walletId).slice().reverse(),
+    gift_card_orders: ({ walletId }, { world }) => signedIn(world, walletId).orders.filter((o) => o.walletId === walletId).slice().reverse(),
     gift_card_create_order: ({ walletId, brand, productId, cents }, { world }) => {
-      const state = signedIn(world);
+      const state = signedIn(world, walletId);
       const found = BRANDS.find((b) => b.id === brand);
       if (!found || productId !== Number(brand) || ![2500, 5000, 10000].includes(cents)) throw fail("This gift card value is unavailable.");
       const expiresAt = Math.floor(Date.now() / 1000) + 120;
@@ -69,7 +89,7 @@ export function giftCardsHandlers(send: Handlers): Handlers {
       return order;
     },
     gift_card_details: ({ walletId, orderId }, { world }) => {
-      const order = signedIn(world).orders.find((o) => o.id === orderId && o.walletId === walletId);
+      const order = signedIn(world, walletId).orders.find((o) => o.id === orderId && o.walletId === walletId);
       if (!order) throw fail("Gift card order unavailable.");
       return {
         order,
@@ -80,19 +100,19 @@ export function giftCardsHandlers(send: Handlers): Handlers {
       };
     },
     gift_card_resend: ({ walletId, orderId }, { world }) => {
-      const order = signedIn(world).orders.find((o) => o.id === orderId && o.walletId === walletId);
+      const order = signedIn(world, walletId).orders.find((o) => o.id === orderId && o.walletId === walletId);
       if (!order?.txid || order.paid || Date.now() >= order.expiresAt * 1000) throw fail("This order cannot be resent.");
       order.paid = true;
       return null;
     },
     gift_card_open_claim: ({ walletId, orderId, card, host }, { world }) => {
-      const order = signedIn(world).orders.find((o) => o.id === orderId && o.walletId === walletId);
+      const order = signedIn(world, walletId).orders.find((o) => o.id === orderId && o.walletId === walletId);
       if (!order?.paid || order.cents !== 5000 || card !== 0 || host !== "link-only.fixture.invalid") throw fail("The redemption link is unavailable.");
       world.giftClaimOpened = host;
       return null;
     },
     gift_card_draft: ({ walletId, orderId }, ctx) => {
-      const state = signedIn(ctx.world);
+      const state = signedIn(ctx.world, walletId);
       const order = state.orders.find((o) => o.id === orderId && o.walletId === walletId);
       if (!order || !order.invoice || order.txid || Date.now() >= order.expiresAt * 1000) throw fail("The gift card invoice is unavailable.");
       const handle = send.new_tx_draft!({ walletId }, ctx);
@@ -110,7 +130,7 @@ export function giftCardsHandlers(send: Handlers): Handlers {
     gift_card_broadcast: ({ orderId, draft, prepared }, ctx) => {
       const { world } = ctx;
       const tx = world.send.prepared[prepared];
-      const state = signedIn(world);
+      const state = signedIn(world, tx?.walletId ?? "");
       const order = state.orders.find((o) => o.id === orderId && o.walletId === tx?.walletId);
       const invoice = order?.invoice;
       const recipients = tx?.summary.outputs.filter((o) => !o.isChange);

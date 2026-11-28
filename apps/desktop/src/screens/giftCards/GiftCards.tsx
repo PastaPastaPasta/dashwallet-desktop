@@ -16,7 +16,6 @@ import { FormField } from "../pay/form";
 import { Checkout } from "./Checkout";
 import "./giftCards.css";
 
-const ACCOUNT = ["giftCards", "account"] as const;
 const US_STATES = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split(" ");
 
 function problem(error: unknown, fallback: string): string {
@@ -46,7 +45,10 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
   const t = useT();
   const b = useBackend();
   const client = useQueryClient();
-  const account = useQuery({ queryKey: ACCOUNT, queryFn: () => b.giftCardAccount(), gcTime: 0, retry: false });
+  const { walletId } = wallet;
+  const accountKey = ["giftCards", walletId, "account"] as const;
+  const account = useQuery({ queryKey: accountKey, queryFn: () => b.giftCardAccount(walletId), gcTime: 0, retry: false });
+  const stored = useQuery({ queryKey: ["giftCards", walletId, "accounts"], queryFn: () => b.giftCardAccounts(walletId), gcTime: 0, retry: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [another, setAnother] = useState(false);
@@ -58,8 +60,9 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
     setBusy(true);
     setError(null);
     try {
-      client.setQueryData(ACCOUNT, await action());
+      client.setQueryData(accountKey, await action());
       setAnother(false);
+      void stored.refetch();
     } catch (e) {
       setError(problem(e, t("giftCards.providerError")));
       void account.refetch();
@@ -88,7 +91,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
               <h2>{t("giftCards.provider")}</h2>
               <p className="field-hint">{t("giftCards.account", { email: status.email })}</p>
             </div>
-            <DashButton variant="tintedGray" disabled={busy} onClick={() => void run(() => b.giftCardSignOut())}>{t("giftCards.signOut")}</DashButton>
+            <DashButton variant="tintedGray" disabled={busy} onClick={() => void run(() => b.giftCardSignOut(walletId))}>{t("giftCards.signOut")}</DashButton>
           </section>
           <Catalog key={status.email} wallet={wallet} network={network} />
         </>
@@ -96,7 +99,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
         <form className="card-l1 gift-panel" onSubmit={(e) => {
           e.preventDefault();
           const code = new FormData(e.currentTarget).get("code");
-          if (typeof code === "string") void run(() => b.giftCardVerifyEmail(code));
+          if (typeof code === "string") void run(() => b.giftCardVerifyEmail(walletId, code));
         }}>
           <h2>{t("giftCards.provider")}</h2>
           <p>{t("giftCards.codeSent", { email: status.email })}</p>
@@ -105,7 +108,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
           </FormField>
           <div className="gift-actions">
             <DashButton type="submit" variant="filledBlue" disabled={busy}>{t("giftCards.verify")}</DashButton>
-            <DashButton variant="tintedGray" disabled={busy} onClick={() => void run(() => b.giftCardSignOut())}>{t("giftCards.changeEmail")}</DashButton>
+            <DashButton variant="tintedGray" disabled={busy} onClick={() => void run(() => b.giftCardSignOut(walletId))}>{t("giftCards.changeEmail")}</DashButton>
           </div>
         </form>
       ) : status.kind === "canSignIn" && !another ? (
@@ -113,7 +116,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
           <h2>{t("giftCards.provider")}</h2>
           <p>{status.email}</p>
           <div className="gift-actions">
-            <DashButton variant="filledBlue" disabled={busy} onClick={() => void run(() => b.giftCardSignIn())}>{t("giftCards.signIn")}</DashButton>
+            <DashButton variant="filledBlue" disabled={busy} onClick={() => void run(() => b.giftCardSignIn(walletId, null))}>{t("giftCards.signIn")}</DashButton>
             <DashButton variant="tintedGray" disabled={busy} onClick={() => { setError(null); setAnother(true); }}>{t("giftCards.anotherAccount")}</DashButton>
           </div>
         </section>
@@ -122,9 +125,19 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
           e.preventDefault();
           const fields = new FormData(e.currentTarget);
           const read = (name: string) => fields.get(name)?.toString() ?? "";
-          void run(() => b.giftCardSignup({ firstName: read("firstName"), lastName: read("lastName"), email: read("email"), state: read("state") }));
+          void run(() => b.giftCardSignup(walletId, { firstName: read("firstName"), lastName: read("lastName"), email: read("email"), state: read("state") }));
         }}>
           <h2>{t("giftCards.provider")}</h2>
+          {(stored.data ?? []).filter((a) => !a.active).length > 0 && (
+            <div className="gift-stored">
+              <p className="field-hint">{t("giftCards.storedAccounts")}</p>
+              {(stored.data ?? []).filter((a) => !a.active).map((a) => (
+                <DashButton key={a.id} variant="tintedGray" disabled={busy} onClick={() => void run(() => b.giftCardSignIn(walletId, a.id))}>
+                  {t("giftCards.signInAs", { email: a.email })}
+                </DashButton>
+              ))}
+            </div>
+          )}
           <p>{t("giftCards.disclosure")}</p>
           <div className="gift-fields">
             <FormField label={t("giftCards.firstName")}>
@@ -156,7 +169,7 @@ function Catalog({ wallet, network }: { wallet: WalletSummary; network: NetworkI
   const client = useQueryClient();
   const { walletId } = wallet;
   const keys = ["giftCards", walletId] as const;
-  const brands = useQuery({ queryKey: [...keys, "brands"], queryFn: () => b.giftCardBrands(), gcTime: 0, retry: false });
+  const brands = useQuery({ queryKey: [...keys, "brands"], queryFn: () => b.giftCardBrands(walletId), gcTime: 0, retry: false });
   const orders = useQuery({ queryKey: [...keys, "orders"], queryFn: () => b.giftCardOrders(walletId), gcTime: 0, retry: false });
   const [search, setSearch] = useState("");
   const [brand, setBrand] = useState<GiftBrand | null>(null);
@@ -211,7 +224,7 @@ function Products({ brand, wallet, onOrder }: { brand: GiftBrand; wallet: Wallet
   const b = useBackend();
   const products = useQuery({
     queryKey: ["giftCards", wallet.walletId, "products", brand.id],
-    queryFn: () => b.giftCardProducts(brand.id), gcTime: 0, retry: false,
+    queryFn: () => b.giftCardProducts(wallet.walletId, brand.id), gcTime: 0, retry: false,
   });
   const [id, setId] = useState("");
   const items = products.data ?? [];
