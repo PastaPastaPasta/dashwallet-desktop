@@ -122,6 +122,7 @@ jobs:
       rust: ${{ steps.diff.outputs.rust }}
       renderer: ${{ steps.diff.outputs.renderer }}
       ui: ${{ steps.diff.outputs.ui }}
+      crates: ${{ steps.diff.outputs.crates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ github.event_name == 'pull_request' }}
@@ -145,23 +146,30 @@ jobs:
             funds_word='send|sign|psbt|coin|fee|key|seed|phrase|mnemonic|vault|wallet|backup|restore|recover|lock|secur|biometr|transfer|withdraw|shield|mix|protx|masternode|collateral|governance|top-?up|fund|pay|utxo|balance|credit|regist|asset|spend|amount|address|invit|tx|pin'
             # Renderer code can reach a funds flow from any file: only catalogs and stylesheets are exempt.
             copy='^apps/desktop/src/(i18n/catalog/[^/]+\.ts|styles/[^/]+\.css)$'
-            rust=false renderer=false ui=false any=false
+            rust=false renderer=false ui=false any=false full=false crates=""
             while IFS= read -r -d '' f; do
               any=true
               if [[ $f =~ $docs && ! $f =~ $docs_code && ! $f =~ $read_by_rust ]]; then kind=docs
               elif [[ $f =~ $renderer_only && ! $f =~ $read_by_rust ]]; then kind=renderer renderer=true
               else kind=all rust=true renderer=true
+                # Rust tests (Linux) tests only the workspace packages a pull request changes; any other
+                # file that runs it (manifests, the lock, ci/, scripts, read_by_rust) runs the whole workspace.
+                if [[ $f =~ ^rust/(crates|bin)/([^/]+)/ && -f rust/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/Cargo.toml ]]; then
+                  [[ " $crates " == *" ${BASH_REMATCH[2]} "* ]] || crates="$crates ${BASH_REMATCH[2]}"
+                else full=true
+                fi
               fi
               if [[ $FUNDS_FULL_SUITE == true && $kind != docs && ! $f =~ $copy ]] \
                 && [[ $f =~ $renderer_only || $f =~ $funds_tree || ${f,,} =~ $funds_word ]]; then
-                kind=funds rust=true renderer=true ui=true
+                kind=funds rust=true renderer=true ui=true full=true
               fi
               echo "$kind $f"
             done < "$RUNNER_TEMP/changed"
             [[ $any == true ]] || rust=true renderer=true ui=true
+            [[ $any == true && $full == false ]] || crates=""
             [[ $rust == true ]] || ci/github/windows-paths.py
           fi
-          printf 'rust=%s\nrenderer=%s\nui=%s\n' "$rust" "$renderer" "$ui" | tee -a "$GITHUB_OUTPUT"
+          printf 'rust=%s\nrenderer=%s\nui=%s\ncrates=%s\n' "$rust" "$renderer" "$ui" "${crates# }" | tee -a "$GITHUB_OUTPUT"
 
   lint:
     name: Rust lint (fmt, clippy)
@@ -214,13 +222,13 @@ jobs:
       - name: RustSec advisories (Cargo.lock; ignores in rust/deny.toml)
         run: cargo deny --locked check advisories
 
-  # Main's Windows job lints the Windows code paths, but only after a merge. This lints them on every
-  # pull request that runs the Rust jobs, cross-compiled from Linux with MinGW-w64: the same command as
-  # the Windows job's clippy, for the GNU target instead of MSVC.
+  # The Windows code paths, cross-compiled from Linux with MinGW-w64: the same command as the Windows
+  # job's clippy, for the GNU target instead of MSVC. Not on pull requests (runner time; fix forward):
+  # on main, nightly and a dispatch, where it reports before the Windows job does.
   windows-cross-check:
     name: Windows cross-check (mingw)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.rust == 'false') }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && !(needs.changes.result == 'success' && needs.changes.outputs.rust == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
@@ -256,6 +264,11 @@ jobs:
     # Cold runs (no cache restored) take about 45 min, warm ones under 20. This job alone saves
     # the ci-Linux cache, only on main and only when it succeeds, so it must be able to finish cold.
     timeout-minutes: 150
+    # On a pull request that changes only workspace packages, CRATES names them and only their tests
+    # run (with `-p`); the whole workspace runs on main, nightly and a dispatch, and fixes go forward.
+    # Rust lint's `clippy --workspace --all-targets` still compiles every crate on the pull request.
+    env:
+      CRATES: ${{ github.event_name == 'pull_request' && needs.changes.outputs.crates || '' }}
     defaults:
       run:
         shell: bash
@@ -287,18 +300,36 @@ jobs:
       - name: cargo test --workspace --no-run --locked
         id: build
         run: |
-          cargo test --workspace --no-run --locked
+          if [[ -n $CRATES ]]; then
+            echo "Pull request: only the tests of $CRATES"
+            read -ra pkgs <<< "$CRATES"
+            cargo test --no-run --locked "${pkgs[@]/#/--package=}"
+          else
+            cargo test --workspace --no-run --locked
+          fi
+          shopt -s nullglob
           find crates/dw-app/permissions target/debug/build/dw-app-*/out -exec touch -d @0 {} +
       # `cargo test --workspace --locked --no-fail-fast` in two concurrent lanes (libraries' unit
       # tests and doc tests; bins' unit tests and integration tests), each binary in one process.
       - name: cargo test --workspace (two lanes)
-        run: ../ci/github/cargo-test-lanes.sh
+        run: |
+          if [[ -n $CRATES ]]; then
+            read -ra pkgs <<< "$CRATES"
+            cargo test --locked --no-fail-fast "${pkgs[@]/#/--package=}"
+          else
+            ../ci/github/cargo-test-lanes.sh
+          fi
       # Without the feature, dw-app's tests prove the self-test's options, commands and grant
       # are absent; with it, that they work (E0-13 D17). The workspace is selected, so only dw-app
       # is compiled again.
       - name: dw-app with the selftest feature
-        if: ${{ !cancelled() }}
-        run: ../ci/github/cargo-test-package.sh dw-app --features dw-app/selftest
+        if: ${{ !cancelled() && (env.CRATES == '' || contains(format(' {0} ', env.CRATES), ' dw-app ')) }}
+        run: |
+          if [[ -n $CRATES ]]; then
+            cargo test -p dw-app --features dw-app/selftest --locked --no-fail-fast
+          else
+            ../ci/github/cargo-test-package.sh dw-app --features dw-app/selftest
+          fi
       # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
       # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
       # leg of mix_shield_release_check isn't vacuous. With `invitation-create-test`, the table
@@ -307,7 +338,7 @@ jobs:
       # only `mix-shield-test` and the release check only `test-mix-shield`. The Nightly runs
       # dwcli's whole suite with each debug feature on its own.
       - name: dwcli and dw-engine with the debug features
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (env.CRATES == '' || contains(format(' {0} ', env.CRATES), ' dwcli ') || contains(format(' {0} ', env.CRATES), ' dw-engine ')) }}
         run: |
           debug=(-p dwcli -p dw-engine --locked --no-fail-fast
             --features dwcli/invitation-create-test,dwcli/mix-shield-test,dw-engine/test-mix-shield)
@@ -325,7 +356,9 @@ jobs:
         # Also after a failed test step (stale bindings fail it): the diff shows what changed.
         if: ${{ !cancelled() }}
         run: |
-          DW_UPDATE_BINDINGS=1 cargo test --workspace --lib --locked -- --exact \
+          scope=--workspace
+          [[ -z $CRATES ]] || scope=--package=dw-app
+          DW_UPDATE_BINDINGS=1 cargo test "$scope" --lib --locked -- --exact \
             codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current | tee "$RUNNER_TEMP/bindings.txt"
           [ "$(grep -c '^test .* \.\.\. ok$' "$RUNNER_TEMP/bindings.txt")" -eq 2 ]
           cd ..
@@ -338,7 +371,7 @@ jobs:
       # second time: about 9 min on the first run, 7 of them that build. Not after a failed
       # build: it would only compile again to print the same error.
       - name: The committed Swift bindings match dw-ffi
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && (env.CRATES == '' || contains(format(' {0} ', env.CRATES), ' dw-ffi ') || contains(format(' {0} ', env.CRATES), ' uniffi-bindgen ')) }}
         run: ../scripts/build-core.sh --check-bindings
       - name: Disk use
         if: ${{ !cancelled() }}
