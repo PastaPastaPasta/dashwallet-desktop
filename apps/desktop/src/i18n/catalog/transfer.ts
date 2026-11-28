@@ -373,6 +373,7 @@ export const transfer = {
       },
       errorCode: "It stopped with {code}.",
       finishLock: "Your Dash is still locked. Finish this move from Unfinished transfers on Home.",
+      balanceUnavailable: "The transfer was confirmed. Your updated Shielded balance is unavailable.",
       checkActivity: "Check Activity for the result of your transfer.",
     },
     done: {

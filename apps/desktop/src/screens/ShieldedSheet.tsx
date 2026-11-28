@@ -418,9 +418,10 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
         </div>
       ))}
       {step === "done" && <Outcome flow={flow} fmt={fmt} steps={steps} />}
-      {step === "checkActivity" && (
+      {(step === "checkActivity" || step === "balanceUnavailable") && (
         <>
-          <p role="status" className="sheet-text">{tr("transfer.shielded.progress.checkActivity")}</p>
+          <p role="status" className="sheet-text">{tr(step === "balanceUnavailable" ? "transfer.shielded.progress.balanceUnavailable" : "transfer.shielded.progress.checkActivity")}</p>
+          {step === "balanceUnavailable" && <MoveSteps steps={steps} />}
           <div className="sheet-actions">
             <DashButton variant="filledBlue" size="large" onClick={() => flow.close()}>{C.close}</DashButton>
           </div>
@@ -428,7 +429,8 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
       )}
       {step === "refused" && (
         <>
-          {steps.some((step) => step.state === "failed") ? <MoveSteps steps={steps} refusal={refusal} /> : (
+          <MoveSteps steps={steps} refusal={refusal} />
+          {!steps.some((step) => step.state === "failed") && (
             <p className="form-problem" role="alert" data-testid="shielded-refusal">{refusal}</p>
           )}
           <div className="sheet-actions">

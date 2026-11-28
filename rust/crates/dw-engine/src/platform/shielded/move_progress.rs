@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
@@ -6,6 +7,7 @@ use crate::{
 };
 
 use super::{ShieldOutcome, ShieldState, ShieldedError, ShieldedSpendState};
+use crate::platform::PlatformError;
 
 tokio::task_local! {
     static MOVE_PROGRESS: Option<Arc<MoveProgress>>;
@@ -17,6 +19,7 @@ struct MoveProgress {
     wallet: WalletId,
     id: u32,
     stage: Mutex<MoveStage>,
+    refreshed: AtomicBool,
 }
 
 impl MoveProgress {
@@ -34,6 +37,14 @@ impl MoveProgress {
 pub(in crate::platform) fn inherit<F: Future>(call: F) -> impl Future<Output = F::Output> {
     let progress = MOVE_PROGRESS.try_with(Option::clone).ok().flatten();
     MOVE_PROGRESS.scope(progress, call)
+}
+
+pub(in crate::platform) fn balance_refreshed() {
+    let _ = MOVE_PROGRESS.try_with(|progress| {
+        if let Some(progress) = progress {
+            progress.refreshed.store(true, Ordering::Relaxed);
+        }
+    });
 }
 
 pub(in crate::platform) fn advance(stage: MoveStage) {
@@ -66,19 +77,29 @@ pub(in crate::platform) async fn report<T>(
         wallet,
         id,
         stage: Mutex::new(MoveStage::CheckTransfer),
+        refreshed: AtomicBool::new(false),
     });
     progress.emit(MoveStage::CheckTransfer, MoveProgressStatus::Running);
     let result = MOVE_PROGRESS.scope(Some(Arc::clone(&progress)), call).await;
-    let status = match &result {
-        Ok(value) => outcome(value),
-        Err(error) => MoveProgressStatus::Failed {
-            code: error.code().into(),
-        },
-    };
     let stage = *progress
         .stage
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
+    let status = match &result {
+        Ok(_)
+            if stage == MoveStage::RefreshShielded
+                && !progress.refreshed.load(Ordering::Relaxed) =>
+        {
+            MoveProgressStatus::Pending
+        }
+        Ok(value) => outcome(value),
+        Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { .. })) => {
+            MoveProgressStatus::Pending
+        }
+        Err(error) => MoveProgressStatus::Failed {
+            code: error.code().into(),
+        },
+    };
     progress.emit(stage, status);
     result
 }

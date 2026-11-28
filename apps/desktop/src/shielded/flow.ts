@@ -463,11 +463,12 @@ export class ShieldedFlow extends Model {
     return !this.open && !this.running && (this.step === "done" || this.step === "refused");
   }
 
-  get displayStep(): ShieldedStep | "checkActivity" {
+  get displayStep(): ShieldedStep | "checkActivity" | "balanceUnavailable" {
     if (this.step !== "done" || this.progressId === undefined || this.progress?.status.kind === "done") return this.step;
     const result = this.result;
     const confirmed = result?.kind === "shield" ? result.outcome.state.kind === "applied" : result?.outcome.state === "done";
     if (!confirmed) return this.step;
+    if (this.progress?.stage === "refreshShielded" && this.progress.status.kind === "pending") return "balanceUnavailable";
     return this.progressInterrupted ? "checkActivity" : "running";
   }
 
@@ -555,9 +556,10 @@ export class ShieldedFlow extends Model {
 
   /** Hides the sheet; a running call goes on and its result waits. A result seen is dropped. */
   close() {
+    const seen = this.open && this.displayStep !== "running";
     this.open = false;
     if (!this.running) {
-      if (this.step === "done" || this.step === "refused") this.step = "form";
+      if (seen && (this.step === "done" || this.step === "refused")) this.step = "form";
       this.grants.cancel();
     }
     this.changed();

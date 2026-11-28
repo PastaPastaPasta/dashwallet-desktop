@@ -162,7 +162,10 @@ const MOVE_COMMANDS = new Set(["shield_from_core", "unshield_to_core", "unshield
 type FixtureAnswer = { result: unknown } | { error: unknown };
 
 function moveOutcome(answer: FixtureAnswer): MoveProgressStatus {
-  if ("error" in answer) return { kind: "failed", code: (answer.error as Partial<AppError> | null)?.code ?? "internal" };
+  if ("error" in answer) {
+    const code = (answer.error as Partial<AppError> | null)?.code ?? "internal";
+    return code === "platform.broadcast_unknown" ? { kind: "pending" } : { kind: "failed", code };
+  }
   const { state } = answer.result as ShieldOutcome | ShieldedSpendOutcome;
   if (state === "done" || (typeof state !== "string" && state.kind === "applied")) return { kind: "done" };
   if (typeof state !== "string" && state.kind === "notApplied") return { kind: "failed", code: state.error };
@@ -259,7 +262,9 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       }
       if (progress) {
         for (const stage of stages) progress(stage, { kind: "running" });
-        const status = moveOutcome(answer);
+        const status: MoveProgressStatus = last === "refreshShielded" && world.pending.shielded?.lastPassFailed
+          ? { kind: "pending" }
+          : moveOutcome(answer);
         if (status.kind === "done" && heldSettlement) {
           void heldSettlement.then(() => progress(last, status));
           heldSettlement = null;

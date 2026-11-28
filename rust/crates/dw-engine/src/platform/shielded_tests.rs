@@ -350,6 +350,8 @@ pub(crate) struct FakeShielded {
     /// What a proved read of the version returns.
     refreshed: u32,
     pub(crate) refreshes: AtomicU32,
+    sync_success: AtomicBool,
+    ledger_missing_after_scan: AtomicBool,
     bound: bool,
     /// What a bind says while not `bound`.
     unbound_as: ShieldedAccount,
@@ -597,6 +599,8 @@ impl Default for FakeShielded {
             version: LATEST,
             refreshed: LATEST,
             refreshes: AtomicU32::new(0),
+            sync_success: AtomicBool::new(true),
+            ledger_missing_after_scan: AtomicBool::new(false),
             bound: true,
             unbound_as: ShieldedAccount::Binding,
             ledger: Some(Ledger {
@@ -983,6 +987,11 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn ledger(&self) -> Result<Option<Ledger>, PlatformError> {
+        if self.ledger_missing_after_scan.load(Ordering::SeqCst)
+            && self.syncs.load(Ordering::SeqCst) > 0
+        {
+            return Ok(None);
+        }
         Ok(self.scan_ledger.lock().unwrap().or(self.ledger))
     }
 
@@ -1018,7 +1027,7 @@ impl ShieldedLib for FakeShielded {
                 row.status = found;
             }
         }
-        true
+        self.sync_success.load(Ordering::SeqCst)
     }
 
     fn sync_state(&self) -> SyncState {
@@ -5600,6 +5609,141 @@ fn shield_move_reports_order_and_the_failed_step() {
             ));
         }
         assert_eq!(events, expected);
+    }
+}
+
+#[test]
+fn broadcast_unknown_keeps_the_current_move_stage_pending() {
+    use super::shielded::move_progress;
+    use crate::{EngineEvent, MoveProgressStatus, MoveStage};
+
+    let fx = Fixture::new(0);
+    let result = fx.engine.block_on(move_progress::report(
+        &fx.s,
+        fx.wallet,
+        Some(42),
+        async {
+            move_progress::advance(MoveStage::PlatformSubmission);
+            Err::<(), _>(
+                PlatformError::BroadcastUnknown {
+                    artifact: "fixture".into(),
+                }
+                .into(),
+            )
+        },
+        |()| MoveProgressStatus::Done,
+    ));
+    assert_eq!(result.unwrap_err().code(), "platform.broadcast_unknown");
+    assert!(fx.events.0.lock().unwrap().iter().any(|event| matches!(
+        event,
+        EngineEvent::MoveProgress {
+            stage: MoveStage::PlatformSubmission,
+            status: MoveProgressStatus::Pending,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn refresh_uses_only_this_wallet_in_this_pass() {
+    use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
+    let wallet = crate::WalletId([1; 32]);
+    let other = crate::WalletId([2; 32]);
+    let scanned = platform_wallet::wallet::shielded::ShieldedSyncSummary {
+        balances: [(dw_vault::SHIELDED_ACCOUNT, 0)].into(),
+        ..Default::default()
+    };
+    let mut pass = ShieldedSyncPassSummary::default();
+    assert!(!pool::wallet_scanned(&pass, wallet));
+    pass.wallet_results
+        .insert(other.0, WalletShieldedOutcome::Ok(scanned.clone()));
+    assert!(!pool::wallet_scanned(&pass, wallet));
+    for outcome in [
+        WalletShieldedOutcome::Err("scan failed".into()),
+        WalletShieldedOutcome::Skipped,
+        WalletShieldedOutcome::Ok(Default::default()),
+        WalletShieldedOutcome::Ok(platform_wallet::wallet::shielded::ShieldedSyncSummary {
+            is_cooldown_skip: true,
+            ..scanned.clone()
+        }),
+    ] {
+        pass.wallet_results.insert(wallet.0, outcome);
+        assert!(!pool::wallet_scanned(&pass, wallet));
+    }
+    pass.wallet_results
+        .insert(other.0, WalletShieldedOutcome::Err("other wallet".into()));
+    pass.wallet_results
+        .insert(wallet.0, WalletShieldedOutcome::Ok(scanned));
+    assert!(pool::wallet_scanned(&pass, wallet));
+}
+
+#[test]
+fn move_refresh_requires_a_successful_wallet_scan_and_a_readable_balance() {
+    use super::shielded::move_progress;
+    use crate::{EngineEvent, MoveProgressStatus, MoveStage};
+
+    for shield in [true, false] {
+        for scan_ok in [false, true] {
+            let fx = Fixture::new(0);
+            let lib = real_rows(&fx);
+            *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+            lib.sync_success.store(scan_ok, Ordering::SeqCst);
+            lib.ledger_missing_after_scan
+                .store(scan_ok, Ordering::SeqCst);
+            let wallet = fx.wallet;
+            if shield {
+                let grant = shield_grant(&fx, 2_000_000);
+                let result = run(&fx, &lib, move |s, lib| async move {
+                    move_progress::report(
+                        &s,
+                        wallet,
+                        Some(43),
+                        pool::shield(
+                            &s,
+                            wallet,
+                            &*lib,
+                            FundAmount::Duffs { duffs: 1_000_000 },
+                            &grant,
+                        ),
+                        move_progress::shield_outcome,
+                    )
+                    .await
+                })
+                .unwrap();
+                assert!(matches!(result.state, ShieldState::Applied { .. }));
+            } else {
+                let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+                let result = run(&fx, &lib, move |s, lib| async move {
+                    move_progress::report(
+                        &s,
+                        wallet,
+                        Some(43),
+                        pool::unshield(&s, wallet, &*lib, NOTE, None, &lease, false),
+                        |o| move_progress::spend_outcome(o.state),
+                    )
+                    .await
+                })
+                .unwrap();
+                assert_eq!(result.state, ShieldedSpendState::Done);
+            }
+            let last = fx
+                .events
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    EngineEvent::MoveProgress { stage, status, .. } => {
+                        Some((*stage, status.clone()))
+                    }
+                    _ => None,
+                });
+            assert_eq!(
+                last,
+                Some((MoveStage::RefreshShielded, MoveProgressStatus::Pending))
+            );
+        }
     }
 }
 

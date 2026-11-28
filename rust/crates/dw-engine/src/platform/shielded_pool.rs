@@ -61,7 +61,7 @@
 //!   transition by Platform's hash of it; a spend stored before any hook was
 //!   set is recorded in the 0.1 dispatch journal, while a spend stored under
 //!   the hook has its artifact written before its first send. Nothing here
-//!   resends. Every pass goes through [`guarded_pass`]: admitted only while
+//!   resends. Every pass goes through [`pass`]: admitted only while
 //!   the session is open (the supervisor's kick, or [`on_pool`]), only with
 //!   the hook set, only while each wallet holding a spend stored before any
 //!   hook was set holds its background lease, and only once each such spend
@@ -140,7 +140,7 @@ use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
 use platform_wallet::manager::shielded_sync::{
-    HostHeightlessSpend, ShieldedPassEvidence, WalletShieldedOutcome,
+    HostHeightlessSpend, ShieldedPassEvidence, ShieldedSyncPassSummary, WalletShieldedOutcome,
 };
 use platform_wallet::wallet::asset_lock::AssetLockFunding;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
@@ -266,7 +266,7 @@ pub(crate) trait ShieldedLib: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<ShieldedActivityEntry>, PlatformError>> + Send;
     /// A sync pass of every bound wallet now, past the caught-up cooldown,
-    /// through [`guarded_pass`]; `false` when it was held back.
+    /// through [`pass`]. Returns true only if this pass scanned this wallet.
     fn sync_now(&self) -> impl Future<Output = bool> + Send;
     fn sync_state(&self) -> SyncState;
     fn prover_ready(&self) -> bool;
@@ -1471,6 +1471,15 @@ async fn balance(lib: &impl ShieldedLib) -> u64 {
     (lib.ledger().await.ok().flatten()).map_or(0, |l| l.spendable)
 }
 
+async fn refresh_balance(lib: &impl ShieldedLib) -> u64 {
+    let scanned = lib.sync_now().await;
+    let ledger = lib.ledger().await.ok().flatten();
+    if scanned && ledger.is_some() {
+        move_progress::balance_refreshed();
+    }
+    ledger.map_or(0, |l| l.spendable)
+}
+
 /// Writes the engine's marker of the spend the library just could not
 /// confirm and kept no record of (DEC-1057): the reservations it made for
 /// it before its broadcast, those of an activity not reserved before, give
@@ -1654,9 +1663,8 @@ pub(super) async fn send_armed(
             move_progress::advance(MoveStage::RefreshShielded);
             drop(hold);
             // The change note is the library's once a pass finds it.
-            lib.sync_now().await;
             Ok(Spent {
-                balance: balance(lib).await,
+                balance: refresh_balance(lib).await,
                 state: ShieldedSpendState::Done,
                 unresolved: None,
                 record,
@@ -2363,9 +2371,8 @@ pub(super) async fn apply(
                 tracing::warn!(%outpoint, error = %e, "could not record a shield's lock settled");
             }
             // The shielded note is the library's once a pass finds it.
-            lib.sync_now().await;
             ShieldState::Applied {
-                balance: balance(lib).await,
+                balance: refresh_balance(lib).await,
             }
         }
         // Neither settles (SR1): the lock pends, checking, until a proved
@@ -3838,7 +3845,9 @@ impl ShieldedLib for PwShielded {
     }
 
     async fn sync_now(&self) -> bool {
-        guarded_pass(&self.pw.session, &self.manager, true).await
+        pass(&self.pw.session, &self.manager, true, None, &|_| true)
+            .await
+            .is_some_and(|summary| wallet_scanned(&summary, self.pw.wallet_id))
     }
 
     /// `last_sync_at`: the last pass's end, or a later skip's proof that
@@ -5493,27 +5502,22 @@ pub(super) async fn hold_passes(
         .map_err(|_| PlatformError::Unavailable.into())
 }
 
-/// One shielded sync pass, the only way the engine runs one: after
-/// [`admit_pass`], started only while the session is open (the facade's
-/// calls in [`on_pool`], the supervisor's [`periodic_pass`]), and
-/// holding the session's pass lock from the admission to its end, so a
-/// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
-/// before the lock outlives it. Its tail reads the library's spend
-/// outcomes into the journal ([`settle_outcomes`]). `false` when it
-/// was held back.
+#[cfg(test)]
 pub(crate) async fn guarded_pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
     force: bool,
 ) -> bool {
-    pass(session, manager, force, None, &|_| true).await
+    pass(session, manager, force, None, &|_| true)
+        .await
+        .is_some()
 }
 
 /// The supervisor's periodic pass (#178): Platform's note count is read
 /// first, by a task holding only the SDK, so neither a close nor a stop
 /// waits for it. Then, while the session is open and `runs` says the loops
 /// that kicked it still do (checked again under the pass's locks),
-/// [`guarded_pass`]'s pass, which skips the library's pass while
+/// [`pass`], which skips the library's pass while
 /// [`pool_is_idle`]. `false` when it did not run or was held back.
 pub(crate) async fn periodic_pass(
     session: Arc<NetworkSession>,
@@ -5559,7 +5563,9 @@ pub(crate) async fn periodic_pass(
     }
     bind_new_tip_accounts(&session, &manager).await;
     let runs = |s: &NetworkSession| runs(s) && s.try_enter().is_ok();
-    pass(&session, &manager, false, count, &runs).await
+    pass(&session, &manager, false, count, &runs)
+        .await
+        .is_some()
 }
 
 /// Before a periodic pass, outside its locks: each bound wallet's identity
@@ -5576,18 +5582,21 @@ pub(crate) async fn bind_new_tip_accounts(session: &Arc<NetworkSession>, manager
     }
 }
 
-/// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
-/// are taken and again as the library's pass starts, and while imported
-/// spends' history rows cannot be kept and the library holds a spend with
-/// no row ([`keep_import_rows`]); a periodic one's proved note `count`,
-/// with the time it was proved at, may skip it.
+/// One shielded sync pass, the only way the engine runs one: after
+/// [`admit_pass`], started only while the session is open (the facade's
+/// calls in [`on_pool`], the supervisor's [`periodic_pass`]), and
+/// holding the session's pass lock from the admission to its end, so a
+/// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
+/// before the lock outlives it. Its tail reads the library's spend
+/// outcomes into the journal ([`settle_outcomes`]). Returns this pass's
+/// summary, or `None` if held back.
 async fn pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
     force: bool,
     count: Option<(u64, u64)>,
     runs: &(dyn Fn(&NetworkSession) -> bool + Sync),
-) -> bool {
+) -> Option<ShieldedSyncPassSummary> {
     #[cfg(test)]
     if let Some(queued) = session.platform.spends_queued.lock().unwrap().take() {
         let _ = queued.send(());
@@ -5596,7 +5605,7 @@ async fn pass(
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
     if !runs(session) {
-        return false;
+        return None;
     }
     #[cfg(test)]
     if let Some(admitting) = session.platform.admitting.lock().unwrap().take() {
@@ -5606,7 +5615,7 @@ async fn pass(
         Ok(coordinator) => coordinator,
         Err(held) => {
             tracing::info!(?held, "a shielded sync pass is held back");
-            return false;
+            return None;
         }
     };
     #[cfg(test)]
@@ -5627,7 +5636,7 @@ async fn pass(
         tracing::warn!(
             "imported shielded spends' history rows could not be kept; the sync pass is held back"
         );
-        return false;
+        return None;
     }
     if let Some((count, proved_at)) = count
         && pool_is_idle(session, manager, &coordinator, count)
@@ -5639,12 +5648,12 @@ async fn pass(
             "the shielded pool is unchanged; the periodic pass is skipped"
         );
         (session.platform.shielded_checked_at).fetch_max(proved_at, Ordering::AcqRel);
-        return true;
+        return Some(ShieldedSyncPassSummary::default());
     }
     // Again with no await until `sync_now` takes its slot: a stop moves the
     // epoch before its quiesce, which waits for a pass in the slot.
     if !runs(session) {
-        return false;
+        return None;
     }
     prepare_drained_pass(session, &coordinator).await;
     #[cfg(test)]
@@ -5709,7 +5718,15 @@ async fn pass(
             tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
         }
     }
-    true
+    Some(summary)
+}
+
+pub(super) fn wallet_scanned(summary: &ShieldedSyncPassSummary, wallet: WalletId) -> bool {
+    matches!(
+        summary.wallet_results.get(&wallet.0),
+        Some(WalletShieldedOutcome::Ok(scan))
+            if !scan.is_cooldown_skip && scan.balances.contains_key(&SHIELDED_ACCOUNT)
+    )
 }
 
 /// Whether a periodic pass would find nothing (#178): Platform's proved
@@ -5811,7 +5828,7 @@ const NOTES_COUNT_BUDGET: Duration = Duration::from_secs(10);
 /// (`bringup.rs`): on an active network, the coordinator, each of
 /// `wallets` bound (where its key is at hand), and the prover's key built
 /// in the background. The library's own sync loop never runs (its passes
-/// would skip [`admit_pass`]): the supervisor runs [`guarded_pass`] every
+/// would skip [`admit_pass`]): the supervisor runs [`pass`] every
 /// interval while the loops are on, and the stop quiesces a pass in flight
 /// with the other loops.
 pub(crate) async fn start(

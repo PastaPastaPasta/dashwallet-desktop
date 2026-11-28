@@ -229,6 +229,17 @@ function arrivingStates(route: "coreToShielded" | "coreToPlatform"): TransferSta
   ];
 }
 export const TRANSFER_STATES: TransferState[] = [
+  ...(["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const).map((route) => ({
+    id: `${route}-balance-unavailable`,
+    scenario: "funded",
+    go: async (page: Page) => {
+      await page.evaluate(() => { window.__dwFixture!.world.pending.shielded!.lastPassFailed = true; });
+      await run(page, route);
+      await expect(page.getByTestId("shielded-body")).toHaveAttribute("data-step", "balanceUnavailable");
+      await expect(page.getByTestId("shielded-progress").locator('[data-stage="refreshShielded"]')).toHaveAttribute("data-state", "waiting");
+      await expect(page.getByTestId("shielded-outcome-text")).toHaveCount(0);
+    },
+  })),
   // Dash wallet → Shielded (the default route).
   {
     id: "coreToShielded-idle",
@@ -586,7 +597,7 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await page.evaluate(() => window.__dwFixture!.fail("unshield_to_platform", "artifact"));
       await run(page, "shieldedToPlatform");
-      await expect(page.getByTestId("shielded-progress").locator('[data-state="failed"]')).toHaveAttribute("data-stage", "platformSubmission");
+      await expect(page.getByTestId("shielded-progress").locator('[data-state="waiting"]')).toHaveAttribute("data-stage", "platformSubmission");
       await expect(page.getByTestId("shielded-refusal")).toHaveText("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
       await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
     },

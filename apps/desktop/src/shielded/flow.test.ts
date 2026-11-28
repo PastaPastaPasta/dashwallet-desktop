@@ -80,6 +80,26 @@ describe("the shielded flow", () => {
     expect(flow.moveSteps.every((row) => row.state === "done")).toBe(true);
   });
 
+  it("keeps a command result when the sheet closes before its settled event", async () => {
+    const { flow, api } = setup();
+    flow.begin("add");
+    flow.next({ kind: "add", duffs: 100_000 });
+    await flow.run({ maxDuffs: 101_000, maxCredits: "0" });
+    const progressId = api.shieldFromCore.mock.calls[0][3]!;
+    flow.recordProgress({ progressId, stage: "refreshShielded", status: { kind: "running" } });
+    flow.close();
+    flow.begin("add");
+    expect(flow.displayStep).toBe("running");
+    flow.close();
+    flow.recordProgress({ progressId, stage: "refreshShielded", status: { kind: "done" } });
+    expect(flow.unseen).toBe(true);
+    flow.begin("add");
+    expect(flow.displayStep).toBe("done");
+    expect(flow.result).toEqual({ kind: "shield", outcome: APPLIED });
+    flow.close();
+    expect(flow.step).toBe("form");
+  });
+
   it("adds to Shielded under a duffs grant and reads again", async () => {
     const { flow, vault, calls } = setup();
     const settled = vi.fn();

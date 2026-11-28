@@ -682,8 +682,10 @@ an optional host-chosen `progress_id` (a u32 correlation ID). With an ID, the en
 when it starts the next stage. A shield funds a Core asset lock and obtains its proof, then builds the
 Shielded proof. The unshields begin with the Shielded spend proof. Signing the shield transition or
 entering the spend dispatch hook begins the Platform submission stage. A proved Platform result begins
-the Shielded balance refresh. The terminal status is `Done` on the confirmed outcome, `Pending` when
-evidence is outstanding, or `Failed{code}` at the stage that ended with an error. A confirmed Shielded
+the Shielded balance refresh. The refresh reports `Done` only when this pass scanned this wallet and the
+post-scan balance was available. Otherwise the refresh reports `Pending`, preserving the confirmed
+move outcome and withholding the balance line. An unknown broadcast also reports `Pending` and retains
+the command's recovery information. A definitive error reports `Failed{code}` at the failing stage. A confirmed Shielded
 withdrawal still reaches the Dash wallet when its Core asset unlock is mined. These signals do not
 affect signing, holds or settlement.
 
@@ -1076,7 +1078,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 6cd4d6662b1fa9408acb9086e514d035a9f915ea190f333c659e7666678b9298 version: 117 -->
+<!-- surface-sha256: 5cce4ec087dc6230308a70d9f262c3a9894bbbb41a67676f4257526a221ebaad version: 118 -->
 
 ```rust
 // src/platform/app_connect.rs
