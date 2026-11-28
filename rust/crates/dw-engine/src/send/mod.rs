@@ -1994,6 +1994,9 @@ impl TxDraft {
         let Some(sent) = sent else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
+        if first && invoice && matches!(sent, Err(PlatformWalletError::StaleReservation)) {
+            return Err(SendFailure::PreparedTxSpent.into());
+        }
         broadcast_result(sent, first && !invoice)
     }
 

@@ -286,6 +286,16 @@ export function ConfirmSheet({
       toast({ kind: "accept", contact: contact.payee.contact, ok: true, text: accepted }, true);
     } else {
       try {
+        if (draft.giftOrderId) {
+          const { order, status } = await b.giftCardDetails(walletId, draft.giftOrderId);
+          const recipient = confirmed.recipient;
+          if (status !== "awaitingPayment" || order.txid || order.expiresAt * 1000 <= Date.now()
+            || !order.invoice || isContact(recipient) || order.invoice.address !== recipient.address
+            || order.invoice.duffs !== recipient.amount) {
+            attempt.outcome({ kind: "failed", text: t("pay.error.changed") });
+            return;
+          }
+        }
         grant = await b.authorize({ kind: "spend", maxDuffs: total }, walletId, credential);
         authId = grant.id;
       } catch (e) {
