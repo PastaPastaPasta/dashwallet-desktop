@@ -345,6 +345,13 @@ impl NetworkSession {
                 this.spawn_ensure_background();
                 return Err(EngineError::ShieldedSpendHeld(hold));
             }
+            let dir = this.data_dir().to_path_buf();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                dw_store_upgrade::retire_snapshot_for_wallet_removal(&dir, &id.0)
+            }).await? {
+                this.spawn_ensure_background();
+                return Err(EngineError::Storage(e.to_string()));
+            }
             // DEC-134: the vault records first; their failure fails the
             // removal closed, before anything else of the wallet goes.
             let vault = this.vault.clone();

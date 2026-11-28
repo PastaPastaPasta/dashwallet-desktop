@@ -706,7 +706,7 @@ pub(crate) struct SessionHub {
     /// Tests: SPV's progress reports leave the sync reading as the test
     /// set it.
     #[cfg(test)]
-    pub(crate) pin_progress: std::sync::atomic::AtomicBool,
+    pin_progress: std::sync::atomic::AtomicBool,
     /// Tests: the next history load's read of the dropped records fails.
     #[cfg(test)]
     pub(crate) fail_dropped_read: std::sync::atomic::AtomicBool,
@@ -1706,6 +1706,14 @@ impl SessionHub {
 
     pub(crate) fn tracker(&self) -> std::sync::MutexGuard<'_, SyncTracker> {
         self.tracker.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin_progress(&self, progress: &SyncProgress) {
+        let mut tracker = self.tracker();
+        self.pin_progress
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        tracker.on_progress(progress);
     }
 
     /// How many fork truncations the hub applied to any wallet this
@@ -2891,12 +2899,12 @@ impl EventHandler for SessionHub {
     }
 
     fn on_progress(&self, progress: &SyncProgress) {
-        #[cfg(test)]
-        if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
         let (changed, masternodes_synced, tip) = {
             let mut tracker = self.tracker();
+            #[cfg(test)]
+            if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             (
                 tracker.on_progress(progress),
                 tracker.masternodes_synced(),

@@ -395,6 +395,9 @@ pub enum ErrorData {
         left_duffs: u64,
         arriving_duffs: u64,
         arriving_clears: bool,
+        #[ts(type = "\"held\" | \"inputCap\" | null")]
+        arriving_block: Option<dw_engine::platform::CoreMaxArrivalBlock>,
+        other_arriving_duffs: u64,
     },
     /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },

@@ -102,7 +102,7 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
           data-testid="platform-fund-go"
           why={quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting}
           disabled={!q || quote.isError || quote.isFetching || flow.running}
-          onClick={() => q && void flow.run(q.grant)}
+          onClick={() => q && void flow.run(q.grant, q.max?.coinSet)}
         >
           {C.confirm.go}
         </DashButton>
