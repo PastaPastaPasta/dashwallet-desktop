@@ -99,6 +99,23 @@ impl Scenario {
             });
     }
 
+    fn overflow_early_locks(&self) {
+        use dash_spv::EventHandler;
+        for n in 0..=crate::history::EARLY_LOCK_LIMIT {
+            let mut id = [0xa5; 32];
+            id[..4].copy_from_slice(&(n as u32).to_le_bytes());
+            self.session
+                .hub
+                .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
+                    instant_lock: InstantLock {
+                        txid: Txid::from_byte_array(id),
+                        ..InstantLock::default()
+                    },
+                    validated: true,
+                });
+        }
+    }
+
     /// P is mined at `TIP + 1`.
     fn mined(&self) {
         mined(
@@ -123,6 +140,31 @@ impl Scenario {
             self.session.hub.truncations() > heard,
             "the hub heard the fork"
         );
+    }
+
+    fn truncate_silently(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let manager = self.session.manager().unwrap();
+        let reconciles = std::mem::take(&mut *self.session.hub.reconciles.lock().unwrap());
+        self.engine.block_on(async {
+            for reconcile in reconciles {
+                reconcile.await.unwrap();
+            }
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let mut events = wm.subscribe_events();
+            wm.truncate_above(TIP).unwrap();
+            std::iter::from_fn(|| events.try_recv().ok()).collect()
+        })
+    }
+
+    fn detect_fork(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        let events = self.truncate_silently();
+        let manager = self.session.manager().unwrap();
+        self.engine
+            .block_on(self.session.refresh_wallet_state(&manager, self.id));
+        self.session.hub.settle_rereads();
+        events
     }
 
     fn reopen(self) -> Self {
@@ -222,9 +264,10 @@ impl Scenario {
     }
 
     fn assert_restarted_from_old_block(&self) {
-        assert!(
-            matches!(self.row(), Some((status, false, _)) if status != TxStatusKind::Unconfirmed)
-        );
+        assert!(matches!(
+            self.row(),
+            Some((TxStatusKind::Confirming | TxStatusKind::Confirmed, false, _))
+        ));
         assert!(!spendable(&self.engine, &self.session, self.id, self.a));
     }
 
@@ -378,6 +421,64 @@ fn a_child_lock_in_another_wallet_protects_the_senders_forked_input() {
     s.assert_fork_holds_funding_coin();
 }
 
+/// P and C, its child spending P's change, are mined and forked out before
+/// any lock is heard; C's lock verifies afterward.
+fn forked_parent_and_late_locked_child(s: &Scenario) -> Transaction {
+    let change = OutPoint::new(s.p.txid(), 1);
+    let child = super::spend_of(change, vec![(super::elsewhere(), CHANGE / 2)]);
+    let payments = vec![s.p.clone(), child.clone()];
+    mined(&s.engine, &s.session, s.id, TIP + 1, payments);
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the parent's funding coin");
+    assert!(s.max().1.contains(&s.a));
+    s.hear_verified_lock(InstantLock {
+        txid: child.txid(),
+        inputs: vec![change],
+        ..InstantLock::default()
+    });
+    s.session.hub.settle_rereads();
+    child
+}
+
+fn child_row(s: &Scenario, child: &Transaction) -> Option<(TxStatusKind, bool)> {
+    let txid = child.txid().to_string();
+    (rows(&s.engine, &s.session, s.id).into_iter())
+        .find(|r| r.0 == txid)
+        .map(|r| (r.1, r.2))
+}
+
+#[test]
+fn a_child_recovered_by_a_late_lock_keeps_its_forked_parents_funding_coin_unavailable() {
+    let s = scenario();
+    let child = forked_parent_and_late_locked_child(&s);
+    assert_eq!(
+        child_row(&s, &child),
+        Some((TxStatusKind::Unconfirmed, true))
+    );
+    s.assert_fork_holds_funding_coin();
+}
+
+#[test]
+fn a_child_recovered_by_a_late_lock_stays_locked_across_a_later_fork() {
+    let s = scenario();
+    let child = forked_parent_and_late_locked_child(&s);
+    s.overflow_early_locks();
+    mined(
+        &s.engine,
+        &s.session,
+        s.id,
+        TIP + 1,
+        vec![s.p.clone(), child.clone()],
+    );
+    assert!(!s.a_held(), "the parent spends its coin again");
+    s.fork();
+    assert_eq!(
+        child_row(&s, &child),
+        Some((TxStatusKind::Unconfirmed, true))
+    );
+    s.assert_fork_holds_funding_coin();
+}
+
 fn assert_recordless_child_protects_pending_parent(buffered: bool) {
     let (mut s, funding) = before_funding();
     s.fund(funding.clone());
@@ -497,22 +598,9 @@ fn a_lock_heard_before_scanning_its_funding_parent_keeps_the_payment_across_a_fo
 
 #[test]
 fn an_evicted_lock_still_holds_its_input_when_the_wallet_later_forks() {
-    use dash_spv::EventHandler;
     let (s, funding) = before_funding();
     s.hear_lock();
-    for n in 0..crate::history::EARLY_LOCK_LIMIT {
-        let mut id = [0xa5; 32];
-        id[..4].copy_from_slice(&(n as u32).to_le_bytes());
-        s.session
-            .hub
-            .on_sync_event(&dash_spv::SyncEvent::InstantLockReceived {
-                instant_lock: InstantLock {
-                    txid: Txid::from_byte_array(id),
-                    ..InstantLock::default()
-                },
-                validated: true,
-            });
-    }
+    s.overflow_early_locks();
     s.fund(funding);
     s.mined();
     s.fork();
@@ -554,19 +642,207 @@ fn loading_a_wallet_matches_buffered_locks_to_its_stored_outputs() {
     );
 }
 
+fn unrecorded_spender(hear_lock: bool) -> Scenario {
+    let (mut s, funding) = before_funding();
+    s.p.output.truncate(1);
+    if hear_lock {
+        s.hear_lock();
+    }
+    s.mined();
+    s.fund(funding);
+    // The spend was observed before funding, and its block never replayed.
+    assert_eq!(s.row(), None);
+    assert!(!s.a_held());
+    assert_eq!(balances(&s.session, s.id).confirmed, 11 * COIN);
+    s
+}
+
+fn assert_restored_input(s: &Scenario, held: bool) {
+    assert!(s.a_held(), "key-wallet restored the input");
+    assert_eq!(s.row(), None);
+    let (available, inputs) = s.max();
+    let expected = if held { 11 * COIN } else { 12 * COIN };
+    assert_eq!(
+        (
+            balances(&s.session, s.id).confirmed,
+            available,
+            inputs.contains(&s.a),
+            s.a_listed(),
+            spendable(&s.engine, &s.session, s.id, s.a),
+        ),
+        (expected, expected, !held, !held, !held),
+    );
+}
+
+#[test]
+fn a_fork_holds_the_coin_restored_for_an_unrecorded_locked_spender() {
+    let s = unrecorded_spender(true);
+    s.fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_fork_detected_without_an_event_holds_the_unrecorded_locked_spenders_input() {
+    let s = unrecorded_spender(true);
+    s.detect_fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn max_reconciles_a_silent_fork_before_offering_coins() {
+    let s = unrecorded_spender(true);
+    s.truncate_silently();
+    let count = s.session.hub.truncations();
+    let max = s
+        .engine
+        .block_on(s.session.max_spendable(
+            s.id,
+            CoinSource::Any,
+            crate::send::FeeMode::PerKb(1_000),
+        ))
+        .unwrap();
+    assert_eq!(max, 11 * COIN);
+    assert!(s.session.hub.truncations() > count);
+}
+
+#[test]
+fn coin_control_reconciles_a_silent_fork_before_listing_coins() {
+    let s = unrecorded_spender(true);
+    s.truncate_silently();
+    let count = s.session.hub.truncations();
+    assert!(!s.a_listed());
+    assert!(s.session.hub.truncations() > count);
+}
+
+#[test]
+fn a_verified_lock_during_detection_holds_an_unrecorded_spenders_input() {
+    use std::sync::Barrier;
+
+    let s = unrecorded_spender(false);
+    let reached = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    *s.session.hub.pause_truncation.lock().unwrap() =
+        Some((Arc::clone(&reached), Arc::clone(&release)));
+
+    std::thread::scope(|scope| {
+        let detecting = scope.spawn(|| s.detect_fork());
+        reached.wait();
+        s.hear_lock();
+        release.wait();
+        detecting.join().unwrap();
+    });
+
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_verified_lock_after_detection_holds_an_unrecorded_spenders_input() {
+    let s = unrecorded_spender(false);
+    s.detect_fork();
+    assert_restored_input(&s, false);
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_verified_lock_after_a_truncation_event_holds_an_unrecorded_spenders_input() {
+    let s = unrecorded_spender(false);
+    s.fork();
+    assert_restored_input(&s, false);
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+}
+
+/// P, a spend of `a`, and its funding reach key-wallet, but Desktop has
+/// processed neither record when the fork comes.
+fn unrecorded_spender_before_funding_history(hear_lock: bool) -> Scenario {
+    let (mut s, funding) = before_funding();
+    s.p.output.truncate(1);
+    if hear_lock {
+        s.hear_lock();
+    }
+    let manager = s.session.manager().unwrap();
+    let (id, p) = (s.id, s.p.clone());
+    s.engine.block_on(async move {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        for (height, txs) in [
+            (FUNDED_AT, vec![funding]),
+            (TIP, vec![foreign()]),
+            (TIP + 1, vec![p]),
+        ] {
+            let block = super::block_with(txs);
+            wm.process_block_for_wallets(
+                &block,
+                block.block_hash(),
+                height,
+                &BTreeSet::from([id.0]),
+            )
+            .await;
+            wm.update_wallet_synced_height(&id.0, height);
+        }
+    });
+    // The hub has processed past the fork height, without the funding record.
+    mined(&s.engine, &s.session, s.id, TIP + 2, vec![foreign()]);
+    assert!(!s.a_held());
+    s
+}
+
+#[test]
+fn a_silent_fork_before_the_funding_record_holds_a_buffered_locks_input() {
+    let s = unrecorded_spender_before_funding_history(true);
+    s.detect_fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_fork_event_before_the_funding_record_holds_a_buffered_locks_input() {
+    let s = unrecorded_spender_before_funding_history(true);
+    s.fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_lock_after_a_silent_fork_before_the_funding_record_holds_its_input() {
+    let s = unrecorded_spender_before_funding_history(false);
+    s.detect_fork();
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
+    let s = unrecorded_spender(false);
+    s.overflow_early_locks();
+    let events = s.detect_fork();
+    let seen = s.session.hub.truncations();
+    for event in &events {
+        s.session.hub.apply_wallet_event(event);
+    }
+    s.session.hub.settle_rereads();
+    assert_eq!(s.session.hub.truncations(), seen);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_fork_restores_an_unrecorded_spenders_input_without_a_lock_or_overflow() {
+    let s = unrecorded_spender(false);
+    s.fork();
+    assert_restored_input(&s, false);
+}
+
 #[test]
 fn a_truncation_without_a_wallet_event_keeps_the_locked_payment() {
-    use platform_wallet::key_wallet_manager::WalletInterface;
     let s = scenario();
     s.hear_lock();
     s.mined();
-    let manager = s.session.manager().unwrap();
-    s.engine.block_on(async {
-        let wm = manager.wallet_manager_arc();
-        wm.write().await.truncate_above(TIP).unwrap();
-        s.session.refresh_wallet_state(&manager, s.id).await;
-    });
-    s.session.hub.settle_rereads();
+    s.detect_fork();
     s.assert_kept(true, TxActionRefusal::InstantLocked);
 }
 
@@ -580,6 +856,19 @@ fn a_payment_without_a_lock_a_fork_removed_goes_and_frees_its_coin() {
     assert_eq!(s.row(), None, "P is gone");
     assert!(spendable(&s.engine, &s.session, s.id, s.a), "a is offered");
     assert_eq!(balances(&s.session, s.id).total, 12 * COIN);
+}
+
+#[test]
+fn a_lock_verified_after_the_fork_recovers_the_payment_and_holds_its_input() {
+    let s = scenario();
+    s.mined();
+    s.fork();
+    assert_eq!(s.row(), None);
+    assert!(s.max().1.contains(&s.a));
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
 }
 
 #[test]

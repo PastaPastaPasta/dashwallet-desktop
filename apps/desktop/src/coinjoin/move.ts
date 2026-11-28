@@ -50,6 +50,20 @@ export type MoveMixedApi = Pick<
   | "unlockMixingOnly"
 >;
 
+export type ReturnToCoreApi = Pick<
+  Backend,
+  | "returnFromMixingPlan"
+  | "returnFromMixing"
+  | "resendMixedCoins"
+  | "stopMixing"
+  | "authorize"
+  | "revokeGrant"
+  | "lockStatus"
+  | "paymentAuthentication"
+  | "unlock"
+  | "unlockMixingOnly"
+>;
+
 /** The most coins one move to Shielded takes; more are combined first (the engine's limit). */
 const SHIELD_MOVE_MAX_COINS = 50;
 
@@ -277,9 +291,22 @@ export function resultText(r: MixedCoinsSweepResult, amount: (duffs: number) => 
 }
 
 /** The move card shows while the CoinJoin account holds a free coin, mixed or not (collaterals, change, a
- * consolidated output), and while a move runs or its result waits to be seen. */
-export const showsMoveCard = (s: CoinJoinStatus, flow: Pick<MoveMixedFlow, "open" | "running" | "step">) =>
-  s.unavailable?.kind !== "watchOnly" && (s.balances.coinjoinAccount > 0 || flow.open || flow.running || flow.step === "done");
+ * consolidated output), while any CoinJoin coin is held (legacy or hand-off), and while a move or return
+ * runs or its result waits to be seen. */
+export const showsMoveCard = (
+  s: CoinJoinStatus,
+  flow: Pick<MoveMixedFlow, "open" | "running" | "step">,
+  returnFlow?: Pick<ReturnToCoreFlow, "open" | "running" | "step">,
+) =>
+  s.unavailable?.kind !== "watchOnly" &&
+  (s.balances.coinjoinAccount > 0 ||
+    s.balances.heldFromMixing > 0 ||
+    flow.open ||
+    flow.running ||
+    flow.step === "done" ||
+    returnFlow?.open === true ||
+    returnFlow?.running === true ||
+    returnFlow?.step === "done");
 
 export class MoveMixedFlow extends Model {
   open = false;
@@ -550,4 +577,252 @@ export function moveMixedFor(api: MoveMixedApi, walletId: string): MoveMixedFlow
 /** Tests: forget every flow (a fresh app). */
 export function resetMoveMixed() {
   flows.clear();
+}
+
+export const RETURN_COPY = {
+  cardHeld: (amount: string) => t("coinjoin.move.returnToCore.cardHeld", { amount }),
+  get open() {
+    return t("coinjoin.move.returnToCore.open");
+  },
+  get settingsTitle() {
+    return t("coinjoin.move.returnToCore.settingsTitle");
+  },
+  get title() {
+    return t("coinjoin.move.returnToCore.title");
+  },
+  get planning() {
+    return t("coinjoin.move.returnToCore.planning");
+  },
+  confirm: {
+    get message() {
+      return t("coinjoin.move.returnToCore.confirm.message");
+    },
+    get heldAmount() {
+      return t("coinjoin.move.returnToCore.confirm.heldAmount");
+    },
+    get destination() {
+      return t("coinjoin.move.returnToCore.confirm.destination");
+    },
+    get destinationCore() {
+      return t("coinjoin.move.returnToCore.confirm.destinationCore");
+    },
+    get action() {
+      return t("coinjoin.move.returnToCore.confirm.action");
+    },
+  },
+  mixing: {
+    get text() {
+      return t("coinjoin.move.returnToCore.mixing.text");
+    },
+  },
+  running: {
+    get title() {
+      return t("coinjoin.move.returnToCore.running.title");
+    },
+  },
+  done: {
+    get title() {
+      return t("coinjoin.move.returnToCore.done.title");
+    },
+    text: (received: string, fee: string) => t("coinjoin.move.returnToCore.done.text", { received, fee }),
+  },
+  partial: {
+    get title() {
+      return t("coinjoin.move.returnToCore.partial.title");
+    },
+    text: (received: string, fee: string, remaining: string) => t("coinjoin.move.returnToCore.partial.text", { received, fee, remaining }),
+  },
+  get nothing() {
+    return t("coinjoin.move.returnToCore.nothing");
+  },
+  get planChanged() {
+    return t("coinjoin.move.returnToCore.planChanged");
+  },
+};
+
+export type ReturnStep = "plan" | "confirm" | "mixing" | "running" | "done" | "refused";
+
+/** The outcome of a Return to Core run: complete, partial, or with a chunk of unknown outcome. */
+export function returnResultText(r: MixedCoinsSweepResult, amount: (duffs: number) => string): { title: string; text: string; kind: "done" | "partial" | "unknown" } {
+  if (r.failureCode === null) return { kind: "done", title: RETURN_COPY.done.title, text: RETURN_COPY.done.text(amount(r.received), amount(r.fee)) };
+  if (r.unknownTxid !== null) return { kind: "unknown", title: RETURN_COPY.partial.title, text: MOVE_COPY.unknown };
+  return { kind: "partial", title: RETURN_COPY.partial.title, text: RETURN_COPY.partial.text(amount(r.received), amount(r.fee), amount(r.remaining)) };
+}
+
+/** A Return to Core refusal, by code. */
+export function returnRefusalText(flow: Pick<ReturnToCoreFlow, "error" | "planFailed">): string {
+  if (hasCode(flow.error, "coinjoin.nothing_to_move")) return RETURN_COPY.nothing;
+  if (hasCode(flow.error, "coinjoin.mixing_active")) return RETURN_COPY.mixing.text;
+  if (hasCode(flow.error, "gap_limit")) return t("receive.dash.gapLimit");
+  return refusalText(flow);
+}
+
+/** A fee-confirmed self-payment for inputs held from a possible coordinator spend. */
+export class ReturnToCoreFlow extends Model {
+  open = false;
+  step: ReturnStep = "plan";
+  plan: MixedCoinsSweepPlan | null = null;
+  result: MixedCoinsSweepResult | null = null;
+  error: unknown = null;
+  planFailed = false;
+  running = false;
+  resent: MixedCoinsResendState | null = null;
+  replanned = false;
+  readonly grants: GrantModel;
+  #epoch = 0;
+  #unseen = false;
+
+  constructor(
+    private readonly api: ReturnToCoreApi,
+    readonly walletId: string,
+  ) {
+    super();
+    this.grants = new GrantModel(api);
+    this.grants.prompt = PAYMENT_PROMPT;
+    this.grants.subscribe(() => this.changed());
+  }
+
+  begin() {
+    this.open = true;
+    const unseen = this.#unseen;
+    this.#unseen = false;
+    if (this.running || this.step === "done" || (this.step === "refused" && unseen)) {
+      this.changed();
+      return;
+    }
+    void this.#plan();
+  }
+
+  #fail(e: unknown, planning = false) {
+    this.error = e;
+    this.planFailed = planning;
+    this.step = mixingRefusal(e) ? "mixing" : "refused";
+  }
+
+  async #plan(retries = 0) {
+    const epoch = ++this.#epoch;
+    this.step = "plan";
+    this.plan = null;
+    this.result = null;
+    this.resent = null;
+    this.replanned = false;
+    this.error = null;
+    this.changed();
+    for (;;) {
+      try {
+        const plan = await this.api.returnFromMixingPlan(this.walletId);
+        if (epoch !== this.#epoch) return;
+        this.plan = plan;
+        this.step = "confirm";
+      } catch (e) {
+        if (epoch !== this.#epoch) return;
+        if (retries-- > 0 && mixingRefusal(e)) {
+          await new Promise((r) => setTimeout(r, STOP_RETRY_MS));
+          if (epoch !== this.#epoch) return;
+          continue;
+        }
+        this.#fail(e, true);
+      }
+      break;
+    }
+    this.changed();
+  }
+
+  /** Stop Mixing from the sheet, then read a fresh return plan once mixing winds down. */
+  async stopMixing() {
+    if (this.running) return;
+    this.running = true;
+    this.changed();
+    try {
+      await this.api.stopMixing(this.walletId);
+    } catch (e) {
+      this.#fail(e);
+      this.#unseen = !this.open;
+      return;
+    } finally {
+      this.running = false;
+      this.changed();
+    }
+    await this.#plan(STOP_RETRIES);
+  }
+
+  async returnNow() {
+    const { plan } = this;
+    if (this.running || !plan || this.step !== "confirm") return;
+    this.running = true;
+    this.error = null;
+    this.changed();
+    try {
+      const got = await this.grants.withGrant({ kind: "spend", maxDuffs: plan.total }, this.walletId, (g: AuthGrant) => {
+        this.step = "running";
+        this.changed();
+        return this.api.returnFromMixing(this.walletId, plan.quoteId, g.id);
+      });
+      if (got) {
+        this.result = got.value;
+        this.step = "done";
+      } else this.step = "confirm";
+    } catch (e) {
+      if (hasCode(e, "coinjoin.plan_changed")) {
+        this.running = false;
+        await this.#plan();
+        this.replanned = this.step === "confirm";
+        this.changed();
+        return;
+      }
+      this.#fail(e);
+      this.#unseen = !this.open;
+    } finally {
+      this.running = false;
+      this.changed();
+    }
+  }
+
+  /** Try again on a chunk of unknown outcome: its recorded bytes again, no grant, no new signature. */
+  async resend(): Promise<void> {
+    const txid = this.result?.unknownTxid ?? null;
+    if (this.running || txid === null) return;
+    this.running = true;
+    this.changed();
+    try {
+      const sent = await this.api.resendMixedCoins(this.walletId, txid);
+      this.resent = sent.find((s) => s.txid === txid)?.state ?? "resolved";
+    } catch (e) {
+      this.#fail(e);
+      this.#unseen = !this.open;
+    } finally {
+      this.running = false;
+      this.changed();
+    }
+  }
+
+  again() {
+    if (this.running) return;
+    void this.#plan();
+  }
+
+  close() {
+    this.open = false;
+    if (!this.running) {
+      this.#epoch++;
+      this.grants.cancel();
+      if (this.step !== "running") this.step = "plan";
+    }
+    this.changed();
+  }
+}
+
+const returnFlows = new Map<string, ReturnToCoreFlow>();
+export function returnToCoreFor(api: ReturnToCoreApi, walletId: string): ReturnToCoreFlow {
+  let flow = returnFlows.get(walletId);
+  if (!flow) {
+    flow = new ReturnToCoreFlow(api, walletId);
+    returnFlows.set(walletId, flow);
+  }
+  return flow;
+}
+
+/** Tests: forget every Return to Core flow (a fresh app). */
+export function resetReturnToCore() {
+  returnFlows.clear();
 }
