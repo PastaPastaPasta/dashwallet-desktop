@@ -118,12 +118,6 @@ impl ForkRestores {
         self.hold.iter().flat_map(|h| h.coins.iter().copied())
     }
 
-    pub(crate) fn covers(&self, coin: &OutPoint) -> bool {
-        self.hold
-            .as_ref()
-            .is_some_and(|h| h.unknown || h.coins.contains(coin))
-    }
-
     pub(crate) fn rescan_start_for_unknown(&self) -> Option<u32> {
         self.hold
             .as_ref()

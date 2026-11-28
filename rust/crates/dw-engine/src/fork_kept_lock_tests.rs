@@ -974,6 +974,74 @@ fn finish_rescan(s: &Scenario, height: u32) {
 }
 
 #[test]
+fn an_overflow_fork_event_after_detection_keeps_the_input_held_after_a_deep_rescan() {
+    let s = unrecorded_spender(true);
+    s.overflow_early_locks();
+    let events = s.detect_fork();
+    for event in &events {
+        s.session.hub.apply_wallet_event(event);
+    }
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, FUNDED_AT);
+    finish_rescan(&s, TIP);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_reported_fork_during_an_unknown_hold_keeps_its_input_held_after_a_deep_rescan() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+
+    let s = unrecorded_spender(true);
+    s.overflow_early_locks();
+    mined(&s.engine, &s.session, s.id, TIP + 2, vec![foreign()]);
+    let manager = s.session.manager().unwrap();
+    let reconciles = std::mem::take(&mut *s.session.hub.reconciles.lock().unwrap());
+    s.engine.block_on(async {
+        for reconcile in reconciles {
+            reconcile.await.unwrap();
+        }
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        (s.session.hub.history).with_wallet(s.id, |h| h.fork_restores = Default::default());
+        wm.truncate_above(TIP + 1).unwrap();
+    });
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    s.session.hub.settle_rereads();
+    assert!(matches!(
+        s.engine.block_on(s.session.max_spendable(
+            s.id,
+            CoinSource::Any,
+            crate::send::FeeMode::PerKb(1_000)
+        )),
+        Err(EngineError::RescanFirst(_))
+    ));
+
+    s.fork();
+    assert!(s.a_held(), "the second fork restored a");
+    start_offline_spv(&s.engine, &s.session);
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    finish_rescan(&s, TIP + 1);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn an_overflow_fork_holds_the_input_of_a_payment_known_only_by_its_change() {
+    let (s, funding) = before_funding();
+    s.overflow_early_locks();
+    s.mined();
+    assert!(s.row().is_some(), "P is recorded through its change");
+    s.fork();
+    s.fund(funding);
+    assert_restored_input(&s, true);
+}
+
+#[test]
 fn an_eventless_fork_after_overflow_holds_the_unrecorded_spenders_input() {
     let s = unrecorded_spender(true);
     assert_eq!(s.max().0, 11 * COIN);

@@ -1957,6 +1957,8 @@ impl WalletHistory {
                 && !self.session_locks.contains(txid)
                 && let Some(entry) = self.txs.get(txid)
             {
+                (self.restored_fork_inputs)
+                    .extend(entry.tx.input.iter().map(|i| i.previous_output));
                 let own_inputs = self.owned_inputs_of(txid, entry);
                 if !own_inputs.is_empty() {
                     self.uncertain_fork_spends
@@ -2061,10 +2063,7 @@ impl EarlyInstantLocks {
         for coin in restored {
             let mut matched = self.spends.get(coin).into_iter().flatten();
             let covered = matched.clone().any(|t| history.fork_kept_locks.contains(t));
-            if !covered
-                && (matched.next().is_some()
-                    || (self.overflow && !history.fork_restores.covers(coin)))
-            {
+            if !covered && (matched.next().is_some() || self.overflow) {
                 history.restored_fork_inputs.insert(*coin);
             }
         }
@@ -6408,5 +6407,72 @@ mod tests {
             None,
             "mined since: its ordinary status"
         );
+    }
+
+    #[test]
+    fn a_late_lock_walks_through_another_wallets_mined_or_abandoned_entry() {
+        for abandoned in [false, true] {
+            let store = HistoryStore::default();
+            let (a, b) = (WalletId([1; 32]), WalletId([2; 32]));
+            let funding = OutPoint::new(Txid::all_zeros(), 7);
+            let t1 = tx(vec![input(funding.txid, 7)], vec![out(1000, &hash_addr(1))]);
+            let t2 = tx(vec![input(t1.txid(), 0)], vec![out(900, &hash_addr(2))]);
+            let c = tx(vec![input(t2.txid(), 0)], vec![out(800, &hash_addr(3))]);
+            store.with_wallet(a, |h| {
+                let mut e = entry(t1.clone(), in_block(101, 0));
+                e.own_inputs.insert(0, (2000, hash_addr(4)));
+                h.txs.insert(t1.txid(), e);
+            });
+            store.with_wallet(b, |h| {
+                let ctx = if abandoned {
+                    TransactionContext::Mempool
+                } else {
+                    in_block(102, 0)
+                };
+                let mut e = entry(t2.clone(), ctx);
+                e.abandoned = abandoned;
+                h.txs.insert(t2.txid(), e);
+            });
+            store.truncate(a, 100, &[t1.txid()], &[], ForkRestorations::Reported(&[]));
+            store.note_instant_lock(
+                &c.txid(),
+                Some(&[OutPoint::new(t2.txid(), 0)]),
+                &HashSet::new(),
+            );
+            store.read_wallet(&a, |h| {
+                assert_eq!(
+                    h.fork_kept_ancestor_inputs.get(&t1.txid()),
+                    Some(&vec![funding]),
+                    "abandoned={abandoned}"
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn a_late_lock_on_an_unrelated_mined_tx_holds_nothing() {
+        let store = HistoryStore::default();
+        let a = WalletId([1; 32]);
+        let funding = OutPoint::new(Txid::all_zeros(), 7);
+        let t1 = tx(vec![input(funding.txid, 7)], vec![out(1000, &hash_addr(1))]);
+        let other = tx(
+            vec![input(Txid::all_zeros(), 9)],
+            vec![out(900, &hash_addr(2))],
+        );
+        let c = tx(vec![input(other.txid(), 0)], vec![out(800, &hash_addr(3))]);
+        store.with_wallet(a, |h| {
+            let mut e = entry(t1.clone(), in_block(101, 0));
+            e.own_inputs.insert(0, (2000, hash_addr(4)));
+            h.txs.insert(t1.txid(), e);
+            h.txs
+                .insert(other.txid(), entry(other.clone(), in_block(90, 0)));
+        });
+        store.truncate(a, 100, &[t1.txid()], &[], ForkRestorations::Reported(&[]));
+        store.note_instant_lock(
+            &c.txid(),
+            Some(&[OutPoint::new(other.txid(), 0)]),
+            &HashSet::new(),
+        );
+        store.read_wallet(&a, |h| assert!(h.fork_kept_ancestor_inputs.is_empty()));
     }
 }
