@@ -21,10 +21,20 @@ use crate::dto::mirror_enum;
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[(
-    "NetworkSession::coinjoin_addresses_for_test",
-    "test only: dwcli's `mix-shield-test` funds the CoinJoin account for the regtest suite (debug builds only)",
-)];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[
+    (
+        "NetworkSession::coinjoin_addresses_for_test",
+        "test only: dwcli's `mix-shield-test` funds the CoinJoin account for the regtest suite (debug builds only)",
+    ),
+    (
+        "NetworkSession::return_from_mixing",
+        "CLI: `dwcli move-mixed --held` returns inputs held after mixing",
+    ),
+    (
+        "NetworkSession::return_from_mixing_plan",
+        "CLI: `dwcli move-mixed --held` previews the return and its fee",
+    ),
+];
 
 /// The CoinJoin options (Options, CoinJoin, QT-046). Global for the
 /// network; mixing state is per wallet (QT-049).

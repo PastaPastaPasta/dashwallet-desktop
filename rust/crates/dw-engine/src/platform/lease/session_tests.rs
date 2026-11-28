@@ -136,6 +136,9 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
             },
         ))
         .unwrap();
+    engine
+        .block_on(session.mark_coinjoin_handoffs_tracked(wallet))
+        .unwrap();
     let chain = Arc::new(TestChain::default());
     chain.install(&session);
     Fixture {
@@ -2212,6 +2215,147 @@ fn repair_of_a_stuck_drain_spends_the_locks_coinjoin_inputs_alone() {
         assert_eq!(status(), Some(DispatchState::NotSent), "{ordinary}");
         assert!(f.session.leases.unresolved_lock_inputs(f.wallet).is_empty());
     }
+}
+
+/// An upgraded wallet (`TRACKED_WALLET_KEY` unset) classifies an existing
+/// CoinJoin denomination as a `Legacy` hand-off. When that coin is also an
+/// input of a stuck drain asset-lock, `lock_input` stays set so Repair's
+/// self-spend draft still builds and spends it, while Pay, Max and coin
+/// control keep it out.
+#[test]
+fn repair_of_a_stuck_drain_keeps_legacy_handoff_input_repairable_and_unspendable() {
+    use crate::CoinFilter;
+    use crate::coinjoin::{CoinJoinHandoff, TRACKED_WALLET_KEY};
+    use crate::send::{CoinSource, FeeMode, SendFailure};
+
+    const STEP: &str = "shield/0/funding";
+    const DENOM: u64 = 10_000_100;
+    assert!(dw_coinjoin::denoms::is_denominated(DENOM));
+
+    let f = fixture(false);
+    let coin = f.credit_coinjoin(1, DENOM);
+    let scope = dw_appdb::local_scope(&f.wallet.to_string());
+    f.engine
+        .block_on(
+            f.session
+                .appdb_op(move |db| db.set_setting_durable(&scope, TRACKED_WALLET_KEY, None)),
+        )
+        .unwrap();
+
+    // Confirm the upgraded wallet classifies the denomination as a Legacy hand-off.
+    let s = Arc::clone(&f.session);
+    let wallet_id = f.wallet;
+    let before = f
+        .engine
+        .block_on(f.session.on_runtime(async move {
+            let fence = s.coin_fence(wallet_id).await?;
+            let wallet = s.wallet(&wallet_id).await?;
+            let snap = s.coin_snapshot(&fence, &wallet).await?;
+            drop(fence);
+            Ok(snap)
+        }))
+        .unwrap();
+    let legacy = before
+        .coins
+        .iter()
+        .find(|c| c.utxo.outpoint == coin)
+        .expect("coin in snapshot");
+    assert!(
+        matches!(legacy.coinjoin_handoff, Some(CoinJoinHandoff::Legacy)),
+        "expected Legacy hand-off on upgraded wallet, got {:?}",
+        legacy.coinjoin_handoff
+    );
+
+    f.stuck_drain(STEP, 70, &[coin]);
+    f.refresh();
+    assert_eq!(
+        f.session.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::MaybeSent)
+    );
+
+    // The coin stays out of Pay (Core, Mixed, and explicit coin control).
+    for source in [
+        CoinSource::Any,
+        CoinSource::FullyMixedOnly,
+        CoinSource::Outpoints(vec![coin]),
+    ] {
+        let pay = f.draft(DENOM / 2);
+        pay.set_source(source.clone()).unwrap();
+        let err = f.engine.block_on(pay.estimate());
+        assert!(
+            err.is_err(),
+            "Pay ({source:?}) must not take {coin}: {err:?}"
+        );
+    }
+
+    // The coin stays out of Max for Core, Mixed, and explicit coin control.
+    let fee = FeeMode::Recommended { target_blocks: 6 };
+    assert_eq!(
+        f.engine
+            .block_on(f.session.max_spendable(f.wallet, CoinSource::Any, fee))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.engine
+            .block_on(
+                f.session
+                    .max_spendable(f.wallet, CoinSource::FullyMixedOnly, fee)
+            )
+            .unwrap(),
+        0
+    );
+    let max_outpoint = f.engine.block_on(f.session.max_spendable(
+        f.wallet,
+        CoinSource::Outpoints(vec![coin]),
+        fee,
+    ));
+    assert!(
+        matches!(
+            max_outpoint,
+            Err(EngineError::Send(SendFailure::OutpointUnavailable(o))) if o == coin
+        ),
+        "Max coin control must reject {coin}: {max_outpoint:?}"
+    );
+
+    // The coin stays out of spendable coin control.
+    let rows = f
+        .engine
+        .block_on(f.session.utxos(
+            f.wallet,
+            CoinFilter {
+                include_locked: true,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.outpoint == coin)
+        .expect("coin listed in utxos");
+    assert!(row.reserved, "coin control must mark {coin} reserved");
+    assert!(!row.spendable, "coin control must mark {coin} unspendable");
+
+    // Repair's draft builds and spends the lock's CoinJoin input.
+    let repair_draft = f
+        .engine
+        .block_on(f.session.stuck_funding_draft(f.wallet, STEP))
+        .unwrap();
+    let estimate = f
+        .engine
+        .block_on(repair_draft.estimate())
+        .expect("Repair draft must build for Legacy hand-off drain input");
+    assert_eq!(estimate.input_count, 1);
+
+    let tx = f.repair(STEP);
+    let spent: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(spent, [coin].into());
+    assert_eq!(
+        f.session.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::NotSent)
+    );
+    assert!(f.session.leases.unresolved_lock_inputs(f.wallet).is_empty());
 }
 
 /// Repair of a stuck drain waits for mixing to stop and for another move
