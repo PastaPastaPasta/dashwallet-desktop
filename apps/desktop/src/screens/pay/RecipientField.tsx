@@ -126,9 +126,21 @@ export function RecipientField({
     const dismiss = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) close();
     };
+    const onEscape = (e: globalThis.KeyboardEvent) => {
+      if (e.isComposing || e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      if (selectedUser) root.current?.querySelector<HTMLButtonElement>('[data-testid="pay-contacts"]')?.focus();
+      else inputRef.current?.focus();
+    };
     document.addEventListener("pointerdown", dismiss);
-    return () => document.removeEventListener("pointerdown", dismiss);
-  }, [popup]);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [popup, selectedUser !== null]);
 
   const select = (row: (typeof optionRows)[number]) => {
     scanner.dismiss();

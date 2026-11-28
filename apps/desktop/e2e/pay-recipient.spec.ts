@@ -227,7 +227,7 @@ test("a payment link with an amount preserves a typed amount, and picking a cont
   await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
   await expect(amount).toHaveValue("0.25000000");
   await page.getByTestId("pay-contacts").click();
-  await page.getByRole("option", { name: /Bob Builder/ }).click();
+  await page.getByRole("option", { name: /Bob Builder/ }).first().click();
   await expect(page.getByTestId("pay-recipient-chip")).toContainText("Bob Builder");
   await expect(amount).toHaveValue("");
 });
@@ -318,18 +318,19 @@ test("a Core Max result is discarded when the recipient resolves to Platform, an
   await expect(amount).toHaveValue("");
 
   // Case 2: Core Max finishes before Platform resolution completes -> Platform resolution clears Core Max.
-  await page.getByTestId("pay-recipient-clear").click();
+  const field2 = await pay(page);
+  const amount2 = page.getByTestId("pay-amount");
   const c1 = await classifyCalls();
   await page.evaluate(() => {
     (window as Window & { releaseClassify?: () => void }).releaseClassify = window.__dwFixture!.hold("classify_address");
   });
-  await field.fill(PLATFORM);
+  await field2.fill(PLATFORM);
   await expect.poll(classifyCalls).toBeGreaterThan(c1);
   await page.getByTestId("pay-max").click();
-  await expect(amount).not.toHaveValue("");
+  await expect(amount2).not.toHaveValue("");
   await page.evaluate(() => (window as Window & { releaseClassify?: () => void }).releaseClassify?.());
   await expect(page.getByTestId("platform-send-intro")).toBeVisible();
-  await expect(amount).toHaveValue("");
+  await expect(amount2).toHaveValue("");
 
   // Case 3: Core Max in flight while Core address resolves -> Core Max is accepted.
   await page.getByTestId("pay-recipient-clear").click();
@@ -340,14 +341,14 @@ test("a Core Max result is discarded when the recipient resolves to Platform, an
     w.releaseClassify = window.__dwFixture!.hold("classify_address");
     w.releaseMax = window.__dwFixture!.hold("max_spendable");
   });
-  await field.fill(ADDRESS);
+  await field2.fill(ADDRESS);
   await expect.poll(classifyCalls).toBeGreaterThan(c2);
   await page.getByTestId("pay-max").click();
   await expect.poll(maxCalls).toBeGreaterThan(m2);
   await page.evaluate(() => (window as Window & { releaseClassify?: () => void }).releaseClassify?.());
   await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
   await page.evaluate(() => (window as Window & { releaseMax?: () => void }).releaseMax?.());
-  await expect(amount).not.toHaveValue("");
+  await expect(amount2).not.toHaveValue("");
 });
 
 test("link-derived amount, label and message clear when the recipient changes, while typed ones stay", async ({ page }) => {
@@ -383,7 +384,7 @@ test("Change on a resolved non-contact user link clears Pay to instead of reopen
 test("Escape closes an empty Contacts popup even when a contact is already picked", async ({ page }) => {
   await pay(page);
   await page.getByTestId("pay-contacts").click();
-  await page.getByRole("option", { name: /Bob Builder/ }).click();
+  await page.getByRole("option", { name: /Bob Builder/ }).first().click();
   await expect(page.getByTestId("pay-payee-name")).toHaveText("Bob Builder");
 
   await page.evaluate(() => {
