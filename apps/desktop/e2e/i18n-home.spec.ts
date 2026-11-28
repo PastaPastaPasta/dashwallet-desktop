@@ -176,8 +176,10 @@ async function lefts(root: Locator, re: RegExp): Promise<[number, number] | null
   );
 }
 
-/** The left and right edges of the first match of `re` in the text under `root`. */
-async function span(root: Locator, re: RegExp): Promise<{ left: number; right: number } | null> {
+type Span = { left: number; right: number; top: number; bottom: number };
+
+/** The edges of the first match of `re` in the text under `root`. */
+async function span(root: Locator, re: RegExp): Promise<Span | null> {
   return root.evaluate(
     (el, [source, flags]) => {
       const re = new RegExp(source, flags);
@@ -189,7 +191,12 @@ async function span(root: Locator, re: RegExp): Promise<{ left: number; right: n
         r.setStart(n, m.index);
         r.setEnd(n, m.index + m[0].length);
         const rects = [...r.getClientRects()];
-        return { left: Math.min(...rects.map((x) => x.left)), right: Math.max(...rects.map((x) => x.right)) };
+        return {
+          left: Math.min(...rects.map((x) => x.left)),
+          right: Math.max(...rects.map((x) => x.right)),
+          top: Math.min(...rects.map((x) => x.top)),
+          bottom: Math.max(...rects.map((x) => x.bottom)),
+        };
       }
       return null;
     },
@@ -197,21 +204,54 @@ async function span(root: Locator, re: RegExp): Promise<{ left: number; right: n
   );
 }
 
+/** In RTL prose, `first` precedes `second` when it sits on an earlier line or to `second`'s right on the same line. */
+function expectBeforeInRtl(first: Span, second: Span, message: string) {
+  const earlierLine = first.bottom <= second.top;
+  const sameLine = first.top < second.bottom && second.top < first.bottom;
+  expect(earlierLine || (sameLine && first.left > second.right), message).toBe(true);
+}
+
+/** In RTL prose, an amount sits immediately to the right of its word on the same line. */
+function expectBesideWordInRtl(amount: Span, word: Span, message: string) {
+  expect(amount.top, message).toBeLessThan(word.bottom);
+  expect(word.top, message).toBeLessThan(amount.bottom);
+  expect(amount.left - word.right, message).toBeLessThan(12);
+  expect(amount.left - word.right, message).toBeGreaterThanOrEqual(0);
+}
+
 test.describe("amounts keep their order under ar-XB", () => {
   test("the Core line keeps each amount beside its word, the first part rightmost", async ({ page }) => {
     await openHome(page, "pools-absent", "light", "ar-XB");
     await setCore(page, HELD);
     await focusCoreDetail(page);
+    const subtitle = page.getByTestId("breakdown-core").locator(".breakdown-subtitle");
+    await expect(subtitle).toContainText("0.20");
+    const pending = await span(subtitle, /0\.20/);
+    const pendingWord = await span(subtitle, /gnidnep|pending/);
+    expect(pending, "the pending amount on the Core row").not.toBeNull();
+    expect(pendingWord, "the pending word on the Core row").not.toBeNull();
+    expectBesideWordInRtl(pending!, pendingWord!, "the pending amount sits beside its word");
+
     const note = page.getByRole("tooltip");
     await expect(note).toContainText(/·.*·/);
-    const pending = (await span(note, /0\.20/))!;
-    const immature = (await span(note, /2\.00/))!;
-    const locked = (await span(note, /10\.00/))!;
-    const word = (await span(note, /gnidnep|pending/))!;
-    expect(pending.left, "pending's part is first, so rightmost").toBeGreaterThan(immature.right);
-    expect(immature.left, "immature's part comes before locked's").toBeGreaterThan(locked.right);
-    expect(pending.left - word.right, "the pending amount sits beside its word").toBeLessThan(12);
-    expect(pending.left - word.right).toBeGreaterThanOrEqual(0);
+    const pendingStart = await span(note, /demrifnocnU|Unconfirmed/);
+    const pendingEnd = await span(note, /sdnes|sends/);
+    const immature = await span(note, /2\.00/);
+    const immatureWord = await span(note, /erutammi|immature/);
+    const locked = await span(note, /10\.00/);
+    const lockedWord = await span(note, /dekcol|locked/);
+    expect(pendingStart, "the pending detail starts in the tooltip").not.toBeNull();
+    expect(pendingEnd, "the pending detail ends in the tooltip").not.toBeNull();
+    expect(immature, "the immature amount in the tooltip").not.toBeNull();
+    expect(immatureWord, "the immature word in the tooltip").not.toBeNull();
+    expect(locked, "the locked amount in the tooltip").not.toBeNull();
+    expect(lockedWord, "the locked word in the tooltip").not.toBeNull();
+    expectBeforeInRtl(pendingStart!, immature!, "the pending detail is first, before immature");
+    expectBeforeInRtl(pendingEnd!, immature!, "the pending detail ends to the right of immature");
+    expect(pendingStart!.right, "the pending detail starts rightmost in the tooltip").toBeGreaterThan(immature!.right);
+    expectBeforeInRtl(immature!, locked!, "immature's part comes before locked's");
+    expectBesideWordInRtl(immature!, immatureWord!, "the immature amount sits beside its word");
+    expectBesideWordInRtl(locked!, lockedWord!, "the locked amount sits beside its word");
   });
 
 
