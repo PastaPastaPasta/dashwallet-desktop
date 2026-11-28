@@ -601,7 +601,11 @@ impl NetworkSession {
         let upgrade_notice = {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
             tokio::task::spawn_blocking(move || {
-                crate::fsutil::refuse_insecure_root(&dir)?;
+                match std::fs::symlink_metadata(&dir) {
+                    Ok(_) => crate::fsutil::refuse_insecure_dir(&dir)?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
                 crate::store_upgrade::prepare_and_reconcile(&dir, &config)
             })
             .await??

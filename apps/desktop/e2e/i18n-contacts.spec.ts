@@ -104,7 +104,7 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await pickMallory(page, theme, lang);
       await page.getByTestId("add-contact-send").click();
       await authorize(page);
-      await expect(page.getByTestId("add-contact-outcome")).toBeVisible();
+      await expect(page.locator(".toast-host")).toBeVisible();
       await expect(page.getByTestId("add-contact-line")).toBeVisible();
     },
   },

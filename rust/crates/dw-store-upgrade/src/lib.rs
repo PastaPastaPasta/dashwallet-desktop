@@ -95,7 +95,7 @@ pub fn prepare(network_dir: &Path, now: SystemTime) -> Result<Prepared> {
 /// here (`HoldsOpen`): the caller runs [`run_pending_restore`] with its
 /// [`HoldCheck`] first, or [`prepare_with_holds`].
 pub fn prepare_with(network_dir: &Path, adopters: &Adopters, now: SystemTime) -> Result<Prepared> {
-    prepare_with_holds(network_dir, adopters, now, &|_| {
+    prepare_with_holds(network_dir, adopters, now, &|_, _| {
         Err("no hold check ran before the restore".into())
     })
 }

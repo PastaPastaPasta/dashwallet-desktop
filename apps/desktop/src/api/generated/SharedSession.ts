@@ -4,6 +4,7 @@ import type { KeyBase } from "./KeyBase";
 import type { KeyChangeView } from "./KeyChangeView";
 import type { ShareRow } from "./ShareRow";
 import type { ShareTermsView } from "./ShareTermsView";
+import type { SharedConfirming } from "./SharedConfirming";
 import type { SharedKindName } from "./SharedKindName";
 import type { SharedNextName } from "./SharedNextName";
 import type { SharedRoleName } from "./SharedRoleName";
@@ -84,4 +85,8 @@ activityAbandonTxids: Array<string>,
  * The recorded transactions Activity can send again now: the spend
  * back, when the session holds no bytes of its own to replay.
  */
-activityResendTxids: Array<string>, };
+activityResendTxids: Array<string>,
+/**
+ * A spend of the reserved coins is in a block that isn't final yet.
+ */
+confirming: SharedConfirming | null, };

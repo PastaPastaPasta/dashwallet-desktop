@@ -4,4 +4,4 @@
  * What a Max quote adds: the coins it spends, and what stays in the Dash
  * wallet (other accounts' coins, coins still arriving).
  */
-export type CoreMax = { inputs: number, leftDuffs: number, arrivingDuffs: number, };
+export type CoreMax = { inputs: number, leftDuffs: number, arrivingDuffs: number, coinSet: string, };

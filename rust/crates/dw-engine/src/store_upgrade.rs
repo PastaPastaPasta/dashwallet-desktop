@@ -149,12 +149,14 @@ pub(crate) fn sweep_once(data_root: &Path) -> bool {
 fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, EngineError> {
     order::record(network_dir, order::Step::Restore);
     let found = std::cell::Cell::new(None);
-    let holds = |dir: &Path| match crate::platform::restore_hold::restore_hold(dir) {
-        Some(hold) => {
-            found.set(Some(hold));
-            Err(format!("a shielded spend is held ({hold:?})"))
+    let holds = |dir: &Path, snapshot: &dw_store_upgrade::SnapshotInfo| {
+        match crate::platform::restore_hold::restore_hold(dir, Some(snapshot)) {
+            Some(hold) => {
+                found.set(Some(hold));
+                Err(format!("a shielded spend is held ({hold:?})"))
+            }
+            None => crate::platform::restore_hold::check_core_dispatch(dir),
         }
-        None => Ok(()),
     };
     let info = dw_store_upgrade::run_pending_restore(network_dir, SystemTime::now(), &holds)
         .map_err(|e| {
@@ -167,7 +169,7 @@ fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, Engine
             );
             match map_error(network_dir, StoreUpgradeStage::Restore, e, false) {
                 EngineError::StoreRestore(mut r) if held => {
-                    r.cause = hold_cause(found.get());
+                    r.cause = found.get().map_or("other", |hold| hold_cause(Some(hold)));
                     EngineError::StoreRestore(r)
                 }
                 e => e,
@@ -298,9 +300,18 @@ pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
             false,
         ));
     }
-    if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir) {
+    if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir, None) {
         return Err(EngineError::ShieldedSpendHeld(hold));
     }
+    crate::platform::restore_hold::check_core_dispatch(network_dir).map_err(|detail| {
+        EngineError::StoreRestore(Box::new(RestoreFailure {
+            state: RestoreState::NotStarted,
+            cause: "other",
+            needed_bytes: None,
+            folder: network_dir.to_path_buf(),
+            detail,
+        }))
+    })?;
     match dw_store_upgrade::snapshot_state(network_dir)
         .map_err(|e| EngineError::RetryableIo(format!("read the upgrade backups: {e}")))?
     {

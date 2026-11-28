@@ -258,6 +258,27 @@ mirror_enum!(engine::AbandonSpendState => AbandonSpendStateName {
     Refused, Uncertain, InHistory, AbandonedInActivity, Legacy,
 });
 
+/// Which spend of a session's reserved coins is in a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SettledByName {
+    /// A spend back this wallet signed.
+    AbandonTx,
+    OtherSpend,
+}
+
+mirror_enum!(engine::SettledBy => SettledByName { AbandonTx, OtherSpend });
+
+/// A spend of a session's reserved coins in a block that may still become
+/// final and isn't yet final and buried. A registration isn't sent again
+/// meanwhile (`next` is `nothing`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedConfirming {
+    pub by: SettledByName,
+    pub confirmations: u32,
+}
+
 /// The latest abandon spend this wallet signed of a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +510,8 @@ pub struct SharedSession {
     /// The recorded transactions Activity can send again now: the spend
     /// back, when the session holds no bytes of its own to replay.
     pub activity_resend_txids: Vec<String>,
+    /// A spend of the reserved coins is in a block that isn't final yet.
+    pub confirming: Option<SharedConfirming>,
 }
 
 /// The txids of Activity's Abandon and Send again in the engine's recovery
@@ -549,6 +572,15 @@ impl From<engine::SharedSession> for SharedSession {
             _ => None,
         });
         let (activity_abandon_txids, activity_resend_txids) = activity_txids(&recovery.actions);
+        let confirming = match recovery.settlement {
+            engine::Settlement::Confirming {
+                by, confirmations, ..
+            } => Some(SharedConfirming {
+                by: by.into(),
+                confirmations,
+            }),
+            _ => None,
+        };
         let handoff_code = recovery
             .handoff_error
             .filter(|e| e.tx == engine::HandoffTx::Abandon)
@@ -593,6 +625,7 @@ impl From<engine::SharedSession> for SharedSession {
             resend_abandon_charge,
             activity_abandon_txids,
             activity_resend_txids,
+            confirming,
         }
     }
 }
