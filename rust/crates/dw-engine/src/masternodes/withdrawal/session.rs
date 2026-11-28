@@ -3,7 +3,7 @@
 //! the crate-level calls the facade binds (`masternodes/withdrawals.rs`),
 //! the quote's `withdrawal_ready` wait (P4) and the background recheck (P8).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -14,6 +14,7 @@ use dpp::identity::core_script::CoreScript;
 use dpp::state_transition::StateTransition;
 use dw_appdb::{AppDb, PayoutBarrierRow, WithdrawalMark, WithdrawalRow};
 use dw_vault::{GrantKind, GrantPurpose, SignerError, WithdrawalKey};
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use dpp::document::Document;
@@ -30,7 +31,7 @@ use super::{
     Alarm, Authorize, Chain, Env, HeldKey, Hold, PayoutChange, Waits, WalletKeys, WithdrawalError,
     WithdrawalRuntime, load, on_db,
 };
-use crate::history::{Finality, TxEntry, block_beats, instant_locked};
+use crate::history::{Finality, SweptBy, TxEntry, block_beats, instant_locked};
 use crate::masternodes::protx_records::ProTxOperationState;
 use crate::masternodes::{MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::trust::Rule5;
@@ -79,69 +80,297 @@ fn payout_set(
     }
 }
 
+type SeenPayout<'a> = ((Option<Vec<u8>>, bool), Vec<&'a TxEntry>);
+
+/// Every ProRegTx and ProUpRegTx of `pro_tx_hash` in `histories`, grouped by txid.
+fn seen_payout_changes<'a>(
+    histories: &[&'a HashMap<Txid, TxEntry>],
+    pro_tx_hash: &[u8; 32],
+) -> HashMap<Txid, SeenPayout<'a>> {
+    let mut seen: HashMap<Txid, SeenPayout<'a>> = HashMap::new();
+    for (txid, e) in histories.iter().flat_map(|h| h.iter()) {
+        if let Some(set) = payout_set(txid, &e.tx, pro_tx_hash) {
+            seen.entry(*txid).or_insert((set, Vec::new())).1.push(e);
+        }
+    }
+    seen
+}
+
+/// Whether `txid` is mined in any loaded wallet's history.
+fn is_mined_anywhere(histories: &[&HashMap<Txid, TxEntry>], txid: &Txid) -> bool {
+    histories.iter().any(|h| {
+        h.get(txid)
+            .is_some_and(|e| e.context.block_info().is_some())
+    })
+}
+
+/// The unmined reading of `txid` across `histories`: `(instant_locked, inputs)`,
+/// or `None` if `txid` is mined in any wallet or absent from every wallet.
+fn unmined_anywhere<'a>(
+    histories: &[&'a HashMap<Txid, TxEntry>],
+    txid: &Txid,
+) -> Option<(bool, &'a [dashcore::TxIn])> {
+    if is_mined_anywhere(histories, txid) {
+        return None;
+    }
+    let mut locked = false;
+    let mut inputs = None;
+    for h in histories {
+        if let Some(e) = h.get(txid) {
+            locked |= instant_locked(e);
+            inputs.get_or_insert(e.tx.input.as_slice());
+        }
+    }
+    inputs.map(|i| (locked, i))
+}
+
+/// The unmined ancestor closure of the unconfirmed, non-abandoned payout
+/// changes of `pro_tx_hash`, built across `histories` without cloning any
+/// `TxEntry` (#982, #953).
+struct PayoutClosure {
+    /// Unmined transactions in the closure: `txid -> (instant_locked, inputs)`.
+    unmined: HashMap<Txid, (bool, Vec<OutPoint>)>,
+    /// All outpoints spent by any transaction in `unmined`.
+    watched_inputs: HashSet<OutPoint>,
+    /// Unmined txids and non-mined parent txids whose `swept_by` notes may
+    /// mark them conflicted (#953).
+    swept_targets: HashSet<Txid>,
+}
+
+fn payout_closure(
+    histories: &[&HashMap<Txid, TxEntry>],
+    seen: &HashMap<Txid, SeenPayout<'_>>,
+) -> PayoutClosure {
+    let mut queue: Vec<Txid> = seen
+        .iter()
+        .filter_map(|(txid, (_, entries))| {
+            let mined = entries.iter().any(|e| e.context.block_info().is_some());
+            if mined {
+                return None;
+            }
+            let locked = entries.iter().any(|e| instant_locked(e));
+            let abandoned = !locked && entries.iter().any(|e| e.abandoned);
+            (!abandoned).then_some(*txid)
+        })
+        .collect();
+    let mut unmined: HashMap<Txid, (bool, Vec<OutPoint>)> = HashMap::new();
+    let mut watched_inputs: HashSet<OutPoint> = HashSet::new();
+    let mut swept_targets: HashSet<Txid> = HashSet::new();
+    while let Some(id) = queue.pop() {
+        if unmined.contains_key(&id) {
+            continue;
+        }
+        swept_targets.insert(id);
+        let Some((locked, tx_inputs)) = unmined_anywhere(histories, &id) else {
+            continue;
+        };
+        let inputs: Vec<OutPoint> = tx_inputs.iter().map(|i| i.previous_output).collect();
+        for o in &inputs {
+            watched_inputs.insert(*o);
+        }
+        if !locked {
+            for o in &inputs {
+                let parent = o.txid;
+                if !is_mined_anywhere(histories, &parent) {
+                    swept_targets.insert(parent);
+                    if !unmined.contains_key(&parent)
+                        && unmined_anywhere(histories, &parent).is_some()
+                    {
+                        queue.push(parent);
+                    }
+                }
+            }
+        }
+        unmined.insert(id, (locked, inputs));
+    }
+    PayoutClosure {
+        unmined,
+        watched_inputs,
+        swept_targets,
+    }
+}
+
+/// Candidate rival block heights (at most `at_most`) that could conflict an
+/// unconfirmed payout change of `pro_tx_hash` or one of its unmined ancestors
+/// (#982, #953). Empty when no unconfirmed payout change has a mined rival.
+pub(super) fn payout_change_rival_heights(
+    histories: &[&HashMap<Txid, TxEntry>],
+    swept_by: &[&BTreeMap<Txid, SweptBy>],
+    pro_tx_hash: &[u8; 32],
+    at_most: u32,
+) -> BTreeSet<u32> {
+    let seen = seen_payout_changes(histories, pro_tx_hash);
+    let closure = payout_closure(histories, &seen);
+    if closure.unmined.is_empty() {
+        return BTreeSet::new();
+    }
+    let mut heights = BTreeSet::new();
+    for entry in histories.iter().flat_map(|h| h.values()) {
+        let Some(block) = entry.context.block_info() else {
+            continue;
+        };
+        if block.height() <= at_most
+            && entry
+                .tx
+                .input
+                .iter()
+                .any(|i| closure.watched_inputs.contains(&i.previous_output))
+        {
+            heights.insert(block.height());
+        }
+    }
+    for target in &closure.swept_targets {
+        for map in swept_by {
+            if let Some(note) = map.get(target)
+                && !note.claim
+                && let Some((height, _)) = note.block
+                && height <= at_most
+            {
+                heights.insert(height);
+            }
+        }
+    }
+    heights
+}
+
 /// The ProRegTx and ProUpRegTxs of `pro_tx_hash` in the loaded wallets'
-/// `histories`,
-/// once each, but those out of a block that a wallet abandoned or that a
-/// block `finality` proves final, in any wallet's history, conflicts,
-/// directly or, by the history's descendant rule over every wallet's
-/// reading, through a transaction they spend (MG-04's reading, #740). A
-/// block a reorg can still undo, or one the header chain no longer holds,
-/// releases nothing. A wallet the
-/// change pays or names a key of records it with nothing of its own to
-/// abandon. An InstantSend-locked change is conflicted only by a block
-/// `chainlock` covers (key-wallet's finality order).
+/// `histories`, once each, excluding those out of a block that a wallet
+/// abandoned or that a block `finality` proves final conflicts (MG-04's
+/// reading, #740, #953, #982).
+#[cfg(test)]
 pub(super) fn payout_changes_in(
     histories: &[&HashMap<Txid, TxEntry>],
     pro_tx_hash: &[u8; 32],
     chainlock: Option<u32>,
     finality: &Finality,
 ) -> Vec<PayoutChange> {
-    let all = || histories.iter().flat_map(|h| h.iter());
-    // The histories as one, each transaction at its most settled reading
-    // in any wallet (mined, else InstantSend-locked; between mined copies,
-    // a block `finality` proves), for the descendant rule: built once, and
-    // only for a change out of a block.
-    let merged = std::cell::OnceCell::new();
-    let through_parent = |txid: &Txid| {
-        let conflicted = merged.get_or_init(|| {
-            let rank = |e: &TxEntry| {
-                let block = e.context.block_info();
-                let proven = block.is_some_and(|b| finality.proves(b));
-                (block.is_some(), instant_locked(e), proven)
-            };
-            let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
-            for (t, e) in all() {
-                if txs.get(t).is_none_or(|m| rank(e) > rank(m)) {
-                    txs.insert(*t, e.clone());
+    payout_changes_in_with_swept(histories, &[], pro_tx_hash, chainlock, finality)
+}
+
+/// [`payout_changes_in`] with each wallet's persisted `swept_by` notes (#953),
+/// walking only the unmined ancestors of unconfirmed payout changes without
+/// cloning any wallet history (#982).
+pub(super) fn payout_changes_in_with_swept(
+    histories: &[&HashMap<Txid, TxEntry>],
+    swept_by: &[&BTreeMap<Txid, SweptBy>],
+    pro_tx_hash: &[u8; 32],
+    chainlock: Option<u32>,
+    finality: &Finality,
+) -> Vec<PayoutChange> {
+    let seen = seen_payout_changes(histories, pro_tx_hash);
+    let closure = payout_closure(histories, &seen);
+    let mut rivals: HashMap<OutPoint, Vec<(Txid, &TransactionContext)>> = HashMap::new();
+    if !closure.watched_inputs.is_empty() {
+        for (id, entry) in histories.iter().flat_map(|h| h.iter()) {
+            if entry.context.block_info().is_none() {
+                continue;
+            }
+            for input in &entry.tx.input {
+                if closure.watched_inputs.contains(&input.previous_output) {
+                    rivals
+                        .entry(input.previous_output)
+                        .or_default()
+                        .push((*id, &entry.context));
                 }
             }
-            crate::history::conflicted(&txs, chainlock, |b| finality.proves(b))
-        });
-        conflicted.contains_key(txid)
-    };
-    type Seen<'a> = ((Option<Vec<u8>>, bool), Vec<&'a TxEntry>);
-    let mut seen: HashMap<Txid, Seen> = HashMap::new();
-    for (txid, e) in all() {
-        if let Some(set) = payout_set(txid, &e.tx, pro_tx_hash) {
-            seen.entry(*txid).or_insert((set, Vec::new())).1.push(e);
         }
     }
-    let change = |(txid, ((script, registration), entries)): (Txid, Seen)| {
+    let swept_beats = |txid: &Txid, locked: bool| -> bool {
+        swept_by.iter().any(|map| {
+            map.get(txid).is_some_and(|note| {
+                !note.claim
+                    && note.block.is_some_and(|(height, hash)| {
+                        block_beats(
+                            &TransactionContext::InBlock(BlockInfo::new(height, hash, 0)),
+                            locked,
+                            chainlock,
+                            |b| finality.proves(b),
+                        )
+                    })
+            })
+        })
+    };
+    let mut memo: HashMap<Txid, bool> = HashMap::new();
+    let mut visiting: HashSet<Txid> = HashSet::new();
+    #[allow(clippy::too_many_arguments)]
+    fn is_conflicted(
+        txid: Txid,
+        closure: &PayoutClosure,
+        rivals: &HashMap<OutPoint, Vec<(Txid, &TransactionContext)>>,
+        histories: &[&HashMap<Txid, TxEntry>],
+        swept_beats: &dyn Fn(&Txid, bool) -> bool,
+        chainlock: Option<u32>,
+        finality: &Finality,
+        memo: &mut HashMap<Txid, bool>,
+        visiting: &mut HashSet<Txid>,
+    ) -> bool {
+        if let Some(&cached) = memo.get(&txid) {
+            return cached;
+        }
+        if !visiting.insert(txid) {
+            return false;
+        }
+        let result = if let Some((locked, inputs)) = closure.unmined.get(&txid) {
+            let direct = inputs.iter().any(|o| {
+                rivals.get(o).is_some_and(|list| {
+                    list.iter().any(|(wid, ctx)| {
+                        *wid != txid && block_beats(ctx, *locked, chainlock, |b| finality.proves(b))
+                    })
+                })
+            }) || swept_beats(&txid, *locked);
+            if direct {
+                true
+            } else if *locked {
+                false
+            } else {
+                inputs.iter().any(|o| {
+                    let parent = o.txid;
+                    if is_mined_anywhere(histories, &parent) {
+                        false
+                    } else if closure.unmined.contains_key(&parent) {
+                        is_conflicted(
+                            parent,
+                            closure,
+                            rivals,
+                            histories,
+                            swept_beats,
+                            chainlock,
+                            finality,
+                            memo,
+                            visiting,
+                        )
+                    } else {
+                        swept_beats(&parent, false)
+                    }
+                })
+            }
+        } else {
+            false
+        };
+        visiting.remove(&txid);
+        memo.insert(txid, result);
+        result
+    }
+    let change = |(txid, ((script, registration), entries)): (Txid, SeenPayout<'_>)| {
         let height = (entries.iter())
             .filter_map(|e| e.context.block_info().map(|b| b.height()))
             .max();
         if height.is_none() {
             let locked = entries.iter().any(|e| instant_locked(e));
             let abandoned = !locked && entries.iter().any(|e| e.abandoned);
-            let inputs: Vec<OutPoint> = (entries[0].tx.input.iter())
-                .map(|i| i.previous_output)
-                .collect();
-            let beaten = all().any(|(id, w)| {
-                *id != txid
-                    && block_beats(&w.context, locked, chainlock, |b| finality.proves(b))
-                    && (w.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
-            });
-            if abandoned || beaten || (!locked && through_parent(&txid)) {
+            if abandoned
+                || is_conflicted(
+                    txid,
+                    &closure,
+                    &rivals,
+                    histories,
+                    &swept_beats,
+                    chainlock,
+                    finality,
+                    &mut memo,
+                    &mut visiting,
+                )
+            {
                 return None;
             }
         }
@@ -230,15 +459,68 @@ impl Env for SessionEnv {
 
     async fn payout_changes(&self, pro_tx_hash: &[u8; 32]) -> Vec<PayoutChange> {
         let hub = &self.session.hub;
+        // Fast path (#982): when no unconfirmed, non-abandoned payout change
+        // of `pro_tx_hash` exists, return the confirmed changes directly with
+        // zero appdb reads and zero SPV header reads.
+        let wallets = match hub.history.read_wallets(|map| {
+            let histories: Vec<&HashMap<Txid, TxEntry>> = map.values().map(|h| &h.txs).collect();
+            let seen = seen_payout_changes(&histories, pro_tx_hash);
+            let has_unconfirmed = seen.values().any(|(_, entries)| {
+                let mined = entries.iter().any(|e| e.context.block_info().is_some());
+                if mined {
+                    return false;
+                }
+                let locked = entries.iter().any(|e| instant_locked(e));
+                let abandoned = !locked && entries.iter().any(|e| e.abandoned);
+                !abandoned
+            });
+            if !has_unconfirmed {
+                Ok(seen
+                    .into_iter()
+                    .filter_map(|(_, ((script, registration), entries))| {
+                        let height = entries
+                            .iter()
+                            .filter_map(|e| e.context.block_info().map(|b| b.height()))
+                            .max()?;
+                        Some(PayoutChange {
+                            script,
+                            height: Some(height),
+                            registration,
+                        })
+                    })
+                    .collect())
+            } else {
+                Err(map.keys().copied().collect::<Vec<WalletId>>())
+            }
+        }) {
+            Ok(confirmed) => return confirmed,
+            Err(wallets) => wallets,
+        };
+        let swept_by: Vec<BTreeMap<Txid, SweptBy>> = on_db(self, move |db| {
+            let mut out = Vec::with_capacity(wallets.len());
+            for &w in &wallets {
+                let map = crate::tx_actions::load_swept_by(db, w)?;
+                if !map.is_empty() {
+                    out.push(map);
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .unwrap_or_default();
+        let swept_refs: Vec<&BTreeMap<Txid, SweptBy>> = swept_by.iter().collect();
         let finality = (self.session)
             .finality(|at_most| {
-                (hub.history).read_all(|all| crate::history::spender_heights(all, at_most))
+                (hub.history).read_all(|histories| {
+                    payout_change_rival_heights(histories, &swept_refs, pro_tx_hash, at_most)
+                })
             })
             .await;
         let chainlock =
             (hub.tracker().chainlock_height()).max(hub.best_chainlock().map(|(h, _)| h));
-        (hub.history)
-            .read_all(|histories| payout_changes_in(histories, pro_tx_hash, chainlock, &finality))
+        (hub.history).read_all(|histories| {
+            payout_changes_in_with_swept(histories, &swept_refs, pro_tx_hash, chainlock, &finality)
+        })
     }
 
     fn waits(&self) -> Waits {

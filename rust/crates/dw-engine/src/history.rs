@@ -633,6 +633,23 @@ pub(crate) fn conflicted(
     chainlock: Option<u32>,
     counts: impl Fn(&BlockInfo) -> bool,
 ) -> HashMap<Txid, (u32, dashcore::BlockHash)> {
+    conflicted_with_swept(txs, &BTreeMap::new(), chainlock, counts)
+}
+
+/// [`conflicted`] also reading `swept_by` (`swept_by:` conflict-sweep notes,
+/// #953): a non-claim swept parent that isn't live in `txs` participates as
+/// an unmined ancestor, beaten by its winning block `note.block` (when
+/// `counts` accepts it), by a mined copy of `note.winner` in `txs`, or by a
+/// mined spend of one of `note.tx`'s inputs in `txs`.
+///
+/// Seeds are propagated from the lowest `(height, hash)` first so every
+/// descendant is visited at most once (#982).
+pub(crate) fn conflicted_with_swept(
+    txs: &HashMap<Txid, TxEntry>,
+    swept_by: &BTreeMap<Txid, SweptBy>,
+    chainlock: Option<u32>,
+    counts: impl Fn(&BlockInfo) -> bool,
+) -> HashMap<Txid, (u32, dashcore::BlockHash)> {
     let block = |e: &TxEntry| e.context.block_info().map(|b| (b.height(), b.block_hash()));
     let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
     for (t, e) in txs.iter().filter(|(_, e)| block(e).is_some()) {
@@ -641,8 +658,9 @@ pub(crate) fn conflicted(
         }
     }
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
-    let mut todo = Vec::new();
+    let mut seeds: Vec<(Txid, (u32, dashcore::BlockHash))> = Vec::new();
     for (t, e) in txs.iter().filter(|(_, e)| block(e).is_none()) {
+        let mut best: Option<(u32, dashcore::BlockHash)> = None;
         for i in &e.tx.input {
             if !instant_locked(e) {
                 children.entry(i.previous_output.txid).or_default().push(*t);
@@ -653,14 +671,57 @@ pub(crate) fn conflicted(
                 })
                 .filter_map(|(_, be)| block(be))
                 .min();
-            todo.extend(beaten.map(|b| (*t, b)));
+            if let Some(b) = beaten {
+                best = Some(best.map_or(b, |prev| prev.min(b)));
+            }
+        }
+        if let Some(b) = best {
+            seeds.push((*t, b));
         }
     }
+    for (t, note) in swept_by
+        .iter()
+        .filter(|(t, note)| !note.claim && !txs.get(*t).is_some_and(|e| !e.is_abandoned()))
+    {
+        let mut best: Option<(u32, dashcore::BlockHash)> = note
+            .block
+            .filter(|(h, hash)| counts(&BlockInfo::new(*h, *hash, 0)));
+        if let Some(winner) = txs.get(&note.winner)
+            && block_beats(&winner.context, false, chainlock, &counts)
+            && let Some(b) = block(winner)
+        {
+            best = Some(best.map_or(b, |prev| prev.min(b)));
+        }
+        for i in &note.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+            let beaten = (in_block.get(&i.previous_output).into_iter().flatten())
+                .filter(|(b, be)| b != t && block_beats(&be.context, false, chainlock, &counts))
+                .filter_map(|(_, be)| block(be))
+                .min();
+            if let Some(b) = beaten {
+                best = Some(best.map_or(b, |prev| prev.min(b)));
+            }
+        }
+        if let Some(b) = best {
+            seeds.push((*t, b));
+        }
+    }
+    seeds.sort_unstable_by_key(|(_, b)| *b);
     let mut conflicted: HashMap<Txid, (u32, dashcore::BlockHash)> = HashMap::new();
-    while let Some((t, b)) = todo.pop() {
-        if conflicted.get(&t).is_none_or(|known| b < *known) {
+    let mut stack = Vec::new();
+    for (root, b) in seeds {
+        if conflicted.contains_key(&root) {
+            continue;
+        }
+        stack.push(root);
+        while let Some(t) = stack.pop() {
+            if conflicted.contains_key(&t) {
+                continue;
+            }
             conflicted.insert(t, b);
-            todo.extend((children.get(&t).into_iter().flatten()).map(|c| (*c, b)));
+            if let Some(kids) = children.get(&t) {
+                stack.extend(kids.iter().copied().filter(|c| !conflicted.contains_key(c)));
+            }
         }
     }
     conflicted
@@ -691,26 +752,91 @@ impl Finality {
     }
 }
 
-/// Heights at or below `at_most` of the blocks holding a transaction that
-/// spends an output of another transaction of `txs`, or an outpoint
-/// another of `txs` spends too: every block that can beat one of them or
-/// a transaction that spends the wallet's coins, the headers a
-/// [`Finality`] reads.
+/// Heights at or below `at_most` of blocks holding a mined rival spend of
+/// an input of an unmined transaction in `txs` (#982).
+#[cfg(test)]
 pub(crate) fn spender_heights(txs: &[&HashMap<Txid, TxEntry>], at_most: u32) -> BTreeSet<u32> {
-    let mut spent: HashMap<OutPoint, usize> = HashMap::new();
-    for e in txs.iter().flat_map(|h| h.values()) {
+    rival_spender_heights(txs, &[], &[], at_most)
+}
+
+/// Heights at or below `at_most` of blocks that can actually beat an unmined
+/// transaction of `txs`, a non-claim swept parent of `swept_by` (#953), or a
+/// signed operation/session input in `extra` that may not be in `txs` yet
+/// (#982): only mined transactions spending an input with a competing spend
+/// (plus winning blocks recorded on `swept_by` notes) are collected, never
+/// unrelated normal spends in history.
+pub(crate) fn rival_spender_heights(
+    txs: &[&HashMap<Txid, TxEntry>],
+    swept_by: &[&BTreeMap<Txid, SweptBy>],
+    extra: &[(Option<Txid>, OutPoint)],
+    at_most: u32,
+) -> BTreeSet<u32> {
+    let mut heights = BTreeSet::new();
+    // Each contested outpoint maps to `Some(only_txid)` when only one target
+    // spends it, or `None` when more than one (or an anonymous target) does.
+    let mut targets: HashMap<OutPoint, Option<Txid>> = HashMap::new();
+    let mut add_target = |o: OutPoint, owner: Option<Txid>| {
+        targets
+            .entry(o)
+            .and_modify(|existing| {
+                if *existing != owner {
+                    *existing = None;
+                }
+            })
+            .or_insert(owner);
+    };
+    for (t, e) in txs
+        .iter()
+        .flat_map(|h| h.iter())
+        .filter(|(_, e)| e.context.block_info().is_none())
+    {
         for i in &e.tx.input {
-            *spent.entry(i.previous_output).or_default() += 1;
+            add_target(i.previous_output, Some(*t));
         }
     }
-    let known = |o: &OutPoint| {
-        spent.get(o).is_some_and(|n| *n > 1) || txs.iter().any(|h| h.contains_key(&o.txid))
-    };
-    (txs.iter().flat_map(|h| h.values()))
-        .filter_map(|e| Some((e, e.context.block_info()?.height())))
-        .filter(|(e, h)| *h <= at_most && (e.tx.input.iter()).any(|i| known(&i.previous_output)))
-        .map(|(_, h)| h)
-        .collect()
+    for (t, note) in swept_by.iter().flat_map(|m| m.iter()).filter(|(t, note)| {
+        !note.claim
+            && !txs
+                .iter()
+                .any(|h| h.get(*t).is_some_and(|e| !e.is_abandoned()))
+    }) {
+        if let Some((h, _)) = note.block
+            && h <= at_most
+        {
+            heights.insert(h);
+        }
+        for w in txs.iter().filter_map(|h| h.get(&note.winner)) {
+            if let Some(h) = w.context.block_info().map(|b| b.height())
+                && h <= at_most
+            {
+                heights.insert(h);
+            }
+        }
+        for i in &note.tx.input {
+            add_target(i.previous_output, Some(*t));
+        }
+    }
+    for (owner, o) in extra {
+        add_target(*o, *owner);
+    }
+    if targets.is_empty() {
+        return heights;
+    }
+    for (t, e) in txs.iter().flat_map(|h| h.iter()) {
+        let Some(h) = e.context.block_info().map(|b| b.height()) else {
+            continue;
+        };
+        if h <= at_most
+            && e.tx.input.iter().any(|i| {
+                targets
+                    .get(&i.previous_output)
+                    .is_some_and(|only| *only != Some(*t))
+            })
+        {
+            heights.insert(h);
+        }
+    }
+    heights
 }
 
 /// The wallet's coins that the payments this app sent
@@ -5957,6 +6083,34 @@ mod tests {
         );
         assert!(!fin(Some((21, 2)), &[(21, 2)]).proves(&block), "no header");
         assert!(!Finality::default().proves(&block));
+    }
+
+    /// #982: `spender_heights` collects heights only from mined transactions
+    /// that actually have a competing spend, not every normal spend of a
+    /// previous wallet transaction in history.
+    #[test]
+    fn mg982_spender_heights_ignores_uncontested_mined_spends() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let hash = |n: u8| BlockHash::from_byte_array([n; 32]);
+        let at = |h: u32, n: u8| TransactionContext::InBlock(BlockInfo::new(h, hash(n), 0));
+        // Normal confirmed chain A -> B -> C with no rival spend at all.
+        let a = tx(vec![input(coin(1).txid, 0)], vec![out(10, &hash_addr(9))]);
+        let b = tx(vec![input(a.txid(), 0)], vec![out(9, &hash_addr(9))]);
+        let c = tx(vec![input(b.txid(), 0)], vec![out(8, &hash_addr(9))]);
+        // One contested spend: unmined P vs mined R at height 20.
+        let p = tx(vec![input(coin(2).txid, 0)], vec![out(5, &hash_addr(9))]);
+        let r = tx(vec![input(coin(2).txid, 0)], vec![out(4, &hash_addr(8))]);
+        let mut txs = HashMap::new();
+        for (t, ctx) in [
+            (&a, at(10, 1)),
+            (&b, at(11, 2)),
+            (&c, at(12, 3)),
+            (&p, TransactionContext::Mempool),
+            (&r, at(20, 4)),
+        ] {
+            txs.insert(t.txid(), entry(t.clone(), ctx));
+        }
+        assert_eq!(spender_heights(&[&txs], 30), BTreeSet::from([20]));
     }
 
     /// Two mined spends of one coin B (a fork's block the store kept) beside

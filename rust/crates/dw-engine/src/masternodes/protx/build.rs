@@ -40,7 +40,7 @@ use super::super::protx_records::{
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, outpoint_string, parse_pro_tx_hash};
 use super::keys::{Claim, InUse, parse_outpoint};
-use super::ops::state_of;
+use super::ops::extra_op_inputs;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, CoinSnapshot, own_address_info, read_coins, wallet_owns};
 use crate::send::plan::{
@@ -580,7 +580,12 @@ impl NetworkSession {
                 ))
             })
             .await?;
-        let (history, unspent, beats) = self.op_view(wallet).await?.with_beats();
+        let op_view = if rows.is_empty() {
+            None
+        } else {
+            let extra = extra_op_inputs(&rows);
+            Some(self.op_view_for(wallet, &extra).await?)
+        };
         let mut pending = Vec::new();
         let mut used = InUse::default();
         // A coin another row will spend is no collateral (BL-346).
@@ -602,35 +607,39 @@ impl NetworkSession {
             used.operator.insert(e.operator_public_key);
             used.node_ids.extend(e.platform_node_id);
         }
-        for row in &rows {
-            let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) else {
-                continue;
-            };
-            let state = state_of(row, &history, &unspent, &beats);
-            // A final block beats a conflicted row, or a transaction it spends: it
-            // never confirms, so its keys and collateral are free again, as
-            // Core frees a ProRegTx's when it leaves the mempool (D54).
-            if state == ProTxOperationState::Conflicted {
-                continue;
-            }
-            used.add_terms(&terms, network);
-            // Whatever may still go out, or is out and not in the list
-            // (D43's window).
-            let unlisted = match state {
-                ProTxOperationState::Confirmed { height } => list.height.is_none_or(|l| l < height),
-                _ => true,
-            };
-            if unlisted {
-                pending.push(Claim::of_row(row, &terms));
-            }
-            if let (Some(CollateralKind::External), Some(address), Some(hash)) = (
-                terms.collateral,
-                terms.collateral_address.as_deref(),
-                row.pro_tx_hash.as_deref(),
-            ) && let (Ok(address), Ok(hash)) =
-                (l1_address(address, network), parse_pro_tx_hash(hash))
-            {
-                external_collaterals.insert(hash, address.script_pubkey());
+        if let Some(op_view) = &op_view {
+            for row in &rows {
+                let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) else {
+                    continue;
+                };
+                let state = op_view.state_of(row);
+                // A final block beats a conflicted row, or a transaction it spends: it
+                // never confirms, so its keys and collateral are free again, as
+                // Core frees a ProRegTx's when it leaves the mempool (D54).
+                if state == ProTxOperationState::Conflicted {
+                    continue;
+                }
+                used.add_terms(&terms, network);
+                // Whatever may still go out, or is out and not in the list
+                // (D43's window).
+                let unlisted = match state {
+                    ProTxOperationState::Confirmed { height } => {
+                        list.height.is_none_or(|l| l < height)
+                    }
+                    _ => true,
+                };
+                if unlisted {
+                    pending.push(Claim::of_row(row, &terms));
+                }
+                if let (Some(CollateralKind::External), Some(address), Some(hash)) = (
+                    terms.collateral,
+                    terms.collateral_address.as_deref(),
+                    row.pro_tx_hash.as_deref(),
+                ) && let (Ok(address), Ok(hash)) =
+                    (l1_address(address, network), parse_pro_tx_hash(hash))
+                {
+                    external_collaterals.insert(hash, address.script_pubkey());
+                }
             }
         }
         // A shared session's keys are the wallet's too (MG-04b D10), and a

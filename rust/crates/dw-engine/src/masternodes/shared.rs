@@ -25,7 +25,7 @@ mod recovery;
 mod send;
 mod standby;
 pub use standby::standby_file_transactions;
-mod store;
+pub(crate) mod store;
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests;
@@ -233,39 +233,60 @@ impl Masternodes {
         let can_send = self.shared_can_send();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
-            let rows = s.shared_rows(wallet).await?;
-            let chain = s.shared_chain(wallet).await?;
+            let w = wallet.to_string();
+            let all_rows = s.appdb_op(move |db| db.shared_sessions(&w)).await?;
+            if all_rows.is_empty() {
+                return Ok(Vec::new());
+            }
             let network = s.network.core_network();
+            let extra = flow::extra_shared_inputs(&all_rows);
+            let chain = Arc::new(s.shared_chain_for(wallet, &extra).await?);
+            let mut reg_rows = Vec::new();
+            let mut together_rows = Vec::new();
+            let mut key_change_rows = Vec::new();
+            let mut by_id = std::collections::HashMap::with_capacity(all_rows.len());
+            for row in all_rows {
+                by_id.insert(row.id.clone(), row.clone());
+                if row.kind == together::KIND {
+                    together_rows.push(row);
+                } else if row.kind == key_change::KIND {
+                    key_change_rows.push(row);
+                } else {
+                    reg_rows.push(row);
+                }
+            }
+            let mut inputs = std::collections::HashMap::new();
             // A row that doesn't parse is skipped, as every other reader
             // does; `shared_session` of its id reports it.
-            let mut sessions: Vec<SharedSession> = flow::loaded_all(rows, network)
+            let loaded = flow::loaded_all(reg_rows, network);
+            let mut sessions: Vec<SharedSession> = loaded
                 .iter()
-                .map(|l| view(l, &chain))
+                .map(|l| {
+                    inputs.insert(l.row.id.clone(), l.conflict_inputs());
+                    view(l, &chain)
+                })
                 .collect();
             s.prompt_standbys(wallet, &mut sessions).await?;
-            let rows = s.together_rows(wallet).await?;
-            if !rows.is_empty() {
-                let v = s.together_read(wallet).await?;
-                for row in rows {
+            if !together_rows.is_empty() || !key_change_rows.is_empty() {
+                let v = s.together_read_with(wallet, Arc::clone(&chain)).await?;
+                for row in together_rows {
                     // Skipped as an unparsed registration is.
                     let Ok(t) = together::Together::of(row, network) else {
                         continue;
                     };
                     sessions.push(s.together_session(wallet, &t, &v).await?);
                 }
-            }
-            let rows = s.key_change_rows(wallet).await?;
-            if !rows.is_empty() {
-                let v = s.together_read(wallet).await?;
-                for row in rows {
+                for row in key_change_rows {
                     let Ok(k) = key_change::KeyChange::of(row, network) else {
                         continue;
                     };
+                    inputs.insert(k.row.id.clone(), k.own_inputs());
                     sessions.push(s.key_change_session(&k, &v));
                 }
             }
             sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
-            s.fill_recovery(wallet, &mut sessions, can_send).await;
+            s.fill_recovery_with(wallet, &mut sessions, &by_id, &inputs, &chain, can_send)
+                .await;
             Ok(sessions)
         })
         .await
@@ -289,7 +310,8 @@ impl Masternodes {
             if rows.is_empty() {
                 return Ok(Vec::new());
             }
-            let chain = s.shared_chain(wallet).await?;
+            let extra = flow::extra_shared_inputs(&rows);
+            let chain = s.shared_chain_for(wallet, &extra).await?;
             let mut out = Vec::with_capacity(rows.len());
             for row in &rows {
                 out.push(s.unreadable_listing(wallet, row, &chain).await);
@@ -705,7 +727,7 @@ impl Masternodes {
                 session: frozen_session,
                 ..l.clone()
             };
-            let unspent = s.op_view(wallet).await?.unspent;
+            let unspent = s.unspent_outpoints(wallet).await?;
             let frozen = s.consent_checks(&locked, &ctx, &unspent, false, Some(&rec))?;
             s.consent_and_save(wallet, &grant, &l, locked.session, &frozen, &rec)
                 .await?;
@@ -783,7 +805,7 @@ impl Masternodes {
             if !participant_services_ok(&l.session.terms.core_p2p_addrs) {
                 return Err(unsupported(Some("service")));
             }
-            let unspent = s.op_view(wallet).await?.unspent;
+            let unspent = s.unspent_outpoints(wallet).await?;
             let frozen = s.consent_checks(&l, &ctx, &unspent, false, None)?;
             s.consent_and_save(wallet, &grant, &l, l.session.clone(), &frozen, &rec)
                 .await?;
@@ -823,7 +845,7 @@ impl Masternodes {
             // write, as a send holds it from its coin read through signing.
             let _fence = s.coin_fence(wallet).await?;
             let own = s.reserved_inputs(wallet, &l.row, &rec.outpoints()).await?;
-            let unspent = s.op_view(wallet).await?.unspent;
+            let unspent = s.unspent_outpoints(wallet).await?;
             let frozen = s.consent_checks(&l, &ctx, &unspent, true, None)?;
             // D56 at the funding step: the copy is the one this wallet
             // approved (D65).

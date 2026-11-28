@@ -29,8 +29,7 @@ use self::build::{
     sign_message, summarize, to_sign, unsigned_registration,
 };
 use self::ops::{
-    Delivery, abandon_settled, encode_inputs, kind_name, kind_of, operation_of, state_name,
-    state_of,
+    Delivery, encode_inputs, extra_op_inputs, kind_name, kind_of, operation_of, state_name,
 };
 use super::protx_records::{
     CollateralChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState,
@@ -688,15 +687,19 @@ impl Masternodes {
             }
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
-            let (history, unspent, beats) = s.op_view(wallet).await?.with_beats();
+            if rows.is_empty() {
+                return Ok(Vec::new());
+            }
+            let extra = extra_op_inputs(&rows);
+            let op_view = s.op_view_for(wallet, &extra).await?;
             let abandoned = s.abandoned_txids(wallet).await?;
             let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
                 .map(|r| {
-                    let state = list_settled(r, state_of(r, &history, &unspent, &beats), &view);
+                    let state = list_settled(r, op_view.state_of(r), &view);
                     operation_of(
                         r,
-                        abandon_settled(r, state, &history, &abandoned),
+                        op_view.beats.abandon_settled(r, state, &abandoned),
                         &s.hub.tracker(),
                     )
                 })

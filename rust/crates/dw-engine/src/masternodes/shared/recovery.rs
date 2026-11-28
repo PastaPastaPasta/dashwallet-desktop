@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use super::super::MasternodesError;
 use super::super::protx::build::tx_size;
-use super::super::protx::ops::{Beats, beaten_height, conflict_of, overdue, tip_overdue};
+use super::super::protx::ops::{overdue, tip_overdue};
 use super::super::protx::require_protx_sending;
 use super::super::shared_records::{
     AbandonSpend, AbandonSpendState, Blocked, BlockedReason, HandoffError, HandoffErrorOutcome,
@@ -351,12 +351,12 @@ impl NetworkSession {
         chain: &ChainView,
     ) -> UnreadableSession {
         let mut view = unreadable_view(row, chain);
-        if view.abandonable && spend_back_pending(row, &chain.history).unwrap_or(true) {
+        if view.abandonable && spend_back_pending(row, chain.history()).unwrap_or(true) {
             view.abandonable = false;
         }
         if view.abandonable {
             view.abandon_charge = match self.coin_facts(wallet, row, chain).await {
-                Ok(facts) => match facts.test(&chain.history) {
+                Ok(facts) => match facts.test(chain.history()) {
                     AbandonCoins::Usable { fee, .. } => Some(fee),
                     _ => None,
                 },
@@ -467,7 +467,7 @@ impl NetworkSession {
             return Ok(());
         }
         let chain = self.shared_chain(wallet).await?;
-        match spend_back_pending(row, &chain.history)? {
+        match spend_back_pending(row, chain.history())? {
             true => Err(MasternodesError::SharedStage {
                 stage: "abandoning".into(),
             }),
@@ -592,18 +592,41 @@ impl NetworkSession {
             return;
         }
         let w = wallet.to_string();
-        let (Ok(rows), Ok(chain)) = (
-            self.appdb_op(move |db| db.shared_sessions(&w)).await,
-            self.shared_chain(wallet).await,
-        ) else {
+        let Ok(rows) = self.appdb_op(move |db| db.shared_sessions(&w)).await else {
+            return;
+        };
+        let extra = super::flow::extra_shared_inputs(&rows);
+        let Ok(chain) = self.shared_chain_for(wallet, &extra).await else {
             return;
         };
         let rows: HashMap<String, SharedSessionRow> =
             rows.into_iter().map(|r| (r.id.clone(), r)).collect();
+        self.fill_recovery_with(wallet, sessions, &rows, &HashMap::new(), &chain, can_send)
+            .await;
+    }
+
+    /// [`Self::fill_recovery`] reusing already-read `rows`, pre-parsed
+    /// `inputs` (session id -> own conflict inputs) and `chain`, so listing
+    /// shared sessions reads the DB, parses envelopes and scans history once
+    /// (#982).
+    pub(super) async fn fill_recovery_with(
+        &self,
+        wallet: WalletId,
+        sessions: &mut [SharedSession],
+        rows: &HashMap<String, SharedSessionRow>,
+        inputs: &HashMap<String, Vec<OutPoint>>,
+        chain: &ChainView,
+        can_send: bool,
+    ) {
+        if sessions.is_empty() {
+            return;
+        }
         let ctx = self.read_context(can_send);
         for session in sessions {
             if let Some(row) = rows.get(&session.id)
-                && let Ok(r) = self.recovery_of(wallet, row, session, &chain, &ctx).await
+                && let Ok(r) = self
+                    .recovery_of(wallet, row, session, inputs.get(&session.id), chain, &ctx)
+                    .await
             {
                 session.recovery = r;
             }
@@ -617,6 +640,7 @@ impl NetworkSession {
         wallet: WalletId,
         row: &SharedSessionRow,
         session: &SharedSession,
+        preparsed_inputs: Option<&Vec<OutPoint>>,
         chain: &ChainView,
         ctx: &ReadContext,
     ) -> Result<SharedRecovery, MasternodesError> {
@@ -630,7 +654,7 @@ impl NetworkSession {
             ..Default::default()
         };
         if session.kind == SharedKind::DissolveTogether {
-            if self.together_discard(wallet, row.clone()).await.is_ok() {
+            if session.discardable {
                 r.actions.push(RecoveryAction::Discard {
                     releases: self.reserved_total(wallet, row).await?,
                 });
@@ -638,46 +662,34 @@ impl NetworkSession {
             return Ok(r);
         }
         let key_change = session.kind == SharedKind::KeyChange;
-        let (own_inputs, except) = match key_change {
-            true => (
-                KeyChange::of(row.clone(), network)
-                    .map(|k| k.own_inputs())
-                    .unwrap_or_else(|_| reserved_of(row)),
-                txid_of(row.txid.as_deref()),
-            ),
-            false => (
-                Loaded::of(row.clone(), network)
-                    .map(|l| l.conflict_inputs())
-                    .unwrap_or_else(|_| reserved_of(row)),
-                txid_of(session.pro_tx_hash.as_deref()).or(txid_of(row.txid.as_deref())),
-            ),
+        let own_inputs = match preparsed_inputs {
+            Some(v) => v.clone(),
+            None if key_change => KeyChange::of(row.clone(), network)
+                .map(|k| k.own_inputs())
+                .unwrap_or_else(|_| reserved_of(row)),
+            None => Loaded::of(row.clone(), network)
+                .map(|l| l.conflict_inputs())
+                .unwrap_or_else(|_| reserved_of(row)),
+        };
+        let except = match key_change {
+            true => txid_of(row.txid.as_deref()),
+            false => txid_of(session.pro_tx_hash.as_deref()).or(txid_of(row.txid.as_deref())),
         };
         let confirmed = matches!(session.stage, SharedStage::Confirmed { .. });
-        // A lower block that beats a transaction the request spends (#740)
-        // is another spend too: the release reads the lowest.
-        let conflict_by = |beats: &Beats| {
-            (row.out_at.is_some() && !confirmed)
-                .then(|| {
-                    let direct = conflict_of(
-                        &chain.history,
-                        &own_inputs,
-                        except.as_ref(),
-                        &attributed,
-                        beats,
-                    )
-                    .map(|(by, height)| (attributed.contains(&by), height));
-                    let beaten = beaten_height(&chain.history, beats, &own_inputs, except.as_ref());
-                    match (direct, beaten) {
-                        (Some((_, d)), Some(lowest)) if lowest < d => Some((false, lowest)),
-                        (None, lowest) => lowest.map(|h| (false, h)),
-                        (direct, _) => direct,
-                    }
-                })
-                .flatten()
-        };
         // Any block shows the progress; only a final one, buried, settles.
-        let settled = conflict_by(&chain.beats).filter(|(_, height)| (ctx.buried)(*height));
-        let conflict = conflict_by(&chain.seen);
+        // Both are computed in a single scan of history (#982).
+        let (settled, conflict) = if row.out_at.is_some() && !confirmed {
+            let hit =
+                chain
+                    .provisional()
+                    .recovery_conflict(&own_inputs, except.as_ref(), &attributed);
+            (
+                hit.final_hit.filter(|(_, height)| (ctx.buried)(*height)),
+                hit.seen_hit,
+            )
+        } else {
+            (None, None)
+        };
         if let Some((by_abandon, height)) = settled.or(conflict) {
             let by = match by_abandon {
                 true => SettledBy::AbandonTx,
@@ -705,7 +717,7 @@ impl NetworkSession {
             || (key_change && matches!(session.stage, SharedStage::Dead { .. }));
         let pending = matches!(r.settlement, Settlement::Pending { .. });
         let state = (pending && !terminal)
-            .then(|| spend_state(row, entry, &chain.history))
+            .then(|| spend_state(row, entry, chain.history()))
             .flatten();
         // Activity's Abandon stores its mark before its sweep, and flags the
         // history entry only once the sweep is: marked, the spend reads
@@ -761,7 +773,7 @@ impl NetworkSession {
             return Ok(r);
         }
         let facts = self.coin_facts(wallet, row, chain).await?;
-        let coins = facts.test(&chain.history);
+        let coins = facts.test(chain.history());
         let a = txid_of(row.abandon_txid.as_deref());
         let signed = row.abandon_txid.is_some();
         let replaceable = matches!(
@@ -808,7 +820,10 @@ impl NetworkSession {
                 _ => false,
             };
         let charge = match ctx.can_send && replayable {
-            true => self.abandon_fee(wallet, row, entry, &chain.history).await?,
+            true => {
+                self.abandon_fee(wallet, row, entry, chain.history())
+                    .await?
+            }
             false => None,
         };
         if let Some(charge) = charge
@@ -870,7 +885,7 @@ impl NetworkSession {
             r.blocked = blocked(
                 &facts,
                 &coins,
-                &chain.history,
+                chain.history(),
                 &attributed,
                 a,
                 new_spend,

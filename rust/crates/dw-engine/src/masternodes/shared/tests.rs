@@ -3475,8 +3475,8 @@ fn an_unseen_dissolution_stays_sent_after_a_silent_truncation() {
 
 #[test]
 fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
-    use super::super::protx::ops::{Beats, conflict_height, conflict_of};
-    use super::store::{Loaded, derive_stage, releasable, session_hash};
+    use super::super::protx::ops::FinalBeats;
+    use super::store::{ChainView, Loaded, derive_stage, releasable, session_hash};
     let f = fx(3, true);
     let id = three_approved(&f);
     f.both_signed(&id);
@@ -3486,11 +3486,12 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
         }
         let row = f.row(w, &id);
         let loaded = Loaded::of(row.clone(), dashcore::Network::Regtest).unwrap();
-        let mut chain = f.run(f.session.shared_chain(f.wallets[w])).unwrap();
+        let base_chain = f.run(f.session.shared_chain(f.wallets[w])).unwrap();
         let inputs = loaded.own_inputs();
-        let own = session_hash(&loaded, &chain)
+        let own = session_hash(&loaded, &base_chain)
             .or_else(|| row.txid.as_ref().and_then(|id| id.parse().ok()));
         assert!(!inputs.is_empty());
+        let mut history = base_chain.history().clone();
         for (seed, height) in [(71, 60), (72, 59), (73, 60)] {
             let tx = Transaction {
                 version: 2,
@@ -3507,7 +3508,7 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
                 }],
                 special_transaction_payload: None,
             };
-            chain.history.insert(
+            history.insert(
                 tx.txid(),
                 crate::history::TxEntry {
                     tx,
@@ -3525,9 +3526,13 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
                 },
             );
         }
-        chain.beats = Beats::on_chain(&chain.history, Some(60));
+        let chain = ChainView::new(
+            FinalBeats::on_chain(history.clone(), Some(60)),
+            base_chain.unspent.clone(),
+            base_chain.pending.clone(),
+        );
         let original = chain
-            .history
+            .history()
             .iter()
             .filter(|(id, e)| {
                 Some(**id) != own
@@ -3538,12 +3543,12 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
             })
             .filter_map(|(_, e)| e.context.block_info().map(|b| b.height()))
             .min();
+        assert_eq!(chain.beats.conflict_height(&inputs, own.as_ref()), original);
         assert_eq!(
-            conflict_height(&chain.history, &inputs, own.as_ref(), &chain.beats),
-            original
-        );
-        assert_eq!(
-            conflict_of(&chain.history, &inputs, own.as_ref(), &[], &chain.beats).map(|(_, h)| h),
+            chain
+                .beats
+                .conflict_of(&inputs, own.as_ref(), &[])
+                .map(|(_, h)| h),
             original
         );
         assert_eq!(derive_stage(&loaded, &chain), SharedStage::Conflicted);
@@ -3555,7 +3560,7 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
             );
         }
         if let Some(own) = own {
-            let mut own_tx = chain.history.values().next().unwrap().clone();
+            let mut own_tx = history.values().next().unwrap().clone();
             own_tx.context = key_wallet::transaction_checking::TransactionContext::InBlock(
                 key_wallet::transaction_checking::BlockInfo::new(
                     58,
@@ -3563,7 +3568,12 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
                     0,
                 ),
             );
-            chain.history.insert(own, own_tx);
+            history.insert(own, own_tx);
+            let chain = ChainView::new(
+                FinalBeats::on_chain(history, Some(60)),
+                base_chain.unspent,
+                base_chain.pending,
+            );
             assert_eq!(
                 derive_stage(&loaded, &chain),
                 SharedStage::Confirmed { height: 58 }

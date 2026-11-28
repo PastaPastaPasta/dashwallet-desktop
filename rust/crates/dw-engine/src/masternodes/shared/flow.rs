@@ -21,7 +21,8 @@ use super::super::MasternodesError;
 use super::super::follow::load_notes;
 use super::super::protx::build::{Context, invalid, refused, tx_size};
 use super::super::protx::keys::{InUse, p2pkh_id};
-use super::super::protx::ops::Beats;
+#[cfg(test)]
+use super::super::protx::ops::FinalBeats;
 use super::super::records::HeldShares;
 use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, SharedStage};
 use super::build::{Selected, placeholder, select};
@@ -39,6 +40,24 @@ use crate::{EngineError, NetworkSession, WalletId};
 /// Labels of the addresses a session issues (address book, D10).
 const REFUND_LABEL: &str = "Shared masternode refund";
 pub(super) const REWARD_LABEL: &str = "Shared masternode reward";
+
+/// The `(stored_txid, outpoint)` pairs of `rows` that may not yet be in the
+/// wallet's history, so `rival_spender_heights` catches mined rivals of their
+/// inputs (#982).
+pub(crate) fn extra_shared_inputs(rows: &[SharedSessionRow]) -> Vec<(Option<Txid>, OutPoint)> {
+    use std::str::FromStr;
+    let mut out = Vec::new();
+    for row in rows {
+        let txid = row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
+        for o in super::store::conflict_coins(row)
+            .into_iter()
+            .chain(super::store::signed_inputs(row).into_iter().flatten())
+        {
+            out.push((txid, o));
+        }
+    }
+    out
+}
 
 /// A party's own row as it commits it (D10): the keychain owner key, a
 /// fresh refund address and the reward.
@@ -178,17 +197,38 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<ChainView, MasternodesError> {
-        let crate::masternodes::protx::ops::OpView {
-            history,
-            unspent,
-            chainlock,
-            finality,
-        } = self.op_view(wallet).await?;
+        let w = wallet.to_string();
+        let rows = self.appdb_op(move |db| db.shared_sessions(&w)).await?;
+        let extra = extra_shared_inputs(&rows);
+        self.shared_chain_for(wallet, &extra).await
+    }
+
+    /// [`Self::shared_chain`] with the caller's already-loaded extra inputs
+    /// (`extra_shared_inputs` / `extra_op_inputs`), avoiding a redundant DB
+    /// read (#982).
+    pub(crate) async fn shared_chain_for(
+        &self,
+        wallet: WalletId,
+        extra: &[(Option<Txid>, OutPoint)],
+    ) -> Result<ChainView, MasternodesError> {
+        #[cfg(not(test))]
+        let beats_and_unspent = {
+            let op_view = self.op_view_for(wallet, extra).await?;
+            (op_view.beats, op_view.unspent)
+        };
         // The registrations the test seam mines are read with the rest.
         #[cfg(test)]
-        let (history, finality) = {
+        let beats_and_unspent = {
             use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
-            let mut history = history;
+            let w = self.wallet(&wallet).await?;
+            let (unspent, applied) = {
+                let state = crate::wallet_read::info_of(&w).await?;
+                let unspent = (read_coins(&state.core_wallet).coins.into_iter())
+                    .map(|c| c.utxo.outpoint)
+                    .collect();
+                (unspent, crate::history_ops::applied_chainlock(&state))
+            };
+            let mut history = self.hub.history.read(&wallet, |h| h.clone());
             let (mined, locked) = (self.masternodes.protx_seam())
                 .map(|s| {
                     (
@@ -214,21 +254,25 @@ impl NetworkSession {
                     },
                 );
             }
-            drop(finality);
-            let heights = |at_most| crate::history::spender_heights(&[&history], at_most);
-            let finality = self.finality(heights).await;
-            (history, finality)
+            let swept_by = self
+                .appdb_op(move |db| crate::tx_actions::load_swept_by(db, wallet))
+                .await?;
+            let finality = self
+                .finality(|at_most| {
+                    crate::history::rival_spender_heights(&[&history], &[&swept_by], extra, at_most)
+                })
+                .await;
+            let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
+                .max(self.hub.best_chainlock().map(|(h, _)| h))
+                .max(finality.chainlock.map(|(h, _)| h));
+            (
+                FinalBeats::new(history, swept_by, chainlock, finality),
+                unspent,
+            )
         };
-        let seen = Beats::seen(&history, chainlock, finality.clone());
-        let beats = Beats::of(&history, chainlock, finality);
+        let (beats, unspent) = beats_and_unspent;
         let pending = self.spends.snapshot(&wallet);
-        Ok(ChainView {
-            history,
-            unspent,
-            beats,
-            seen,
-            pending,
-        })
+        Ok(ChainView::new(beats, unspent, pending))
     }
 
     pub(crate) async fn shared_view(

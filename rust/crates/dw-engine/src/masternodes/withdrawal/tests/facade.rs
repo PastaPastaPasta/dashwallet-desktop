@@ -1301,6 +1301,149 @@ fn mg740_a_payout_change_reads_the_rivals_final_copy_over_a_replaced_one() {
     assert_eq!(changes([&proven, &replaced]), 0, "proven first");
 }
 
+/// #953: an unconfirmed payout change whose fee-parent payment was swept out
+/// of history clears once the persisted `SweptBy` note names a final winning
+/// block, while a claim-only note or an unproven block keeps the hold.
+#[test]
+fn mg953_payout_change_paid_from_swept_payment_clears_when_rival_final() {
+    use super::super::session::{payout_change_rival_heights, payout_changes_in_with_swept};
+    use crate::history::{Finality, SweptBy, TxEntry};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+    let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+    let mut rival = rival_of(&payment);
+    rival.lock_time = 1;
+
+    let change_only = HashMap::from([(
+        change.txid(),
+        TxEntry {
+            tx: change.clone(),
+            context: TransactionContext::Mempool,
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned: false,
+        },
+    )]);
+    let proven_block = (TIP - 3, dashcore::BlockHash::from_byte_array([0x61; 32]));
+    let unproven_block = (TIP - 3, dashcore::BlockHash::from_byte_array([0x60; 32]));
+    let tip = dashcore::BlockHash::from_byte_array([0x64; 32]);
+    let finality = Finality {
+        chainlock: Some((TIP, tip)),
+        active: HashMap::from([
+            (TIP - 3, dashcore::BlockHash::from_byte_array([0x61; 32])),
+            (TIP, tip),
+        ]),
+    };
+
+    let note = |claim, block| {
+        BTreeMap::from([(
+            payment.txid(),
+            SweptBy {
+                claim,
+                winner: rival.txid(),
+                block: Some(block),
+                tx: payment.clone(),
+            },
+        )])
+    };
+
+    let claim_note = note(true, proven_block);
+    assert_eq!(
+        payout_changes_in_with_swept(
+            &[&change_only],
+            &[&claim_note],
+            &PRO_TX,
+            Some(TIP),
+            &finality
+        )
+        .len(),
+        1,
+        "a claim-only sweep note never releases the payout hold"
+    );
+
+    let unproven_note = note(false, unproven_block);
+    assert_eq!(
+        payout_changes_in_with_swept(
+            &[&change_only],
+            &[&unproven_note],
+            &PRO_TX,
+            Some(TIP),
+            &finality
+        )
+        .len(),
+        1,
+        "an unproven block on a sweep note keeps the hold"
+    );
+
+    let proven_note = note(false, proven_block);
+    assert_eq!(
+        payout_change_rival_heights(&[&change_only], &[&proven_note], &PRO_TX, TIP),
+        BTreeSet::from([TIP - 3])
+    );
+    assert_eq!(
+        payout_changes_in_with_swept(
+            &[&change_only],
+            &[&proven_note],
+            &PRO_TX,
+            Some(TIP),
+            &finality
+        )
+        .len(),
+        0,
+        "a final winning block on the swept parent clears the payout hold"
+    );
+}
+
+/// #982: `payout_change_rival_heights` skips unrelated confirmed spends in
+/// wallet history and returns only candidate rival heights for unconfirmed
+/// payout changes of `pro_tx_hash`.
+#[test]
+fn mg982_payout_change_rival_heights_skips_unrelated_confirmed_spends() {
+    use super::super::session::payout_change_rival_heights;
+    use crate::history::TxEntry;
+    use std::collections::{BTreeSet, HashMap};
+
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let entry = |tx: &Transaction, context: TransactionContext| TxEntry {
+        tx: tx.clone(),
+        context,
+        instant_locked: false,
+        first_seen: None,
+        own_inputs: Default::default(),
+        abandoned: false,
+    };
+    let parent = rival_of(&payout_change(&PRO_TX, &moved, coin(10)));
+    let child = rival_of(&payout_change(
+        &PRO_TX,
+        &moved,
+        OutPoint::new(parent.txid(), 0),
+    ));
+    let change = payout_change(&PRO_TX, &moved, coin(20));
+    let mut rival = rival_of(&change);
+    rival.lock_time = 2;
+
+    let mut history = HashMap::from([
+        (parent.txid(), entry(&parent, in_block(11))),
+        (child.txid(), entry(&child, in_block(12))),
+        (change.txid(), entry(&change, TransactionContext::Mempool)),
+        (rival.txid(), entry(&rival, in_block(20))),
+    ]);
+    assert_eq!(
+        payout_change_rival_heights(&[&history], &[], &PRO_TX, TIP),
+        BTreeSet::from([20]),
+        "only the rival height of the unconfirmed payout change is requested"
+    );
+    history.insert(change.txid(), entry(&change, in_block(19)));
+    assert_eq!(
+        payout_change_rival_heights(&[&history], &[], &PRO_TX, TIP),
+        BTreeSet::new(),
+        "no heights are requested once every payout change is confirmed"
+    );
+}
+
 /// #740's rule reads every wallet: a change InstantSend-locked, or paid
 /// from a payment another wallet reads mined, still holds when a final
 /// block holds a rival of the payment's input. One paid from a payment
