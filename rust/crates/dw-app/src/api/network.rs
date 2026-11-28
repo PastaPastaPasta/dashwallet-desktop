@@ -361,9 +361,9 @@ commands! {
     /// the session, its drafts, the window and the choice stay, and the
     /// paused operations run. Once closed, its vault is locked and its
     /// draft handles dropped, and the chosen one opens with SPV started as
-    /// at launch. A failed open reopens the network it left and is
-    /// `app.network_switch_failed`, the choice unsaved. The renderer boots
-    /// again on success: every read of the old network is gone.
+    /// at launch. A failed open reopens the network it left and leaves the
+    /// choice unsaved. A damaged target returns its `storage_refused` screen;
+    /// other failures return `app.network_switch_failed`.
     ///
     /// [`Engine::close_network_unless_busy`]: dw_engine::Engine::close_network_unless_busy
     #[facade(
@@ -439,6 +439,11 @@ commands! {
                             .inspect_err(|e| eprintln!("dw-app: {} did not reopen: {e}", left.dir_name()));
                         let rolled_back = back.is_ok();
                         *slot = back.ok();
+                        if matches!(&e.data, Some(ErrorData::StoreRefused { screen, .. })
+                            if screen.text_key == dw_engine::store_upgrade::copy::WayOut::Damaged.line().key)
+                        {
+                            return Err(e);
+                        }
                         return Err(AppError::app(
                             AppCode::NetworkSwitchFailed,
                             format!("{} did not open: {e}", target.dir_name()),
@@ -667,24 +672,39 @@ commands! {
         Ok(engines.wait().await?.cancel_restore(&network).await?)
     }
 
-    /// The refused open's way back to the funds (Q107 C1): the window's
-    /// network starts over in a new, empty folder beside its own, with the
+    /// The refused open's way back to the funds (Q107 C1): `network` (null
+    /// for the window's network) starts over in a new folder beside its own, with the
     /// restore's RESTORED mark, so the wallet set up there from its recovery
     /// phrase stays held until its first full sync. Nothing in the refused
-    /// folder changes. The next start opens the new folder; the renderer
-    /// restarts the app after this (`restart_app`). `invalid_argument`
+    /// folder changes. For a switch target, save that network for the restart.
+    /// The renderer restarts the app after this (`restart_app`). `invalid_argument`
     /// unless the network's last open was refused by the store-upgrade
     /// check as damaged, or Restore earlier data was refused for a shielded
     /// hold since an open refused with it or at that open's swap, and while
     /// it is open.
     #[facade("Engine::recover_in_fresh_folder")]
-    fn recover_in_fresh_folder(state) -> () {
+    fn recover_in_fresh_folder(state, network: Option<ChosenNetwork>) -> () {
         let engines = state.engine.clone();
         let engine = engines.wait().await?;
         let _slot = state.session_slot().await;
-        let network = state.window_network();
-        let dir = engine.recover_in_fresh_folder(network.clone()).await?;
-        eprintln!("dw-app: {} starts over in {}", network.dir_name(), dir.display());
+        let choice = network.map(NetworkChoice::from);
+        let network = choice.map_or_else(|| state.window_network(), NetworkChoice::network);
+        let mut pending = state.recovery_choice_pending.lock().await;
+        let redirected = match (choice, pending.get(&network)) {
+            (Some(_), Some(dir)) => *dir == engine.network_dir(&network)?,
+            _ => false,
+        };
+        if !redirected {
+            let dir = engine.recover_in_fresh_folder(network.clone()).await?;
+            eprintln!("dw-app: {} starts over in {}", network.dir_name(), dir.display());
+            if choice.is_some() {
+                pending.insert(network.clone(), dir);
+            }
+        }
+        if let Some(choice) = choice {
+            network_choice::write_network_choice(&state.data_root, choice)?;
+            pending.remove(&network);
+        }
         Ok(())
     }
 }

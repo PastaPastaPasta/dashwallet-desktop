@@ -34,8 +34,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-# The effective uid, to refuse a wallet.sqlite another user owns.
-rustix = { version = "1", default-features = false, features = ["std", "process"] }
+# The effective uid for wallet ownership and no-follow flags for inspection copies.
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [dev-dependencies]
 # The fork migrations' recorded checksums, recomputed from the copied SQL.

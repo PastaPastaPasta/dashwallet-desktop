@@ -432,6 +432,127 @@ fn a_damaged_refusal_refuses_restore_earlier_data() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+#[test]
+fn damaged_wallet_precheck_offers_recovery() {
+    probe_p9a_absent();
+    let root = dw_testutil::private_tempdir();
+    let net = root.path().join("regtest");
+    dw_fs::create_owned_dir(root.path(), Path::new("regtest")).unwrap();
+    let wallet = net.join("wallet.sqlite");
+    let junk = [0x5a; 512];
+    std::fs::write(&wallet, junk).unwrap();
+    let engine = engine(root.path());
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => assert_eq!(r.screen.way_out, WayOut::Damaged),
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened"),
+    }
+    let recovered = engine
+        .block_on(engine.recover_in_fresh_folder(DashNetwork::Regtest))
+        .unwrap();
+    assert!(restored_mark_set(&recovered));
+    assert_eq!(std::fs::read(wallet).unwrap(), junk);
+    assert!(
+        engine
+            .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+            .is_ok()
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+#[test]
+fn missing_shielded_store_after_upgrade_offers_recovery() {
+    probe_p9a_absent();
+    let f = fixture("v0.3.0");
+    let engine = engine(&f.root);
+    let network = DashNetwork::Regtest;
+    let session = engine
+        .block_on(engine.open_network(network.clone(), local_opts()))
+        .unwrap();
+    drop(session);
+    engine
+        .block_on(engine.close_network(network.clone()))
+        .unwrap();
+
+    let shielded = f.net.join("shielded.sqlite");
+    std::fs::remove_file(&shielded).unwrap();
+    match engine.block_on(engine.open_network(network.clone(), local_opts())) {
+        Err(EngineError::StoreRefused(r)) => assert_eq!(r.screen.way_out, WayOut::Damaged),
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened without the shielded store"),
+    }
+    assert!(!shielded.exists());
+    let recovered = engine
+        .block_on(engine.recover_in_fresh_folder(network.clone()))
+        .unwrap();
+    assert!(restored_mark_set(&recovered));
+    assert!(
+        engine
+            .block_on(engine.open_network(network, local_opts()))
+            .is_ok()
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+#[test]
+fn missing_shielded_store_with_a_wal_only_marker_is_refused_unchanged() {
+    probe_p9a_absent();
+    let f = fixture("v0.3.0");
+    std::fs::remove_file(f.net.join("shielded.sqlite")).unwrap();
+    let app = f.net.join("app.sqlite");
+    let conn = rusqlite::Connection::open(&app).unwrap();
+    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )
+    .unwrap();
+    let main = std::fs::read(&app).unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, 'shielded_store_seen', '1')",
+        [dw_appdb::GLOBAL_SCOPE],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(f.net.join("app.sqlite-wal").is_file());
+    assert_eq!(std::fs::read(&app).unwrap(), main);
+    std::fs::remove_file(f.net.join("app.sqlite-shm")).unwrap();
+
+    let engine = engine(&f.root);
+    let before = tree(&f.net);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => assert_eq!(r.screen.way_out, WayOut::Damaged),
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened without the shielded store"),
+    }
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+#[test]
+fn damaged_app_database_without_shielded_store_offers_recovery() {
+    probe_p9a_absent();
+    let f = fixture("v0.3.0");
+    std::fs::remove_file(f.net.join("shielded.sqlite")).unwrap();
+    damage_header(&f, "app.sqlite");
+    let engine = engine(&f.root);
+    let before = tree(&f.net);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => {
+            assert_eq!(r.screen.way_out, WayOut::Damaged);
+            assert!(r.detail.contains("app.sqlite"), "{r:?}");
+        }
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened with a damaged app database"),
+    }
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    let fresh = engine
+        .block_on(engine.recover_in_fresh_folder(DashNetwork::Regtest))
+        .unwrap();
+    assert!(restored_mark_set(&fresh));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A damaged refusal followed by an open that is not refused as damaged
 /// (here, the store mended) takes the way out back.
 #[test]

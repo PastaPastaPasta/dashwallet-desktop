@@ -4,6 +4,7 @@
 // `installFixture({ scenario })` (vitest).
 
 import type { AuthGrant } from "../api/generated/AuthGrant";
+import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
 import type { ContestStatus } from "../api/generated/ContestStatus";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
@@ -90,6 +91,7 @@ export interface World {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
     closeRefused?: "wallet" | "shielded_spend_unresolved" | "transfer_preparing";
     fail?: { rolledBack: boolean };
+    damaged?: ChosenNetwork;
     reopenFails?: boolean;
     /** The switch goes through but its choice is not written. */
     saveFails?: boolean;

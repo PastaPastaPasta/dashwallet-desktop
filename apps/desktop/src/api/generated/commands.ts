@@ -396,9 +396,9 @@ export function openNetwork(network: string | null, settings: SessionSettings | 
  * the session, its drafts, the window and the choice stay, and the
  * paused operations run. Once closed, its vault is locked and its
  * draft handles dropped, and the chosen one opens with SPV started as
- * at launch. A failed open reopens the network it left and is
- * `app.network_switch_failed`, the choice unsaved. The renderer boots
- * again on success: every read of the old network is gone.
+ * at launch. A failed open reopens the network it left and leaves the
+ * choice unsaved. A damaged target returns its `storage_refused` screen;
+ * other failures return `app.network_switch_failed`.
  *
  * [`Engine::close_network_unless_busy`]: dw_engine::Engine::close_network_unless_busy
  */
@@ -521,19 +521,19 @@ export function cancelRestore(network: string | null): Promise<null> {
 }
 
 /**
- * The refused open's way back to the funds (Q107 C1): the window's
- * network starts over in a new, empty folder beside its own, with the
+ * The refused open's way back to the funds (Q107 C1): `network` (null
+ * for the window's network) starts over in a new folder beside its own, with the
  * restore's RESTORED mark, so the wallet set up there from its recovery
  * phrase stays held until its first full sync. Nothing in the refused
- * folder changes. The next start opens the new folder; the renderer
- * restarts the app after this (`restart_app`). `invalid_argument`
+ * folder changes. For a switch target, save that network for the restart.
+ * The renderer restarts the app after this (`restart_app`). `invalid_argument`
  * unless the network's last open was refused by the store-upgrade
  * check as damaged, or Restore earlier data was refused for a shielded
  * hold since an open refused with it or at that open's swap, and while
  * it is open.
  */
-export function recoverInFreshFolder(): Promise<null> {
-  return invoke<null>("recover_in_fresh_folder");
+export function recoverInFreshFolder(network: ChosenNetwork | null): Promise<null> {
+  return invoke<null>("recover_in_fresh_folder", { network });
 }
 
 export function lockStatus(): Promise<LockStatus> {
@@ -3803,7 +3803,7 @@ export type CommandArgs = {
   request_restore: { network: string | null };
   keep_current_files: { network: string | null };
   cancel_restore: { network: string | null };
-  recover_in_fresh_folder: {  };
+  recover_in_fresh_folder: { network: ChosenNetwork | null };
   lock_status: {  };
   unlock: { passphrase: string };
   unlock_mixing_only: { passphrase: string };

@@ -668,6 +668,17 @@ impl Borrow<Connection> for CopyRead {
     }
 }
 
+/// Read a store under the data root's instance lock, with any committed log
+/// applied to a private copy and no changes to the live files. The caller
+/// resolves the parent directories so symlinks are refused only at the file.
+pub fn inspect_live_store<T>(
+    path: &Path,
+    inspect: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    let copy = open_copy_with_flags(path, OpenFlags::SQLITE_OPEN_NOFOLLOW)?;
+    inspect(&copy.conn)
+}
+
 /// A live store read with its log applied and nothing written beside it:
 /// with no log, `immutable=1`; with a non-empty `-wal` or `-journal`, the
 /// file and its log copied into a private 0700 directory under the data
@@ -677,6 +688,10 @@ impl Borrow<Connection> for CopyRead {
 /// `SQLITE_PERM` for its permissions, `SQLITE_FULL` for space and
 /// `SQLITE_IOERR` otherwise.
 fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
+    open_copy_with_flags(path, OpenFlags::empty())
+}
+
+fn open_copy_with_flags(path: &Path, flags: OpenFlags) -> rusqlite::Result<CopyRead> {
     #[cfg(test)]
     fault("snapshot.open_copy").map_err(|_| {
         rusqlite::Error::SqliteFailure(
@@ -686,7 +701,7 @@ fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
     })?;
     if !logged(path) {
         return Ok(CopyRead {
-            conn: sql::open_immutable(path)?,
+            conn: sql::open_immutable_with_flags(path, flags)?,
             _scratch: None,
         });
     }
@@ -715,7 +730,7 @@ fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
     }
     let name = path.file_name().unwrap_or_default();
     let copy = scratch.path().join(name);
-    fs::copy(path, &copy).map_err(ioerr)?;
+    copy_for_inspection(path, &copy, flags).map_err(ioerr)?;
     for suffix in ["-wal", "-journal"] {
         let mut side = path.as_os_str().to_owned();
         side.push(suffix);
@@ -723,13 +738,37 @@ fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
         if side.exists() {
             let mut to = copy.as_os_str().to_owned();
             to.push(suffix);
-            fs::copy(&side, PathBuf::from(to)).map_err(ioerr)?;
+            copy_for_inspection(&side, Path::new(&to), flags).map_err(ioerr)?;
         }
     }
     Ok(CopyRead {
         conn: Connection::open(&copy)?,
         _scratch: Some(scratch),
     })
+}
+
+fn copy_for_inspection(from: &Path, to: &Path, flags: OpenFlags) -> io::Result<()> {
+    if !flags.contains(OpenFlags::SQLITE_OPEN_NOFOLLOW) {
+        fs::copy(from, to)?;
+        return Ok(());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags((OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::NONBLOCK).bits() as i32);
+    }
+    if let Some(why) = dw_fs::not_sole(&fs::symlink_metadata(from)?) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, why));
+    }
+    let mut source = options.open(from)?;
+    if let Some(why) = dw_fs::not_sole(&source.metadata()?) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, why));
+    }
+    io::copy(&mut source, &mut fs::File::create_new(to)?)?;
+    Ok(())
 }
 
 /// Once `wallet.sqlite` is upgraded, a before-upgrade snapshot is its backup

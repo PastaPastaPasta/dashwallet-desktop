@@ -10,6 +10,7 @@ import type { Route } from "../api/generated/Route";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { ToolsTab } from "../api/generated/ToolsTab";
 import type { UiSettings } from "../api/generated/UiSettings";
+import type { StoreRefusedData } from "../api/storeOpen";
 
 export type { Route, ToolsTab };
 export type ThemeChoice = ThemeName | null;
@@ -104,6 +105,7 @@ export interface UiState {
    * again or the switch is refused. Its card covers the window; menu commands and shortcuts are
    * ignored meanwhile, and links wait (`useShellBridge`). */
   switching: ChosenNetwork | null;
+  switchRefusal: { network: ChosenNetwork; refusal: StoreRefusedData } | null;
   /** How many mounted views show a recovery phrase (`useSecretScreen`, U-02 D15). */
   secrets: number;
   /** Whether the content protection those views need is in effect (D27; set by the shell). */
@@ -163,6 +165,7 @@ let state: UiState = {
   forgotPassphrase: false,
   wiping: false,
   switching: null,
+  switchRefusal: null,
   secrets: 0,
   protection: "off",
   contact: null,

@@ -260,6 +260,48 @@ fn assert_put_back(f: &Fixture, pin: &str, c: &Claim, reason: &str) -> String {
     raw
 }
 
+fn unreadable_fork_inputs_refuse_open(fail_before_recheck: bool) {
+    let f = store(PINS[0], "wallet.sqlite");
+    rusqlite::Connection::open(f.wallet())
+        .unwrap()
+        .execute(
+            "UPDATE core_dropped_unsigned_spends SET record_blob = X'00', released_coins = 'unreadable'
+             WHERE txid = ?1",
+            [key(A.txid)],
+        )
+        .unwrap();
+    if fail_before_recheck {
+        let appdb = dw_appdb::AppDb::open(&f.net.join(dw_appdb::APP_DB_FILE)).unwrap();
+        appdb
+            .set_setting_durable("store_repair", "staged_restored", Some("unreadable"))
+            .unwrap();
+    }
+    assert_eq!(coin(&f, &A), (0, None));
+    let engine = engine(&f.root);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::Storage(detail)) => {
+            assert!(detail.contains(&format!(
+                "cannot identify the inputs of legacy claim {}",
+                A.txid
+            )));
+        }
+        Err(other) => panic!("unexpected startup error: {other:?}"),
+        Ok(_) => panic!("opened with a released input despite an unreadable claim"),
+    }
+    assert_eq!(coin(&f, &A), (0, None));
+    assert_eq!(fork_rows(&f, &A), 1);
+}
+
+#[test]
+fn unreadable_fork_inputs_refuse_open_during_recheck() {
+    unreadable_fork_inputs_refuse_open(false);
+}
+
+#[test]
+fn unreadable_fork_inputs_refuse_open_after_a_repair_error() {
+    unreadable_fork_inputs_refuse_open(true);
+}
+
 /// (a)–(d), at the first open: the claim whose input script isn't
 /// push-only (a) and the one settled in the other wallet (b) come back
 /// pending with their coins held, so the first session already doesn't

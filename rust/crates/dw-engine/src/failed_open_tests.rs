@@ -440,7 +440,11 @@ fn a_failed_open_through_a_symlinked_root_keeps_its_wallets() {
     close(&linked);
     let rows = stored_rows(&data_dir, wallet);
     let failed = failing_in(&FAIL_LOAD_IN, &data_dir, || open(&linked));
-    assert!(failed.is_err());
+    assert!(
+        matches!(&failed, Err(EngineError::Storage(e)) if e == "test: load failed"),
+        "{:?}",
+        failed.err()
+    );
     linked.block_on(linked.shutdown()).unwrap();
     drop(linked);
 

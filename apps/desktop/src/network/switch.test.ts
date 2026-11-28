@@ -4,6 +4,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend, liveListenerCount } from "../api/tauri";
+import { STORE_SCREENS, storeRefusedError } from "../fixture/errors";
 import { bootAgain, switchOutcome, takeSwitchNote } from "./switch";
 
 // The link takes asked for so far: a test sets one still in flight.
@@ -76,6 +77,11 @@ describe("switchOutcome", () => {
     code: "app.network_busy",
     message: "busy",
     data: { kind: "networkBusy", flows, mixing, broadcast, stalled: false, draining: false, ...more },
+  });
+
+  it("keeps the damaged target's recovery screen", () => {
+    const refusal = STORE_SCREENS.damaged("/data/testnet");
+    expect(switchOutcome(storeRefusedError(refusal), "testnet", "mainnet")).toEqual({ recovery: refusal });
   });
 
   it("says what a busy network waits for", () => {

@@ -76,6 +76,7 @@ export function useNetworkPicker() {
     onError: (e, to) => {
       const outcome = switchOutcome(e, to, current ?? to, lock.data?.encrypted === true);
       if ("reboot" in outcome) return void bootAgain(outcome.reboot);
+      if ("recovery" in outcome) return void ui.set({ switching: null, switchRefusal: { network: to, refusal: outcome.recovery } });
       ui.set({ switching: null });
       setProblem(outcome.problem);
     },

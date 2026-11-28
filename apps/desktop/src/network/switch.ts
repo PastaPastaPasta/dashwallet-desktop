@@ -6,6 +6,7 @@
 import type { Backend } from "../api/backend";
 import { errorMessage, isAppError } from "../api/backend";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
+import { storeRefusal, type StoreRefusedData } from "../api/storeOpen";
 import { releaseListeners } from "../api/tauri";
 import { linksTaken } from "../app/shellBridge";
 import { prefsWritten } from "../settings/prefs";
@@ -36,7 +37,9 @@ function leaveSwitchNote(note: string) {
 /** What a switch to `target` that failed with `e` means: a refusal said in place (nothing changed),
  * or a failure after the close, which boots the page again with its note. `canLock`: the vault is
  * encrypted, so the user can lock it (which ends a flow's lease). */
-export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNetwork, canLock = false): { problem: string } | { reboot: string } {
+export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNetwork, canLock = false): { problem: string } | { reboot: string } | { recovery: StoreRefusedData } {
+  const refusal = storeRefusal(e);
+  if (refusal?.screen.textKey === "storeUpgrade.refused.wayOut.damaged") return { recovery: refusal };
   const refused = closeRefusal(e, canLock);
   if (refused !== null) return { problem: refused };
   if (isAppError(e)) {

@@ -284,6 +284,34 @@ test.describe("network choice", () => {
   type Knobs = NonNullable<NonNullable<Window["__dwFixture"]>["world"]["networkSwitch"]>;
   const setKnobs = (page: Page, knobs: Knobs) => page.evaluate((k) => void (window.__dwFixture!.world.networkSwitch = k), knobs);
 
+  for (const theme of THEMES) {
+    test(`a damaged switch target offers recovery for that network (${theme})`, async ({ page }) => {
+      const errors = await open(page, "no-wallet-mainnet", theme);
+      await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
+      await setKnobs(page, { damaged: "testnet" });
+      const testnet = page.getByTestId("onboarding-network-testnet");
+      await testnet.click();
+      const refusal = page.getByTestId("store-refused");
+      await expect(refusal).toContainText("/home/user/.local/share/dashwallet/testnet");
+      await expect(page.getByTestId("onboarding-welcome")).toHaveCount(0);
+      expect(await activeNetwork(page)).toBe("mainnet");
+      await shot(page, `${theme}-damaged-switch`);
+
+      await refusal.getByRole("button", { name: "Back", exact: true }).click();
+      await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
+      await testnet.click();
+      await refusal.getByRole("button", { name: "Set up from recovery phrase" }).click();
+      await expect(page.getByTestId("recover-confirm")).toContainText("/home/user/.local/share/dashwallet/testnet");
+      await shot(page, `${theme}-damaged-switch-confirm`);
+      await page.getByTestId("recover-confirm-confirm").click();
+      await expect.poll(() => activeNetwork(page)).toBe("testnet");
+      await expect(page.getByTestId("onboarding-restore")).toBeVisible();
+      await expect(page.getByTestId("onboarding-create")).toHaveCount(0);
+      await shot(page, `${theme}-damaged-switch-recovery`);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("Welcome offers the choice, mainnet or testnet", async ({ page }) => {
     await open(page, "no-wallet");
     await expect(page.getByTestId("onboarding-network-testnet")).toHaveAttribute("aria-pressed", "true");

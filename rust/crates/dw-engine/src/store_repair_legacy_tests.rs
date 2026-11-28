@@ -281,6 +281,114 @@ fn a_non_push_only_claim_the_fork_dropped_is_held_again_until_abandoned() {
     }
 }
 
+#[test]
+fn failed_legacy_repair_never_offers_the_claim_input() {
+    for unreadable in [false, true] {
+        let (_dir, engine, id, funding, claim, network) =
+            non_push_only_claim_the_fork_dropped(Pin::Dev1387);
+        if unreadable {
+            on_store(
+                &network,
+                "UPDATE core_dropped_unsigned_spends SET record_blob = X'00'",
+                [],
+            );
+        }
+        arm(&network, Stop::BeforeCommit);
+        let session = open(&engine);
+        let input = OutPoint::new(funding.txid(), 0);
+        assert!(session.spends.snapshot(&id).contains(&input));
+        session.spends.forget_wallet(&id);
+        assert!(!spendable(&engine, &session, id, input));
+        assert_eq!(fork_rows(&network, id, claim.txid()), 1);
+        assert_eq!(coin_spent(&network, id, &encode_outpoint(&input)).0, 0);
+    }
+}
+
+#[test]
+fn a_malformed_legacy_claim_id_refuses_the_open() {
+    let (_dir, engine, id, funding, _, network) =
+        non_push_only_claim_the_fork_dropped(Pin::Dev1387);
+    let input = encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    on_store(
+        &network,
+        "UPDATE core_dropped_unsigned_spends SET txid = X'00'",
+        [],
+    );
+    let result = engine.block_on(engine.open_network(DashNetwork::Regtest, offline()));
+    assert!(matches!(result, Err(crate::EngineError::Storage(_))));
+    let rows: i64 = rusqlite::Connection::open(network.join(WALLET_DB_FILE))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM core_dropped_unsigned_spends WHERE txid = X'00'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1);
+    assert_eq!(coin_spent(&network, id, &input).0, 0);
+}
+
+#[test]
+fn restored_legacy_output_uses_the_canonical_outpoint_key() {
+    let (_dir, _engine, wallet, _, claim, network) =
+        non_push_only_claim_the_fork_dropped(Pin::Dev1387);
+    let change = OutPoint::new(claim.txid(), 1);
+    let canonical = encode_outpoint(&change);
+    let mut alternate = canonical.clone();
+    assert_eq!(alternate.pop(), Some(1));
+    alternate.extend([251, 1, 0]);
+    assert_eq!(crate::history_ops::decode_stored(&alternate), Some(change));
+    on_store(
+        &network,
+        "UPDATE core_dropped_unsigned_spends SET deleted_outputs =
+            json_set(deleted_outputs, '$[0].outpoint', ?1)",
+        [hex::encode(&alternate)],
+    );
+    repair_closed(&network);
+    let stored_key: Vec<u8> = rusqlite::Connection::open(network.join(WALLET_DB_FILE))
+        .unwrap()
+        .query_row(
+            "SELECT outpoint FROM core_utxos WHERE wallet_id = ?1 AND outpoint IN (?2, ?3)",
+            rusqlite::params![wallet.0.as_slice(), &canonical, &alternate],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_key, canonical);
+}
+
+#[test]
+fn legacy_output_must_match_its_transaction() {
+    for field in ["value", "script", "outpoint"] {
+        let (_dir, _engine, id, funding, claim, network) =
+            non_push_only_claim_the_fork_dropped(Pin::Dev1387);
+        let change = encode_outpoint(&OutPoint::new(claim.txid(), 1));
+        let nonexistent = encode_outpoint(&OutPoint::new(claim.txid(), 42));
+        let value = match field {
+            "value" => serde_json::json!(1),
+            "script" => serde_json::json!("51"),
+            _ => serde_json::json!(hex::encode(&nonexistent)),
+        };
+        on_store(
+            &network,
+            "UPDATE core_dropped_unsigned_spends SET deleted_outputs = json_set(deleted_outputs, ?1, json(?2))",
+            rusqlite::params![format!("$[0].{field}"), value.to_string()],
+        );
+        repair_closed(&network);
+        assert!(stored(&network, id, claim.txid()), "{field}");
+        let input = encode_outpoint(&OutPoint::new(funding.txid(), 0));
+        assert_eq!(coin_spent(&network, id, &input).0, 1, "{field}");
+        let conn = rusqlite::Connection::open(network.join(WALLET_DB_FILE)).unwrap();
+        let restored: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM core_utxos WHERE wallet_id = ?1 AND outpoint IN (?2, ?3)",
+                rusqlite::params![id.0.as_slice(), change, nonexistent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(restored, 0, "{field}");
+    }
+}
+
 /// L4 with a block's spend (V025): the claim is put back, and its change,
 /// which a block spent by a transaction the store has no record of, comes
 /// back spent.
@@ -681,7 +789,7 @@ fn the_recheck_runs_once_and_a_stop_either_side_of_its_commit_leaves_it_whole() 
 /// (f) A fork row whose record doesn't read: the claim can't go back, so
 /// the coins the fork released for it are held again from its
 /// `released_coins`, its row goes and the put-back is recorded as a doubt.
-/// When its released coins don't read either, nothing changes.
+/// When its released coins don't read either, the repair fails with its row intact.
 #[test]
 fn a_fork_row_whose_record_doesnt_read_holds_its_released_coins_again() {
     for pin in PINS {
@@ -703,8 +811,8 @@ fn a_fork_row_whose_record_doesnt_read_holds_its_released_coins_again() {
             "UPDATE core_dropped_unsigned_spends SET released_coins = 'not json'",
             [],
         );
-        let outcome = repair_closed(copy.path());
-        assert!(outcome.restored.is_empty(), "{outcome:?}");
+        let db = dw_appdb::AppDb::open(&copy.path().join(dw_appdb::APP_DB_FILE)).unwrap();
+        assert!(repair(copy.path(), &db).is_err());
         assert_eq!(fork_rows(copy.path(), id, claim.txid()), 1, "its row stays");
 
         let session = open(&engine);

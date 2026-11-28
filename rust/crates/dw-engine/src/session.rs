@@ -655,16 +655,22 @@ impl NetworkSession {
         // Before the persister holds wallet.sqlite and once app.sqlite,
         // where its records go, is open: no other writer can touch the
         // store, and the load reads what was dropped (#739, Q112).
-        {
+        let spends = {
             let (dir, db) = (data_dir.clone(), Arc::clone(&appdb));
             let repaired =
                 tokio::task::spawn_blocking(move || crate::store_repair::repair(&dir, &db)).await;
             match repaired {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => tracing::warn!(error = %e, "store repair: stopped"),
-                Err(e) => tracing::warn!(error = %e, "store repair: panicked"),
+                Ok(Ok(_)) => Default::default(),
+                failed => {
+                    tracing::warn!(?failed, "store repair: holding legacy inputs after failure");
+                    let dir = data_dir.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::store_repair::hold_legacy_inputs(&dir)
+                    })
+                    .await??
+                }
             }
-        }
+        };
         {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
             tokio::task::spawn_blocking(move || {
@@ -1035,7 +1041,7 @@ impl NetworkSession {
                 replay,
             })),
             pump: Mutex::new(None),
-            spends: Default::default(),
+            spends,
             coin_fences: Default::default(),
             username_gate: Default::default(),
             withdrawal_nonces: Default::default(),
@@ -1876,12 +1882,11 @@ fn open_app_db(data_dir: &Path) -> Result<(AppDb, NamedWallets), EngineError> {
     record(data_dir, Step::AppDb);
     create_owned_file(data_dir, Path::new(APP_DB_FILE))?;
     create_owned_file(data_dir, Path::new(APP_DB_LOCK_FILE))?;
-    let open = || {
-        let db = AppDb::open(&data_dir.join(APP_DB_FILE))?;
-        let names = db.wallets()?;
-        Ok::<_, dw_appdb::AppDbError>((db, names))
-    };
-    open().map_err(|e| EngineError::Storage(format!("app database: {e}")))
+    let app_error = |e| EngineError::Storage(format!("app database: {e}"));
+    let db = AppDb::open(&data_dir.join(APP_DB_FILE)).map_err(app_error)?;
+    crate::platform::shielded_pool::check_store_presence(data_dir, &db)?;
+    let names = db.wallets().map_err(app_error)?;
+    Ok((db, names))
 }
 
 /// Reads and checks a PEM CA file the way the SDK will use it. The SDK parses

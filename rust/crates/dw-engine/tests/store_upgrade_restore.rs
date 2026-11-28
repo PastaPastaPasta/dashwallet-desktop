@@ -390,6 +390,44 @@ fn a_requested_restore_runs_at_the_next_open() {
     assert_eq!(after_dirs(&f), 1);
 }
 
+#[test]
+fn a_requested_restore_cannot_replace_a_missing_shielded_store() {
+    let f = upgraded();
+    let engine = on_restore_screen(&f);
+    engine
+        .block_on(engine.request_restore(&DashNetwork::Regtest))
+        .unwrap();
+    close(engine);
+    std::fs::remove_file(f.net.join("shielded.sqlite")).unwrap();
+    let before = tree(&f.net);
+    let result = open_in_child(&f.root);
+    assert!(
+        result.starts_with("refused SnapshotSourceDamaged "),
+        "{result}"
+    );
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+}
+
+#[test]
+fn a_restore_request_with_a_missing_shielded_store_offers_fresh_recovery() {
+    let f = upgraded();
+    let engine = on_restore_screen(&f);
+    std::fs::remove_file(f.net.join("shielded.sqlite")).unwrap();
+    let before = tree(&f.net);
+    let result = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+    assert!(
+        matches!(&result, Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Damaged),
+        "{result:?}"
+    );
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    let dir = engine
+        .block_on(engine.recover_in_fresh_folder(DashNetwork::Regtest))
+        .unwrap();
+    assert!(dw_store_upgrade::restored_mark_present(&dir));
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    close(engine);
+}
+
 /// A refusal after the start's restore put the before-upgrade files back
 /// never says Dash Wallet changed nothing (ProvedState's `wrote`): the
 /// restored file isn't upgraded, so the screen only asks to keep the folder.

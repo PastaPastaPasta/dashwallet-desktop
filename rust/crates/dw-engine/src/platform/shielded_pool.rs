@@ -176,10 +176,98 @@ use super::shielded::{
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
-use crate::{NetworkSession, PlatformChange, WalletId};
+use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
 /// The coordinator's commitment tree, in the network directory.
 pub(crate) const SHIELDED_DB_FILE: &str = "shielded.sqlite";
+const SHIELDED_STORE_SEEN: &str = "shielded_store_seen";
+
+pub(crate) fn refuse_missing_store(dir: &std::path::Path, wrote: bool) -> Result<(), EngineError> {
+    let app_db = dir.join(dw_appdb::APP_DB_FILE);
+    if dir.join(SHIELDED_DB_FILE).try_exists()? {
+        return Ok(());
+    }
+    let metadata = match app_db.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(why) = dw_fs::not_sole(&metadata) {
+        return Err(EngineError::Storage(format!(
+            "read Shielded store marker: app.sqlite {why}"
+        )));
+    }
+    #[cfg(unix)]
+    let app_db = dir.canonicalize()?.join(dw_appdb::APP_DB_FILE);
+    let seen = dw_store_upgrade::inspect_live_store(&app_db, |conn| {
+        let settings: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'settings_kv')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !settings {
+            return Ok(false);
+        }
+        conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM settings_kv WHERE scope = ?1 AND key = ?2)",
+            [dw_appdb::GLOBAL_SCOPE, SHIELDED_STORE_SEEN],
+            |r| r.get(0),
+        )
+    })
+    .map_err(|e| {
+        if crate::store_upgrade::is_damaged(&e) {
+            damaged_store(dir, dw_appdb::APP_DB_FILE, e.to_string(), wrote)
+        } else {
+            EngineError::RetryableIo(format!("read Shielded store marker: {e}"))
+        }
+    })?;
+    if seen {
+        return Err(missing_store(dir, wrote));
+    }
+    Ok(())
+}
+
+fn missing_store(dir: &std::path::Path, wrote: bool) -> EngineError {
+    damaged_store(
+        dir,
+        SHIELDED_DB_FILE,
+        "the previously opened Shielded store is missing".into(),
+        wrote,
+    )
+}
+
+fn damaged_store(dir: &std::path::Path, store: &str, detail: String, wrote: bool) -> EngineError {
+    crate::store_upgrade::map_error(
+        dir,
+        crate::store_upgrade::StoreUpgradeStage::Prepare,
+        dw_store_upgrade::StoreUpgradeError::SnapshotSourceDamaged {
+            store: store.into(),
+            detail,
+        },
+        wrote,
+    )
+}
+
+pub(crate) fn check_store_presence(
+    dir: &std::path::Path,
+    appdb: &dw_appdb::AppDb,
+) -> Result<(), EngineError> {
+    let seen = appdb
+        .setting(dw_appdb::GLOBAL_SCOPE, SHIELDED_STORE_SEEN)
+        .map_err(|e| EngineError::Storage(format!("read Shielded store marker: {e}")))?
+        .is_some();
+    match (seen, dir.join(SHIELDED_DB_FILE).try_exists()?) {
+        (true, false) => Err(missing_store(dir, false)),
+        (false, true) => mark_store_seen(appdb)
+            .map_err(|e| EngineError::Storage(format!("write Shielded store marker: {e}"))),
+        _ => Ok(()),
+    }
+}
+
+fn mark_store_seen(appdb: &dw_appdb::AppDb) -> Result<(), dw_appdb::AppDbError> {
+    appdb.set_setting_durable(dw_appdb::GLOBAL_SCOPE, SHIELDED_STORE_SEEN, Some("1"))
+}
+
 /// The most rows one history page returns.
 const MAX_HISTORY: u32 = 500;
 /// Orchard's memo field.
@@ -2780,6 +2868,7 @@ pub(crate) async fn coordinator(
         if !hooked(session, &coordinator) {
             // Not under a pass, as the configuration below.
             let _passes = session.platform.shielded_passes.write().await;
+            session.appdb_op(mark_store_seen).await?;
             set_dispatch(session, &coordinator)?;
         }
         return Ok(coordinator);
@@ -2819,9 +2908,15 @@ pub(crate) async fn coordinator(
     };
     // Not under a pass (R1-3, `PlatformRuntime::shielded_passes`).
     let _passes = session.platform.shielded_passes.write().await;
+    let dir = session.data_dir().to_path_buf();
+    let appdb = session.live()?.appdb;
+    tokio::task::spawn_blocking(move || check_store_presence(&dir, &appdb))
+        .await
+        .map_err(EngineError::from)??;
     (manager
         .configure_shielded(session.data_dir().join(SHIELDED_DB_FILE))
         .await)?;
+    session.appdb_op(mark_store_seen).await?;
     let coordinator =
         (manager.shielded_coordinator().await).ok_or_else(|| PlatformError::Internal {
             detail: "the shielded coordinator is not configured".into(),
