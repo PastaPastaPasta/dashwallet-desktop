@@ -1092,32 +1092,64 @@ fn release_mark(
     (format!("{ABANDON_RELEASE_PREFIX}{txid}"), Some(coins))
 }
 
+/// Of `candidates` (each with its transaction when known), those another of
+/// `wallets` stores settled (mined, as a record or a height-only row, or
+/// InstantSend-locked), or that one it stores settled descends from,
+/// through the inputs of what it stores and of `candidates`.
 fn settled_in_store(
     persister: &platform_wallet_storage::SqlitePersister,
     wallets: &HashMap<[u8; 32], crate::history_ops::Persisted>,
     wallet: WalletId,
-    candidates: &HashSet<Txid>,
+    candidates: &BTreeMap<Txid, Option<Transaction>>,
 ) -> Result<HashSet<Txid>, platform_wallet::changeset::PersistenceError> {
-    let mut settled = HashSet::new();
+    let mut parents: HashMap<Txid, HashSet<Txid>> = HashMap::new();
+    let link = |parents: &mut HashMap<Txid, HashSet<Txid>>, t: Txid, tx: &Transaction| {
+        (parents.entry(t).or_default()).extend(tx.input.iter().map(|i| i.previous_output.txid));
+    };
+    for (t, tx) in candidates {
+        if let Some(tx) = tx {
+            link(&mut parents, *t, tx);
+        }
+    }
+    let mut todo = Vec::new();
     for (id, other) in wallets.iter().filter(|(id, _)| **id != wallet.0) {
-        settled.extend(
-            other
-                .recordless
-                .difference(&other.unconfirmed)
-                .chain(other.lock_parents.keys())
-                .filter(|t| candidates.contains(*t))
-                .copied(),
-        );
-        for t in other.records.iter().filter(|t| candidates.contains(*t)) {
-            if persister.get_core_tx_record(*id, t)?.is_some_and(|record| {
-                record.context.block_info().is_some()
-                    || matches!(record.context, TransactionContext::InstantSend(_))
-            }) {
-                settled.insert(*t);
+        todo.extend(other.recordless.difference(&other.unconfirmed).copied());
+        for (t, of) in &other.lock_parents {
+            todo.push(*t);
+            parents.entry(*t).or_default().extend(of.iter().copied());
+        }
+        for t in &other.records {
+            // Another's record that doesn't read links nothing, as before
+            // this walk; a marked payment's own still fails the load.
+            let record = match persister.get_core_tx_record(*id, t) {
+                Ok(Some(record)) => record,
+                Ok(None) => continue,
+                Err(e) if !candidates.contains_key(t) => {
+                    tracing::warn!(error = %e, "a stored record of another wallet does not read");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            link(&mut parents, *t, &record.transaction);
+            if record.context.block_info().is_some()
+                || matches!(record.context, TransactionContext::InstantSend(_))
+            {
+                todo.push(*t);
             }
         }
     }
-    Ok(settled)
+    let mut settled: HashSet<Txid> = todo.iter().copied().collect();
+    while let Some(t) = todo.pop() {
+        for p in parents.get(&t).into_iter().flatten() {
+            if settled.insert(*p) {
+                todo.push(*p);
+            }
+        }
+    }
+    Ok((candidates.keys())
+        .filter(|t| settled.contains(*t))
+        .copied()
+        .collect())
 }
 
 /// Finishes in the wallet store the abandons whose marks are stored but
@@ -1127,8 +1159,10 @@ fn settled_in_store(
 /// Replays the original release set subject to newer spend evidence.
 /// Only marked payments are swept; one mined or InstantSend-locked since
 /// (a height-only row, a record in a block or locked, a stored lock) counts
-/// again and is left. Run before the wallets load, so a swept payment's
-/// change is never credited. A mark is known by its key, so one whose copy
+/// again and is left, and so is one another wallet's store holds settled
+/// or holds a settled transaction descending from: its marks go, so it
+/// loads pending with its claims. Run before the wallets load, so a swept
+/// payment's change is never credited. A mark is known by its key, so one whose copy
 /// does not read back still counts, its coins then taken from its sent
 /// mark. A read that fails (the marks, the drops' holds, a stored record,
 /// the sent marks) or a sweep that cannot be stored fails the load.
@@ -1174,9 +1208,7 @@ pub(crate) fn finish_marked_abandons(
                 .insert(crate::history_ops::persisted_txids(db_path).map_err(|e| storage(&e))?),
         };
         let persisted = all.get(&wallet.0).cloned().unwrap_or_default();
-        let marked: HashSet<_> = marks.keys().copied().collect();
-        let settled_elsewhere =
-            settled_in_store(persister, all, wallet, &marked).map_err(|e| storage(&e))?;
+        let mut marked: HashSet<_> = marks.keys().copied().collect();
         let (outputs, locked) = crate::history_ops::txids_with_outputs_and_locks(
             db_path,
             wallet,
@@ -1186,7 +1218,7 @@ pub(crate) fn finish_marked_abandons(
         let mut pending: BTreeMap<Txid, Option<Transaction>> = BTreeMap::new();
         for (t, copy) in marks {
             let mined = persisted.recordless.contains(&t) && !persisted.unconfirmed.contains(&t);
-            if mined || locked.contains(&t) || settled_elsewhere.contains(&t) {
+            if mined || locked.contains(&t) {
                 continue;
             }
             if !persisted.records.contains(&t) {
@@ -1212,6 +1244,31 @@ pub(crate) fn finish_marked_abandons(
                 }
                 None => {}
             }
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        // Settled in another wallet's store: no longer abandoned, so the
+        // load restores its claims.
+        let spared = settled_in_store(persister, all, wallet, &pending).map_err(|e| storage(&e))?;
+        if !spared.is_empty() {
+            let keys: Vec<String> = (spared.iter())
+                .flat_map(|t| {
+                    [
+                        ABANDONED_PREFIX,
+                        ABANDON_RELEASE_PREFIX,
+                        DROPPED_PREFIX,
+                        DROP_HOLDS_PREFIX,
+                        DROP_WINNER_PREFIX,
+                    ]
+                    .map(|prefix| format!("{prefix}{t}"))
+                })
+                .collect();
+            let writes: Vec<(&str, Option<&str>)> =
+                keys.iter().map(|k| (k.as_str(), None)).collect();
+            (appdb.set_settings_durable(&wallet.to_string(), &writes)).map_err(|e| storage(&e))?;
+            pending.retain(|t, _| !spared.contains(t));
+            marked.retain(|t| !spared.contains(t));
         }
         let Some(&root) = pending.keys().next() else {
             continue;

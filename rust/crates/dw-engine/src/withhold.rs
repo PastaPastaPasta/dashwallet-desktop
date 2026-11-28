@@ -212,7 +212,8 @@ impl SessionHub {
         #[cfg(not(test))]
         let skip = false;
         let (withheld, kept) = self.history.read_wallets(|histories| {
-            let mut withheld = pending_invalid_outputs(core, histories);
+            let retired = self.retired_invalid(histories);
+            let mut withheld = pending_invalid_outputs(core, histories, retired);
             let Some(h) = histories.get(&wallet) else {
                 return (withheld, BTreeSet::new());
             };
@@ -251,6 +252,7 @@ impl SessionHub {
                 histories
                     .values()
                     .any(|h| invalid_txids(h).next().is_some())
+                    || !self.retired_invalid(histories).is_empty()
                     || histories.get(id).is_some_and(|h| {
                         !h.fork_kept_locks.is_empty()
                             || !h.fork_kept_ancestor_inputs.is_empty()
@@ -260,6 +262,41 @@ impl SessionHub {
                             })
                     })
             })
+    }
+}
+
+impl SessionHub {
+    /// Keeps `id`'s invalid verdicts as it unloads, for the wallets still
+    /// loaded. Only a history its load filled in full replaces those kept
+    /// before; any other (a failed open's) adds to them.
+    pub(crate) fn retire_invalid(&self, id: &WalletId, h: &WalletHistory) {
+        let verdicts = invalid_txids(h);
+        let mut retired = self
+            .retired_invalid
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if h.loaded && !h.load_incomplete {
+            retired.insert(*id, verdicts.collect());
+        } else {
+            retired.entry(*id).or_default().extend(verdicts);
+        }
+    }
+
+    /// The retired verdicts of the wallets whose history is not loaded in
+    /// full.
+    fn retired_invalid(&self, histories: &HashMap<WalletId, WalletHistory>) -> Vec<Txid> {
+        let retired = self
+            .retired_invalid
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        (retired.iter())
+            .filter(|(w, _)| {
+                !histories
+                    .get(*w)
+                    .is_some_and(|h| h.loaded && !h.load_incomplete)
+            })
+            .flat_map(|(_, t)| t.iter().copied())
+            .collect()
     }
 }
 
@@ -274,8 +311,11 @@ fn invalid_txids(h: &WalletHistory) -> impl Iterator<Item = Txid> + '_ {
 fn pending_invalid_outputs(
     core: &ManagedWalletInfo,
     histories: &HashMap<WalletId, WalletHistory>,
+    retired: Vec<Txid>,
 ) -> BTreeSet<OutPoint> {
-    let mut invalid: HashSet<Txid> = histories.values().flat_map(invalid_txids).collect();
+    let mut invalid: HashSet<Txid> = (histories.values().flat_map(invalid_txids))
+        .chain(retired)
+        .collect();
     if invalid.is_empty() {
         return BTreeSet::new();
     }

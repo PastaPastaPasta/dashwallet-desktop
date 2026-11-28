@@ -2329,11 +2329,18 @@ impl HistoryStore {
         }
     }
 
-    pub fn remove_wallet(&self, wallet: &WalletId) {
-        self.wallets
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(wallet);
+    /// Removes `wallet`'s history, handing `retire` the history under the
+    /// same lock first.
+    pub(crate) fn remove_wallet_with(
+        &self,
+        wallet: &WalletId,
+        retire: impl FnOnce(&WalletHistory),
+    ) {
+        let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(h) = wallets.get(wallet) {
+            retire(h);
+        }
+        wallets.remove(wallet);
     }
 
     /// Txids of the wallet's transactions whose status can still change with

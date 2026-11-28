@@ -638,6 +638,10 @@ pub(crate) struct SessionHub {
     /// dropped at the next reconcile (#170 case 4), unless a truncation
     /// came since (#891).
     dead_children: Mutex<Vec<DeadChildren>>,
+    /// The invalid verdicts of each unloaded wallet's history at its
+    /// unload (`crate::withhold`): another wallet's outputs of those
+    /// payments stay out until the wallet's history loads again.
+    pub(crate) retired_invalid: Mutex<HashMap<WalletId, BTreeSet<Txid>>>,
     /// The drops that wait, by wallet: for another wallet's open (#818,
     /// S1), or, with no recheck, for key-wallet's risen height to be read
     /// again (#891). Each with its detection's evidence and what it was
@@ -1070,6 +1074,7 @@ impl SessionHub {
             shielded_ready: Mutex::new(HashSet::new()),
             platform_addresses: Mutex::new(HashMap::new()),
             dead_children: Mutex::new(Vec::new()),
+            retired_invalid: Mutex::new(HashMap::new()),
             deferred_drops: Mutex::new(Vec::new()),
             carried_drops: Mutex::new(BTreeMap::new()),
             dropped_holds: Mutex::new(HashMap::new()),
@@ -1889,7 +1894,7 @@ impl SessionHub {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
-        self.history.remove_wallet(id);
+        (self.history).remove_wallet_with(id, |h| self.retire_invalid(id, h));
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
@@ -2006,7 +2011,7 @@ impl SessionHub {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
-        self.history.remove_wallet(id);
+        (self.history).remove_wallet_with(id, |h| self.retire_invalid(id, h));
         self.forget_drops(id);
         // Its notes go with its rows: a wallet restored under the same id
         // holds nothing of them.
