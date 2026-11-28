@@ -299,6 +299,24 @@ test.describe("Address Book", () => {
     await expect(page.getByTestId("pay-address")).toHaveValue(/^y/);
     await expect(page.getByTestId("pay-label")).toHaveValue("Bob's shop");
   });
+
+  test("a failed address book QR keeps its slot and copyable payment link", async ({ page }) => {
+    await open(page);
+    await tools(page, "addressBook");
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("qr_matrix"));
+    await page.evaluate(() => window.__dwFixture!.fail("qr_matrix", "none"));
+    await page.getByTestId("address-book-receive").click();
+    await page.getByTestId("address-book-table").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /QR code/ }).click();
+    const loading = page.getByTestId("address-book-qr-loading");
+    const copy = page.getByRole("button", { name: "Copy payment link" });
+    await expect(loading).toBeVisible();
+    await expect(copy).toBeVisible();
+    await fontsReady(page);
+    const before = await copy.boundingBox();
+    await release.evaluate((resume) => resume());
+    await expect(page.getByTestId("address-book-qr-error")).toContainText("Could not draw the QR code");
+    expect(await copy.boundingBox()).toEqual(before);
+  });
 });
 
 test.describe("Sign/Verify", () => {

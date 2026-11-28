@@ -143,13 +143,11 @@ const BELL_SCRIPT = `
   return {
     requests: [...p.querySelectorAll('${tid("bell-request")}')].map((r) => ({ contact: r.dataset.contact, text: r.innerText })),
     events: [...p.querySelectorAll('${tid("bell-event")}')].map((r) => r.innerText),
-    outcome: p.querySelector('${tid("bell-outcome")}')?.textContent ?? null,
   };`;
 
 interface Bell {
   requests: { contact: string; text: string }[];
   events: string[];
-  outcome: string | null;
 }
 
 async function run(passphrase: string, sender: string, wd: WebDriver, step: (s: string) => void): Promise<Record<string, unknown>> {
@@ -199,7 +197,10 @@ async function run(passphrase: string, sender: string, wd: WebDriver, step: (s: 
   await wd.press(tid("grant-sheet-submit"));
   await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
   step("accepted from the bell; passphrase given");
-  const outcome = await poll(ACCEPT_TIMEOUT_MS, "the accept's outcome in the bell", async () => (await wd.script<Bell | null>(BELL_SCRIPT))?.outcome ?? undefined);
+  const outcome = await poll(ACCEPT_TIMEOUT_MS, "the accept toast", async () => {
+    const text = await wd.script<string | null>("return document.querySelector('.toast-host')?.textContent?.trim() || null;");
+    return text ?? undefined;
+  });
   out.outcome = outcome;
   await wd.screenshot("3-accepted");
   if (!outcome.endsWith("are now contacts.")) throw new Error(`the accept failed: ${outcome}`);

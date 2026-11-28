@@ -138,6 +138,26 @@ test("IOS-073 the eligibility pre-check says why no request can go, with the one
   await expect(add(page)).toHaveCount(0);
 });
 
+test("refining search keeps the selected contact action in place", async ({ page }) => {
+  await openAdd(page);
+  await field(page).fill("ma");
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(5);
+  await hit(page, "Mallory").click();
+  const send = page.getByTestId("add-contact-send");
+  await expect(send).toBeVisible();
+  await fontsReady(page);
+  const before = await send.boundingBox();
+
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("search_users"));
+  await field(page).fill("mal");
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(0);
+  expect(await send.boundingBox()).toEqual(before);
+  await release.evaluate((resume) => resume());
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(1);
+  await expect(hit(page, "Mallory")).toBeVisible();
+  expect(await send.boundingBox()).toEqual(before);
+});
+
 test("IOS-073 without DashPay keys the card offers Enable, not Send", async ({ page }) => {
   await openAdd(page, "dashpay-no-keys");
   await pick(page, "mal", "Mallory");
@@ -342,6 +362,16 @@ test("IOS-073 My QR shows the plain link as a QR code with Copy Link; no usernam
   await openAdd(page, "dashpay-no-username");
   await tab(page, "myQr").click();
   await expect(page.getByTestId("add-contact-qr-no-username")).toHaveText("Your username is not registered yet, so there is no link to share.");
+});
+
+test("My QR keeps the full Copy Link button visible at minimum width", async ({ page }) => {
+  await page.setViewportSize({ width: 920, height: 620 });
+  await openAdd(page);
+  await tab(page, "myQr").click();
+  const copy = page.getByTestId("add-contact-copy-link");
+  await copy.scrollIntoViewIfNeeded();
+  await expect(copy).toBeInViewport({ ratio: 1 });
+  expect(await copy.locator("..").evaluate((footer) => footer.scrollHeight)).toBe(await copy.locator("..").evaluate((footer) => footer.clientHeight));
 });
 
 test("D11 a file dropped outside the drop area does not navigate the page", async ({ page }) => {

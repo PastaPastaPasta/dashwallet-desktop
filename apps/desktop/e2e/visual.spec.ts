@@ -41,6 +41,11 @@ for (const theme of THEMES) {
         await expect(copy).toHaveCSS("outline-style", "solid");
         await expect(copy).toHaveCSS("outline-width", "2px");
         expect(await contrast(icon, "mask")).toBeGreaterThanOrEqual(3);
+
+        await page.emulateMedia({ forcedColors: "active", colorScheme: "light" });
+        const forcedForeground = await copy.evaluate((button) => getComputedStyle(button).color);
+        await expect(icon).toHaveCSS("background-color", forcedForeground);
+        expect(await contrast(icon, "mask")).toBeGreaterThanOrEqual(3);
       }
     });
   }

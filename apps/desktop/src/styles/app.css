@@ -687,8 +687,11 @@ input[type="radio"]:disabled {
 }
 
 .add-contact-search-results {
-  max-block-size: calc(3 * var(--dw-layout-tx-row-min-height));
   overflow: auto;
+}
+
+.add-contact-search-results.has-space {
+  block-size: calc(3 * var(--dw-layout-tx-row-min-height));
 }
 
 .add-contact-my-qr .qr,
@@ -697,11 +700,16 @@ input[type="radio"]:disabled {
 }
 
 .add-contact-qr-footer {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  justify-items: start;
   gap: var(--dw-space-s);
-  block-size: calc(4 * var(--dw-type-footnote-line) + var(--dw-space-s));
+  block-size: calc(5 * var(--dw-type-footnote-line) + var(--dw-space-s));
+}
+
+.add-contact-qr-footer .add-contact-link-text {
+  min-inline-size: 0;
+  max-inline-size: 100%;
   overflow: auto;
 }
 
@@ -2104,6 +2112,12 @@ input[type="radio"]:disabled {
   background-color: currentColor;
   -webkit-mask: var(--copy-icon-url) center / contain no-repeat;
   mask: var(--copy-icon-url) center / contain no-repeat;
+}
+
+@media (forced-colors: active) {
+  .copy-icon {
+    background-color: ButtonText;
+  }
 }
 
 .copy-icon-check {
@@ -3934,6 +3948,18 @@ input[type="radio"]:disabled {
   block-size: calc(2 * var(--dw-type-body-line));
   max-inline-size: 100%;
   overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.tool-qr-code {
+  display: grid;
+  place-items: center;
+  inline-size: 240px;
+  block-size: 240px;
+}
+
+.tool-qr-code .qr-problem {
+  padding: var(--dw-space-m);
   overflow-wrap: anywhere;
 }
 

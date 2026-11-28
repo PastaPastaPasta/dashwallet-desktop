@@ -360,7 +360,7 @@ function SearchTab({ ctx, identity, query, onPick, result }: { ctx: AddContext; 
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
         <input ref={input} type="search" value={text} placeholder={t("contacts.addContact.searchField")} aria-label={t("contacts.addContact.searchField")} onChange={(e) => setText(e.target.value)} />
       </label>
-      <div className="add-contact-search-results">{results()}</div>
+      <div className={typed !== null || result ? "add-contact-search-results has-space" : "add-contact-search-results"}>{results()}</div>
       {result}
     </div>
   );

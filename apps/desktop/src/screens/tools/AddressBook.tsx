@@ -5,6 +5,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { errorMessage, hasCode } from "../../api/backend";
 import type { AddressBookEntry } from "../../api/generated/AddressBookEntry";
 import type { AddressPurposeName } from "../../api/generated/AddressPurposeName";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -199,10 +200,21 @@ function QrSheet({ entry, onClose }: { entry: AddressBookEntry; onClose: () => v
     queryFn: () => b.buildPaymentUri(entry.address, null, entry.label || null, null, null),
   });
   const qr = useQrMatrix(uri.data);
+  const error = uri.error ?? qr.error;
   return (
     <Sheet title={entry.label || AddressBookText.noLabel} width="small" testId="address-book-qr" onClose={onClose}>
       <div className="tool-qr">
-        {qr.data ? <QrCode matrix={qr.data} size={240} label={t("tools.addressBook.qrLabel", { address: entry.address })} testId="address-book-qr-code" /> : <QrPlaceholder size={240} testId="address-book-qr-loading" label={t("tools.addressBook.qrLoading")} />}
+        <div className="tool-qr-code">
+          {qr.data ? (
+            <QrCode matrix={qr.data} size={240} label={t("tools.addressBook.qrLabel", { address: entry.address })} testId="address-book-qr-code" />
+          ) : error ? (
+            <p className="qr-problem" role="alert" data-testid="address-book-qr-error">
+              {hasCode(error, "uri.too_long_for_qr") ? t("receive.qr.tooLong") : t("receive.qr.failed", { error: errorMessage(error) })}
+            </p>
+          ) : (
+            <QrPlaceholder size={240} testId="address-book-qr-loading" label={t("tools.addressBook.qrLoading")} />
+          )}
+        </div>
         <div className="tool-qr-value">
           <CopyValue value={uri.data ?? entry.address} action={t("tools.addressBook.copyPaymentLink")} mono />
         </div>
