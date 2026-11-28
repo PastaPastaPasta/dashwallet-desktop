@@ -1541,7 +1541,8 @@ pub(crate) struct WalletHistory {
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
     /// Verified locks whose transaction or one of its inputs belongs to
-    /// this wallet. In memory only.
+    /// this wallet, or whose input is an output of a transaction the
+    /// history holds. In memory only.
     pub(crate) session_locks: HashSet<Txid>,
     session_lock_parents: HashMap<Txid, Vec<Txid>>,
     /// Of [`Self::session_locks`], those a fork took out of their block
@@ -1646,6 +1647,21 @@ impl WalletHistory {
         {
             self.remember_session_lock(*txid, inputs);
         }
+        let outputs = self.txs.get(txid).map_or(0, |e| e.tx.output.len());
+        let spenders: Vec<Txid> = (0..outputs as u32)
+            .filter_map(|vout| locks.spends.get(&OutPoint::new(*txid, vout)))
+            .flatten()
+            .copied()
+            .collect();
+        for spender in spenders {
+            self.remember_session_lock(spender, &locks.inputs[&spender]);
+        }
+    }
+
+    fn holds_output(&self, o: &OutPoint) -> bool {
+        self.txs
+            .get(&o.txid)
+            .is_some_and(|e| (o.vout as usize) < e.tx.output.len())
     }
 
     fn remember_session_lock(&mut self, txid: Txid, inputs: &[OutPoint]) {
@@ -1678,16 +1694,6 @@ impl WalletHistory {
             return new;
         }
         self.remember_if_buffered(&record.txid, locks);
-        for output in record
-            .output_details
-            .iter()
-            .filter(|o| matches!(o.role, OutputRole::Received | OutputRole::Change))
-        {
-            let outpoint = OutPoint::new(record.txid, output.index);
-            for txid in locks.spends.get(&outpoint).into_iter().flatten() {
-                self.remember_session_lock(*txid, &locks.inputs[txid]);
-            }
-        }
         new
     }
 
@@ -2050,8 +2056,18 @@ fn forked_ancestor_inputs(
     let removed: HashSet<_> = removed.iter().copied().collect();
     let mut parents: Vec<_> = wallets
         .values()
-        .flat_map(WalletHistory::lock_parent_links)
-        .flat_map(|(_, parents)| parents.iter().copied())
+        .flat_map(|h| {
+            let links = h.lock_parent_links().flat_map(|(_, p)| p.iter().copied());
+            let locked = (h.txs.values())
+                .filter(|e| {
+                    instant_locked(e)
+                        && !e.is_abandoned()
+                        && e.context.block_info().is_none_or(|b| b.height() > height)
+                })
+                .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output.txid));
+            let kept = (h.fork_kept_ancestor_inputs.values().flatten()).map(|o| o.txid);
+            links.chain(locked).chain(kept)
+        })
         .chain(
             wallets
                 .get(&wallet)
@@ -2066,30 +2082,17 @@ fn forked_ancestor_inputs(
             continue;
         }
         let forked = removed.contains(&parent);
-        // A different wallet may still show the old block, or may already
-        // have removed this record and kept its inputs.
-        for h in wallets.values() {
-            if let Some(inputs) = h.fork_kept_ancestor_inputs.get(&parent) {
-                parents.extend(inputs.iter().map(|o| o.txid));
-                if forked {
-                    held.push((parent, inputs.clone()));
-                }
-                break;
-            }
-            if let Some(entry) = h.txs.get(&parent)
-                && (forked
-                    || (!entry.is_abandoned()
-                        && entry
-                            .context
-                            .block_info()
-                            .is_none_or(|b| b.height() > height)))
-            {
-                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
-                parents.extend(inputs.clone().map(|o| o.txid));
-                if forked {
-                    held.push((parent, inputs.collect()));
-                }
-                break;
+        // Any wallet's record links its inputs, whatever its status, as do
+        // the inputs a wallet kept for a record it already removed.
+        let inputs = wallets.values().find_map(|h| {
+            (h.fork_kept_ancestor_inputs.get(&parent).cloned()).or_else(|| {
+                (h.txs.get(&parent)).map(|e| e.tx.input.iter().map(|i| i.previous_output).collect())
+            })
+        });
+        if let Some(inputs) = inputs {
+            parents.extend(inputs.iter().map(|o| o.txid));
+            if forked {
+                held.push((parent, inputs));
             }
         }
     }
@@ -2255,8 +2258,9 @@ impl HistoryStore {
     /// `skip` that holds it out of a block without a known lock: key-wallet
     /// tells only the wallets holding its record or coins (#828). The
     /// wallets marked. `verified_inputs` is present only for a verified
-    /// lock. Each history that holds `txid` or owns one of those inputs
-    /// keeps it among its [`WalletHistory::session_locks`].
+    /// lock. Each history that holds `txid`, or owns one of those inputs or
+    /// holds the transaction of one, keeps it among its
+    /// [`WalletHistory::session_locks`].
     pub(crate) fn note_instant_lock(
         &self,
         txid: &Txid,
@@ -2273,7 +2277,8 @@ impl HistoryStore {
         let mut marked = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
             if let Some(inputs) = verified_inputs
-                && (h.txs.contains_key(txid) || inputs.iter().any(|o| h.owns_output(o)))
+                && (h.txs.contains_key(txid)
+                    || inputs.iter().any(|o| h.owns_output(o) || h.holds_output(o)))
             {
                 h.remember_session_lock(*txid, inputs);
             }
@@ -3280,6 +3285,37 @@ mod tests {
 
     fn in_block(height: u32, time: u32) -> TransactionContext {
         TransactionContext::InBlock(BlockInfo::new(height, BlockHash::all_zeros(), time))
+    }
+
+    /// After a restart, a locked child another wallet still shows mined
+    /// above the fork seeds the walk of the wallet that hears the fork
+    /// first: the coin of the parent it spends stays held.
+    #[test]
+    fn a_locked_child_another_wallet_still_shows_mined_seeds_the_forks_walk() {
+        let store = HistoryStore::default();
+        let (sender, recipient) = (WalletId([1; 32]), WalletId([2; 32]));
+        let coin = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
+        let out = |value| TxOut {
+            value,
+            script_pubkey: ScriptBuf::new(),
+        };
+        let input = |previous_output| TxIn {
+            previous_output,
+            ..TxIn::default()
+        };
+        let parent = tx(vec![input(coin)], vec![out(5)]);
+        let child = tx(vec![input(OutPoint::new(parent.txid(), 0))], vec![out(4)]);
+        store.with_wallet(sender, |h| {
+            (h.txs).insert(parent.txid(), entry(parent.clone(), in_block(11, 0)));
+        });
+        store.with_wallet(recipient, |h| {
+            let mut locked = entry(child.clone(), in_block(12, 0));
+            locked.instant_locked = true;
+            h.txs.insert(child.txid(), locked);
+        });
+        store.truncate(sender, 10, &[parent.txid()], &[]);
+        let held = store.read_wallet(&sender, |h| h.fork_kept_ancestor_inputs.clone());
+        assert_eq!(held, HashMap::from([(parent.txid(), vec![coin])]));
     }
 
     struct Fixture {
