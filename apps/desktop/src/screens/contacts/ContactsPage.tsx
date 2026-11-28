@@ -31,7 +31,7 @@ import { selectionAnnouncement, type EnableBanner } from "../../contacts/pane";
 import { useContactActions, useContactList, useContactsOwner, useEnableBanner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
-import { GrantSheet, Outcome } from "../tools/common";
+import { GrantSheet } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
 import { AddContact } from "./AddContact";
 import { ContactPane } from "./ContactPane";
@@ -202,8 +202,6 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
     return () => onEmptyCard(false);
   }, [display.kind, onEmptyCard]);
   const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
-  // A row's Accept or Ignore: the pane says its own contact's outcome, a toast another's; focus
-  // goes to the request now in the row's place, else to the page's heading (D28).
   const toast = useActionToast(walletId);
   const requests = groups.find((g) => g.section === "requests")?.contacts ?? [];
   const pageHeading = () => document.querySelector<HTMLElement>(".app-body > main h1");
@@ -211,18 +209,13 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
     (contact) => requests.some((c) => c.contact === contact),
     (i) => document.querySelectorAll<HTMLElement>(".contact-row-item.has-actions > .contact-row")[i] ?? pageHeading(),
   );
-  // The contact whose pane shows now (a link's card or Add contact take the slot), read when an
-  // action ends.
-  const paneShows = useRef<string | null>(null);
-  paneShows.current = prefill || add ? null : (selected?.contact ?? null);
   const rowDone = (c: ContactSummaryInfo) => (o: ActionOutcome | null) => {
-    toast(o, paneShows.current === c.contact);
+    toast(o, false);
     if (o?.ok) arm(c.contact, requests.indexOf(c));
   };
-  // Enable: success removes the banner, so a toast says it and focus goes to the heading.
   const armEnable = useRefocus(() => banner !== null, pageHeading);
   const enableDone = (o: ActionOutcome | null) => {
-    toast(o, !o?.ok);
+    toast(o, false);
     if (o?.ok) armEnable("enable");
   };
 
@@ -330,17 +323,19 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
           </select>
         </label>
       </div>
-      {banner && <EnableDashPay banner={banner} actions={actions} onDone={enableDone} />}
-      {hint && (
-        <div className={`contacts-hint card-l1 is-${hint.kind}`} role="status" data-testid="contacts-setup-hint">
-          <span>{hint.text}</span>
-          {hint.kind === "unlock" && (
-            <DashButton variant="tintedBlue" size="small" data-testid="contacts-setup-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
-              {t("contacts.unlock")}
-            </DashButton>
-          )}
-        </div>
-      )}
+      <div className="contacts-feedback">
+        {banner && <EnableDashPay banner={banner} actions={actions} onDone={enableDone} />}
+        {hint && (
+          <div className={`contacts-hint card-l1 is-${hint.kind}`} role="status" data-testid="contacts-setup-hint">
+            <span>{hint.text}</span>
+            {hint.kind === "unlock" && (
+              <DashButton variant="tintedBlue" size="small" data-testid="contacts-setup-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
+                {t("contacts.unlock")}
+              </DashButton>
+            )}
+          </div>
+        )}
+      </div>
       <div className={solo ? "contacts-split is-solo" : "contacts-split"} data-testid="contacts-split">
         <div className="contacts-list" data-testid="contacts-list">
           {body}
@@ -389,7 +384,6 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
 function EnableDashPay({ banner, actions, onDone }: { banner: EnableBanner; actions: ContactActions; onDone: (o: ActionOutcome | null) => void }) {
   useModel(actions);
   const t = useT();
-  const outcome = actions.outcome?.kind === "enable" && !actions.outcome.ok ? actions.outcome : null;
   return (
     <div className="contacts-hint contacts-enable card-l1" data-testid="contacts-enable-banner">
       <span className="contacts-enable-text">
@@ -399,7 +393,6 @@ function EnableDashPay({ banner, actions, onDone }: { banner: EnableBanner; acti
             ? t("contacts.enable.text")
             : t.rich("contacts.enable.textWithFee", { fee: banner.fee, amount: (text) => <span data-testid="contacts-enable-fee">{text}</span> })}
         </span>
-        <Outcome ok={false} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
       <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.busy} onClick={() => void actions.enable().then(onDone)}>
         {actions.isRunning("enable", null) ? t("contacts.enable.busy") : t("contacts.enable.button")}

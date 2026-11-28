@@ -11,6 +11,9 @@ export const components = {
     checking: "Checking…",
     strength: "Strength: {strength}",
   },
+  toast: {
+    dismiss: "Dismiss",
+  },
   copy: {
     copied: "Copied",
     failed: "Could not copy",

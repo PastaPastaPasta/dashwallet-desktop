@@ -103,7 +103,7 @@
 //! one connection behind a mutex; async callers run them on the blocking
 //! pool.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -720,6 +720,14 @@ pub struct ShieldedArtifact {
     pub selected: Vec<([u8; 32], bool)>,
     /// The nullifiers it published, in action order.
     pub published: Vec<[u8; 32]>,
+}
+
+/// Journal evidence for a dispatched spend displayed in Shielded Activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldedHistoryRefusal {
+    CheckHold,
+    DrainedHold,
+    Released,
 }
 
 /// What [`DispatchJournal::settle_shielded_artifact`] found.
@@ -2202,6 +2210,21 @@ impl DispatchJournal {
                 "a shielded artifact settled {other} is not {new}"
             )));
         }
+        if disposition == Some(("not_executed", Some("pruned"))) {
+            let no_unspent_inputs = tx.query_row(
+                "SELECT COALESCE(MIN(n.spent), 0) = 1
+                 FROM shielded_artifact a
+                 JOIN shielded_artifact_note n USING (wallet, activity)
+                 WHERE a.wallet = ?1 AND a.st_hash = ?2 AND a.status <> 'archived'",
+                params![&wallet[..], &st_hash[..]],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if no_unspent_inputs {
+                return Err(AppDbError::Corrupt(
+                    "the pruned dispatch has every input marked spent".into(),
+                ));
+            }
+        }
         let (kind, reason) = disposition.unzip();
         tx.execute(
             "UPDATE shielded_artifact SET status = ?3, status_reason = NULL, \
@@ -2262,11 +2285,7 @@ impl DispatchJournal {
     /// The shielded artifacts of `wallet` (schema 11) but the archived ones,
     /// by activity.
     pub fn shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {
-        Ok(self
-            .all_shielded_artifacts(wallet)?
-            .into_iter()
-            .filter(|a| a.status != ArtifactStatus::Archived)
-            .collect())
+        self.read_shielded_artifacts(wallet, false)
     }
 
     /// Whether `wallet` has a shielded artifact that holds it
@@ -2289,9 +2308,90 @@ impl DispatchJournal {
             .collect())
     }
 
+    /// Activity IDs to check when dispatching a spend alongside open imports.
+    pub fn open_shielded_import_activity(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT activity FROM shielded_artifact
+             WHERE wallet = ?1 AND origin = 'imported_redrive'
+               AND status IN ('registered', 'unresolved')
+               AND st_hash IS NOT NULL AND disposition_kind IS NULL",
+        )?;
+        stmt.query_map(params![&wallet[..]], |r| r.get::<_, Vec<u8>>(0))?
+            .map(|row| fixed(row?, "shielded_artifact.activity"))
+            .collect()
+    }
+
+    /// Refusal evidence keyed by displayed activity ID.
+    pub fn shielded_refusal_activity(
+        &self,
+        wallet: &[u8; 32],
+        activities: &[[u8; 32]],
+    ) -> Result<BTreeMap<[u8; 32], ShieldedHistoryRefusal>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT CASE
+                WHEN a.status = 'not_executed' THEN 2
+                WHEN EXISTS (SELECT 1 FROM shielded_drained_hold h
+                    WHERE h.wallet = a.wallet AND h.st_hash = a.st_hash AND h.spent = 0
+                      AND h.origin IN ('unresolved', 'unreadable')
+                      AND NOT EXISTS (SELECT 1 FROM shielded_drained_release r
+                        WHERE r.wallet = h.wallet AND r.st_hash = h.st_hash
+                          AND r.released_at IS NOT NULL)) THEN 1
+                ELSE 0 END
+             FROM shielded_artifact a
+             WHERE a.wallet = ?1 AND a.activity = ?2 AND a.origin = 'dispatched'
+               AND (a.status = 'not_executed' OR (a.acked = 0
+                 AND (a.status = 'registered' OR (
+                   a.status = 'unresolved' AND a.status_reason IS NULL AND a.st_hash IS NOT NULL
+                   AND a.disposition_kind = 'unresolved' AND a.disposition_reason = 'cancelled'
+                 ))))",
+        )?;
+        let mut eligible = BTreeMap::new();
+        for activity in activities {
+            if let Some(evidence) = stmt
+                .query_row(params![&wallet[..], &activity[..]], |r| {
+                    Ok(match r.get::<_, i32>(0)? {
+                        2 => ShieldedHistoryRefusal::Released,
+                        1 => ShieldedHistoryRefusal::DrainedHold,
+                        _ => ShieldedHistoryRefusal::CheckHold,
+                    })
+                })
+                .optional()?
+            {
+                eligible.insert(*activity, evidence);
+            }
+        }
+        Ok(eligible)
+    }
+
+    /// Selected notes that may have been spent by a local dispatch.
+    /// Keep the evidence across scans because the note store is rebuilt
+    /// after a restart and a lagging node may omit a known spend.
+    pub fn shielded_dispatch_holds(&self, wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT n.nullifier FROM shielded_artifact a
+             JOIN shielded_artifact_note n USING (wallet, activity)
+             WHERE a.wallet = ?1 AND a.origin = 'dispatched' AND a.status <> 'archived'
+               AND (a.status <> 'not_executed' OR n.spent = 1)",
+        )?;
+        stmt.query_map(params![&wallet[..]], |r| r.get::<_, Vec<u8>>(0))?
+            .map(|row| fixed(row?, "shielded_artifact_note.nullifier"))
+            .collect()
+    }
+
     /// Every shielded artifact of `wallet`, archived ones included, by
     /// activity.
     pub fn all_shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {
+        self.read_shielded_artifacts(wallet, true)
+    }
+
+    fn read_shielded_artifacts(
+        &self,
+        wallet: &[u8; 32],
+        include_archived: bool,
+    ) -> Result<Vec<ShieldedArtifact>> {
         type Row = (
             Vec<u8>,
             String,
@@ -2310,10 +2410,11 @@ impl DispatchJournal {
         let mut stmt = conn.prepare(
             "SELECT activity, origin, st_hash, kind, anchor, identity_id, status, status_reason, \
              disposition_kind, disposition_reason, acked, at \
-             FROM shielded_artifact WHERE wallet = ?1 ORDER BY activity",
+             FROM shielded_artifact WHERE wallet = ?1 AND (?2 OR status <> 'archived')
+             ORDER BY activity",
         )?;
         let rows = stmt
-            .query_map(params![&wallet[..]], |r| {
+            .query_map(params![&wallet[..], include_archived], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,

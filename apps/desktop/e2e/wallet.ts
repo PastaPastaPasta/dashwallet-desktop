@@ -15,7 +15,6 @@ export async function showWalletView(page: Page, view: WalletView, theme: Theme)
   await page.getByTestId("hero").waitFor();
   if (view.startsWith("pay")) {
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await page.getByTestId("pay-label").fill("Alice");

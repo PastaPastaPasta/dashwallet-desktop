@@ -2,8 +2,8 @@
 # forward fix on top or a revert, before anything else merges (docs/ci.md, "Pull request checks"). While the
 # newest finished run of that workflow is red, one open issue labelled nightly-failure names its
 # failed jobs and the pull requests merged since that workflow's last green run on main. The next
-# green run closes it. A newer push cancels a running main CI run; a cancelled run counts as red when one of
-# its jobs had already failed or timed out, and otherwise reports nothing.
+# green run closes it. A main CI run is cancelled only by hand or when a newer pending run replaces it; a
+# cancelled run counts as red when one of its jobs had already failed or timed out, and otherwise reports nothing.
 name: Main result
 
 on:

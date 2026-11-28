@@ -68,6 +68,8 @@ pub(crate) enum Resumed {
     /// The library made its attempt (whatever it returned), or the row is
     /// no longer tracked: it stops blocking the wallet's funding calls.
     Ran,
+    /// The row has a durable Abandon and must not block unrelated funding.
+    Suppressed,
     /// The attempt could not start: the row keeps blocking until a later
     /// pass runs it.
     NotRun,
@@ -280,7 +282,7 @@ impl LeaseTable {
             }
             while let Some(done) = resumes.join_next().await {
                 match done {
-                    Ok((txid, Resumed::Ran)) => {
+                    Ok((txid, Resumed::Ran | Resumed::Suppressed)) => {
                         if !self.note_resumed_by(wallet, txid, id) {
                             // Ended (wallet closed or removed): nothing more.
                             return;

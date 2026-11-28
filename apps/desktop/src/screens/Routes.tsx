@@ -4,14 +4,11 @@
 // route (Pay's prefill, Add contact's prefill, a Tools tab) is shown here already, so links
 // route end to end.
 
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { ui, useUi, type PayTab, type Route } from "../app/ui";
-import { LoadingState } from "../components/history";
-import { useT, type Translate } from "../i18n";
-import { useDefaultPayTab } from "./pay/contactQueries";
-import { PayToAddress } from "./pay/PayToAddress";
-import { PayToContact } from "./pay/PayToContact";
+import { useUi, type Route } from "../app/ui";
+import { useT } from "../i18n";
+import { Pay } from "./pay/Pay";
 import { ShieldedSendLink } from "./ShieldedSheet";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 
@@ -121,47 +118,14 @@ export function Tabs<T extends string>({
   );
 }
 
-const PAY_TABS = (tr: Translate): Tab<PayTab>[] => [
-  { id: "contact", title: tr("app.pay.contact") },
-  { id: "address", title: tr("app.pay.address") },
-];
-
 export function PayPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
-  const tr = useT();
-  const chosen = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
   const links = useUi((s) => s.payLinks);
   const coins = useUi((s) => s.payCoins);
-  const auto = useDefaultPayTab(walletId);
-  // Another wallet chooses its tab afresh, by its own contacts; a form a link or a tool filled
-  // stays on its tab, so choosing the wallet that pays it keeps the payment in view.
-  const shownWallet = useRef(walletId);
-  const filled = prefill !== null || coins !== null;
-  const rechoose = shownWallet.current !== walletId && !filled;
-  useEffect(() => {
-    shownWallet.current = walletId;
-    if (rechoose) ui.set({ payTab: null });
-  }, [rechoose, walletId]);
-  const tab = rechoose ? null : (chosen ?? auto);
-  // The tab picked for the user stays while Pay is open: contacts arriving later do not move it.
-  useEffect(() => {
-    if (chosen === null && auto !== null) ui.set({ payTab: auto });
-  }, [chosen, auto]);
   return (
     <Page route="pay">
       <UpgradeReplayNotice walletId={walletId} />
-      {tab === null ? (
-        <LoadingState testId="pay-tab-loading" text={tr("app.pay.loading")} />
-      ) : (
-        <Tabs label={tr("app.pay.tabs")} tabs={PAY_TABS(tr)} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
-          {tab === "address" ? (
-            // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
-            <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
-          ) : (
-            <PayToContact walletId={walletId} network={network} />
-          )}
-        </Tabs>
-      )}
+      <Pay key={`${network.dirName}:${walletId}:${links}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
       <ShieldedSendLink walletId={walletId} network={network} />
     </Page>
   );

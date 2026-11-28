@@ -166,9 +166,9 @@ impl From<TransferKind> for LockKindId {
 
 #[derive(Subcommand)]
 pub enum ShieldedCmd {
-    /// The account's status: active, balance, pending, sync.
+    /// The account status, including the reason a local hold stopped the last sync.
     Status,
-    /// Run a sync pass now, then the status.
+    /// Run a sync pass now and show the status, or report a local hold.
     Sync,
     /// The shielded receive address.
     Address,
@@ -888,6 +888,7 @@ fn platform_params(e: &PlatformError) -> Value {
         P::Profile(ProfileError::Conflict { current }) => json!({"current": current}),
         P::LeaseRevoked { cause } => json!({"cause": cause}),
         P::FeatureOff { feature } => json!({"feature": feature}),
+        P::SessionOff => json!({"feature": "platform"}),
         P::NotImplemented { call } => json!({"call": call}),
         P::InvalidArgument { detail } | P::Storage { detail } | P::Internal { detail } => {
             json!({"detail": detail})
@@ -2914,6 +2915,7 @@ mod tests {
         // 0.1 E1: regtest's floor (13) is past the activation; the new
         // wallet's account binds from the vault, and is not ready: no pass
         // has scanned it this session (Platform is not started here).
+        // With no hold, the status omits last_pass_failure_reason.
         (
             "shielded status",
             r#"{"ok":true,"result":{"active":true,"protocol_version":14,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":false,"account":"bound","scan":null,"last_pass_failed":false}}"#,

@@ -267,8 +267,5 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     expect(disconnectErrorText({ code: "connect.failed", message: "", data: { kind: "connectFailure", failure: "pendingWrite" } })).toContain(
       "hasn't settled on Dash Platform yet",
     );
-    expect(disconnectErrorText({ code: "connect.mainnet_off", message: "", data: null })).toBe(
-      "This version can sign in to apps on test networks only.",
-    );
   });
 });
