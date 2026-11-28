@@ -492,6 +492,11 @@ pub struct NetworkSession {
     pub(crate) spends: crate::send::PendingSpends,
     /// One coin fence per wallet (`coins.rs`, E0-04 §2a.6).
     pub(crate) coin_fences: crate::coins::CoinFences,
+    /// Tests: replaces [`SpvBroadcaster`] in [`Self::broadcast_psbt`] so the
+    /// success, `NoPeers`, `Rejected`, and `BroadcastUnknown` paths can be
+    /// exercised directly.
+    #[cfg(test)]
+    pub(crate) psbt_broadcaster: Mutex<Option<Arc<dyn crate::send::psbt::PsbtBroadcaster>>>,
     /// "Include my username in payment requests" vs the URIs that read it
     /// (`receive.rs`, DP3-03b D20).
     pub(crate) username_gate: crate::receive::UsernameGate,
@@ -1037,6 +1042,8 @@ impl NetworkSession {
             pump: Mutex::new(None),
             spends: Default::default(),
             coin_fences: Default::default(),
+            #[cfg(test)]
+            psbt_broadcaster: Mutex::new(None),
             username_gate: Default::default(),
             withdrawal_nonces: Default::default(),
             opened_at: crate::events::unix_now(),
