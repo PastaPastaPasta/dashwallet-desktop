@@ -258,6 +258,111 @@ impl Scenario {
     }
 }
 
+impl Scenario {
+    /// A fork takes P's block away with no wallet event reaching the hub,
+    /// key-wallet scans back past P's height, and a payment of one more
+    /// coin in the next block sends the hub a balance snapshot. The history
+    /// still shows P in its block.
+    fn silent_fork_caught_up(&self) {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let manager = self.session.manager().unwrap();
+        self.engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            wm.truncate_above(TIP).unwrap();
+            wm.update_wallet_last_processed_height(&self.id.0, TIP + 1);
+        });
+        assert!(self.a_held(), "key-wallet gave a back");
+        let to = fresh_address(&self.engine, &self.session, self.id);
+        let payment = funding(8, &[to], COIN);
+        mined(&self.engine, &self.session, self.id, TIP + 2, vec![payment]);
+        let entry = (self.session.hub.history.get(&self.id, &self.p.txid())).unwrap();
+        assert!(entry.context.block_info().is_some(), "P is in its block");
+    }
+
+    /// Key-wallet holds `a` unspent, and `coins` coins besides it count:
+    /// `a` is neither counted, offered, listed nor taken by Max.
+    fn assert_a_held_out(&self, coins: u64) {
+        assert!(self.a_held(), "key-wallet holds a");
+        self.session.hub.settle_rereads();
+        let b = balances(&self.session, self.id);
+        let (max, inputs) = self.max();
+        assert_eq!(
+            (
+                (b.total, b.confirmed),
+                (max, inputs.len() as u64, inputs.contains(&self.a)),
+                self.a_listed(),
+                spendable(&self.engine, &self.session, self.id, self.a)
+            ),
+            (
+                (coins * COIN, coins * COIN),
+                (coins * COIN, coins, false),
+                false,
+                false
+            ),
+            "balance, Max, coin control and Send"
+        );
+    }
+}
+
+/// #1186: P's verified lock comes before key-wallet processes P. Coin `a`
+/// is held out until key-wallet records P, and then a send goes ahead.
+#[test]
+fn a_lock_before_its_payment_holds_the_coin_until_the_wallet_records_it() {
+    let (mut s, paid) = before_funding();
+    let owner =
+        dashcore::Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest)
+            .unwrap();
+    s.fund(paid);
+    s.p = super::signed_by_wallet(&s.engine, &s.session, s.id, &owner, s.p.clone());
+    s.hear_lock();
+    assert!(s.session.hub.history.get(&s.id, &s.p.txid()).is_none());
+    s.assert_a_held_out(11);
+
+    mempool(&s.engine, &s.session, s.id, &s.p);
+    s.session.hub.settle_rereads();
+    assert!(!s.a_held(), "P spends a");
+    let b = balances(&s.session, s.id);
+    let excluded = s.session.hub.wallet_state(&s.id).unwrap().excluded;
+    assert_eq!(
+        (b.total, b.confirmed, excluded.total()),
+        (11 * COIN + CHANGE, 11 * COIN, 0)
+    );
+    let sent = send(&s.engine, &s.session, s.id, CoinSource::Any, COIN, false);
+    assert!(sent.input.iter().all(|i| i.previous_output != s.a));
+}
+
+/// #1186: a fork key-wallet scanned past without the hub hearing it
+/// leaves P in its block in the history while key-wallet gives `a` back.
+/// The next balance snapshot does not count it.
+#[test]
+fn a_locked_payment_still_mined_in_the_history_holds_its_restored_coin() {
+    let s = scenario();
+    s.hear_lock();
+    s.mined();
+    s.silent_fork_caught_up();
+    s.assert_a_held_out(12);
+}
+
+/// #1186: the same with no lock heard for P once the lock buffer has
+/// evicted evidence: P may have been locked.
+#[test]
+fn an_evicted_buffer_holds_a_restored_coin_of_a_payment_still_mined() {
+    let (s, funding) = before_funding();
+    for n in 0..=crate::history::EARLY_LOCK_LIMIT as u32 {
+        let mut id = [0x5a; 32];
+        id[..4].copy_from_slice(&n.to_le_bytes());
+        s.hear_verified_lock(InstantLock {
+            txid: Txid::from_byte_array(id),
+            ..InstantLock::default()
+        });
+    }
+    s.fund(funding);
+    s.mined();
+    s.silent_fork_caught_up();
+    s.assert_a_held_out(12);
+}
+
 fn assert_forked_parent_protected(child_mined: bool) {
     let s = scenario();
     let change = OutPoint::new(s.p.txid(), 1);
