@@ -189,6 +189,10 @@ pub struct CoinJoinBalances {
     /// minimum, mixed or not (collaterals, change, a consolidated output):
     /// what "Move mixed coins" can take, so what it is offered for.
     pub coinjoin_account: u64,
+    /// Confirmed, unlocked CoinJoin-account coins above the sweep minimum
+    /// held by a coordinator hand-off (`Legacy`, `FinalInputs`, `Collateral`):
+    /// what "Return to Core" (`return_from_mixing`) can recover.
+    pub held_from_mixing: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1160,6 +1164,19 @@ fn compute_balances(
         })
         .map(|c| c.value())
         .sum();
+    let held_from_mixing = (view.coins.iter())
+        .filter(|c| {
+            c.coin.coinjoin_account
+                && c.coin.coinjoin_handoff.is_some()
+                && !c.coin.user_locked
+                && c.coin.utxo.is_confirmed
+                && c.value() > dw_coinjoin::recovery::SWEEP_MIN_COIN
+                && c.path
+                    .as_ref()
+                    .is_some_and(|p| is_coinjoin_path(p, network))
+        })
+        .map(|c| c.value())
+        .sum();
     (
         CoinJoinBalances {
             anonymizable,
@@ -1168,6 +1185,7 @@ fn compute_balances(
             fully_mixed,
             mixable_unfinished,
             coinjoin_account,
+            held_from_mixing,
         },
         average,
     )
@@ -3548,11 +3566,22 @@ impl NetworkSession {
             };
             for chunk in &picked.chunks {
                 let dest = match target {
-                    SweepTarget::Bip44 | SweepTarget::ReturnToCore => wallet
+                    SweepTarget::Bip44 => wallet
                         .core()
                         .next_receive_address_for_account(0)
                         .await
                         .map_err(EngineError::from),
+                    SweepTarget::ReturnToCore => {
+                        this.issue_address(wallet_id, None).await.and_then(|info| {
+                            info.address
+                                .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
+                                .map_err(|e| EngineError::Internal(format!("issued address: {e}")))?
+                                .require_network(this.network.core_network())
+                                .map_err(|e| {
+                                    EngineError::Internal(format!("issued address network: {e}"))
+                                })
+                        })
+                    }
                     SweepTarget::CoinJoin => this
                         .reserve_coinjoin_addresses(wallet_id, 1, false)
                         .await

@@ -31,7 +31,14 @@ import {
   planReceives,
   refusalText,
   resetMoveMixed,
+  resetReturnToCore,
   resultText,
+  RETURN_COPY,
+  returnRefusalText,
+  returnResultText,
+  ReturnToCoreFlow,
+  returnToCoreFor,
+  type ReturnToCoreApi,
   shieldResultText,
   showsMoveCard,
 } from "./move";
@@ -566,23 +573,108 @@ describe("Move mixed coins, the flow's edges", () => {
   });
 });
 
-// The card follows the CoinJoin account's free coins, not its denominations.
+// The card follows the CoinJoin account's free or held coins, not its denominations.
 describe("the move card", () => {
   const status = (coinjoinAccount: number, extra: Partial<CoinJoinStatus["balances"]> = {}) =>
-    ({ unavailable: null, balances: { anonymizable: 0, denominated: 0, normalizedAnonymized: 0, fullyMixed: 0, coinjoinAccount, ...extra } }) as unknown as CoinJoinStatus;
+    ({ unavailable: null, balances: { anonymizable: 0, denominated: 0, normalizedAnonymized: 0, fullyMixed: 0, mixableUnfinished: 0, coinjoinAccount, heldFromMixing: 0, ...extra } }) as unknown as CoinJoinStatus;
   const idle = { open: false, running: false, step: "plan" as const };
 
-  it("shows for a collateral alone, a consolidated output, and after a restart", () => {
+  it("shows for a collateral alone, a consolidated output, held coins alone, and after a restart", () => {
     expect(showsMoveCard(status(40_000), idle)).toBe(true);
     expect(showsMoveCard(status(3_000_000_000), idle)).toBe(true);
+    // Held legacy or hand-off coins with zero free CoinJoin coins must still show the card.
+    expect(showsMoveCard(status(0, { heldFromMixing: 10_000_100 }), idle)).toBe(true);
+    expect(showsMoveCard(status(0, { heldFromMixing: 40_000 }), idle)).toBe(true);
     // A fresh app: no flow kept, the account's coins are what counts.
     resetMoveMixed();
+    resetReturnToCore();
     expect(showsMoveCard(status(3_000_000_000), new MoveMixedFlow({} as MoveMixedApi, W))).toBe(true);
+    expect(showsMoveCard(status(0, { heldFromMixing: 10_000_100 }), new MoveMixedFlow({} as MoveMixedApi, W), new ReturnToCoreFlow({} as ReturnToCoreApi, W))).toBe(true);
   });
 
-  it("hides when the account holds nothing free, unless a move runs or its result waits", () => {
+  it("hides when the account holds nothing free or held, unless a move or return runs or waits", () => {
     expect(showsMoveCard(status(0, { denominated: 0 }), idle)).toBe(false);
     expect(showsMoveCard(status(0), { ...idle, step: "done" })).toBe(true);
+    expect(showsMoveCard(status(0), idle, { ...idle, step: "done" })).toBe(true);
     expect(showsMoveCard({ ...status(40_000), unavailable: { kind: "watchOnly" } } as CoinJoinStatus, idle)).toBe(false);
+    expect(showsMoveCard({ ...status(0, { heldFromMixing: 10_000_100 }), unavailable: { kind: "watchOnly" } } as CoinJoinStatus, idle)).toBe(false);
+  });
+});
+
+describe("ReturnToCoreFlow", () => {
+  afterEach(() => {
+    resetReturnToCore();
+    clearMocks();
+  });
+
+  it("plans, authorizes a spend grant for the held total, returns held coins, and clears heldFromMixing", async () => {
+    installFixture({ scenario: "coinjoin-held" });
+    const api = new IpcBackend("fixture");
+    const before = await api.coinjoinStatus(W);
+    expect(before.balances.coinjoinAccount).toBe(0);
+    expect(before.balances.heldFromMixing).toBe(20_040_200);
+
+    const rf = returnToCoreFor(api, W);
+    rf.begin();
+    await until(() => rf.step === "confirm");
+    expect(rf.plan?.total).toBe(20_040_200);
+    expect(rf.plan?.chunks).toHaveLength(1);
+
+    const done = rf.returnNow();
+    await until(() => rf.grants.pending !== null || !rf.running);
+    if (rf.grants.pending) expect(await rf.grants.submit(FIXTURE_PASSPHRASE)).toBe(true);
+    await done;
+    expect(rf.step).toBe("done");
+    expect(rf.result?.failureCode).toBeNull();
+    expect(rf.result?.moved).toBe(20_040_200);
+    expect(returnResultText(rf.result!, (n) => `${n} duffs`).kind).toBe("done");
+
+    const after = await api.coinjoinStatus(W);
+    expect(after.balances.heldFromMixing).toBe(0);
+  });
+
+  it("offers Stop Mixing when mixing runs, then plans the held return", async () => {
+    installFixture({ scenario: "coinjoin-held-mixing" });
+    const api = new IpcBackend("fixture");
+    const rf = new ReturnToCoreFlow(api, W);
+    rf.begin();
+    await until(() => rf.step === "mixing");
+    expect(returnRefusalText(rf)).toBe(RETURN_COPY.mixing.text);
+    await rf.stopMixing();
+    expect(rf.step).toBe("confirm");
+    expect(rf.plan?.total).toBe(20_040_200);
+  });
+
+  it("replans on coinjoin.plan_changed instead of leaving the user stuck", async () => {
+    installFixture({ scenario: "coinjoin-held" });
+    const api = new IpcBackend("fixture");
+    const spy = vi.spyOn(api, "returnFromMixing").mockRejectedValueOnce(appError("coinjoin.plan_changed"));
+    const rf = new ReturnToCoreFlow(api, W);
+    rf.begin();
+    await until(() => rf.step === "confirm");
+    const run = rf.returnNow();
+    await until(() => rf.grants.pending !== null || !rf.running);
+    if (rf.grants.pending) expect(await rf.grants.submit(FIXTURE_PASSPHRASE)).toBe(true);
+    await run;
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(rf.step).toBe("confirm");
+    expect(rf.replanned).toBe(true);
+  });
+
+  it("supports Try again (resend) when a return chunk has unknown broadcast outcome", async () => {
+    installFixture({ scenario: "coinjoin-held-unknown" });
+    const api = new IpcBackend("fixture");
+    const rf = new ReturnToCoreFlow(api, W);
+    rf.begin();
+    await until(() => rf.step === "confirm");
+    const run = rf.returnNow();
+    await until(() => rf.grants.pending !== null || !rf.running);
+    if (rf.grants.pending) expect(await rf.grants.submit(FIXTURE_PASSPHRASE)).toBe(true);
+    await run;
+    expect(rf.step).toBe("done");
+    expect(rf.result?.unknownTxid).not.toBeNull();
+    expect(returnResultText(rf.result!, (n) => `${n}`).kind).toBe("unknown");
+    await rf.resend();
+    expect(rf.resent).toBe("unknown");
   });
 });

@@ -671,3 +671,135 @@ fn mixing_session_held_coins_keep_coinjoin_total_steady() {
     assert_eq!(after.amount_and_rounds.amount, 4 * DENOM);
     assert_eq!(after.progress, before.progress);
 }
+
+#[test]
+fn held_from_mixing_counts_legacy_and_handoff_coins_and_clears_after_return() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let coin = denomination(&engine, &session, id);
+    let s = Arc::clone(&session);
+    let col_addr = engine
+        .block_on(
+            session.on_runtime(async move { s.reserve_coinjoin_addresses(id, 1, false).await }),
+        )
+        .unwrap();
+    let col_tx = funding(52, &col_addr, dw_coinjoin::denoms::MAX_COLLATERAL_AMOUNT);
+    mined(&engine, &session, id, FUNDED_AT, vec![col_tx.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let col = OutPoint::new(col_tx.txid(), 0);
+
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+
+    let read_status = || {
+        let s = Arc::clone(&session);
+        engine
+            .block_on(session.on_runtime(async move {
+                s.refresh_coinjoin_status(id).await;
+                Ok(())
+            }))
+            .unwrap();
+        session.coinjoin_status(id).unwrap()
+    };
+
+    let held = read_status();
+    assert_eq!(held.balances.coinjoin_account, 0);
+    assert_eq!(
+        held.balances.held_from_mixing,
+        DENOM + dw_coinjoin::denoms::MAX_COLLATERAL_AMOUNT
+    );
+
+    engine
+        .block_on(session.lock_outpoints(id, vec![col]))
+        .unwrap();
+    assert_eq!(read_status().balances.held_from_mixing, DENOM);
+    engine
+        .block_on(session.unlock_outpoints(id, vec![col]))
+        .unwrap();
+
+    let (returned, sent) = return_held(&engine, &session, id, |tx| Ok(tx.txid()));
+    assert_eq!(returned.failure_code, None);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].input.len(), 2);
+    assert!(sent[0].input.iter().any(|i| i.previous_output == coin));
+    assert!(sent[0].input.iter().any(|i| i.previous_output == col));
+    mined(&engine, &session, id, TIP + 1, sent);
+
+    let cleared = read_status();
+    assert_eq!(cleared.balances.held_from_mixing, 0);
+    assert_eq!(cleared.balances.coinjoin_account, 0);
+}
+
+#[test]
+fn return_from_mixing_pays_distinct_unissued_bip44_addresses_per_chunk() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let shared = engine
+        .block_on(session.next_receive_address(id, None))
+        .unwrap();
+    let shared_script = shared
+        .address
+        .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
+        .unwrap()
+        .assume_checked()
+        .script_pubkey();
+
+    let a = denomination(&engine, &session, id);
+    let b = denomination(&engine, &session, id);
+    assert_ne!(a, b);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let w = Arc::clone(&wire);
+    let broadcast: Broadcast = Arc::new(move |tx| {
+        w.lock().unwrap().push(tx.clone());
+        Ok(tx.txid())
+    });
+    *session.coinjoin.sweep_hooks.lock().unwrap() = Hooks {
+        max_inputs: Some(1),
+        broadcast: Some(broadcast),
+        ..Hooks::default()
+    };
+    let plan = engine
+        .block_on(session.return_from_mixing_plan(id))
+        .unwrap();
+    assert_eq!(plan.chunks.len(), 2);
+    let grant = session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 10 * DENOM,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let result = engine
+        .block_on(session.return_from_mixing(id, plan.quote_id, grant))
+        .unwrap();
+    assert_eq!(result.failure_code, None);
+    let sent = wire.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    let out0 = &sent[0].output[0].script_pubkey;
+    let out1 = &sent[1].output[0].script_pubkey;
+    assert_ne!(
+        out0, &shared_script,
+        "chunk 0 reused an issued receive address"
+    );
+    assert_ne!(
+        out1, &shared_script,
+        "chunk 1 reused an issued receive address"
+    );
+    assert_ne!(
+        out0, out1,
+        "multi-chunk return reused the same receive address"
+    );
+}
