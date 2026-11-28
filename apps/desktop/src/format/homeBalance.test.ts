@@ -4,6 +4,7 @@ import type { ListArrival } from "../components/emptyStates";
 import { compact, masked } from "./amount";
 import {
   breakdownRows,
+  coreDetails,
   coreSubtitle,
   HERO_FIRST_READ_QUIET_MS,
   HERO_NEW_BLOCK_HOLD_MS,
@@ -33,7 +34,7 @@ describe("Home's balance", () => {
     const b = homeBalance(withPending, 5 * COIN, COIN / 2);
     expect(b.pools.core).toBe(3 * COIN);
     expect(b.total).toBe(8.5 * COIN);
-    expect(coreSubtitle(withPending, fmt, "Dash wallet")).toBe("+1.50 pending");
+    expect(coreSubtitle(withPending, fmt, "Dash wallet")).toBe("1.50 pending");
   });
 
   it("is Core (mixed coins included) plus Shielded plus Platform", () => {
@@ -59,10 +60,12 @@ describe("Home's balance", () => {
   });
 
   it("names what is pending, immature and locked under the Core row", () => {
-    expect(coreSubtitle(core, fmt, "Dash wallet")).toBe("+1.00 pending");
+    expect(coreSubtitle(core, fmt, "Dash wallet")).toBe("1.00 pending");
+    expect(coreDetails(core, fmt)).toBe("Unconfirmed, including change from your sends");
     const held = { ...core, unconfirmed: 0, immature: 2 * COIN, locked: 10 * COIN };
     expect(coreSubtitle(held, fmt, "Dash wallet")).toBe("2.00 immature · 10.00 locked");
     expect(coreSubtitle({ ...held, immature: 0, locked: 0 }, fmt, "Dash wallet")).toBe("Dash wallet");
+    expect(coreDetails(held, fmt)).toBe("2.00 immature · 10.00 locked");
   });
 
   it("names under the Shielded row what payments that may still go through hold, and how many", () => {

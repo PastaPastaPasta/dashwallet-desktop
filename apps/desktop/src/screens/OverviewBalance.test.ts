@@ -45,7 +45,8 @@ it("renders the same three cells with pending on each reporting pool and when it
     expect(html.match(/data-testid="breakdown-(core|shielded|platform)"/g)).toHaveLength(3);
   }
   const cell = (pool: string) => new RegExp('data-testid="breakdown-' + pool + '"[^>]*>(.*?)</div>').exec(arriving)?.[1];
-  expect(cell("core")).toContain("+0.10 pending");
+  expect(cell("core")).toContain("0.10 pending");
+  expect(cell("core")).toMatch(/role="tooltip"[^>]*>Unconfirmed, including change from your sends</);
   expect(cell("shielded")).toMatch(/role="tooltip"[^>]*>Pending history \(in \+ out\): 0\.4960919 tDASH</);
   expect(cell("shielded")).toContain('<span class="breakdown-subtitle"></span>');
   expect(cell("platform")).toContain('<span class="breakdown-subtitle"></span>');

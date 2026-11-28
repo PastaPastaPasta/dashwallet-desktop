@@ -147,14 +147,17 @@ test("Home keeps a Core-only breakdown and masks pending amounts in discreet mod
   await expect(page.getByTestId("hero-amount")).toContainText("30.19698287");
   const core = page.getByTestId("breakdown-core");
   const subtitle = core.locator(".breakdown-subtitle");
-  await expect(subtitle).toHaveText("+0.20 pending");
+  await expect(subtitle).toHaveText("0.20 pending");
+  await core.focus();
+  await expect(core.getByRole("tooltip")).toHaveText("Unconfirmed, including change from your sends");
+  await page.keyboard.press("Escape");
   await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
   await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
   await page.getByTestId("toolbar-discreet").click();
   await expect(page.getByTestId("hero-amount")).toContainText("#.##");
   await expect(subtitle).toBeEmpty();
   await page.getByTestId("toolbar-discreet").click();
-  await expect(subtitle).toHaveText("+0.20 pending");
+  await expect(subtitle).toHaveText("0.20 pending");
   await setCore(page, { confirmed: 125_000_000, unconfirmed: 0, immature: 0, locked: 0, total: 125_000_000 });
   await expect(page.getByTestId("hero-amount").locator(".amount-number")).toHaveText("1.25");
   await expect(page.getByTestId("hero-amount").locator(".amount-minor")).toHaveCount(0);
@@ -187,7 +190,10 @@ for (const theme of THEMES) {
 
     await setCore(page, { unconfirmed: 20_000_000, withheld: 5_000_000 });
     await setShielded(true);
-    await expect(core.locator(".breakdown-subtitle")).toHaveText("+0.25 pending");
+    await expect(core.locator(".breakdown-subtitle")).toHaveText("0.25 pending");
+    await core.focus();
+    await expect(core.getByRole("tooltip")).toHaveText("Unconfirmed, including change from your sends");
+    await page.keyboard.press("Escape");
     await expect(shielded.locator(".breakdown-subtitle")).toBeEmpty();
     await expect(shielded.locator("[role=tooltip]")).toHaveCount(1);
     await expect(shielded.getByRole("tooltip")).toBeHidden();

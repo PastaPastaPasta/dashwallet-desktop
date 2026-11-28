@@ -30,7 +30,8 @@ export const home = {
   },
   /** The Core row's subtitle: what is still arriving, and what is held. Parts joined by `separator`. */
   core: {
-    pending: "+{amount} pending",
+    pending: "{amount} pending",
+    pendingDetail: "Unconfirmed, including change from your sends",
     immature: "{amount} immature",
     locked: "{amount} locked",
     separator: " · ",

@@ -156,6 +156,15 @@ export function coreSubtitle(core: Balances, fmt: (duffs: number) => string, fal
   return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;
 }
 
+/** Details for Core's pending and non-spendable buckets. */
+export function coreDetails(core: Balances, fmt: (duffs: number) => string): string {
+  const parts: string[] = [];
+  if (core.unconfirmed + core.withheld > 0) parts.push(t("home.core.pendingDetail"));
+  if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
+  if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
+  return parts.join(t("home.core.separator"));
+}
+
 /** Use the display unit when it can represent the credits exactly. */
 function exactCredits(value: string, fmt: (duffs: number) => string): string {
   const credits = BigInt(value);

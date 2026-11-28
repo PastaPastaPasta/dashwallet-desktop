@@ -23,7 +23,7 @@ import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { heldLine, heldWayOutText } from "../format/heldUnfinished";
-import { breakdownRows, corePending, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, platformSubtitle, shieldedDetails, type HeroSync, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, coreDetails, corePending, heroDigits, heroSyncLine, homeBalance, known, platformSubtitle, shieldedDetails, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
@@ -162,7 +162,7 @@ function BalanceHero({ walletId, balances, shielded, shieldedPendingCredits, shi
             let detail = "";
             if (!discreet && row.pool === "core") {
               subtitle = corePending(balances, fmt);
-              if (balances.immature || balances.locked) detail = coreSubtitle(balances, fmt, "");
+              detail = coreDetails(balances, fmt);
             }
             if (!discreet && row.pool === "shielded") detail = shieldedDetails(shieldedHold, (duffs) => `${fmt(duffs)} ${unit}`, shieldedPendingCredits);
             if (!discreet && row.pool === "platform" && known(reading)) {

@@ -68,9 +68,9 @@ describe("a withheld coin is in no balance the app shows (condition (a))", () =>
     expect(home.pools.core).toBe(b.confirmed);
     expect(b.total).toBe(b.confirmed + b.unconfirmed + b.immature + b.locked);
     const fmt = (duffs: number) => String(duffs);
-    expect(coreSubtitle(b, fmt, "Dash wallet")).toBe(`+${b.unconfirmed + CHANGE} pending`);
+    expect(coreSubtitle(b, fmt, "Dash wallet")).toBe(`${b.unconfirmed + CHANGE} pending`);
     const none: Balances = { ...b, unconfirmed: 0, withheld: CHANGE };
-    expect(coreSubtitle(none, fmt, "Dash wallet")).toBe(`+${CHANGE} pending`);
+    expect(coreSubtitle(none, fmt, "Dash wallet")).toBe(`${CHANGE} pending`);
   });
 
   it("Send's available amount leaves it out", async () => {
