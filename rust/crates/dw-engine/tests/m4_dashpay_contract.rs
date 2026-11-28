@@ -1152,7 +1152,6 @@ fn error_codes_match_the_contract() {
         "ConnectError",
         &[
             ConnectError::Network,
-            ConnectError::MainnetOff,
             ConnectError::Unsupported,
             ConnectError::Invalid,
             ConnectError::Stale,
