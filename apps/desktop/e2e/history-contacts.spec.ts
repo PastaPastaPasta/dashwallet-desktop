@@ -160,10 +160,9 @@ test("DP3-07 Home's frequent strip opens Pay ▸ To a contact on the pick (D7)",
   await expect(strip.getByRole("heading", { name: "Frequent contacts" })).toBeVisible();
   await expect(strip.getByTestId("home-frequent-chip").locator(".pay-frequent-name")).toHaveText(["Bob Builder", "dave"]);
   await strip.getByTestId("home-frequent-chip").first().click();
-  await expect(page.getByTestId("pay-tabs-contact")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("pay-payee-name")).toHaveText("Bob Builder");
-  // Pay's own strip is the same component.
-  await page.getByTestId("pay-payee").getByRole("button", { name: "Change" }).click();
+  await page.getByTestId("pay-payee-change").click();
+  await page.getByTestId("pay-contacts").click();
   await expect(page.getByTestId("pay-frequent-chip").locator(".pay-frequent-name")).toHaveText(["Bob Builder", "dave"]);
   expect(errors).toEqual([]);
 });

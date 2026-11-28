@@ -18,6 +18,7 @@ import {
   contestRow,
   endsText,
   isClosed,
+  isOwnActiveContest,
   listContests,
   NAME_SORTS,
   nameErrorText,
@@ -70,7 +71,7 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
     );
   else {
     const data = names.data!;
-    const listed = listContests(data.contests, search, sort);
+    const listed = listContests(data.contests, search, sort, now);
     const current = listed.find((c) => c.label === selected) ?? listed[0] ?? null;
     body = (
       <>
@@ -188,7 +189,7 @@ export function NamesTab({ wallet, network }: { wallet: WalletSummary; network: 
 }
 
 function ContestRowButton({ contest, names, now, current, onSelect }: { contest: ContestedName; names: ContestedNames; now: number; current: boolean; onSelect: () => void }) {
-  useT();
+  const t = useT();
   const row = contestRow(contest, names.voters, now);
   return (
     <button type="button" className="mg-row mg-row-wide" aria-current={current ? "true" : undefined} data-testid={`name-row-${row.label}`} onClick={onSelect}>
@@ -200,6 +201,7 @@ function ContestRowButton({ contest, names, now, current, onSelect }: { contest:
         </span>
       </span>
       <span className="mg-row-trailing">
+        {isOwnActiveContest(contest, now) && <span className="chip chip-neutral">{t("masternodes.names.yourUsername")}</span>}
         {row.chip && <StatusChip chip={row.chip} />}
         <span className="mg-row-meta">{votesText(row.total)}</span>
       </span>

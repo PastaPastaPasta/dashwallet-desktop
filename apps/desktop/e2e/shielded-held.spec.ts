@@ -30,8 +30,10 @@ test.describe("Shielded funds held for a payment that may still go through", () 
     test(`Home, Send from Shielded and Activity explain one hold (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-held", theme);
       const row = page.getByTestId("breakdown-shielded");
-      await expect(row).toContainText("held for a payment");
-      await expect(row).not.toContainText("Private balance");
+      await expect(row.locator(".breakdown-subtitle")).toBeEmpty();
+      await expect(row).toHaveAttribute("tabindex", "0");
+      await row.focus();
+      await expect(row.getByRole("tooltip")).toContainText("held for a payment");
       await shot(page, `${theme}-home-held-one`);
 
       await page.getByTestId("sidebar-pay").click();
@@ -61,7 +63,10 @@ test.describe("Shielded funds held for a payment that may still go through", () 
 
     test(`two holds are counted (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-held-two", theme);
-      await expect(page.getByTestId("breakdown-shielded")).toContainText("held for 2 payments");
+      const row = page.getByTestId("breakdown-shielded");
+      await expect(row).toHaveAttribute("tabindex", "0");
+      await row.focus();
+      await expect(page.getByRole("tooltip")).toContainText("held for 2 payments");
       await shot(page, `${theme}-home-held-two`);
       await page.getByTestId("sidebar-pay").click();
       await page.getByTestId("shielded-send").click();
@@ -73,7 +78,7 @@ test.describe("Shielded funds held for a payment that may still go through", () 
 
   test("nothing held: the Shielded row and the sheet are as before", async ({ page }) => {
     await open(page, "funded", "light");
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("Private balance");
+    await expect(page.getByTestId("breakdown-shielded").locator("[role=tooltip]")).toHaveCount(0);
     await page.getByTestId("sidebar-pay").click();
     await page.getByTestId("shielded-send").click();
     await expect(page.getByTestId("shielded-sheet")).toBeVisible();
@@ -83,7 +88,7 @@ test.describe("Shielded funds held for a payment that may still go through", () 
   test("discreet mode keeps the held amount to itself", async ({ page }) => {
     await open(page, "shielded-held", "light");
     await page.getByTestId("hero-amount").click();
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("Private balance");
+    await expect(page.getByTestId("breakdown-shielded").locator("[role=tooltip]")).toHaveCount(0);
     await expect(page.getByTestId("breakdown-shielded")).not.toContainText("held");
   });
 
@@ -98,6 +103,6 @@ test.describe("Shielded funds held for a payment that may still go through", () 
       s.heldCredits = "0";
       f.emit({ kind: "platform", network: "testnet", walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } });
     });
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("Private balance");
+    await expect(page.getByTestId("breakdown-shielded").locator("[role=tooltip]")).toHaveCount(0);
   });
 });

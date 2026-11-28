@@ -115,7 +115,6 @@ async function main() {
 
     // Pay shows the funding once SPV saw its block: the wallet is caught up.
     await wd.press(tid("sidebar-pay"));
-    await wd.press(tid("pay-tabs-address"));
     await poll(LOAD_WAIT_MS, "the funding in the balance", async () =>
       (await textOf(tid("pay-address-form"))).includes(`Available: ${FUNDING}.00000000`) ? true : undefined,
     );
@@ -263,7 +262,6 @@ async function main() {
     evidence.repairRunning = seen ?? "ended before the first poll";
     await wd.screenshot("9-repair-ended");
     await wd.press(tid("sidebar-pay"));
-    await wd.press(tid("pay-tabs-address"));
     const left = (FUNDING_DUFFS - PAYMENT_DUFFS - Number(evidence.fee)) / 1e8;
     await poll(LOAD_WAIT_MS, "the balance after the rescan", async () =>
       (await textOf(tid("pay-address-form"))).includes(`Available: ${left.toFixed(8)}`) ? true : undefined,

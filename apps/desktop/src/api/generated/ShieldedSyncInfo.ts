@@ -30,6 +30,10 @@ syncing: boolean, scan: ShieldedScanProgress | null,
  */
 lastPassFailed: boolean,
 /**
+ * Reason a local safety hold stopped the last pass.
+ */
+lastPassFailureReason?: string,
+/**
  * As `ShieldedStatus.spendsAvailable`, and read on an inactive network
  * too.
  */

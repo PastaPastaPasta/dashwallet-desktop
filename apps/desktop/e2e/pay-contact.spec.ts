@@ -13,16 +13,12 @@ const world = <T>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"
 
 const GRACE = "Grace Hopper";
 
-const contactless = ["dashpay-no-identity"];
-
 async function openPay(page: Page, scenario = "dashpay-registered", theme: Theme = "light") {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  // Pay opens on To an address without contacts (e2e/pay-no-dead-end.spec.ts).
-  if (contactless.includes(scenario)) await page.getByTestId("pay-tabs-contact").click();
-  await expect(page.getByTestId("pay-tabs-contact")).toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("pay-contacts").click();
   return errors;
 }
 
@@ -176,7 +172,7 @@ test("a picked contact with no amount asks only for an amount; To an address sti
   await expect(page.getByTestId("pay-payee-name")).toHaveText("Bob Builder");
   await expect(page.getByTestId("pay-incomplete")).toHaveText("Enter an amount first.");
   await expect(page.getByTestId("pay-continue")).toBeDisabled();
-  await page.getByTestId("pay-tabs-address").click();
+  await page.getByTestId("pay-payee-change").click();
   await expect(page.getByTestId("pay-incomplete")).toHaveText("Enter an address and an amount first.");
 });
 
@@ -188,7 +184,7 @@ test("IOS-050 the picker searches the contacts and requests, and Change goes bac
   await expect(pickerRow(page, "Frank")).toHaveCount(0);
   await expect(pickerRow(page, "Judy")).toHaveCount(0);
   await expect(pickerRow(page, "dave")).toContainText("Payments cannot be sent right now");
-  await page.getByTestId("pay-contact-search").locator("input").fill("car");
+  await page.getByTestId("pay-address").fill("car");
   await expect(page.getByTestId("pay-picker-row")).toHaveCount(1);
   // A search hides the frequent strip.
   await expect(page.getByTestId("pay-frequent")).toHaveCount(0);
@@ -196,8 +192,8 @@ test("IOS-050 the picker searches the contacts and requests, and Change goes bac
   await expect(page.getByTestId("pay-banner")).toHaveAttribute("data-kind", "note");
   await expect(page.getByTestId("pay-amount")).toBeVisible();
   await page.getByTestId("pay-payee-change").click();
-  await expect(page.getByTestId("pay-contact")).toBeVisible();
-  await page.getByTestId("pay-contact-search").locator("input").fill("zzz");
+  await expect(page.getByTestId("pay-address")).toBeVisible();
+  await page.getByTestId("pay-address").fill("zzz");
   await expect(page.getByTestId("pay-picker-none")).toBeVisible();
 });
 
@@ -255,6 +251,9 @@ test("IOS-050 an accept refused pays nothing and says why", async ({ page }) => 
   await send(page);
   await expect(page.getByTestId("pay-result-failed")).toBeVisible();
   await expect(page.getByTestId("pay-result-text")).toHaveText("Not enough credits. Top up your credits and try again. Nothing was paid.");
+  // Refused inside the open sheet, it is said there, in view.
+  await expect(page.getByTestId("pay-result-text")).toBeVisible();
+  await expect(page.getByRole("dialog").getByTestId("pay-result-text")).toBeVisible();
   expect(await world(page, (w) => w.wallets[0].rows.length)).toBe(rows);
   expect(await world(page, (w) => w.dashpay.contacts.find((c) => c.summary.username === "grace")?.summary.relation)).toBe("pendingIncoming");
   expect(await world(page, (w) => w.leases.filter((l) => l.flow === "acceptAndPay").map((l) => l.state.kind))).toEqual(["ended"]);
