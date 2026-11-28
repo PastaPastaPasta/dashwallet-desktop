@@ -993,11 +993,11 @@ fn check_domain<E: std::fmt::Debug>(
             format!("{sample:?}").starts_with(variant.as_str()),
             "{name}: the samples must follow the variant order ({variant})"
         );
-        // The code names its variant; `contact.self` is `IsSelf` (a keyword).
         let suffix = code(sample).rsplit('.').next().unwrap();
-        let expected = match variant.as_str() {
-            "IsSelf" => "self".to_string(),
-            v => snake(v),
+        let expected = match (name, variant.as_str()) {
+            ("ContactError", "IsSelf") => "self".to_string(),
+            ("PlatformError", "SessionOff") => "unavailable".to_string(),
+            (_, v) => snake(v),
         };
         assert_eq!(
             suffix,
@@ -1008,6 +1008,7 @@ fn check_domain<E: std::fmt::Debug>(
     }
     let mut codes: Vec<&str> = samples.iter().map(code).collect();
     codes.sort_unstable();
+    codes.dedup();
     assert_eq!(codes, contract_row(name), "{name}: §4 row");
 }
 
@@ -1020,6 +1021,7 @@ fn error_codes_match_the_contract() {
         "PlatformError",
         &[
             PlatformError::Unavailable,
+            PlatformError::SessionOff,
             PlatformError::Timeout,
             PlatformError::ProofInvalid,
             PlatformError::TrustMismatch,
