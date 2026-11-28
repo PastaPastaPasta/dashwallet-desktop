@@ -7791,8 +7791,8 @@ fn disconnect_pending_rebroadcast_enforces_funds_gate_while_allowing_confirmatio
         f.net.refreshed.store(false, Ordering::SeqCst);
         assert_eq!(
             f.disconnect(&me_b58, &req_hex, &gd_retry),
-            Err(ConnectError::Platform(PlatformError::Unavailable)),
-            "pending rebroadcast with Platform funds off must refuse Unavailable"
+            Err(ConnectError::Platform(PlatformError::SessionOff)),
+            "pending rebroadcast with Platform funds off must refuse SessionOff"
         );
         assert_eq!(
             f.net.broadcast_disables.lock().unwrap().len(),

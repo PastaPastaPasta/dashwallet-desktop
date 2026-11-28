@@ -1099,7 +1099,7 @@ fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
             .session
             .hub
             .history
-            .truncate(restored.wallets[0], &[], &[txid]);
+            .truncate(restored.wallets[0], 49, &[], &[txid]);
         assert_eq!(
             penalty(),
             serde_json::json!(COIN),
@@ -1109,7 +1109,7 @@ fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
             .session
             .hub
             .history
-            .truncate(restored.wallets[0], &[txid], &[]);
+            .truncate(restored.wallets[0], 49, &[txid], &[]);
         assert!(
             penalty().is_null(),
             "unknown penalty, full_only={full_only}"

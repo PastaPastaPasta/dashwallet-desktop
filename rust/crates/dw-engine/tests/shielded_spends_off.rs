@@ -1,6 +1,6 @@
 //! The shipped engine spends from Shielded on testnet only: built as the app
 //! links it (not `cfg(test)`, so with no test override of the switch),
-//! mainnet's and regtest's status and sync read report `spends_available`
+//! mainnet's, regtest's and devnet's status and sync read report `spends_available`
 //! false, and their receive address, spend quotes and a Shielded-funded
 //! registration's quote and start are refused, while testnet reports spends
 //! available and issues the receive address.
@@ -54,6 +54,9 @@ fn shielded_spends_are_off_on_mainnet_until_their_funds_review() {
         DashNetwork::Mainnet,
         DashNetwork::Testnet,
         DashNetwork::Regtest,
+        DashNetwork::Devnet {
+            name: "shielded-spends-off".into(),
+        },
     ] {
         let dir = dw_testutil::private_tempdir();
         let engine = engine(&dir.path().join("data"));
