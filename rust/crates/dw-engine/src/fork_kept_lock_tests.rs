@@ -772,6 +772,65 @@ fn a_verified_lock_after_a_truncation_event_holds_an_unrecorded_spenders_input()
     assert_restored_input(&s, true);
 }
 
+/// P, a spend of `a`, and its funding reach key-wallet, but Desktop has
+/// processed neither record when the fork comes.
+fn unrecorded_spender_before_funding_history(hear_lock: bool) -> Scenario {
+    let (mut s, funding) = before_funding();
+    s.p.output.truncate(1);
+    if hear_lock {
+        s.hear_lock();
+    }
+    let manager = s.session.manager().unwrap();
+    let (id, p) = (s.id, s.p.clone());
+    s.engine.block_on(async move {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        for (height, txs) in [
+            (FUNDED_AT, vec![funding]),
+            (TIP, vec![foreign()]),
+            (TIP + 1, vec![p]),
+        ] {
+            let block = super::block_with(txs);
+            wm.process_block_for_wallets(
+                &block,
+                block.block_hash(),
+                height,
+                &BTreeSet::from([id.0]),
+            )
+            .await;
+            wm.update_wallet_synced_height(&id.0, height);
+        }
+    });
+    // The hub has processed past the fork height, without the funding record.
+    mined(&s.engine, &s.session, s.id, TIP + 2, vec![foreign()]);
+    assert!(!s.a_held());
+    s
+}
+
+#[test]
+fn a_silent_fork_before_the_funding_record_holds_a_buffered_locks_input() {
+    let s = unrecorded_spender_before_funding_history(true);
+    s.detect_fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_fork_event_before_the_funding_record_holds_a_buffered_locks_input() {
+    let s = unrecorded_spender_before_funding_history(true);
+    s.fork();
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_lock_after_a_silent_fork_before_the_funding_record_holds_its_input() {
+    let s = unrecorded_spender_before_funding_history(false);
+    s.detect_fork();
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+}
+
 #[test]
 fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
     let s = unrecorded_spender(false);
