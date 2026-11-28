@@ -1308,7 +1308,14 @@ impl SessionHub {
     fn fan_out_lock(&self, lock: &InstantLock, unloaded: &HashSet<WalletId>, verified: bool) {
         let txid = lock.txid;
         let inputs = verified.then_some(lock.inputs.as_slice());
-        let wallets = self.history.note_instant_lock(&txid, inputs, unloaded);
+        let (wallets, named) = self.history.note_instant_lock(&txid, inputs, unloaded);
+        // A lock can hold a coin before key-wallet records its spender
+        // (`crate::withhold`), and no wallet event follows it then.
+        if let Some(reread) = self.balance_reread.get() {
+            for id in named {
+                reread(id);
+            }
+        }
         if wallets.is_empty() && self.unstored_locks().is_empty() {
             return;
         }

@@ -27,7 +27,7 @@ use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoIn
 
 use crate::WalletId;
 use crate::events::SessionHub;
-use crate::history::{TxEntry, WalletHistory, instant_locked};
+use crate::history::{EarlyInstantLocks, TxEntry, WalletHistory, instant_locked};
 
 /// Why a coin is kept out of spending and every balance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -193,13 +193,13 @@ impl SessionHub {
         let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let skip = false;
-        let (withheld, kept) = (self.history).read_wallet(&wallet, |h| {
+        let (withheld, kept) = (self.history).read_wallet_with_locks(&wallet, |h, locks| {
             let withheld = if skip {
                 BTreeSet::new()
             } else {
                 pending_unproven(core, h)
             };
-            (withheld, fork_kept_inputs(core, h))
+            (withheld, fork_kept_inputs(core, h, locks))
         });
         let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
@@ -220,14 +220,17 @@ impl SessionHub {
     /// change: some are, or its history holds an unmined transaction,
     /// neither abandoned nor InstantSend-locked, that spends a coin the
     /// history knows as the wallet's (its own input, claim or mark, or an
-    /// output of a stored transaction). A wallet event's balance is then
-    /// read again with the excluded coins, not applied (an event's
-    /// snapshot comes without them).
+    /// output of a stored transaction), or it holds a verified lock, or the
+    /// lock buffer has evicted one ([`fork_kept_inputs`]). A wallet event's
+    /// balance is then read again with the excluded coins, not applied (an
+    /// event's snapshot comes without them).
     pub(crate) fn may_withhold(&self, id: &WalletId) -> bool {
         let excluded = (self.wallet_state(id)).is_some_and(|s| s.excluded.total() > 0);
         excluded
-            || (self.history).read_wallet(id, |h| {
+            || (self.history).read_wallet_with_locks(id, |h, locks| {
                 !h.rescan_holds.is_empty()
+                    || locks.overflow
+                    || !h.session_locks.is_empty()
                     || !h.fork_kept_locks.is_empty()
                     || !h.fork_kept_ancestor_inputs.is_empty()
                     || !h.uncertain_fork_spends.is_empty()
@@ -269,10 +272,23 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// abandon the ChainLock exception lets through, and the end of the session.
 /// Also includes restored inputs from removed ancestors and from spends
 /// whose lock may have been evicted.
-fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
+///
+/// A truncation the history has not applied yet holds the same coins: the
+/// inputs of a verified lock whose spender key-wallet holds no record of
+/// (not yet processed, or still in a block in the history that key-wallet
+/// no longer holds), and, once the lock buffer has evicted evidence, those
+/// of any spend the history holds in a block that key-wallet does not
+/// record. Key-wallet recording the spender ends the hold.
+fn fork_kept_inputs(
+    core: &ManagedWalletInfo,
+    h: &WalletHistory,
+    locks: &EarlyInstantLocks,
+) -> BTreeSet<OutPoint> {
     if h.fork_kept_locks.is_empty()
         && h.fork_kept_ancestor_inputs.is_empty()
         && h.uncertain_fork_spends.is_empty()
+        && h.session_locks.is_empty()
+        && !locks.overflow
     {
         return BTreeSet::new();
     }
@@ -287,11 +303,27 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
     };
     let funding = core.accounts.all_funding_accounts();
     let unspent = |o: &OutPoint| funding.iter().any(|a| a.utxos.contains_key(o));
-    (h.fork_kept_locks.iter())
+    let inputs = |e: &TxEntry| e.tx.input.iter().map(|i| i.previous_output).collect();
+    let kept = (h.fork_kept_locks.iter())
         .filter(|t| !recorded(t))
         .filter_map(|t| h.txs.get(t))
         .filter(|e| e.context.block_info().is_none() && !e.is_abandoned())
-        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .map(inputs);
+    let locked = (h.session_locks.iter())
+        .filter(|t| !recorded(t))
+        .filter_map(|t| match h.txs.get(t) {
+            Some(e) => (!e.is_abandoned()).then(|| inputs(e)),
+            None => locks.inputs.get(t).cloned(),
+        });
+    let evicted = (h.txs.iter())
+        .filter(|_| locks.overflow)
+        .filter(|(_, e)| e.context.block_info().is_some() && !e.is_abandoned())
+        .filter(|(_, e)| e.tx.input.iter().any(|i| unspent(&i.previous_output)))
+        .filter(|(t, _)| !recorded(t))
+        .map(|(_, e)| inputs(e));
+    kept.chain(locked)
+        .chain(evicted)
+        .flat_map(|i: Vec<OutPoint>| i)
         .chain(h.fork_kept_ancestor_inputs.values().flatten().copied())
         .chain(h.uncertain_fork_spends.values().flatten().copied())
         .filter(unspent)

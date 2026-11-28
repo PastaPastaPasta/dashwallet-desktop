@@ -1988,10 +1988,10 @@ const EARLY_LOCK_INPUT_LIMIT: usize = 65_536;
 #[derive(Debug, Default)]
 pub(crate) struct EarlyInstantLocks {
     order: VecDeque<Txid>,
-    inputs: HashMap<Txid, Vec<OutPoint>>,
+    pub(crate) inputs: HashMap<Txid, Vec<OutPoint>>,
     spends: HashMap<OutPoint, HashSet<Txid>>,
     input_count: usize,
-    overflow: bool,
+    pub(crate) overflow: bool,
 }
 
 impl EarlyInstantLocks {
@@ -2241,6 +2241,21 @@ impl HistoryStore {
             .and_then(|h| h.txs.get(txid).cloned())
     }
 
+    /// [`Self::read_wallet`] with the verified-lock buffer, taken in
+    /// [`Self::with_wallet_records`]' order.
+    pub(crate) fn read_wallet_with_locks<R>(
+        &self,
+        wallet: &WalletId,
+        f: impl FnOnce(&WalletHistory, &EarlyInstantLocks) -> R,
+    ) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+        match map.get(wallet) {
+            Some(h) => f(h, &locks),
+            None => f(&WalletHistory::default(), &locks),
+        }
+    }
+
     /// Runs `f` over one wallet's history under the store's read lock
     /// (empty when unknown).
     pub fn read_wallet<R>(&self, wallet: &WalletId, f: impl FnOnce(&WalletHistory) -> R) -> R {
@@ -2256,13 +2271,14 @@ impl HistoryStore {
     /// tells only the wallets holding its record or coins (#828). The
     /// wallets marked. `verified_inputs` is present only for a verified
     /// lock. Each history that holds `txid` or owns one of those inputs
-    /// keeps it among its [`WalletHistory::session_locks`].
+    /// keeps it among its [`WalletHistory::session_locks`]; those wallets
+    /// are returned second.
     pub(crate) fn note_instant_lock(
         &self,
         txid: &Txid,
         verified_inputs: Option<&[OutPoint]>,
         skip: &HashSet<WalletId>,
-    ) -> Vec<WalletId> {
+    ) -> (Vec<WalletId>, Vec<WalletId>) {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         if let Some(inputs) = verified_inputs {
             self.early_locks
@@ -2270,12 +2286,13 @@ impl HistoryStore {
                 .unwrap_or_else(|p| p.into_inner())
                 .remember(*txid, inputs);
         }
-        let mut marked = Vec::new();
+        let (mut marked, mut named) = (Vec::new(), Vec::new());
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
             if let Some(inputs) = verified_inputs
                 && (h.txs.contains_key(txid) || inputs.iter().any(|o| h.owns_output(o)))
             {
                 h.remember_session_lock(*txid, inputs);
+                named.push(*id);
             }
             let entry = h.txs.get(txid);
             if h.loaded
@@ -2285,7 +2302,7 @@ impl HistoryStore {
                 marked.push(*id);
             }
         }
-        marked
+        (marked, named)
     }
 
     /// Forgets a load's claims of `txids` once their marks are gone or
