@@ -145,3 +145,44 @@ test("a DashPay user link resolves to the verified contact identity", async ({ p
   expect(calls).toContain("draft_set_contact_recipient");
   expect(calls).not.toContain("draft_set_recipients");
 });
+
+test("an address resolving preserves the amount typed before or during resolution", async ({ page }) => {
+  const field = await pay(page);
+  const amount = page.getByTestId("pay-amount");
+  const review = page.getByTestId("pay-continue");
+
+  await amount.click();
+  await page.keyboard.type("0.03700001");
+  await expect(amount).toHaveValue("0.03700001");
+  await field.click();
+  await page.keyboard.type(ADDRESS);
+  await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
+  await expect(amount).toHaveValue("0.03700001");
+  await review.click();
+  await expect(page.getByTestId("pay-confirm-address")).toContainText(ADDRESS);
+  await expect(page.getByTestId("pay-confirm-amount")).toContainText("0.03700001");
+  await page.getByTestId("pay-confirm-cancel").click();
+
+  const next = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
+  const classifications = () => page.evaluate(() => window.__dwFixture!.calls.filter((call) => call === "classify_address").length);
+  const before = await classifications();
+  await page.evaluate(() => {
+    (window as Window & { releaseRecipient?: () => void }).releaseRecipient = window.__dwFixture!.hold("classify_address");
+  });
+  await page.getByTestId("pay-recipient-clear").click();
+  await expect(field).toBeFocused();
+  await page.keyboard.type(next);
+  await expect.poll(classifications).toBeGreaterThan(before);
+  await expect(field).toHaveValue(next);
+  await expect(review).toBeDisabled();
+  await amount.click();
+  await amount.selectText();
+  await page.keyboard.type("0.04100001");
+  await expect(amount).toHaveValue("0.04100001");
+  await page.evaluate(() => (window as Window & { releaseRecipient?: () => void }).releaseRecipient?.());
+  await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
+  await expect(amount).toHaveValue("0.04100001");
+  await review.click();
+  await expect(page.getByTestId("pay-confirm-address")).toContainText(next);
+  await expect(page.getByTestId("pay-confirm-amount")).toContainText("0.04100001");
+});
