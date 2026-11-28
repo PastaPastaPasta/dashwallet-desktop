@@ -701,6 +701,43 @@ test.describe("Export CSV", () => {
     await expect(alert).toHaveCount(0);
   });
 
+  test("an alert never covers a sheet: Confirm's Total, Send and Cancel stay clear at 920×620", async ({ page }) => {
+    await page.setViewportSize({ width: 920, height: 620 });
+    await open(page, "funded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    await page.evaluate(() => window.__dwFixture!.fail("save_file_as", "call"));
+    await page.getByTestId("tx-export-csv").click();
+    const alert = page.getByTestId("toast-alert");
+    await expect(alert).toBeVisible();
+
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    await page.getByTestId("pay-address").fill("yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
+    await page.getByTestId("pay-amount").fill("0.5");
+    await page.getByTestId("pay-fee-line").waitFor();
+    await page.getByTestId("pay-continue").click();
+    await expect(page.getByTestId("pay-confirm")).toBeVisible();
+    await expect(alert).toHaveCount(1);
+    await expect(alert).toBeHidden();
+    // What is on top at the middle of each control is the control itself.
+    const onTop = (testId: string) =>
+      page.getByTestId(testId).evaluate((el) => {
+        el.scrollIntoView({ block: "nearest" });
+        const r = el.getBoundingClientRect();
+        return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+      });
+    for (const id of ["pay-confirm-total", "pay-confirm-passphrase", "pay-confirm-send", "pay-confirm-cancel"]) expect(await onTop(id), id).toBe(true);
+    await page.getByTestId("pay-confirm-cancel").click({ trial: true });
+    await page.getByTestId("pay-confirm-passphrase").fill("demo");
+    await page.getByTestId("pay-confirm-send").click({ trial: true });
+
+    // Closing the sheet brings the alert back.
+    await page.getByTestId("pay-confirm-cancel").click();
+    await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    await expect(alert).toBeVisible();
+  });
+
   test("a cancelled dialog says nothing", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();

@@ -198,7 +198,10 @@ async function run(passphrase: string, sender: string, wd: WebDriver, step: (s: 
   await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
   step("accepted from the bell; passphrase given");
   const outcome = await poll(ACCEPT_TIMEOUT_MS, "the accept toast", async () => {
-    const text = await wd.script<string | null>("return document.querySelector('.toast-host')?.textContent?.trim() || null;");
+    // A refused accept stays in the alert; an accepted one is the toast.
+    const text = await wd.script<string | null>(
+      "return document.querySelector('.toast-alert-text')?.textContent?.trim() || document.querySelector('.toast-host')?.textContent?.trim() || null;",
+    );
     return text ?? undefined;
   });
   out.outcome = outcome;

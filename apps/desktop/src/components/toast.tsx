@@ -1,7 +1,8 @@
 // Toast (UX-SPEC C21): bottom-centre, 24 pt above the status bar, auto-dismiss. An actionable
 // failure is an alert in the same stack: it stays until Dismiss or the next attempt's outcome, and
 // a toast shows under it rather than over it. An alert's region comes with it: role=alert is said
-// when it is inserted, unlike the status region a toast fills (#291).
+// when it is inserted, unlike the status region a toast fills (issue 291). While a sheet is open the
+// alert is hidden, not dropped: it would cover the sheet's buttons.
 
 import { useEffect, useRef, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useUi } from "../app/ui";
