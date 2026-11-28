@@ -56,9 +56,23 @@ export function transferScenarios(base: Base) {
     /** As "transfer-max-arriving", the coin being 0.00005 DASH: too little for either route's smallest amount even
      * once it has confirmed. */
     "transfer-max-arriving-small": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 5_000 }]),
+    "transfer-max-arriving-locked": (t: ThemeName | null) =>
+      maxCoins(base(t), [{ ...ARRIVING, amount: 200_000, userLocked: true, spendable: false }]),
+    "transfer-max-arriving-locked-with-mixed": (t: ThemeName | null) => {
+      const w = base(t);
+      return maxCoins(w, [
+        { ...ARRIVING, amount: 200_000, userLocked: true, spendable: false },
+        { amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: w.coinjoin.settings.rounds },
+      ]);
+    },
+    "transfer-max-arriving-cap": (t: ThemeName | null) =>
+      maxCoins(base(t), Array.from({ length: 51 }, () => ({ ...ARRIVING, amount: 200_000 }))),
+    "transfer-max-arriving-contact": (t: ThemeName | null) =>
+      maxCoins(base(t), [{ ...ARRIVING, amount: 200_000, isChange: false, spendable: false }], [0]),
     /** The Dash wallet's only coin is an incoming payment of 0.002 DASH not confirmed yet, which a payment can't
      * spend: Max is still offered, and says the coins are arriving. */
     "transfer-max-incoming": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 200_000, isChange: false, spendable: false }]),
+    "transfer-max-incoming-small": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 5_000, isChange: false, spendable: false }]),
     /** The Dash wallet holds only a mixed coin of 0.1 DASH in the CoinJoin account, which neither a payment nor
      * Max takes: Max is still offered, and says it has nothing to move. */
     "transfer-max-mixed-only": (t: ThemeName | null) => {

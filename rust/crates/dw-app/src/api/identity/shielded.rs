@@ -239,7 +239,7 @@ impl From<engine::ShieldedAddress> for ShieldedAddress {
 /// How much of the Core balance a shield or an "Add from Dash wallet"
 /// moves: `duffs`, its fee on top, or everything in the Dash wallet's
 /// account 0 (Max), the fee out of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -248,6 +248,7 @@ impl From<engine::ShieldedAddress> for ShieldedAddress {
 pub enum FundAmount {
     Duffs { duffs: u64 },
     All,
+    QuotedAll { coin_set: String },
 }
 
 impl From<FundAmount> for engine::FundAmount {
@@ -255,18 +256,26 @@ impl From<FundAmount> for engine::FundAmount {
         match a {
             FundAmount::Duffs { duffs } => Self::Duffs { duffs },
             FundAmount::All => Self::All,
+            FundAmount::QuotedAll { coin_set } => {
+                let mut decoded = [0; 32];
+                match hex::decode_to_slice(coin_set, &mut decoded) {
+                    Ok(()) => Self::QuotedAll { coin_set: decoded },
+                    Err(_) => Self::All,
+                }
+            }
         }
     }
 }
 
 /// What a Max quote adds: the coins it spends, and what stays in the Dash
 /// wallet (other accounts' coins, coins still arriving).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreMax {
     pub inputs: u32,
     pub left_duffs: u64,
     pub arriving_duffs: u64,
+    pub coin_set: String,
 }
 
 impl From<engine::CoreMax> for CoreMax {
@@ -275,17 +284,19 @@ impl From<engine::CoreMax> for CoreMax {
             inputs,
             left_duffs,
             arriving_duffs,
+            coin_set,
         } = m;
         CoreMax {
             inputs,
             left_duffs,
             arriving_duffs,
+            coin_set: hex::encode(coin_set),
         }
     }
 }
 
 /// What moving duffs of the Core balance into the pool costs and buys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShieldQuote {
     pub duffs: u64,
@@ -922,6 +933,20 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn core_max_coin_set_round_trips_through_the_app_contract() {
+        let coin_set = [0xba; 32];
+        let quote = CoreMax::from(engine::CoreMax {
+            inputs: 2,
+            left_duffs: 0,
+            arriving_duffs: 0,
+            coin_set,
+        });
+        let wire = json!({ "kind": "quotedAll", "coinSet": quote.coin_set });
+        let amount: FundAmount = serde_json::from_value(wire).unwrap();
+        assert_eq!(engine::FundAmount::from(amount), engine::FundAmount::QuotedAll { coin_set });
+    }
 
     /// Repair's listing says why it refuses a move without naming a
     /// transaction, a coin or an address; `resolveStuckFunding` answers
