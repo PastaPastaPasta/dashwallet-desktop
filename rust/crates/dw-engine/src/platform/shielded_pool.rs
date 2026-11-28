@@ -2068,10 +2068,11 @@ async fn shield_max_gate(
 async fn shield_max_plan(
     lib: &impl ShieldedLib,
     pool_fee: u64,
+    expected: Option<[u8; 32]>,
     fence: &crate::coins::CoinFence,
 ) -> Result<(ShieldQuote, MaxPlan), ShieldedError> {
     let floor = super::shield_drain::drain_floor(pool_fee);
-    let plan = core_max::plan(lib.core_coins(fence).await?, floor)?;
+    let plan = core_max::plan(lib.core_coins(fence).await?, floor, expected)?;
     let quote = ShieldQuote {
         duffs: plan.duffs,
         fee_duffs: plan.fee_duffs,
@@ -2107,7 +2108,7 @@ pub(crate) async fn shield_max_quote(
     let pool_fee = shield_max_gate(session, lib).await?;
     let _claim = core_max::claim(session, wallet)?;
     let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-    Ok(shield_max_plan(lib, pool_fee, &fence).await?.0)
+    Ok(shield_max_plan(lib, pool_fee, None, &fence).await?.0)
 }
 
 /// What holds a shield's funding back, as the code the host sees: as a
@@ -2175,9 +2176,13 @@ pub(crate) async fn shield(
     // The amount's plan, or a Core Max's pool fee: it holds the wallet's
     // CoinJoin claim through its funding.
     let (claim, quoted) = match amount {
-        FundAmount::All => {
+        FundAmount::All => return Err(ShieldedError::CoinsChanged),
+        FundAmount::QuotedAll { coin_set } => {
             let pool_fee = shield_max_gate(session, lib).await?;
-            (Some(core_max::claim(session, wallet)?), Err(pool_fee))
+            (
+                Some(core_max::claim(session, wallet)?),
+                Err((pool_fee, coin_set)),
+            )
         }
         FundAmount::Duffs { duffs } => (None, Ok(shield_plan(session, lib, duffs).await?)),
     };
@@ -2189,9 +2194,9 @@ pub(crate) async fn shield(
     // library tracks the lock.
     let (plan, max) = match quoted {
         Ok(plan) => (plan, None),
-        Err(pool_fee) => {
+        Err((pool_fee, coin_set)) => {
             let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-            let (plan, max) = shield_max_plan(lib, pool_fee, &fence).await?;
+            let (plan, max) = shield_max_plan(lib, pool_fee, Some(coin_set), &fence).await?;
             (plan, Some((max, fence)))
         }
     };
@@ -2204,8 +2209,7 @@ pub(crate) async fn shield(
         }
         .into());
     }
-    // A Max's grant is its quote's coins' sum: coins read again to another
-    // sum are not the quote's.
+    // A Core Max's grant must be exactly its quoted debit.
     if max.is_some() && plan.total_duffs != remaining {
         return Err(ShieldedError::CoinsChanged);
     }

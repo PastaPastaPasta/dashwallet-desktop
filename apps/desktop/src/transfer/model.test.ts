@@ -33,7 +33,7 @@ const fromShortfall = (first: Settled<unknown>, probe: number): number | null =>
 };
 
 /** A Core Max quote of `duffs` (the lock), its coins' sum `duffs + fee`, and what it leaves. */
-const coreMaxQuote = (duffs: number, left = 0, arriving = 0) => ({ duffs, feeDuffs: 1_044, totalDuffs: duffs + 1_044, credits: String(duffs * 1000), max: { inputs: 2, leftDuffs: left, arrivingDuffs: arriving } }) as never;
+const coreMaxQuote = (duffs: number, left = 0, arriving = 0) => ({ duffs, feeDuffs: 1_044, totalDuffs: duffs + 1_044, credits: String(duffs * 1000), max: { inputs: 2, leftDuffs: left, arrivingDuffs: arriving, coinSet: "fixture" } }) as never;
 
 /** Timers run by hand: `tick(ms)` fires those due. */
 function manualTimers() {
@@ -359,7 +359,7 @@ describe("Max", () => {
 
   it("from the Dash wallet: Max's figure stays a Core Max for the balance it read; another balance makes it an amount", async () => {
     const { timers, tick } = manualTimers();
-    const shieldQuote = vi.fn(async (_w: string, a: FundAmount) => (a.kind === "all" ? coreMaxQuote(199_998_956) : ({ duffs: a.duffs } as never)));
+    const shieldQuote = vi.fn(async (_w: string, a: FundAmount) => (a.kind !== "duffs" ? coreMaxQuote(199_998_956) : ({ duffs: a.duffs } as never)));
     const f = flows();
     const t = new TransferModel(f, { shieldQuote, unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote: vi.fn() }, WALLET_A, timers);
     t.start("coreToShielded");
@@ -403,10 +403,10 @@ describe("Max", () => {
     const LEFT = "633 duffs stays in your Dash wallet, because Max doesn't include mixed coins, payments from contacts or coins in other accounts.";
     const ARRIVING = "5000 duffs still arriving stays in your Dash wallet. Move it once it confirms.";
     it.each([
-      ["nothing left or arriving", { inputs: 2, leftDuffs: 0, arrivingDuffs: 0 }, []],
-      ["coins in other accounts only", { inputs: 2, leftDuffs: 633, arrivingDuffs: 0 }, [LEFT]],
-      ["coins still arriving only", { inputs: 2, leftDuffs: 0, arrivingDuffs: 5_000 }, [ARRIVING]],
-      ["both", { inputs: 2, leftDuffs: 633, arrivingDuffs: 5_000 }, [LEFT, ARRIVING]],
+      ["nothing left or arriving", { inputs: 2, leftDuffs: 0, arrivingDuffs: 0, coinSet: "fixture" }, []],
+      ["coins in other accounts only", { inputs: 2, leftDuffs: 633, arrivingDuffs: 0, coinSet: "fixture" }, [LEFT]],
+      ["coins still arriving only", { inputs: 2, leftDuffs: 0, arrivingDuffs: 5_000, coinSet: "fixture" }, [ARRIVING]],
+      ["both", { inputs: 2, leftDuffs: 633, arrivingDuffs: 5_000, coinSet: "fixture" }, [LEFT, ARRIVING]],
     ] as const)("%s", (_name, max, notes) => {
       expect(coreMaxNotes(max, fmt)).toEqual(notes);
     });
@@ -636,7 +636,7 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
   function fundModel() {
     const { timers, tick } = manualTimers();
     const platformFundQuote = vi.fn(async (_wallet: string, a: FundAmount) => {
-      if (a.kind === "all") return coreMaxQuote(2_899_998_956);
+      if (a.kind !== "duffs") return coreMaxQuote(2_899_998_956);
       if (a.duffs > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: a.duffs + 1_000, available: 2_900_000_000 });
       return { duffs: a.duffs } as never;
     });
