@@ -2944,12 +2944,10 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let _claim = self.coinjoin.claim_resend(wallet)?;
         let gate = self.abandon_gate(wallet).write_owned().await;
-        let chunk =
-            self.pending_sweep_chunk(wallet, txid)
-                .await?
-                .ok_or(EngineError::TxActionRefused(
-                    crate::TxActionRefusal::Confirmed,
-                ))?;
+        let chunk = self
+            .pending_sweep_chunk(wallet, txid)
+            .await?
+            .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))?;
         if !self.manager()?.spv().is_started() {
             return Err(EngineError::SpvNotRunning);
         }

@@ -2804,6 +2804,55 @@ fn a_rebuilt_spv_retries_an_unrelated_pending_send() {
     assert_eq!(*wire.lock().unwrap(), [other.txid()]);
 }
 
+fn ready_replay(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+) -> Arc<std::sync::Mutex<Vec<Txid>>> {
+    start_offline_spv(engine, session);
+    session
+        .hub
+        .tracker()
+        .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(
+            "127.0.0.1:9".parse().unwrap(),
+        ));
+    session.rebroadcast_replay.store(
+        session.manager().unwrap().spv().run_session(),
+        std::sync::atomic::Ordering::Release,
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    wire
+}
+
+#[test]
+fn replay_after_a_failed_sent_mark_read_retries_without_another_peer() {
+    let (_dir, engine, session, _, payment, _, _) = pending_payment_of_one_coin();
+    let wire = ready_replay(&engine, &session);
+    dw_appdb::fault::arm(
+        &session.data_dir().join(dw_appdb::APP_DB_FILE),
+        "settings.read_sent:",
+        dw_appdb::fault::Stage::Before,
+    );
+    engine.block_on(session.resume_rebroadcasts());
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn replay_after_a_failed_wallet_record_read_keeps_the_generation_for_reconnect() {
+    let (_dir, engine, session, _, payment, _, _) = pending_payment_of_one_coin();
+    let wire = ready_replay(&engine, &session);
+    let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
+        .unwrap();
+    conn.execute_batch("ALTER TABLE core_transactions RENAME TO offline_transactions")
+        .unwrap();
+    engine.block_on(session.resume_rebroadcasts());
+    assert!(wire.lock().unwrap().is_empty());
+    conn.execute_batch("ALTER TABLE offline_transactions RENAME TO core_transactions")
+        .unwrap();
+    engine.block_on(session.resume_rebroadcasts());
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
 #[test]
 fn a_peer_up_during_rebroadcast_rearm_retries_the_saved_payment() {
     let (_dir, engine, session, _id, payment, _, _) = pending_payment_of_one_coin();

@@ -1122,6 +1122,56 @@ fn start_sweep_spv(f: &Fixture) {
 }
 
 #[test]
+fn a_sweep_row_lost_during_activity_resend_is_not_confirmation() {
+    let f = fixture(false);
+    f.credit_coinjoin(1, COIN);
+    let first = hook(&f, 1, &[]);
+    move_to_wallet(&f).unwrap();
+    let txid = first.txs()[0].txid();
+    let wallet = f.wallet;
+    let session = Arc::clone(&f.session);
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let manager = session.manager()?;
+            session.abandon_inner(&manager, wallet, txid).await
+        }))
+        .unwrap();
+    let wire = hook(&f, 1, &[]);
+    let outcome = within(&f, async {
+        let gate = f.session.abandon_gate(wallet).write_owned().await;
+        let session = Arc::clone(&f.session);
+        let resend = f
+            .session
+            .rt
+            .spawn(async move { session.resend_transaction(wallet, txid).await });
+        while !f
+            .session
+            .coinjoin
+            .mixers()
+            .get(&wallet)
+            .is_some_and(|m| m.resending)
+        {
+            tokio::task::yield_now().await;
+        }
+        f.session
+            .drop_sweep_outs(wallet, vec![format!("coinjoin.sweep_out.{txid}")])
+            .await?;
+        drop(gate);
+        resend.await?
+    });
+    assert!(
+        matches!(outcome, Err(EngineError::TxNotFound(ref missing)) if missing == &txid.to_string()),
+        "{outcome:?}"
+    );
+    assert!(wire.txs().is_empty());
+    assert!(
+        f.engine
+            .block_on(f.session.read_abandon_mark(wallet, txid))
+            .unwrap()
+    );
+}
+
+#[test]
 fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
     let f = fixture(false);
     for seed in [1, 2] {
