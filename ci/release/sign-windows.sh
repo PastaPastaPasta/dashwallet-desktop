@@ -2,8 +2,8 @@
 # Windows Authenticode signing step. Two key holders:
 #   - a YubiKey PIV certificate via osslsigncode + PKCS#11, on the release signer's Mac (mirrors Dash
 #     Core's contrib/windeploy/detached-sig-create.sh);
-#   - a cloud-held key via jsign (--jsign-jar), for release-sign.yml: Azure Artifact Signing
-#     (TRUSTEDSIGNING), or any other jsign store type (docs/release/CI-SIGNING.md).
+#   - a cloud-held key via jsign (--jsign-jar): any jsign store type. No workflow uses this today
+#     (docs/release/CI-SIGNING.md, appendix).
 #
 # Signs dash-wallet-<version>-windows-x64-setup.exe, extracts the detached PEM signature into
 # <sigs-dir>/win/dash-wallet-<version>-windows-x64-setup.exe.pem, and round-trip verifies that

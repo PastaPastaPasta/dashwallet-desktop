@@ -2285,14 +2285,21 @@ def step(needle):
     return hits[0]
 
 pinned = step("ci/github/windows-verify-pinned.sh")
-for before in ("ci/release/sign-windows.sh", "osslsigncode attach-signature"):
-    assert step(before) < pinned, f"the publisher check must come after {before}"
+attach = step("osslsigncode attach-signature")
+assert attach < pinned, "the publisher check must come after the signature is attached"
 for after in ("ci-signing-keys.sh apple", "ci/release/sign-macos.sh", "ci-signing-keys.sh pgp", "ci/release/sign-checksums.sh"):
     assert pinned < step(after), f"the publisher check must come before {after}"
-assert "if:" not in steps[pinned], "the publisher check must run for both Windows key holders"
+assert "if:" not in steps[attach] and "if:" not in steps[pinned], "the Windows steps must be unconditional"
+assert "--leaf-hash" in steps[pinned] and "--signer-org" not in steps[pinned], "the YubiKey certificate is pinned by its leaf hash"
 assert "--skip-chain-verify" not in text, "no workflow may pass the test-only skip flag"
+# The Windows key stays on the YubiKey: the signing job holds no cloud signing identity and fetches no signer.
+assert "id-token" not in sign, "the sign job must not be able to mint an OIDC token"
+for word in ("azure", "jsign", "sign-windows.sh "):
+    assert word not in sign.lower().replace("ci/release/sign-windows.sh and pushes", ""), f"the sign job must not use {word}"
+assert "windows_sig_ref:" in text and text.split("windows_sig_ref:")[1].split("type:")[0].count("required: true") == 1, \
+    "windows_sig_ref must be a required input"
 PY
-check "release-sign.yml: the pinned Windows publisher is verified after either Windows step and before the Apple and PGP keys are used" \
+check "release-sign.yml: the YubiKey's Windows signature is required, attached and verified against its pin before the Apple and PGP keys are used, with no cloud signer" \
   '[[ $order_rc -eq 0 ]]'
 if [[ $order_rc -ne 0 ]]; then cat "$work/sign-order.out" >&2; fi
 check "release-publish-signed.yml passes no test-only Windows flag to release-attach.sh" \

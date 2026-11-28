@@ -70,10 +70,10 @@ before.
 
 The examples use `v1.0.0-rc.1`. Substitute the real tag everywhere.
 
-**Signing in CI instead.** [`CI-SIGNING.md`](CI-SIGNING.md) runs sections 4 to 6 of this file on a hosted runner
-(`release-sign.yml`), with the keys in a protected `release-signing` environment and the same verification before
-anything is published. It also takes a Windows signature made here on the YubiKey (sections 4.1, 4.3 and 5) while
-macOS and PGP are signed in CI.
+**Signing in CI instead.** [`CI-SIGNING.md`](CI-SIGNING.md) leaves only the Windows signature to this Mac and its
+YubiKey (sections 4.1, 4.3 and 5). `release-sign.yml` takes that signature, signs the macOS app and `SHA256SUMS`
+on a hosted runner with keys in a protected `release-signing` environment, and publishes after the same
+verification.
 
 ## What a signed candidate publishes
 

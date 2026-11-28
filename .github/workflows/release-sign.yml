@@ -6,8 +6,9 @@
 #   sign      runs the same ci/release/sign-*.sh scripts on a hosted macOS runner. It is the only job that
 #             sees signing credentials, and it reaches them only through the `release-signing` environment
 #             (required reviewer, v* tags only). It builds nothing and installs no project dependency: it
-#             downloads the attested files, signs them, and uploads the detached signatures and the .dmg
-#             as a run artifact. It cannot write to the repository.
+#             downloads the attested files, attaches the Windows signature, signs the macOS app and
+#             SHA256SUMS, and uploads the detached signatures and the .dmg as a run artifact. It cannot write
+#             to the repository.
 #   publish   calls release-publish-signed.yml, which holds no secret: it re-attaches the signatures to
 #             CI's own unsigned bytes, verifies every one against the identities pinned in this
 #             repository at the tag, attests the result and publishes the prerelease.
@@ -15,14 +16,12 @@
 # Credentials, all in the `release-signing` environment:
 #   macOS     secrets APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD, APPLE_API_KEY_P8;
 #             variables APPLE_API_KEY_ID, APPLE_API_ISSUER_ID
-#   Windows   no stored secret: GitHub's OIDC token signs in to Azure Artifact Signing. Variables
-#             AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT,
-#             AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
 #   PGP       secrets RELEASE_PGP_PRIVATE_KEY, RELEASE_PGP_PASSPHRASE: a key of CI's own (ci_pgp_fingerprint),
 #             never the release key or a subkey of it, and accepted for candidates only
-#
-# Until the Azure account exists, `windows_sig_ref` takes the Windows signature from the detached-signatures
-# repository instead (made on the YubiKey with ci/release/sign-windows.sh); macOS and PGP are still signed here.
+#   Windows   none. The Authenticode key is on the release signer's YubiKey and cannot leave it: the signer
+#             signs the installer with ci/release/sign-windows.sh and pushes the detached signature to the
+#             detached-signatures repository, and `windows_sig_ref` names that commit. This job attaches it and
+#             checks it against the pinned certificate (windows_leaf_sha256) before it signs anything else.
 #
 # A stable tag vX.Y.Z is refused: its updater feed needs the stable updater key, which is not in CI.
 name: Sign release in CI
@@ -39,12 +38,11 @@ on:
         required: true
         type: string
       windows_sig_ref:
-        description: "Leave empty to sign Windows with Azure Artifact Signing. Or: branch, tag or commit in sigs_repo holding win/<setup.exe>.pem signed on the YubiKey"
-        required: false
-        default: ""
+        description: "Branch, tag or commit in sigs_repo holding win/<setup.exe>.pem, the Windows signature made on the YubiKey"
+        required: true
         type: string
       sigs_repo:
-        description: "Detached-signatures repository (owner/name), read only when windows_sig_ref is set"
+        description: "Detached-signatures repository (owner/name)"
         required: false
         default: PastaPastaPasta/dashwallet-detached-sigs
         type: string
@@ -61,10 +59,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  JSIGN_VERSION: "7.6"
-  JSIGN_SHA256: 6cf58aa080e7ff82656f320cff8d4a3bff30408df8766806dcba3740dd839fa5
-
 jobs:
   sign:
     name: Sign macOS, Windows and SHA256SUMS
@@ -75,7 +69,6 @@ jobs:
       actions: read
       attestations: read
       contents: read
-      id-token: write
     concurrency:
       group: release-sign-refs/tags/${{ inputs.tag }}
       cancel-in-progress: false
@@ -99,16 +92,14 @@ jobs:
             echo "::error::release_run_id must be numeric (got '$INPUT_RUN_ID')" >&2
             exit 1
           }
-          if [[ -n "$INPUT_WIN_REF" ]]; then
-            [[ "$INPUT_WIN_REF" =~ ^[A-Za-z0-9._/-]+$ && "$INPUT_WIN_REF" != *..* && "$INPUT_WIN_REF" != -* ]] || {
-              echo "::error::invalid windows_sig_ref '$INPUT_WIN_REF'" >&2
-              exit 1
-            }
-            [[ "$INPUT_SIGS_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
-              echo "::error::invalid sigs_repo '$INPUT_SIGS_REPO'" >&2
-              exit 1
-            }
-          fi
+          [[ "$INPUT_WIN_REF" =~ ^[A-Za-z0-9._/-]+$ && "$INPUT_WIN_REF" != *..* && "$INPUT_WIN_REF" != -* ]] || {
+            echo "::error::windows_sig_ref must name the commit in sigs_repo that holds the YubiKey's Windows signature (got '$INPUT_WIN_REF')" >&2
+            exit 1
+          }
+          [[ "$INPUT_SIGS_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+            echo "::error::invalid sigs_repo '$INPUT_SIGS_REPO'" >&2
+            exit 1
+          }
           {
             echo "TAG=$INPUT_TAG"
             echo "VERSION=${INPUT_TAG#v}"
@@ -137,8 +128,6 @@ jobs:
           echo "TAG_SHA=$sha" >> "$GITHUB_ENV"
       # Before any credential is used: a tag whose pins are placeholders could only fail at publish.
       - name: The signing identities are pinned at this tag
-        env:
-          INPUT_WIN_REF: ${{ inputs.windows_sig_ref }}
         run: |
           ids=docs/release/signing-identities.json
           jq -e '((.ci_pgp_fingerprint // "") | test("^[0-9A-Fa-f]{40}$")) and (.apple_team_id | test("^[A-Z0-9]{10}$"))' "$ids" >/dev/null || {
@@ -149,37 +138,22 @@ jobs:
             echo "::error::ci_pgp_fingerprint is the release key's fingerprint in $ids: CI holds a key of its own" >&2
             exit 1
           }
-          # Azure signs under windows_signer; a YubiKey signature (windows_sig_ref) under windows_leaf_sha256.
-          if [[ -z "$INPUT_WIN_REF" ]]; then
-            jq -e '(has("windows_signer")) and (.windows_signer | (.organization | type == "string" and length > 0 and (test("REPLACE_|[\\n\\r]") | not)) and (.eku | type == "string" and test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) and (((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-fA-F]{64}$")) | not)' "$ids" >/dev/null || {
-              echo "::error::signing Windows with Azure needs windows_signer (organization and the identity's own EKU) and no windows_leaf_sha256 in $ids at $TAG" >&2
-              exit 1
-            }
-          else
-            jq -e '(has("windows_signer") | not) and ((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-fA-F]{64}$"))' "$ids" >/dev/null || {
-              echo "::error::windows_sig_ref takes a YubiKey signature, which needs windows_leaf_sha256 and no windows_signer in $ids at $TAG" >&2
-              exit 1
-            }
-          fi
+          jq -e '(has("windows_signer") | not) and ((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-fA-F]{64}$"))' "$ids" >/dev/null || {
+            echo "::error::$ids must pin the YubiKey's Windows certificate as windows_leaf_sha256 (and no windows_signer) at $TAG" >&2
+            exit 1
+          }
           grep -qx -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' docs/release/ci-release-key.asc || {
             echo "::error::docs/release/ci-release-key.asc is not CI's public key at $TAG" >&2
             exit 1
           }
           if grep -qx -- '-----BEGIN CERTIFICATE-----' docs/release/windows-ca.pem; then
             echo "WIN_CA=docs/release/windows-ca.pem" >> "$GITHUB_ENV"
-          elif jq -e '.windows_signer' "$ids" >/dev/null; then
-            echo "::error::windows_signer needs the signer's and the timestamp's roots in docs/release/windows-ca.pem" >&2
-            exit 1
           fi
-      - name: Install osslsigncode, gnupg and jsign
+      - name: Install osslsigncode and gnupg
         run: |
           brew install osslsigncode gnupg
           osslsigncode --version
           gpg --version | head -n 2
-          java -version
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/jsign.jar" \
-            "https://github.com/ebourg/jsign/releases/download/$JSIGN_VERSION/jsign-$JSIGN_VERSION.jar"
-          echo "$JSIGN_SHA256  $RUNNER_TEMP/jsign.jar" | shasum -a 256 -c -
           # Before any key is used: the committed public key is the pinned one, or publishing would fail later.
           want=$(jq -r '.ci_pgp_fingerprint | ascii_upcase' docs/release/signing-identities.json)
           gpg --show-keys --with-colons docs/release/ci-release-key.asc |
@@ -196,42 +170,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS"
           mkdir -p "$OUT/dist"
 
-      - name: Sign in to Azure with GitHub's OIDC token (no stored secret)
-        if: ${{ inputs.windows_sig_ref == '' }}
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Windows, sign the installer with Azure Artifact Signing
-        if: ${{ inputs.windows_sig_ref == '' }}
-        env:
-          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
-        run: |
-          [[ -n "$AZURE_SIGNING_ENDPOINT" && -n "$AZURE_SIGNING_ACCOUNT" && -n "$AZURE_SIGNING_PROFILE" ]] || {
-            echo "::error::AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and AZURE_SIGNING_PROFILE are not set in the release-signing environment" >&2
-            exit 1
-          }
-          endpoint=${AZURE_SIGNING_ENDPOINT#https://}
-          endpoint=${endpoint%/}
-          AZURE_SIGNING_TOKEN=$(az account get-access-token --resource https://codesigning.azure.net --query accessToken --output tsv)
-          echo "::add-mask::$AZURE_SIGNING_TOKEN"
-          export AZURE_SIGNING_TOKEN
-          args=(
-            --version "$VERSION" --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS" --out-dir "$OUT"
-            --jsign-jar "$RUNNER_TEMP/jsign.jar"
-            --jsign-storetype TRUSTEDSIGNING
-            --jsign-keystore "$endpoint"
-            --jsign-alias "$AZURE_SIGNING_ACCOUNT/$AZURE_SIGNING_PROFILE"
-            --jsign-storepass-env AZURE_SIGNING_TOKEN
-            --tsa http://timestamp.acs.microsoft.com
-          )
-          [[ -z "${WIN_CA:-}" ]] || args+=(--ca-file "$WIN_CA")
-          ci/release/sign-windows.sh "${args[@]}"
       - name: Windows, attach the YubiKey signature from the detached-signatures repository
-        if: ${{ inputs.windows_sig_ref != '' }}
         env:
           SIGS_REPO: ${{ inputs.sigs_repo }}
           WIN_REF: ${{ inputs.windows_sig_ref }}
@@ -255,16 +194,10 @@ jobs:
       # Before anything else is signed: SHA256SUMS.asc must never cover an installer another publisher signed.
       # The publish job asks the same question again, with the same script.
       - name: Windows, the signed installer is the pinned publisher's
-        env:
-          INPUT_WIN_REF: ${{ inputs.windows_sig_ref }}
         run: |
           ids=docs/release/signing-identities.json
-          args=(--exe "$OUT/dist/dash-wallet-$VERSION-windows-x64-setup.exe")
-          if [[ -z "$INPUT_WIN_REF" ]]; then
-            args+=(--signer-org "$(jq -r .windows_signer.organization "$ids")" --signer-eku "$(jq -r .windows_signer.eku "$ids")")
-          else
-            args+=(--leaf-hash "$(jq -r .windows_leaf_sha256 "$ids" | tr '[:upper:]' '[:lower:]')")
-          fi
+          args=(--exe "$OUT/dist/dash-wallet-$VERSION-windows-x64-setup.exe"
+            --leaf-hash "$(jq -r .windows_leaf_sha256 "$ids" | tr '[:upper:]' '[:lower:]')")
           [[ -z "${WIN_CA:-}" ]] || args+=(--ca-file "$WIN_CA")
           ci/github/windows-verify-pinned.sh "${args[@]}"
 

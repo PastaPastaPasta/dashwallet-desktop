@@ -176,7 +176,7 @@ The Release run on the tag (`.github/workflows/release.yml`, zero signing secret
 
 | Location | Kind | Used by | Purpose | Without it |
 |---|---|---|---|---|
-| `docs/release/signing-identities.json` | repo file (at tag) | `release-attach.sh`, `release-publish-signed.yml` | Pins 40-hex `pgp_fingerprint`, 10-char `apple_team_id`, and the Windows signer, either `windows_signer` (organization and EKU, Azure Artifact Signing, [`CI-SIGNING.md`](CI-SIGNING.md)) or `windows_leaf_sha256` (`sha256:<64-hex>`) via reviewed PR | Fails closed (placeholders rejected) |
+| `docs/release/signing-identities.json` | repo file (at tag) | `release-attach.sh`, `release-publish-signed.yml` | Pins 40-hex `pgp_fingerprint`, 10-char `apple_team_id`, and `windows_leaf_sha256` (`sha256:<64-hex>`) via reviewed PR | Fails closed (placeholders rejected) |
 | `docs/release/release-key.asc` | repo file (at tag) | `release-attach.sh`, `release-publish-signed.yml` | Pinned armored PGP release public key (never loaded from the detached-sigs repo). A candidate signed in CI is checked against `ci_pgp_fingerprint` and `docs/release/ci-release-key.asc` instead, a separate key that never verifies a stable release ([`CI-SIGNING.md`](CI-SIGNING.md)) | Fails closed |
 | `environment: release` | GitHub environment (0 secrets) | `release-publish-signed.yml` | Restricts signed-publish runs to `v*` tags + required reviewers | Manual workflow protection only |
 | `DW_ALLOW_UNSIGNED_STABLE` | repo variable (escape hatch) | `release.yml`, `release-publish.sh` | Set to `1` only when intentionally publishing an unsigned pre-1.0 `vX.Y.Z` tag | Final `vX.Y.Z` tags fail closed and wait for signatures |
