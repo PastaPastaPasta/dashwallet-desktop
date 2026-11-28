@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "pgp_fingerprint": "REPLACE_WITH_40_HEX_PRIMARY_PGP_FINGERPRINT",
-  "ci_pgp_fingerprint": "REPLACE_WITH_40_HEX_CI_CANDIDATE_PGP_FINGERPRINT",
-  "apple_team_id": "REPLACE_WITH_10_CHAR_APPLE_TEAM_ID",
-  "windows_leaf_sha256": "sha256:REPLACE_WITH_64_HEX_WINDOWS_LEAF_CERT_SHA256"
+  "ci_pgp_fingerprint": "0EF39031686EAAB363CC14A81AEBD32DE3AC9589",
+  "apple_team_id": "44RJ69WHFF",
+  "windows_leaf_sha256": "sha256:8afc3c06b496b59723c456e549f8c0e2a3b8284c6d52a427ba7ce3971419823d"
 }
