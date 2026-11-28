@@ -5,7 +5,7 @@ import { fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 
 // The screens instead of the wallet when its data can't be opened: a refused store (the engine's own
 // screen), a data folder others can change, and StorageInUse. Neither falls through to onboarding, an empty wallet list or a zero balance;
-// only a damaged store's Set up from recovery phrase leads to onboarding, in a new folder after a restart.
+// Set up from recovery phrase leads to onboarding in a new folder after a restart.
 
 const appExits = (page: Page) => page.evaluate(() => window.__dwFixture!.world.appExits ?? []);
 
@@ -32,6 +32,22 @@ test.describe("a refused store", () => {
     await page.goto(fixtureUrl("funded", "dark", "&openRefused=refusedSupport"));
     await expect(page.getByTestId("store-refused-text")).toContainText("Choose Report a problem.");
     await expect(page.getByTestId("store-refused-button-storeUpgrade.refused.report")).toHaveText("Report a problem");
+    await expectNoWallet(page);
+  });
+
+  test("explains a retired backup and warns about in-progress work before recovery", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light", "&openRefused=retiredBackup"));
+    const screen = page.getByTestId("store-refused");
+    const text = page.getByTestId("store-refused-text");
+    await expect(text).toContainText("Dash Wallet retired the backup from before the upgrade as part of removing a wallet.");
+    await expect(text).toContainText("Payment holds, in-progress operations, imported keys and other local records stay in that folder.");
+    await expect(text).toContainText("If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.");
+    await expect(screen.locator("button")).toHaveText(["Set up from recovery phrase", "Report a problem", "Quit"]);
+    await page.getByTestId("store-refused-button-storeUpgrade.refused.recover").click();
+    await expect(page.getByTestId("recover-confirm")).toBeVisible();
+    await page.getByTestId("recover-confirm-cancel").click();
+    await expect(page.getByTestId("recover-confirm")).toHaveCount(0);
+    expect(await appExits(page)).toEqual([]);
     await expectNoWallet(page);
   });
 });

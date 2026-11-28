@@ -188,7 +188,7 @@ impl Route {
 /// CoinJoin claim, the read of BIP44 account 0 and the plan of that read.
 fn max_plan(w: &Wallet, route: Route) -> Result<MaxPlan, MaxRefusal> {
     let claim = core_max::claim(&w.session, w.wallet)?;
-    let plan = core_max::plan(read(w), route.floor());
+    let plan = core_max::plan(read(w), route.floor(), None);
     drop(claim);
     plan
 }

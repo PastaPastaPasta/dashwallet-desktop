@@ -6147,6 +6147,151 @@ fn winner_in_a_replaced_block(mode: Again) {
     assert_eq!(held_report(&session, id), (x, 0, awaits), "{state}");
 }
 
+/// #951: P of A with change, Q of P's change with change, and C of Q's
+/// change and D, all stored unmined; restarted, then P and Q swept for W,
+/// another device's spend of A paying the wallet, out of a block: C goes,
+/// holding D. W is mined at `TIP + 1` in block B. After a reopen the header
+/// chain holds B' at `TIP + 1` and the ChainLock is of `TIP + 2` on that
+/// branch: W's stored record of B is no proof, so D awaits. Returns A, D,
+/// the funding, P, Q, C and the value of D.
+#[allow(clippy::type_complexity)]
+fn grandchild_beside_a_stale_winner() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    (OutPoint, OutPoint),
+    Transaction,
+    (Transaction, Transaction, Transaction),
+    u64,
+) {
+    let (dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let spend = |coins: Vec<OutPoint>, value: u64| {
+        let tx = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(coins),
+            value,
+            false,
+        );
+        mempool(&engine, &session, id, &tx);
+        let change = change_of(&tx, &own_scripts(&engine, &session, id));
+        (tx, change)
+    };
+    let (p, p_change) = spend(vec![a], COIN / 2);
+    let (q, q_change) = spend(vec![p_change], COIN / 8);
+    let (c, _) = spend(vec![q_change, d], COIN);
+    wait_stored(&session, id, &[p.txid(), q.txid(), c.txid()]);
+    let session = reopen(&engine, session);
+
+    let w = rival(&engine, &session, id, &paid, a.vout);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid(), q.txid()],
+            superseded_by: w.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, c.txid()), "C dropped");
+    assert!(session.hub.dropped_holds(id).contains(&d), "C holds D");
+    let x = paid.output[d.vout as usize].value;
+    let b = super::block_with(vec![w.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, b)]);
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "W mined in B");
+
+    let replaced = super::block_with(vec![foreign()]).block_hash();
+    let next = super::block_with(vec![foreign(), foreign()]).block_hash();
+    let session = reopen(&engine, session);
+    reload_with_headers(
+        &engine,
+        &session,
+        id,
+        &[(TIP + 1, replaced), (TIP + 2, next)],
+    );
+    chain_lock(&engine, &session, id, TIP + 2, next);
+    reconciled(&engine, &session, id);
+    let w_block = (session.hub.history).read_wallet(&id, |h| {
+        (h.txs.get(&w.txid()))
+            .and_then(|e| e.context.block_info())
+            .map(|b| b.block_hash())
+    });
+    assert_eq!(w_block, Some(b), "W's record of B comes back");
+    assert_eq!(held_report(&session, id), (x, 0, true), "B replaced");
+    (dir, engine, session, id, (a, d), paid, (p, q, c), x)
+}
+
+/// Mines `txs` at `TIP + 3` on the branch of
+/// [`grandchild_beside_a_stale_winner`] and ChainLocks `TIP + 4`, strictly
+/// above it, no other evidence naming that height.
+fn mined_on_the_new_branch(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txs: Vec<Transaction>,
+) {
+    let replaced = super::block_with(vec![foreign()]).block_hash();
+    let next = super::block_with(vec![foreign(), foreign()]).block_hash();
+    let txs: Vec<Transaction> = txs.into_iter().chain([foreign()]).collect();
+    let at_3 = super::block_with(txs.clone()).block_hash();
+    let at_4 = super::block_with(vec![foreign(), foreign(), foreign()]).block_hash();
+    header_chain(
+        session,
+        &[
+            (TIP + 1, replaced),
+            (TIP + 2, next),
+            (TIP + 3, at_3),
+            (TIP + 4, at_4),
+        ],
+    );
+    mined(engine, session, id, TIP + 3, txs);
+    chain_lock(engine, session, id, TIP + 4, at_4);
+    reconciled(engine, session, id);
+}
+
+/// #951: on [`grandchild_beside_a_stale_winner`], the reopen keeps P's
+/// sweep note, though only Q's note names P: C's walk reads C, Q, then P.
+/// A rival's spend of A, P's input, mined on the new branch and
+/// ChainLocked above it, kills P, so D awaits nothing, held still.
+#[test]
+fn a_grandparents_sweep_note_survives_a_reopen_and_settles_the_drop_beside_a_stale_winner() {
+    let (_dir, engine, session, id, (a, d), paid, (p, q, _), x) =
+        grandchild_beside_a_stale_winner();
+    assert!(swept_by_note(&session, id, q.txid()).is_some(), "Q's note");
+    assert!(swept_by_note(&session, id, p.txid()).is_some(), "P's note");
+    let other = rival(&engine, &session, id, &paid, a.vout);
+    mined_on_the_new_branch(&engine, &session, id, vec![other]);
+    assert!(session.hub.dropped_holds(id).contains(&d), "D is held");
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, false),
+        "another spend of A final"
+    );
+}
+
+/// #951: as above, but P itself is mined on the new branch and
+/// ChainLocked: P spends its own input, so C, built on P through Q, can
+/// still confirm, and D awaits it.
+#[test]
+fn a_grandchilds_root_mined_beside_a_stale_winner_keeps_the_wallet_awaiting() {
+    let (_dir, engine, session, id, (_, d), _, (p, _, _), x) = grandchild_beside_a_stale_winner();
+    mined_on_the_new_branch(&engine, &session, id, vec![p]);
+    assert!(session.hub.dropped_holds(id).contains(&d), "D is held");
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, true),
+        "P mined and ChainLocked"
+    );
+}
+
 /// D held, its drop's winner W ChainLocked: nothing awaits.
 fn settled_holding_d() -> (
     tempfile::TempDir,
@@ -6272,7 +6417,7 @@ fn a_held_coin_spent_in_a_block_not_yet_final_keeps_the_wallet_awaiting() {
     let block = super::block_with(vec![spend.clone()]).block_hash();
     header_chain(&session, &[(TIP + 1, w_block), (TIP + 2, block)]);
     mined(&engine, &session, id, TIP + 2, vec![spend]);
-    reconciled(&engine, &session, id);
+    reconciles_done(&engine, &session);
     assert_eq!(observed(&engine, &session, id).get(&d), Some(&(TIP + 2)));
     assert_eq!(held_report(&session, id), (0, 0, true), "not final");
 
