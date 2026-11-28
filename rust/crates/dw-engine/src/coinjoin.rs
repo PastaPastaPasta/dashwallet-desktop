@@ -1033,7 +1033,12 @@ impl MixView {
         let mut map: BTreeMap<String, (Address, Vec<&MixViewCoin>)> = BTreeMap::new();
         for c in &self.coins {
             let usable_account = c.bip44(network) || c.coin.coinjoin_account;
-            if !usable_account || !c.trusted() || !c.free() {
+            // Funding transactions must not consume our own unconfirmed
+            // change. If its parent is later abandoned, a sibling input
+            // recorded in the sweep journal could otherwise stay held with
+            // no valid transaction to resolve it. InstantSend-locked
+            // outputs are final enough for the coordinator.
+            if !usable_account || !c.final_enough() || !c.free() {
                 continue;
             }
             if !c.coin.utxo.is_spendable(self.height) {
@@ -5088,6 +5093,33 @@ mod tests {
     const A: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
     const B: &str = "yfGodgKENPQ1ePSRfbEHfuz1BBPD48vsDk";
     const C: &str = "yTcx2EJ24TUobNtGfN8UKEQZ5fUziT8yRE";
+
+    #[test]
+    fn funding_does_not_pair_a_confirmed_coin_with_unsecured_change() {
+        let rounds = rounds::ROUNDS_NOT_DENOMINATED;
+        let confirmed = coin(1, 50_000_000, false, rounds, false, A);
+        let mut change = coin(2, 25_000_000, false, rounds, false, A);
+        change.coin.is_change = true;
+        change.coin.utxo.is_confirmed = false;
+        change.coin.utxo.is_trusted = true;
+        let mut instant_locked = change.clone();
+        instant_locked.coin.utxo.outpoint = OutPoint::new(Txid::from_byte_array([3; 32]), 0);
+        instant_locked.coin.utxo.is_instantlocked = true;
+        let expected = [
+            confirmed.coin.utxo.outpoint,
+            instant_locked.coin.utxo.outpoint,
+        ];
+        let view = MixView {
+            height: 200,
+            coins: vec![confirmed, change, instant_locked],
+            balances: CoinJoinBalances::default(),
+            total: 0,
+            average_rounds: 0.0,
+        };
+        let network = dashcore::Network::Testnet;
+        assert_eq!(view.funding_inputs(network, true), expected);
+        assert_eq!(view.funding_inputs(network, false), expected);
+    }
 
     #[test]
     fn test_qt_041_balances_follow_core_definitions() {
