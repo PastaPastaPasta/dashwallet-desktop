@@ -2343,3 +2343,76 @@ fn an_export_staging_file_the_start_cannot_delete_is_named_at_every_start_until_
     let (_engine, _session, notices) = restart(engine, session);
     assert_eq!(export_notices(&notices), []);
 }
+
+/// Gift card rows are sealed to the wallet's seed and live in its scope: a
+/// backup restored into another data folder, with another vault, brings
+/// them back readable, and removing the wallet deletes them.
+#[test]
+fn gift_card_rows_travel_with_the_wallet_backup_and_go_with_its_removal() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = open(dir.path().join("a"), Arc::new(Notices::default()));
+    let id = import(&engine, &session, PHRASE);
+    let other = import(&engine, &session, OTHER_PHRASE);
+    let sealed = session
+        .vault()
+        .seal_wallet_data(&id.0, "giftcards.piggy.account", b"fixture-password")
+        .unwrap();
+    let sealed = String::from_utf8(sealed).unwrap();
+    engine
+        .block_on(session.write_gift_card_rows(vec![
+            (id, "giftcards.piggy.account.a".into(), Some(sealed.clone())),
+            (other, "giftcards.piggy.active".into(), Some("b".into())),
+        ]))
+        .unwrap();
+    assert!(
+        engine
+            .block_on(session.write_gift_card_rows(vec![(
+                id,
+                "backup.keep".into(),
+                Some("1".into())
+            )]))
+            .is_err()
+    );
+    let file = dir.path().join("w.dwbackup");
+    backup(&engine, &session, id, &file);
+
+    let (engine_b, session_b) = open(dir.path().join("b"), Arc::new(Notices::default()));
+    let restored = engine_b
+        .block_on(session_b.restore_backup(file, Some(Zeroizing::new(b"bk".to_vec()))))
+        .unwrap();
+    assert_eq!(restored, [id]);
+    let rows = engine_b.block_on(session_b.gift_card_rows(id)).unwrap();
+    assert_eq!(
+        rows,
+        [("giftcards.piggy.account.a".to_string(), sealed.clone())]
+    );
+    let opened = session_b
+        .vault()
+        .open_wallet_data(&id.0, "giftcards.piggy.account", sealed.as_bytes())
+        .unwrap();
+    assert_eq!(&opened[..], b"fixture-password");
+
+    let wipe = session
+        .vault()
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+    assert!(engine.block_on(session.gift_card_rows(id)).is_err());
+    let left = app_db(&session)
+        .query_row(
+            "SELECT count(*) FROM settings_kv WHERE scope = ?1",
+            [id.to_string()],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
+    assert_eq!(
+        engine.block_on(session.gift_card_rows(other)).unwrap(),
+        [("giftcards.piggy.active".to_string(), "b".to_string())]
+    );
+}

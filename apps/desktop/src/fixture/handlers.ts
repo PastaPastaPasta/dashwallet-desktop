@@ -45,6 +45,7 @@ import { activityPage, contactList, coreActivity, eventOf, fixtureLoops, relatio
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
+import { giftCardsHandlers } from "./giftCards";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
 import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedOff, shieldedQuote, shieldedSpendsOff } from "./registration";
@@ -766,9 +767,12 @@ export function restoredNetwork(world: World): RestoredNetworkInfo {
   return { ...world.launch.network, restored: world.restored === true };
 }
 
+const send = sendHandlers(sendDeps);
+
 export const HANDLERS: Handlers = {
   // Pay and Receive (U-03): send.ts.
-  ...sendHandlers(sendDeps),
+  ...send,
+  ...giftCardsHandlers(send),
   // Tools (U-05): tools.ts.
   ...toolsHandlers({ wallet, grant: checkGrant, useGrant }),
   // Settings (U-04): settings.ts.

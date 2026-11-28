@@ -3265,3 +3265,44 @@ fn finishing_without_platform_with_the_gate_open_does_nothing() {
     assert_eq!(opened["network"]["dirName"], "mainnet", "{opened}");
     drop(in_flight);
 }
+
+#[test]
+fn a_gift_card_draft_cannot_use_the_ordinary_broadcast_or_psbt_commands() {
+    use tauri::Manager;
+
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    let wallet: dw_engine::WalletId = created["walletId"].as_str().unwrap().parse().unwrap();
+    let state = demo.app.state::<crate::state::AppState>();
+    let (session, epoch) = tauri::async_runtime::block_on(state.session_and_epoch()).unwrap();
+    let bound = [7; 32];
+    let draft = state
+        .sends
+        .insert_send_draft(epoch, session.new_tx_draft(wallet).unwrap(), Some(bound))
+        .unwrap();
+    assert!(state.sends.for_payment(draft, Some(bound)).is_ok());
+    assert!(state.sends.for_payment(draft, Some([8; 32])).is_err());
+    demo.err(
+        "draft_broadcast",
+        json!({ "draft": draft, "prepared": 0 }),
+        "invalid_argument",
+    );
+    demo.err(
+        "draft_create_unsigned",
+        json!({ "draft": draft }),
+        "invalid_argument",
+    );
+    let ordinary = demo
+        .ok("new_tx_draft", json!({ "walletId": wallet.to_string() }))
+        .as_u64()
+        .unwrap();
+    assert!(state.sends.for_payment(ordinary, None).is_ok());
+    assert!(state.sends.for_payment(ordinary, Some(bound)).is_err());
+    demo.err(
+        "gift_card_account",
+        json!({ "walletId": wallet.to_string() }),
+        "invalid_argument",
+    );
+}

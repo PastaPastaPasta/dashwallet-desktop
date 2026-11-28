@@ -118,6 +118,7 @@ use crate::{SignerError, VaultError};
 mod compat;
 mod links;
 pub(crate) mod masternode;
+mod wallet_data;
 use compat::BackupKek;
 pub use compat::{CoreMnemonicCheck, WalletBackupBundle, reads_bundle_version};
 pub use links::{

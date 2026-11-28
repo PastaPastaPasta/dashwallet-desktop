@@ -7631,3 +7631,383 @@ fn pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_br
         vec![coin]
     );
 }
+
+#[test]
+fn invoice_payment_and_send_record_commit_together() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepare = |draft: &Arc<TxDraft>| {
+        f.engine
+            .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+            .unwrap()
+    };
+    let prepared = prepare(&draft);
+    let invoice = [1; 32];
+    let read = || {
+        f.engine
+            .block_on(f.session.invoice_payment(invoice))
+            .unwrap()
+    };
+    let db = f.session.live().unwrap().appdb;
+    let wallet = f.wallet.to_string();
+    let txid = prepared.summary().txid.clone();
+    let sent_key = format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX);
+    assert_eq!(read(), None);
+    assert_eq!(db.setting(&wallet, &sent_key).unwrap(), None);
+
+    // Stop at exactly the point where a crash would leave the send recorded.
+    f.engine
+        .block_on(draft.mark_sent(&prepared, true, Some(invoice)))
+        .unwrap();
+    assert_eq!(read().as_deref(), Some(txid.as_str()));
+    assert!(db.setting(&wallet, &sent_key).unwrap().is_some());
+    let activity = f.engine.block_on(
+        f.session
+            .resend_transaction(f.wallet, txid.parse().unwrap()),
+    );
+    assert!(
+        matches!(activity, Err(EngineError::InvalidArgument(_))),
+        "{activity:?}"
+    );
+
+    f.credit(2, COIN);
+    let other = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let candidate = prepare(&other);
+    assert_ne!(candidate.summary().txid, txid);
+    assert!(
+        f.engine
+            .block_on(other.mark_sent(&candidate, true, Some(invoice)))
+            .is_err()
+    );
+    f.engine
+        .block_on(other.mark_sent(&candidate, false, Some(invoice)))
+        .unwrap();
+    assert_eq!(read().as_deref(), Some(txid.as_str()));
+
+    // A first attempt with no peers is definitely unsent and drops both marks.
+    assert_eq!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice))
+        ),
+        SendFailure::NoPeers
+    );
+    assert_eq!(read(), None);
+    assert_eq!(db.setting(&wallet, &sent_key).unwrap(), None);
+}
+
+#[test]
+fn invoice_payment_recovered_in_activity_cannot_be_resent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    f.engine
+        .block_on(draft.mark_sent(&prepared, true, Some([4; 32])))
+        .unwrap();
+    drop(prepared);
+    drop(draft);
+
+    let f = f.reopen();
+    let page = f
+        .engine
+        .block_on(f.session.history_page(
+            f.wallet,
+            crate::HistoryQuery {
+                filter: Default::default(),
+                sort: crate::HistorySort::NewestFirst,
+                cursor: None,
+                limit: 10,
+            },
+        ))
+        .unwrap();
+    assert!(page.records.iter().any(|record| record.txid == txid));
+    let txid = txid.parse().unwrap();
+    let extras = f
+        .engine
+        .block_on(f.session.tx_detail_extras(f.wallet, txid))
+        .unwrap();
+    assert!(!extras.can_resend);
+    let result = f
+        .engine
+        .block_on(f.session.resend_transaction(f.wallet, txid));
+    assert!(
+        matches!(result, Err(EngineError::InvalidArgument(message)) if message.contains("gift card order"))
+    );
+
+    f.engine.block_on(f.session.start_spv()).unwrap();
+    f.engine.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !matches!(f.session.spv_state().unwrap(), crate::SpvState::Running) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    dash_spv::EventHandler::on_network_event(
+        &*f.session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *f.session.hub.resend_wire.lock().unwrap() = Some(wire.clone());
+    // With SPV and the transport ready, only the order check can refuse.
+    let wrong = f.engine.block_on(
+        f.session
+            .resend_invoice_transaction(f.wallet, txid, [5; 32]),
+    );
+    assert!(
+        matches!(&wrong, Err(EngineError::InvalidArgument(m)) if m.contains("does not belong")),
+        "{wrong:?}"
+    );
+    assert!(wire.lock().unwrap().is_empty());
+    f.engine
+        .block_on(
+            f.session
+                .resend_invoice_transaction(f.wallet, txid, [4; 32]),
+        )
+        .unwrap();
+    assert_eq!(*wire.lock().unwrap(), [txid]);
+}
+
+#[test]
+fn an_unknown_invoice_payment_stays_bound_across_a_failed_retry() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let invoice = [2; 32];
+    *prepared.phase() = Phase::Unknown;
+    assert!(matches!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, invoice))
+        ),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    assert_eq!(
+        f.engine
+            .block_on(f.session.invoice_payment(invoice))
+            .unwrap()
+            .as_deref(),
+        Some(txid.as_str())
+    );
+}
+
+/// A first gift card broadcast the network definitely rejects was never
+/// sent: its coins are released and the order's binding dropped, so a fresh
+/// payment can be made, as for any first send.
+#[test]
+fn a_definite_first_invoice_rejection_releases_the_payment() {
+    struct Rejects;
+    impl super::TestBroadcaster for Rejects {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+
+        fn broadcast(
+            &self,
+            _: &Transaction,
+            _: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
+                    + Send,
+            >,
+        > {
+            Box::pin(async {
+                Err(platform_wallet::PlatformWalletError::TransactionBroadcast(
+                    "rejected: bad-txns-fixture".into(),
+                ))
+            })
+        }
+    }
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let key = [6; 32];
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(Rejects));
+    assert!(matches!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared.clone(), key))
+        ),
+        SendFailure::BroadcastRejected { .. }
+    ));
+    assert_eq!(*prepared.phase(), Phase::Released);
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        None
+    );
+    let reverse = crate::tx_actions::invoice_tx_key(&txid);
+    let db = f.session.live().unwrap().appdb;
+    assert_eq!(db.setting(&f.wallet.to_string(), &reverse).unwrap(), None);
+    let retry = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let again = f
+        .engine
+        .block_on(retry.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    f.engine
+        .block_on(retry.mark_sent(&again, true, Some(key)))
+        .unwrap();
+}
+
+#[test]
+fn invoice_entering_transport_remains_bound_after_restart() {
+    struct Queued(Arc<std::sync::atomic::AtomicBool>);
+    impl super::TestBroadcaster for Queued {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+
+        fn broadcast(
+            &self,
+            _: &Transaction,
+            _: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
+                    + Send,
+            >,
+        > {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Err(
+                    platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(
+                        "no acceptance seen".into(),
+                    ),
+                )
+            })
+        }
+    }
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(Queued(entered.clone())));
+    let key = [7; 32];
+    // The payment entered transport and no acceptance was seen: it may
+    // have left, so it stays bound to its order, across a restart too.
+    assert!(matches!(
+        send_failure(f.engine.block_on(draft.broadcast_invoice(prepared, key))),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+    drop(draft);
+    let f = f.reopen();
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        Some(txid)
+    );
+}
+
+#[test]
+fn changed_invoice_is_rejected_before_redeeming_the_spend_grant() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let grant = f.spend_grant(10_000_000 + FEE_ROOM);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let rejected = f.engine.block_on(draft.prepare_checked(
+        grant.clone(),
+        Some((FOREIGN.to_string(), 9_000_000, deadline)),
+    ));
+    assert!(matches!(rejected, Err(EngineError::InvalidArgument(_))));
+    f.engine
+        .block_on(draft.prepare_checked(grant, Some((FOREIGN.to_string(), 10_000_000, deadline))))
+        .unwrap();
+}
+
+/// A gift card quote that expires while the prepare waits, after its early
+/// check, is refused right before the signature: nothing is signed or
+/// reserved.
+#[test]
+fn a_quote_expiring_during_the_prepare_is_refused_before_signing() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_prepare.lock().unwrap() = Some(Arc::clone(&pause));
+    let grant = f.spend_grant(10_000_000 + FEE_ROOM);
+    let deadline = f
+        .engine
+        .block_on(async { tokio::time::Instant::now() + Duration::from_millis(500) });
+    let prepare = f.session.rt.spawn({
+        let draft = Arc::clone(&draft);
+        async move {
+            draft
+                .prepare_checked(grant, Some((FOREIGN.to_string(), 10_000_000, deadline)))
+                .await
+        }
+    });
+    eventually("the prepare's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    std::thread::sleep(Duration::from_millis(700));
+    pause.release.notify_one();
+    let refused = f.engine.block_on(prepare).unwrap();
+    assert_eq!(send_failure(refused), SendFailure::Cancelled);
+    assert!(f.session.spends.snapshot(&f.wallet).is_empty());
+}
+
+/// A wallet restored from a backup has the wallet-scope reverse row of its
+/// invoice payment but not the global one: the order still finds its
+/// transaction, and a second payment for it is still refused.
+#[test]
+fn a_restored_invoice_payment_keeps_its_order_binding() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let key = [9; 32];
+    f.engine
+        .block_on(draft.mark_sent(&prepared, true, Some(key)))
+        .unwrap();
+    // The global row stays on the computer the backup came from.
+    let db = f.session.live().unwrap().appdb;
+    db.set_setting(super::INVOICE_SCOPE, &hex::encode(key), None)
+        .unwrap();
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        Some(txid.clone())
+    );
+    f.credit(2, COIN);
+    let other = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let candidate = f
+        .engine
+        .block_on(other.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    assert_ne!(candidate.summary().txid, txid);
+    assert!(
+        f.engine
+            .block_on(other.mark_sent(&candidate, true, Some(key)))
+            .is_err()
+    );
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        Some(txid)
+    );
+}

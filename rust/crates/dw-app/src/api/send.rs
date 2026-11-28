@@ -27,8 +27,8 @@ use dw_engine::{EngineError, PreparedTx, PsbtFailure, SendFailure, TxDraft};
 use self::coins::{CoinSelectionSummary, FeePolicy, OutPoint, Utxo, UtxoFilter};
 pub(crate) use self::draft::BroadcastOutcome;
 use self::draft::{
-    ChangePolicy, CoinSource, ContactRecipient, FeeMode, PreparedTxHandle, PreparedTxSummary, PsbtAnalysis,
-    Recipient, TxEstimate,
+    ChangePolicy, CoinSource, ContactRecipient, FeeMode, PreparedTxHandle, PreparedTxSummary,
+    PsbtAnalysis, Recipient, TxEstimate,
 };
 use self::uri::{AddressClass, QrMatrix, UriParse};
 use crate::error::AppError;
@@ -48,7 +48,11 @@ fn draft_of(state: &AppState, draft: u64) -> Result<Arc<TxDraft>, AppError> {
 }
 
 /// The prepared transaction behind a handle, which must be one of `draft`'s.
-fn prepared_of(state: &AppState, draft: u64, prepared: u64) -> Result<Arc<PreparedTx>, AppError> {
+pub(super) fn prepared_of(
+    state: &AppState,
+    draft: u64,
+    prepared: u64,
+) -> Result<Arc<PreparedTx>, AppError> {
     let (owner, tx) = state.sends.prepared(prepared)?;
     if owner != draft {
         return Err(AppError::invalid_argument(format!(
@@ -70,6 +74,25 @@ fn released(e: &EngineError) -> bool {
                 | SendFailure::Cancelled
         )
     )
+}
+
+pub(super) async fn broadcast(
+    state: &AppState,
+    draft: Arc<TxDraft>,
+    tx: Arc<PreparedTx>,
+    prepared: u64,
+    invoice: Option<[u8; 32]>,
+) -> Result<dw_engine::BroadcastOutcome, EngineError> {
+    let _in_flight = state.broadcasting();
+    let first = state.sends.start_broadcast(prepared);
+    let result = match invoice {
+        Some(key) => draft.broadcast_invoice(tx, key).await,
+        None => draft.broadcast(tx).await,
+    };
+    if result.is_ok() || (first && result.as_ref().is_err_and(released)) {
+        state.sends.remove_prepared(prepared);
+    }
+    result
 }
 
 /// A PSBT argument: base64 text (`dw_psbt::parse` also reads binary, which a
@@ -171,11 +194,12 @@ commands! {
     /// the call fails with `app.unknown_handle`. The handle is reserved
     /// first: with the table full (open and in-flight prepares), the call
     /// fails with `app.too_many_handles` before the grant is redeemed.
-    #[facade("TxDraft::prepare", "PreparedTx::summary")]
+    #[facade("TxDraft::prepare", "TxDraft::prepare_checked", "PreparedTx::summary")]
     fn draft_prepare(state, draft: u64, grant_id: String) -> PreparedTxHandle {
         let d = draft_of(&state, draft)?;
         let slot = state.sends.reserve_prepared(draft)?;
-        let prepared = d.prepare(grant_id).await?;
+        let invoice = super::gift_cards::check_before_prepare(&state, draft).await?;
+        let prepared = d.prepare_checked(grant_id, invoice).await?;
         let summary = PreparedTxSummary::from(prepared.summary().clone());
         let handle = slot.fill(prepared)?;
         Ok(PreparedTxHandle { handle, summary })
@@ -192,15 +216,9 @@ commands! {
     /// holds the session open); it finishes and reports its outcome.
     #[facade("TxDraft::broadcast")]
     fn draft_broadcast(state, draft: u64, prepared: u64) -> BroadcastOutcome {
-        let d = draft_of(&state, draft)?;
+        let d = state.sends.for_payment(draft, None)?;
         let tx = prepared_of(&state, draft, prepared)?;
-        let _in_flight = state.broadcasting();
-        let first = state.sends.start_broadcast(prepared);
-        let result = d.broadcast(tx).await;
-        if result.is_ok() || (first && result.as_ref().is_err_and(released)) {
-            state.sends.remove_prepared(prepared);
-        }
-        Ok(result?.into())
+        Ok(broadcast(&state, d, tx, prepared, None).await?.into())
     }
 
     /// Discards a prepared transaction and releases its reserved inputs;
@@ -228,7 +246,7 @@ commands! {
     /// grant, so watch-only wallets can use it.
     #[facade("TxDraft::create_unsigned")]
     fn draft_create_unsigned(state, draft: u64) -> String {
-        let psbt = draft_of(&state, draft)?.create_unsigned().await?;
+        let psbt = state.sends.for_payment(draft, None)?.create_unsigned().await?;
         Ok(dw_psbt::to_base64(&psbt))
     }
 

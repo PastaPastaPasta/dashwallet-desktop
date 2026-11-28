@@ -591,6 +591,30 @@ pub(crate) mod finish_fault {
 /// the mark; one an earlier build wrote has none.
 pub(crate) const SENT_TX_PREFIX: &str = "senttx:";
 
+/// Settings key prefix of the wallet-scope reverse of an invoice binding
+/// (`invoice-tx:<txid>` = the invoice key), which wallet backups carry.
+pub(crate) const INVOICE_TX_PREFIX: &str = "invoice-tx:";
+
+/// The wallet-local guard persists with the transaction across wallet backups.
+pub(crate) fn invoice_tx_key(txid: &str) -> String {
+    format!("{INVOICE_TX_PREFIX}{txid}")
+}
+
+/// The transaction a wallet scope's reverse rows bind to `invoice` (hex):
+/// the binding a wallet restored from a backup keeps, whose global row
+/// stayed on the other computer.
+pub(crate) fn restored_invoice_binding(
+    db: &dw_appdb::AppDb,
+    scope: &str,
+    invoice: &str,
+) -> dw_appdb::Result<Option<String>> {
+    Ok(db
+        .settings_with_prefix(scope, INVOICE_TX_PREFIX)?
+        .into_iter()
+        .find(|(_, value)| value == invoice)
+        .map(|(key, _)| key[INVOICE_TX_PREFIX.len()..].to_owned()))
+}
+
 /// Settings key prefix of a sent mark's inputs: each signed coin's
 /// outpoint, value and address, so it is listed when its funding is not.
 pub(crate) const SENT_IN_PREFIX: &str = "sentin:";
@@ -2529,6 +2553,12 @@ impl NetworkSession {
         Ok(())
     }
 
+    async fn is_invoice_payment(&self, wallet: WalletId, txid: Txid) -> Result<bool, EngineError> {
+        let (scope, key) = (wallet.to_string(), invoice_tx_key(&txid.to_string()));
+        self.appdb_op(move |db| Ok(db.setting(&scope, &key)?.is_some()))
+            .await
+    }
+
     /// dash-qt detail fields and action enablement for one transaction.
     pub async fn tx_detail_extras(
         self: &Arc<Self>,
@@ -2588,8 +2618,9 @@ impl NetworkSession {
                 in_mempool: None,
                 abandoned: f.abandoned,
                 can_abandon: f.abandon_refusal().is_none(),
-                can_resend: f.resend_refusal().is_none()
-                    || this.can_restart_abandoned_sweep(wallet, txid, &f).await,
+                can_resend: (f.resend_refusal().is_none()
+                    || this.can_restart_abandoned_sweep(wallet, txid, &f).await)
+                    && !this.is_invoice_payment(wallet, txid).await?,
                 dust_locked_outputs,
                 withheld_outputs,
                 checking_spent_coins: f.abandoned && {
@@ -4944,7 +4975,7 @@ impl NetworkSession {
                     continue;
                 }
                 match self
-                    .resend_transaction_inner(wallet, txid, Some(generation))
+                    .resend_transaction_inner(wallet, txid, Some(generation), false)
                     .await
                 {
                     Ok(()) => {
@@ -4968,10 +4999,43 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
     ) -> Result<(), EngineError> {
+        self.resend_stored(wallet, txid, None).await
+    }
+
+    /// Resends the same stored transaction only for its original payment order.
+    pub async fn resend_invoice_transaction(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        txid: Txid,
+        invoice: [u8; 32],
+    ) -> Result<(), EngineError> {
+        self.resend_stored(wallet, txid, Some(invoice)).await
+    }
+
+    async fn resend_stored(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        txid: Txid,
+        invoice: Option<[u8; 32]>,
+    ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            this.resend_transaction_inner(wallet, txid, None).await
+            if let Some(key) = invoice {
+                if this.invoice_payment(key).await? != Some(txid.to_string())
+                    || !this.is_invoice_payment(wallet, txid).await?
+                {
+                    return Err(EngineError::InvalidArgument(
+                        "This transaction does not belong to this order.".into(),
+                    ));
+                }
+            } else if this.is_invoice_payment(wallet, txid).await? {
+                return Err(EngineError::InvalidArgument(
+                    "Check the gift card order in Explore before paying it again.".into(),
+                ));
+            }
+            this.resend_transaction_inner(wallet, txid, None, invoice.is_some())
+                .await
         })
         .await
     }
@@ -4981,12 +5045,16 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
         replay_generation: Option<u64>,
+        invoice: bool,
     ) -> Result<(), EngineError> {
         self.refuse_tx_action_while_restored()?;
         let manager = self.manager()?;
         let (entry, f) = self.tx_facts(&manager, wallet, txid, false).await?;
         let peers = self.hub.tracker().snapshot().connected_peers;
-        if replay_generation.is_none() && self.can_restart_abandoned_sweep(wallet, txid, &f).await {
+        if replay_generation.is_none()
+            && !invoice
+            && self.can_restart_abandoned_sweep(wallet, txid, &f).await
+        {
             return self.restart_abandoned_sweep(wallet, txid).await;
         }
         if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
@@ -5054,7 +5122,16 @@ impl NetworkSession {
                     tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen")
                 }
             }
-            outcome
+            match outcome {
+                Err(error) if invoice => Err(crate::send::SendFailure::BroadcastUnknown {
+                    reason: error.to_string(),
+                }
+                .into()),
+                Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)) => {
+                    Err(EngineError::NoPeers)
+                }
+                _ => Ok(txid),
+            }
         });
         {
             let mut resends = self.resends.lock().unwrap_or_else(|p| p.into_inner());
@@ -5063,9 +5140,7 @@ impl NetworkSession {
         }
         drop(replay_lifecycle);
         match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
-            Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
-                return Err(EngineError::NoPeers);
-            }
+            Ok(Ok(Err(error))) => return Err(error),
             Ok(Err(e)) => return Err(e.into()),
             Ok(Ok(_)) | Err(_) => {}
         }

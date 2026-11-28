@@ -27,6 +27,7 @@ export function ResultSheet({
   draft,
   returnFocus,
   retrying,
+  allowRetry = true,
   onRetry,
   onDone,
 }: {
@@ -36,6 +37,7 @@ export function ResultSheet({
   returnFocus: () => HTMLElement | null;
   /** A Try again is running, perhaps from before a lock. */
   retrying: boolean;
+  allowRetry?: boolean;
   /** Starts a Try again: where its outcome goes, or `null` when there is none to run. */
   onRetry: () => ((o: Outcome) => void) | null;
   /** `show`: open the transaction in Activity. */
@@ -44,6 +46,7 @@ export function ResultSheet({
   const t = useT();
   const [running, setRunning] = useState(false);
   const busy = running || retrying;
+  const canRetry = outcome.kind === "unknown" && outcome.retry && allowRetry;
   // Finished retries, for a harness that must not miss a fast one's busy state (DP3-06 Sol r1 #1).
   const [tries, setTries] = useState(0);
   const shown = useDisplay(network);
@@ -51,7 +54,7 @@ export function ResultSheet({
 
   const retryButton = useRef<HTMLButtonElement>(null);
   const retry = async () => {
-    if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
+    if (!canRetry || busy) return;
     const settle = onRetry();
     if (!settle) return;
     if (retryButton.current === document.activeElement) retryButton.current?.closest<HTMLElement>('[role="dialog"]')?.focus();
@@ -80,9 +83,9 @@ export function ResultSheet({
     heldAt.current = null;
     if (outcome.kind !== "unknown") return;
     const a = document.activeElement;
-    if (held && a !== held && a !== document.body && a !== closeButton.current?.closest('[role="dialog"]')) return;
-    (outcome.retry ? retryButton : closeButton).current?.focus();
-  }, [busy, outcome]);
+    if (a !== held && a !== document.body && a !== closeButton.current?.closest('[role="dialog"]')) return;
+    (canRetry ? retryButton : closeButton).current?.focus();
+  }, [busy, canRetry, outcome]);
 
   return (
     <Sheet title={TITLE[outcome.kind]} width="small" testId="pay-result" returnFocus={returnFocus} onClose={() => !busy && onDone(false)}>
@@ -131,10 +134,10 @@ export function ResultSheet({
         )}
         {outcome.kind === "unknown" && (
           <>
-            <DashButton ref={closeButton} variant="tintedGray" size="large" data-testid="pay-result-close" disabled={busy} onClick={() => onDone(false)}>
+            <DashButton ref={closeButton} variant="tintedGray" size="large" data-testid="pay-result-close" data-autofocus={!canRetry || undefined} disabled={busy} onClick={() => onDone(false)}>
               {t("pay.result.close")}
             </DashButton>
-            {outcome.retry && (
+            {(canRetry || busy) && (
               <DashButton ref={retryButton} variant="filledBlue" size="large" data-testid="pay-result-retry" data-autofocus disabled={busy} onClick={() => void retry()}>
                 {busy ? t("pay.result.sending") : t("pay.result.retry")}
               </DashButton>

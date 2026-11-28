@@ -28,7 +28,8 @@ import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
 import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
-import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
+import { ContactsPage, PayPage } from "../screens/Routes";
+import { GiftCardsPage } from "../screens/giftCards/GiftCards";
 import { AppConnectSheet } from "../screens/dashpay/AppConnectSheet";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
@@ -165,6 +166,7 @@ function WalletChrome({
   const { network } = launch;
   const unitName = useDisplay(network).name;
   const route = useUi((s) => s.route);
+  const explore = useUi((s) => s.prefs.giftCardsNetworks.includes(network.dirName));
   const detail = useUi((s) => s.detail);
   const lock = useLockStatus();
   const sync = useSyncStatus();
@@ -178,6 +180,9 @@ function WalletChrome({
   useEffect(() => {
     if (route === "masternodes" && masternodesItem.settled && !masternodesItem.shown) navigate("home");
   }, [route, masternodesItem.settled, masternodesItem.shown]);
+  useEffect(() => {
+    if (route === "explore" && !explore) navigate("home");
+  }, [route, explore]);
 
   const walletsBlocked =
     walletsLoading ??
@@ -187,7 +192,7 @@ function WalletChrome({
       </main>
     ));
   let content;
-  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin" || route === "masternodes") {
+  if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin" || route === "masternodes" || route === "explore") {
     if (walletsBlocked) content = walletsBlocked;
     else if (!wallet)
       content = (
@@ -206,6 +211,7 @@ function WalletChrome({
     else if (route === "notifications") content = <NotificationsPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "joinDashPay") content = <JoinDashPayPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     else if (route === "profile") content = <MyProfilePage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
+    else if (route === "explore") content = explore ? <GiftCardsPage key={`${network.dirName}:${wallet.walletId}`} wallet={wallet} network={network} /> : null;
     else if (route === "coinJoin") content = <CoinJoinPage key={wallet.walletId} walletId={wallet.walletId} network={network} />;
     // Hidden while Show Masternodes is Off, or Auto finds nothing (MG-00 D1, D2): the effect above
     // sends a link or a menu that opened it home. The page stays while Auto has no answer yet.
@@ -214,7 +220,7 @@ function WalletChrome({
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
   } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} noWallet={walletsLoading ?? walletsError} />;
   else if (route === "settings") content = <SettingsPage network={network} />;
-  else content = <Placeholder route={route} />;
+
 
   // The bell's popover once the main identity is known; before that the bell opens its page.
   const main = dashpay.main?.identity;
@@ -244,7 +250,7 @@ function WalletChrome({
             bellOwner={bellOwner}
           />
           <div className="app-body">
-            <Sidebar joined={joined} requests={dashpay.requests} masternodes={masternodesItem} />
+            <Sidebar joined={joined} requests={dashpay.requests} masternodes={masternodesItem} explore={explore} />
             {content}
           </div>
           <StatusBar

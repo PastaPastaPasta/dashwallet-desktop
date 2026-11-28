@@ -86,7 +86,7 @@ owner updates the State column as items land and reports against it daily.
 | 0.2 | Thu 11-19; published Fri 11-20 | `main` at #72 plus the `release/0.2` fixes; instant incoming payments and the fast launch move to 0.3 |
 | 0.3 | Mon 11-23; published Sun 11-22 | instant incoming payments, the fast launch, masternode screens (MG-10), Platform ↔ Shielded, CoinJoin fixes, legacy `wallet.dat`, empty states, unlock once |
 | 0.4 | Thu 11-26 | the rest of the core: shared masternodes (MG-10b), the lane C items that have merged by then, CoinJoin V24, PSBT under Advanced, the screens whose copy is in the message catalog by then (English) |
-| 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
+| 0.5 | — | not released: PiggyCards gift cards move into 1.0 as an experimental opt-in. Other commerce and BIP70 move to 1.0.x |
 | 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the lane C items kept and merged after 0.4; the last screens' copy in the catalog; the translations |
 | 0.9 (RC) | Mon 11-30 | security review fixes in; QA pass on three OSes |
 | 1.0 | Wed 12-02 | RC fixes; release checklist; signed locally by pasta (#780) |
@@ -110,7 +110,7 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | J DashConnect | PO | Cut: App Connect v1 and v2 | — | cut to 1.0.x |
 | K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction metadata sync and restore on Platform | 11-18 → 11-24 | all three merged on 11-19 (#25, #37, #57); what is left of unlock once was #78, fixed and merged (#160, 11-20); what that leaves is listed in #173 |
 | P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | the foundation merged (#146, 11-20): the catalog, the language choice, plurals and two fixture-only pseudo-locales, with the shell, the lock screen and Settings ▸ General converted; what must be fixed before the first translation and the first right-to-left language ship is listed in #155; the per-area conversions start 11-21 |
-| L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
+| L Commerce | PO | PiggyCards gift cards in Explore, experimental and off by default. CTX requires BIP70. | 1.0 | Other Explore features, CTX, CrowdNode withdraw, Buy & Sell and ZenLedger move to 1.0.x |
 | M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 merged (#149, 11-20): ten fuzz targets, a seed replay in the test suite and a nightly job, with its gaps listed in #166; a PSBT defect its fuzzing found is fixed (#130, 11-20). H-09 merged (#334, 11-23): contact payments and masternode withdrawals refuse on unverified Platform data. H-06 merged (#343, 11-23; probe fixes #355, 11-23): the contacts query passes (p50 34 ms at 1,000 contacts); `history_page(200)` (p95 120 ms on 40k records, 6× the 20 ms budget), wallet open and engine memory miss, filed for 1.0.x as #296–#298; the contacts read's per-row rebuild is a 1.0.x follow-up (#299). A withdrawal-test flake (#344) is fixed (#349, 11-23). H-03 under way, not merged: the kill -9 matrix's harness and rows for registration, contact requests, profile edits, a reserved contact payment, sync apply, top-up, a `.dwbackup` restore and a phrase import; its findings are filed for 1.0.x (#358 avatar files, #381 bell rows). H-01 not started (from 11-27) |
 | N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | 0.2.0 published 11-20; 0.3.0 published 11-22, the first release that can update itself; `parity.md` redone (#32); SBOM and checklist merged (#54); Flatpak merged (#56) |
 | O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites merged (#129, 11-20), with the harness gaps listed in #168; their nightly on testnet is not installed yet, because where its failure messages go is not decided; the upgrade-path checks from v0.1.0 (#102) and from v0.2.0 (#152) merged on 11-20, and the #152 review items closed in #280 and #281 (11-22); the v0.3.0 fixture for #101 is captured from the tagged release; the by-hand H-08 script for macOS and Windows is written (`docs/qa/H-08-macos-windows.md`, #278, for pasta around 11-28); keyboard-only DashPay journeys merged (#289), and the defects they found (#286, #287, #288, #291) are the H-05 fixes; visual baselines refresh not started, and it now has to cover the whole set (about 150 images differ on `main`) |
@@ -128,7 +128,7 @@ to a 1.0.x release unless a row says otherwise; nothing on the never-cut list is
 | Windows Hello (passphrase only on Windows) | lane N, W-02 | ROADMAP §6, cut 5; the rest of W-02 is the release owner's to keep or cut |
 | The tray companion on Windows and Linux | U-01 | ROADMAP §6, cut 6; only what is not on `main` yet |
 | DashConnect, App Connect v1 and v2 | lane J | the whole lane |
-| Explore, CrowdNode withdraw, DashSpend, Buy & Sell, ZenLedger (MP-09…MP-13) | lane L | the whole lane; the partner credentials are no longer needed for 1.0 |
+| Explore directory and maps, CTX gift cards, CrowdNode withdraw, Buy & Sell, ZenLedger (MP-09…MP-13) | lane L | PiggyCards gift cards are in 1.0, experimental and off by default |
 | Username marketplace (X4) and the identity-verify link | lane H | the whole lane |
 | Creating invitations (X3) and its storage patch, the Home claim card, scanning an invitation's QR code | lane I | the whole lane; claiming an invitation from a link or pasted text stays |
 | MP-04 tax categories, MP-06 phrase repair, MP-07 sweep and BIP38, MP-05 BIP70 | lanes G, K | the 0.4 and 0.5 parity items |
@@ -159,6 +159,7 @@ only) is not applied, on pasta's decision of 2026-11-19: localization is in 1.0,
   network as a message, not a code, stays English in 1.0;
 - hardening: fuzzing, the kill -9 matrix, performance, the trust gate, the security review (lane M);
 - the DashPay suites, the QA pass on three OSes, accessibility, the canary (lane O);
+- PiggyCards gift cards on mainnet through Explore (experimental, off by default);
 - releases and packaging: auto-update, Flatpak, SBOM and checklist (lane N).
 
 `docs/parity.md` still names 0.4 and 0.5 for the cut rows; its Release column is brought in line in lane N.
@@ -335,7 +336,7 @@ shielded-note sync. It is an RC item in lane C, sized and scheduled by the relea
 
 Without these the release still ships on 12-02, in the reduced form the release plan already allows, except for
 signing: without it the final tag waits (first row).
-No longer on this list: partner credentials and Explore database access (lane L is cut), and Transifex access
+No longer on this list: partner credentials and Explore database access (PiggyCards uses its own catalog), and Transifex access
 (the translations are made in this repository).
 
 | Needed | For | By | If it does not arrive |

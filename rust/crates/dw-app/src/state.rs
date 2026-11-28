@@ -84,6 +84,7 @@ pub struct AppState {
     /// The data root (`--datadir` or the platform default), where
     /// `settings.json` lives (U-04 D2).
     pub data_root: PathBuf,
+    pub(crate) gift_cards: crate::api::gift_cards::GiftCards,
     /// Gives the main window an appearance (`None`: the system's).
     pub apply_theme: Box<dyn Fn(Option<ThemeName>) + Send + Sync>,
     /// Titles the main window.
@@ -621,6 +622,7 @@ impl AppState {
             engine,
             engine_build,
             data_root,
+            gift_cards: Default::default(),
             apply_theme: Box::new(move |theme| {
                 if let Some(w) = window.get_webview_window("main") {
                     let _ = w.set_theme(theme.map(Into::into));
@@ -962,13 +964,18 @@ struct Sends {
     epoch: u64,
     /// The last id given out.
     last: u64,
-    drafts: HashMap<u64, Arc<TxDraft>>,
+    drafts: HashMap<u64, DraftHandle>,
     /// Each with its draft, and whether a broadcast of it was attempted.
     prepared: HashMap<u64, Prepared>,
     /// Prepares in flight: reservation id → draft.
     reserved: HashMap<u64, u64>,
     /// The last reservation id given out.
     last_reservation: u64,
+}
+
+struct DraftHandle {
+    draft: Arc<TxDraft>,
+    invoice: Option<[u8; 32]>,
 }
 
 struct Prepared {
@@ -1018,6 +1025,15 @@ impl SendHandles {
 
     /// Stores a draft made from the session of `epoch`.
     pub fn insert_draft(&self, epoch: u64, draft: Arc<TxDraft>) -> Result<u64, AppError> {
+        self.insert_send_draft(epoch, draft, None)
+    }
+
+    pub(crate) fn insert_send_draft(
+        &self,
+        epoch: u64,
+        draft: Arc<TxDraft>,
+        invoice: Option<[u8; 32]>,
+    ) -> Result<u64, AppError> {
         let mut s = self.lock();
         if s.epoch != epoch {
             return Err(AppError::new(
@@ -1027,7 +1043,7 @@ impl SendHandles {
         }
         let open = s.drafts.len();
         let id = s.next_id(open)?;
-        s.drafts.insert(id, draft);
+        s.drafts.insert(id, DraftHandle { draft, invoice });
         Ok(id)
     }
 
@@ -1035,8 +1051,31 @@ impl SendHandles {
         self.lock()
             .drafts
             .get(&id)
-            .cloned()
+            .map(|handle| Arc::clone(&handle.draft))
             .ok_or_else(|| unknown(id))
+    }
+
+    pub(crate) fn invoice_key(&self, id: u64) -> Result<Option<[u8; 32]>, AppError> {
+        self.lock()
+            .drafts
+            .get(&id)
+            .map(|handle| handle.invoice)
+            .ok_or_else(|| unknown(id))
+    }
+
+    pub(crate) fn for_payment(
+        &self,
+        id: u64,
+        invoice: Option<[u8; 32]>,
+    ) -> Result<Arc<TxDraft>, AppError> {
+        let sends = self.lock();
+        let handle = sends.drafts.get(&id).ok_or_else(|| unknown(id))?;
+        if handle.invoice != invoice {
+            return Err(AppError::invalid_argument(
+                "This draft belongs to a different payment flow.",
+            ));
+        }
+        Ok(Arc::clone(&handle.draft))
     }
 
     /// Drops a draft, its prepared transactions and the reservations of its

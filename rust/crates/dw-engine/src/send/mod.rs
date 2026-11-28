@@ -782,6 +782,26 @@ struct Resolved {
 }
 
 impl Resolved {
+    fn check_invoice(
+        &self,
+        invoice: Option<&(String, u64, tokio::time::Instant)>,
+    ) -> Result<(), EngineError> {
+        let Some((address, amount, deadline)) = invoice else {
+            return Ok(());
+        };
+        if tokio::time::Instant::now() >= *deadline
+            || self.contact.is_some()
+            || self.data.is_some()
+            || !matches!(self.change, ChangeTarget::Auto)
+            || !matches!(self.recipients.as_slice(), [r] if !r.subtract_fee && r.address.to_string() == *address && r.amount == *amount)
+        {
+            return Err(EngineError::InvalidArgument(
+                "Refresh the gift card quote and confirm the payment again.".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// key-wallet's builder for exactly this plan: the planned inputs, the
     /// recipient outputs and the change as an explicit output paying
     /// `change`. The builder always budgets a change output; without change
@@ -826,6 +846,13 @@ impl Resolved {
     }
 }
 
+const INVOICE_SCOPE: &str = "payment-invoices";
+
+#[derive(Clone, Copy)]
+struct InvoiceDispatch {
+    key: [u8; 32],
+}
+
 impl NetworkSession {
     /// A new draft for `wallet_id`: no recipients, source `Any`, fee
     /// `Recommended{6}`, change `Auto`.
@@ -834,6 +861,29 @@ impl NetworkSession {
         wallet_id: WalletId,
     ) -> Result<Arc<TxDraft>, EngineError> {
         self.new_draft(wallet_id, HashSet::new(), false)
+    }
+
+    /// The transaction durably recorded for a payment invoice, if any: its
+    /// global row, or for a wallet restored from a backup, the reverse row
+    /// in the wallet's scope.
+    pub async fn invoice_payment(&self, invoice: [u8; 32]) -> Result<Option<String>, EngineError> {
+        let _op = self.enter().await?;
+        let key = hex::encode(invoice);
+        let scopes: Vec<String> = (self.manager()?.list_wallet_ids_blocking().into_iter())
+            .map(|id| WalletId(id).to_string())
+            .collect();
+        self.appdb_op(move |db| {
+            if let Some(txid) = db.setting(INVOICE_SCOPE, &key)? {
+                return Ok(Some(txid));
+            }
+            for scope in &scopes {
+                if let Some(txid) = crate::tx_actions::restored_invoice_binding(db, scope, &key)? {
+                    return Ok(Some(txid));
+                }
+            }
+            Ok(None)
+        })
+        .await
     }
 
     /// A new draft whose coin control may spend `exempt` although tracked
@@ -1200,11 +1250,20 @@ impl TxDraft {
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        self.prepare_checked(grant_id, None).await
+    }
+
+    /// Builds the normal Pay transaction and verifies the resolved recipient before authorizing it.
+    pub async fn prepare_checked(
+        self: &Arc<Self>,
+        grant_id: String,
+        invoice: Option<(String, u64, tokio::time::Instant)>,
+    ) -> Result<Arc<PreparedTx>, EngineError> {
         let this = Arc::clone(self);
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
-                this.prepare_inner(grant_id).await
+                this.prepare_inner(grant_id, invoice).await
             })
             .await
     }
@@ -1212,12 +1271,18 @@ impl TxDraft {
     async fn prepare_inner(
         self: &Arc<Self>,
         grant_id: String,
+        invoice: Option<(String, u64, tokio::time::Instant)>,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         if self.session.hub.restore.is_restored() {
             return Err(SendFailure::Restored.into());
         }
         let contact = self.state().contact;
         if let Some(pair) = contact {
+            if invoice.is_some() {
+                return Err(EngineError::InvalidArgument(
+                    "Gift card orders require an invoice address.".into(),
+                ));
+            }
             return self.prepare_contact(grant_id, pair).await;
         }
         let session = &self.session;
@@ -1238,7 +1303,8 @@ impl TxDraft {
             lease
                 .check_tx_signer(purpose)
                 .map_err(|e| lease_failure(e, 0))?;
-            return (self.prepare_leased(lease.clone(), purpose, fence, guarded)).await;
+            return (self.prepare_leased(lease.clone(), purpose, fence, guarded, invoice.as_ref()))
+                .await;
         }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
@@ -1258,8 +1324,13 @@ impl TxDraft {
         // What the grant caps: everything that leaves the wallet, fee
         // included (the same outflow `sign_psbt` caps).
         let outflow = external_sent.saturating_add(r.plan.fee);
+        r.check_invoice(invoice.as_ref())?;
+        let deadline = invoice.as_ref().map(|(_, _, d)| *d);
         let vault = session.vault.clone();
         let signer = tokio::task::spawn_blocking(move || {
+            if invoice.is_some_and(|(_, _, deadline)| tokio::time::Instant::now() >= deadline) {
+                return Ok(Err(SendFailure::Cancelled));
+            }
             let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
             let max_duffs = token.max_duffs().unwrap_or(0);
             if outflow > max_duffs {
@@ -1279,6 +1350,7 @@ impl TxDraft {
             None,
             fence,
             guarded,
+            deadline,
         )
         .await
     }
@@ -1294,12 +1366,14 @@ impl TxDraft {
         purpose: crate::platform::BudgetPurpose,
         fence: CoinFence,
         guarded: u32,
+        invoice: Option<&(String, u64, tokio::time::Instant)>,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
         let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
         let outflow = external_sent.saturating_add(r.plan.fee);
         // One J step: a payment exactly at the cap is charged and signs.
+        r.check_invoice(invoice)?;
         let (charge, signer) = lease
             .charge_tx_signer(purpose, outflow)
             .map_err(|e| lease_failure(e, outflow))?;
@@ -1318,6 +1392,7 @@ impl TxDraft {
             Some(charge),
             fence,
             guarded,
+            invoice.map(|(_, _, d)| *d),
         )
         .await
     }
@@ -1376,10 +1451,18 @@ impl TxDraft {
         charge: Option<SpendCharge>,
         fence: CoinFence,
         guarded: u32,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         self.session.coin_fences.prepare_pause_point().await;
         // The coins are read: a rewind since the guard refuses them.
         (self.session).replay_guard(self.wallet_id, guarded).await?;
+        // A gift card quote's window is checked again right before each
+        // signature, after every wait above and below.
+        let expired = || {
+            deadline
+                .is_some_and(|d| tokio::time::Instant::now() >= d)
+                .then_some(EngineError::Send(SendFailure::Cancelled))
+        };
         let session = &self.session;
         let wallet_id = self.wallet_id;
         let network = self.network();
@@ -1403,6 +1486,9 @@ impl TxDraft {
                 None => None,
             };
             let change_script = change.as_ref().map(|c| c.script_pubkey.clone());
+            if let Some(e) = expired() {
+                return Err(e);
+            }
             let mut outputs = vec![data.clone()];
             if let Some(change) = change {
                 // Core's `RANDOM_CHANGE_POSITION` (wallet/spend.cpp:1307).
@@ -1423,6 +1509,9 @@ impl TxDraft {
                     script_pubkey: rc.address.script_pubkey(),
                 })
                 .collect();
+            if let Some(e) = expired() {
+                return Err(e);
+            }
             let tx = session
                 .sign_coinjoin_payment(wallet_id, &r.plan.inputs, outputs, &signer)
                 .await?;
@@ -1484,6 +1573,9 @@ impl TxDraft {
             }
             (ChangeTarget::Auto, None) => r.plan.inputs[0].address.clone(),
         };
+        if let Some(e) = expired() {
+            return Err(e);
+        }
         let signed = wallet
             .core()
             .finalize_transaction_with_options(
@@ -1633,12 +1725,31 @@ impl TxDraft {
         self: &Arc<Self>,
         prepared: Arc<PreparedTx>,
     ) -> Result<BroadcastOutcome, EngineError> {
+        self.broadcast_candidate(prepared, None).await
+    }
+
+    /// Broadcasts through the normal send path and records the order's transaction
+    /// in the same durable write as its send record, before the network hand-off.
+    pub async fn broadcast_invoice(
+        self: &Arc<Self>,
+        prepared: Arc<PreparedTx>,
+        key: [u8; 32],
+    ) -> Result<BroadcastOutcome, EngineError> {
+        self.broadcast_candidate(prepared, Some(InvoiceDispatch { key }))
+            .await
+    }
+
+    async fn broadcast_candidate(
+        self: &Arc<Self>,
+        prepared: Arc<PreparedTx>,
+        invoice: Option<InvoiceDispatch>,
+    ) -> Result<BroadcastOutcome, EngineError> {
         self.check_mine(&prepared)?;
         let this = Arc::clone(self);
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
-                this.broadcast_inner(prepared).await
+                this.broadcast_inner_with_invoice(prepared, invoice).await
             })
             .await
     }
@@ -1654,6 +1765,14 @@ impl TxDraft {
     pub(crate) async fn broadcast_inner(
         &self,
         prepared: Arc<PreparedTx>,
+    ) -> Result<BroadcastOutcome, EngineError> {
+        self.broadcast_inner_with_invoice(prepared, None).await
+    }
+
+    async fn broadcast_inner_with_invoice(
+        &self,
+        prepared: Arc<PreparedTx>,
+        invoice: Option<InvoiceDispatch>,
     ) -> Result<BroadcastOutcome, EngineError> {
         // A contact payment's repeat waits for the attempt before it to
         // settle the contact; any other overlap is refused below.
@@ -1699,8 +1818,9 @@ impl TxDraft {
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send
         // recovered with its outcome unknown, which may be its first.
-        if let Err(e) = self.mark_sent(&prepared, true).await {
-            let next = match first && self.drop_mark(&prepared).await {
+        let invoice_key = invoice.map(|i| i.key);
+        if let Err(e) = self.mark_sent(&prepared, true, invoice_key).await {
+            let next = match first && self.drop_mark(&prepared, invoice_key).await {
                 true => Phase::Pending,
                 false => Phase::Unknown,
             };
@@ -1717,9 +1837,14 @@ impl TxDraft {
             return Err(e);
         }
         let (mut outcome, mut next) = match &prepared.lease {
-            Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
+            Some((lease, artifact)) => {
+                self.fenced(&prepared, lease, *artifact, first, invoice.is_some())
+                    .await
+            }
             None => {
-                let outcome = self.dispatch(&prepared, first, None).await;
+                let outcome = self
+                    .dispatch(&prepared, first, None, invoice.is_some())
+                    .await;
                 let next = settle(first, &outcome);
                 (outcome, next)
             }
@@ -1728,7 +1853,7 @@ impl TxDraft {
         // be dropped keeps the payment held as maybe sent.
         let unsent = next == Phase::Released
             || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
-        if unsent && !self.drop_mark(&prepared).await {
+        if unsent && !self.drop_mark(&prepared, invoice_key).await {
             next = Phase::Unknown;
             *prepared.held.lock().unwrap() = Some(Held::UntilRestart);
             self.note_held(&prepared);
@@ -1785,6 +1910,7 @@ impl TxDraft {
         lease: &Lease,
         artifact: ArtifactId,
         first: bool,
+        invoice: bool,
     ) -> (Result<BroadcastOutcome, EngineError>, Phase) {
         let table = std::sync::Arc::clone(&lease.table);
         let wallet = self.wallet_id;
@@ -1812,13 +1938,13 @@ impl TxDraft {
                 // L5: the transport only before the permit's deadline, and
                 // under it (`dispatch`).
                 let result = self
-                    .dispatch(prepared, first, Some(permit.deadline()))
+                    .dispatch(prepared, first, Some(permit.deadline()), invoice)
                     .await;
                 let s = permit.finish(attempt_outcome(&result));
                 (result, s)
             }
             Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let result = self.dispatch(prepared, false, None).await;
+                let result = self.dispatch(prepared, false, None, invoice).await;
                 let s = guard.finish(attempt_outcome(&result));
                 (result, s)
             }
@@ -1883,6 +2009,7 @@ impl TxDraft {
         prepared: &PreparedTx,
         first: bool,
         deadline: Option<tokio::time::Instant>,
+        invoice: bool,
     ) -> Result<BroadcastOutcome, EngineError> {
         let signed = prepared.signed().clone();
         let signed = signed.as_ref();
@@ -1900,7 +2027,10 @@ impl TxDraft {
             if let Some(seam) = &seam {
                 seam.before_entry().await;
             }
-            if seam.is_none() && !self.session.manager()?.spv().is_started() {
+            if seam.is_none()
+                && (!self.session.manager()?.spv().is_started()
+                    || (invoice && self.session.hub.tracker().snapshot().connected_peers == 0))
+            {
                 // Nothing to send to; handled like dash-spv's never-sent
                 // rejection.
                 return Err(if first {
@@ -1965,6 +2095,9 @@ impl TxDraft {
         let Some(sent) = sent else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
+        if first && invoice && matches!(sent, Err(PlatformWalletError::StaleReservation)) {
+            return Err(SendFailure::PreparedTxSpent.into());
+        }
         broadcast_result(sent, first)
     }
 
@@ -2478,7 +2611,7 @@ impl Drop for ReleaseClaim {
 impl TxDraft {
     /// Drops `prepared`'s sent mark; whether it went (a failure is logged),
     /// or stays on purpose: a load claimed its coins from it.
-    async fn drop_mark(&self, prepared: &PreparedTx) -> bool {
+    async fn drop_mark(&self, prepared: &PreparedTx, invoice: Option<[u8; 32]>) -> bool {
         // A load this session claimed the payment's coins from its marks:
         // they're all that holds those coins, so they stay, and the payment
         // stays pending (Abandon frees the coins in History, after a restart
@@ -2490,7 +2623,7 @@ impl TxDraft {
         if claimed {
             return true;
         }
-        let dropped = self.mark_sent(prepared, false).await;
+        let dropped = self.mark_sent(prepared, false, invoice).await;
         if let Err(e) = &dropped {
             tracing::warn!(error = %e, "could not drop a payment's sent mark: it stays held as maybe sent");
         }
@@ -2500,8 +2633,13 @@ impl TxDraft {
     /// Marks `prepared` as a payment this app sent, naming the wallet's
     /// coins it signed (`sent`), or removes the mark
     /// ([`crate::tx_actions::SENT_PREFIX`]).
-    async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
-        let txid = &prepared.summary.txid;
+    async fn mark_sent(
+        &self,
+        prepared: &PreparedTx,
+        sent: bool,
+        invoice: Option<[u8; 32]>,
+    ) -> Result<(), EngineError> {
+        let txid = prepared.summary.txid.clone();
         let scope = self.wallet_id.to_string();
         let keys = [
             format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
@@ -2569,7 +2707,40 @@ impl TxDraft {
                     (keys[1].as_str(), tx.as_deref()),
                     (keys[2].as_str(), inputs.as_deref()),
                 ];
-                db.set_settings_durable(&scope, &writes)
+                let Some(invoice) = invoice else {
+                    return db.set_settings_durable(&scope, &writes);
+                };
+                let key = hex::encode(invoice);
+                let existing = db.setting(INVOICE_SCOPE, &key)?;
+                let bound = match &existing {
+                    Some(id) => Some(id.clone()),
+                    None => crate::tx_actions::restored_invoice_binding(db, &scope, &key)?,
+                };
+                if bound.as_deref().is_some_and(|id| id != txid) {
+                    return if sent {
+                        Err(dw_appdb::AppDbError::Invalid(
+                            "the invoice already has a different transaction".into(),
+                        ))
+                    } else {
+                        db.set_settings_durable(&scope, &writes)
+                    };
+                }
+                let mut scoped: Vec<_> = writes
+                    .iter()
+                    .map(|(key, value)| (scope.as_str(), *key, *value))
+                    .collect();
+                let reverse = crate::tx_actions::invoice_tx_key(&txid);
+                scoped.push((INVOICE_SCOPE, key.as_str(), sent.then_some(txid.as_str())));
+                scoped.push((&scope, &reverse, sent.then_some(key.as_str())));
+                if !db.set_scoped_settings_if_durable(
+                    Some((INVOICE_SCOPE, &key, existing.as_deref())),
+                    &scoped,
+                )? {
+                    return Err(dw_appdb::AppDbError::Invalid(
+                        "the invoice payment changed".into(),
+                    ));
+                }
+                Ok(())
             })
             .await
     }

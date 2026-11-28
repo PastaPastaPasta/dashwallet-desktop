@@ -65,6 +65,8 @@ pub struct UiSettings {
     /// Settings ▸ About ▸ Check for updates automatically (PK-03): off until
     /// the user turns it on; only a copy that can update itself checks.
     pub check_updates_automatically: bool,
+    /// Networks on which the user enabled experimental gift cards.
+    pub gift_cards_networks: Vec<String>,
 }
 
 impl Default for UiSettings {
@@ -81,6 +83,7 @@ impl Default for UiSettings {
             pre_release_notice_dismissed: false,
             language: None,
             check_updates_automatically: false,
+            gift_cards_networks: Vec::new(),
         }
     }
 }
@@ -280,6 +283,7 @@ mod tests {
             pre_release_notice_dismissed: true,
             language: Some("pt-BR".into()),
             check_updates_automatically: true,
+            gift_cards_networks: vec!["mainnet".into()],
         };
         write(dir.path(), &s).unwrap();
         assert_eq!(read(dir.path()), s);

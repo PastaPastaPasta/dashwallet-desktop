@@ -29,6 +29,7 @@ mod failed_open_tests;
 mod fees;
 mod fsutil;
 mod gate;
+mod gift_card_rows;
 pub mod governance;
 #[cfg(test)]
 mod held_writes;

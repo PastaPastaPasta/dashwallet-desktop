@@ -1633,13 +1633,34 @@ impl AppDb {
     /// [`Self::set_settings_durable`] across scopes: each `(scope, key,
     /// value)` in one transaction, all of them or none.
     pub fn set_scoped_settings_durable(&self, writes: &[(&str, &str, Option<&str>)]) -> Result<()> {
+        self.set_scoped_settings_if_durable(None, writes).map(drop)
+    }
+
+    /// Writes settings atomically only if the guard's value still matches.
+    pub fn set_scoped_settings_if_durable(
+        &self,
+        guard: Option<(&str, &str, Option<&str>)>,
+        writes: &[(&str, &str, Option<&str>)],
+    ) -> Result<bool> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
+            if let Some((scope, key, expected)) = guard {
+                let current: Option<String> = tx
+                    .query_row(
+                        "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                        params![scope, key],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if current.as_deref() != expected {
+                    return Ok(false);
+                }
+            }
             for (scope, key, value) in writes {
                 Self::put_setting(&tx, scope, key, *value)?;
             }
             tx.commit()?;
-            Ok(())
+            Ok(true)
         })
     }
 

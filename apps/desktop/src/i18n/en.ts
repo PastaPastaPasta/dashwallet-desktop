@@ -11,6 +11,7 @@ import { common } from "./catalog/common";
 import { components } from "./catalog/components";
 import { contacts } from "./catalog/contacts";
 import { dashpay } from "./catalog/dashpay";
+import { giftCards } from "./catalog/giftCards";
 import { home } from "./catalog/home";
 import { lock } from "./catalog/lock";
 import { masternodes } from "./catalog/masternodes";
@@ -40,6 +41,7 @@ export const en = {
   app,
   storeUpgrade,
   onboarding,
+  giftCards,
   home,
   activity,
   receive,

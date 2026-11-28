@@ -5,6 +5,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { MasternodesItem } from "../../api/generated/MasternodesItem";
 import type { ThemeName } from "../../api/generated/ThemeName";
 import type { UiSettings } from "../../api/generated/UiSettings";
@@ -62,7 +63,7 @@ export function useSavePrefs() {
   return { prefs, save, problem };
 }
 
-export function GeneralTab() {
+export function GeneralTab({ network }: { network: NetworkInfo }) {
   const t = useT();
   const launch = useLaunch();
   const { prefs, save, problem } = useSavePrefs();
@@ -154,6 +155,22 @@ export function GeneralTab() {
         <ShowMasternodesRow choice={prefs.masternodesItem} save={save} />
       </SettingsCard>
       <LocalCurrencyCard />
+      <SettingsCard title={t("giftCards.title")} testId="settings-gift-cards">
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={prefs.giftCardsNetworks.includes(network.dirName)}
+            aria-describedby={`${id}-gift-cards-hint`}
+            onChange={(e) => void save({
+              giftCardsNetworks: e.target.checked
+                ? [...prefs.giftCardsNetworks, network.dirName]
+                : prefs.giftCardsNetworks.filter((name) => name !== network.dirName),
+            })}
+          />
+          {t("giftCards.enable")}
+        </label>
+        <Hint id={`${id}-gift-cards-hint`}>{t("giftCards.settingHint")}</Hint>
+      </SettingsCard>
       <DustCard />
       <PrivacyCard />
       <NetworkCard />
