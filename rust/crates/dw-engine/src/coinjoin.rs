@@ -4656,19 +4656,16 @@ impl MixingWallet for EngineMixingWallet {
         let ours: Vec<OutPoint> = (inputs.iter())
             .map(|(i, _)| tx.input[*i].previous_output)
             .collect();
+        let held = s.leases.unresolved_lock_inputs(self.wallet_id);
+        if let Some(o) = ours.iter().find(|o| held.contains(o)) {
+            return Err(WalletError(format!(
+                "input {o} is held: an asset lock spends it, unresolved (Resolve stuck funding)"
+            )));
+        }
         if self.withdrawn_under(&s, &fence, &ours).await? {
             return Err(WalletError(
                 "an input was locked, left the wallet or is claimed by another payment".into(),
             ));
-        }
-        let held = s.leases.unresolved_lock_inputs(self.wallet_id);
-        if let Some(o) = (inputs.iter())
-            .map(|(i, _)| tx.input[*i].previous_output)
-            .find(|o| held.contains(o))
-        {
-            return Err(WalletError(format!(
-                "input {o} is held: an asset lock spends it, unresolved (Resolve stuck funding)"
-            )));
         }
         let signer = s
             .vault
