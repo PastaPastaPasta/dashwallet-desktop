@@ -87,6 +87,7 @@ describe("the restore's Platform and Shielded hold, as each flow says it", () =>
     expect(platformHoldText(featureOff)).toBe(OFF);
     expect(platformHoldText(featureOff, false)).toBe(OFF_NOT_SENDING);
     expect(platformHoldText(unavailable, false)).toBeNull();
+    expect(platformHoldText({ ...featureOff, code: "platform.unavailable" }, false)).toBe(OFF_NOT_SENDING);
     withoutPlatform();
     expect(platformHoldText(unavailable)).toBe(OFF);
     expect(platformHoldText(unavailable, false)).toBe(OFF_NOT_SENDING);

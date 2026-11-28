@@ -567,3 +567,63 @@ async fn a_pass_sends_no_lock_before_its_durable_record() {
         Some(crate::platform::flows::DispatchState::MaybeSent)
     );
 }
+
+#[tokio::test]
+async fn a_resume_cannot_leave_a_send_waiting_for_transport() {
+    let gate = Arc::new(tokio::sync::RwLock::new(()));
+    let transport = Arc::new(tokio::sync::Notify::new());
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let ready = Arc::clone(&transport);
+    super::mode_b::await_asset_lock_resume(Arc::clone(&gate).read_owned().await, async move {
+        tokio::spawn(async move {
+            ready.notified().await;
+            let _ = send.send(());
+        });
+    })
+    .await
+    .unwrap();
+    // Repair can now save the mark. Transport then comes back.
+    let repair = gate.write().await;
+    drop(repair);
+    transport.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), receive)
+            .await
+            .unwrap()
+            .is_err(),
+        "a detached resume reached the broadcaster after Repair"
+    );
+}
+
+#[tokio::test]
+async fn a_repair_abandon_waits_for_the_asset_lock_handoff() {
+    let gate = Arc::new(tokio::sync::RwLock::new(()));
+    let (checked, mark_checked) = tokio::sync::oneshot::channel();
+    let (allow_send, handoff) = tokio::sync::oneshot::channel();
+    let mark = Arc::new(AtomicBool::new(false));
+    let marked = Arc::clone(&mark);
+    let resume = tokio::spawn(super::mode_b::await_asset_lock_resume(
+        Arc::clone(&gate).read_owned().await,
+        async move {
+            assert!(!marked.load(Ordering::SeqCst));
+            checked.send(()).unwrap();
+            handoff.await.unwrap();
+            assert!(
+                !marked.load(Ordering::SeqCst),
+                "Repair abandoned the funding before handoff"
+            );
+        },
+    ));
+    mark_checked.await.unwrap();
+    assert!(
+        gate.try_write().is_err(),
+        "Repair can save its mark before handoff"
+    );
+    let abandoned = tokio::spawn(async move {
+        let _repair = gate.write().await;
+        mark.store(true, Ordering::SeqCst);
+    });
+    allow_send.send(()).unwrap();
+    resume.await.unwrap().unwrap();
+    abandoned.await.unwrap();
+}

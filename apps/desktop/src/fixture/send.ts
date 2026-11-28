@@ -113,6 +113,7 @@ export interface SendWorld {
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
+  abandonedSweepChunks: string[];
   /** Abandoned payments a coin of which the engine's rescan is still checking before giving it
    * back (`checkingSpentCoins`). */
   checkingSpentCoins: string[];
@@ -142,6 +143,7 @@ export const newSendWorld = (): SendWorld => ({
   platformFundingHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
+  abandonedSweepChunks: [],
   checkingSpentCoins: [],
   catchingUp: false,
   restoreHeld: [],
@@ -889,7 +891,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         canAbandon:
           (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid) && !world.send.platformFundingHidden.includes(txid)) ||
           world.send.rescanFirst.includes(txid),
-        canResend: resendRefusal(row) === null,
+        canResend: resendRefusal(row) === null || (row.status.kind === "abandoned" && world.send.abandonedSweepChunks.includes(txid)),
         dustLockedOutputs: [],
         withheldOutputs: withheldCoins(wallet(world, walletId).coins, txid).map((u) => u.outpoint),
         checkingSpentCoins: world.send.checkingSpentCoins.includes(txid),
@@ -945,10 +947,19 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       changed(ctx, w, [txid]);
       return null;
     },
-    resend_transaction: ({ walletId, txid }, { world }) => {
+    resend_transaction: ({ walletId, txid }, ctx) => {
+      const { world } = ctx;
       if (world.restored) throw refused("restored");
-      const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
-      if (refusal) throw refused(refusal);
+      const w = wallet(world, walletId);
+      const row = rowOf(w, txid);
+      if (row.status.kind === "abandoned" && world.send.abandonedSweepChunks.includes(txid)) {
+        world.send.abandonedSweepChunks = world.send.abandonedSweepChunks.filter((t) => t !== txid);
+        w.rows = w.rows.map((r) => (r === row ? { ...r, status: { ...r.status, kind: "unconfirmed" } } : r));
+        changed(ctx, w, [txid]);
+      } else {
+        const refusal = resendRefusal(row);
+        if (refusal) throw refused(refusal);
+      }
       world.send.announced[txid] = secs(FIXTURE_NOW);
       return null;
     },

@@ -652,6 +652,8 @@ pub struct ContestedName {
     /// The normalized label (`a-hj-km-np-z01-`).
     pub label: String,
     pub ends_at: u64,
+    /// An identity of the queried wallet requested this username.
+    pub own: bool,
     pub contenders: Vec<NameContender>,
     pub lock_votes: Option<u32>,
     pub abstain_votes: Option<u32>,
@@ -663,6 +665,7 @@ impl From<engine::ContestedName> for ContestedName {
         let engine::ContestedName {
             label,
             ends_at,
+            own,
             contenders,
             lock_votes,
             abstain_votes,
@@ -671,6 +674,7 @@ impl From<engine::ContestedName> for ContestedName {
         ContestedName {
             label,
             ends_at,
+            own,
             contenders: contenders.into_iter().map(Into::into).collect(),
             lock_votes,
             abstain_votes,

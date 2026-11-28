@@ -2409,8 +2409,14 @@ impl NetworkSession {
             .appdb_op(move |db| {
                 #[cfg(all(test, debug_assertions))]
                 db.fault_point(SENT_MARK_READ_FAULT, dw_appdb::fault::Stage::Before)?;
+                let sweep_scope = dw_appdb::local_scope(&wallet.to_string());
                 (rest.into_iter())
-                    .map(|t| Ok((t, has_sent_mark(db, wallet, t)?)))
+                    .map(|t| {
+                        let key = format!("{}{t}", crate::coinjoin::SWEEP_OUT_PREFIX);
+                        let sent = has_sent_mark(db, wallet, t)?
+                            || db.setting(&sweep_scope, &key)?.is_some();
+                        Ok((t, sent))
+                    })
                     .collect::<Result<Vec<_>, dw_appdb::AppDbError>>()
             })
             .await?;
@@ -2418,33 +2424,93 @@ impl NetworkSession {
         Ok(sent)
     }
 
-    /// Where an abandon stops dash-spv's rebroadcast timer from sending
-    /// `txid` again. The pinned dash-spv has no such stop: its timer keeps
-    /// what this run sent until it confirms, is locked or ages out (a day),
-    /// and a restart ends it, as the abandon's confirmation says.
-    pub(crate) async fn stop_rebroadcast(&self, _manager: &Manager, _wallet: WalletId, txid: Txid) {
+    /// The pinned client owns the whole rebroadcast map. Replacing it after
+    /// a durable abandon or drop retires every affected transaction.
+    pub(crate) async fn stop_rebroadcasts(
+        &self,
+        wallet: WalletId,
+        txids: impl Iterator<Item = Txid>,
+    ) {
+        let mut txids = txids.peekable();
+        if txids.peek().is_none() {
+            return;
+        }
         #[cfg(not(test))]
-        let _ = txid;
+        let _ = wallet;
         #[cfg(test)]
-        {
-            let marked = self.abandon_marked(_wallet, txid).await;
+        for txid in txids {
+            let marked = self.abandon_marked(wallet, txid).await;
             self.hub
                 .stopped_rebroadcasts
                 .lock()
                 .unwrap()
                 .push((txid, marked));
         }
+        self.request_rebroadcast_rebuild();
     }
 
     /// Whether an Abandon of `txid` committed its mark, which it writes
     /// before its sweep: a mark that cannot be read counts.
     pub(crate) async fn abandon_marked(&self, wallet: WalletId, txid: Txid) -> bool {
+        self.read_abandon_mark(wallet, txid).await.unwrap_or(true)
+    }
+
+    pub(crate) async fn read_abandon_mark(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<bool, EngineError> {
         let (scope, key) = (wallet.to_string(), format!("{ABANDONED_PREFIX}{txid}"));
-        (self.appdb_op(move |db| {
+        self.appdb_op(move |db| {
             Ok((db.settings_with_prefix_lossy(&scope, &key)?.into_iter()).any(|(k, _)| k == key))
-        }))
+        })
         .await
-        .unwrap_or(true)
+    }
+
+    async fn can_restart_abandoned_sweep(&self, wallet: WalletId, txid: Txid, f: &Facts) -> bool {
+        f.abandoned
+            && f.abandon_marked
+            && f.depth == 0
+            && !f.instant_locked
+            && !f.chain_locked
+            && self
+                .pending_sweep_chunk(wallet, txid)
+                .await
+                .is_ok_and(|chunk| chunk.is_some())
+    }
+
+    /// Called under the abandon write gate for an explicitly resumed sweep.
+    pub(crate) async fn clear_sweep_abandon(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<(), EngineError> {
+        if !self.read_abandon_mark(wallet, txid).await?
+            || self
+                .hub
+                .history
+                .read_wallet(&wallet, |h| h.drops.contains_key(&txid))
+        {
+            return Err(EngineError::TxActionRefused(
+                TxActionRefusal::AlreadyAbandoned,
+            ));
+        }
+        self.write_abandoned_marks(
+            wallet,
+            vec![
+                (format!("{ABANDONED_PREFIX}{txid}"), None),
+                (format!("{ABANDON_RELEASE_PREFIX}{txid}"), None),
+            ],
+        )
+        .await?;
+        self.hub.history.with_wallet(wallet, |history| {
+            history.abandoned_here.remove(&txid);
+            if let Some(entry) = history.txs.get_mut(&txid) {
+                entry.abandoned = false;
+            }
+        });
+        self.hub.pump.mark_history(wallet, Some(&[txid]));
+        Ok(())
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
@@ -2506,7 +2572,8 @@ impl NetworkSession {
                 in_mempool: None,
                 abandoned: f.abandoned,
                 can_abandon: f.abandon_refusal().is_none(),
-                can_resend: f.resend_refusal().is_none(),
+                can_resend: f.resend_refusal().is_none()
+                    || this.can_restart_abandoned_sweep(wallet, txid, &f).await,
                 dust_locked_outputs,
                 withheld_outputs,
                 checking_spent_coins: f.abandoned && {
@@ -2526,10 +2593,9 @@ impl NetworkSession {
     /// descendants show as `Abandoned`, their change leaves the balance and
     /// the coins they spent come back through a rescan.
     ///
-    /// Needs a running SPV client (`SpvNotRunning`, checked first, review
-    /// M2): the spent coins return only through the filter rescan, which
-    /// rewinds the running client's in-memory sync height. Abandoning
-    /// offline would leave them missing from the balance.
+    /// Needs SPV running or rebuilding (`SpvNotRunning`, checked first):
+    /// the spent coins return only through the filter rescan. A rebuild
+    /// waits for the wallet's rewind before starting the replacement.
     pub async fn abandon_transaction(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -2544,7 +2610,7 @@ impl NetworkSession {
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             this.require_wallet(&wallet)?;
-            let spv_running = manager.spv().is_started();
+            let spv_running = this.spv_can_abandon(&manager);
             if !spv_running {
                 return Err(EngineError::SpvNotRunning);
             }
@@ -2652,7 +2718,7 @@ impl NetworkSession {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         let held_since = std::time::Instant::now();
-        let (abandoned, released, overridden, txs, links) = {
+        let (abandoned, released, overridden, txs, links, sent) = {
             let settled = {
                 let infos = wm.get_all_wallet_infos().iter();
                 self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)), [root])
@@ -2840,13 +2906,7 @@ impl NetworkSession {
                 txs.iter()
                     .map(|(t, tx)| release_mark(*t, tx, &planned_release)),
             );
-            // Before the marks, under the gate a resend's hand-off holds:
-            // the stop of each marked transaction this wallet sent is asked
-            // (`Self::stop_rebroadcast`). The pinned dash-spv has none, and
-            // keeps sending what this run sent until a restart.
-            for t in self.sent_by(wallet, &planned, info).await? {
-                self.stop_rebroadcast(manager, wallet, t).await;
-            }
+            let sent = self.sent_by(wallet, &planned, info).await?;
             // A drop of what can never confirm is recorded with the marks,
             // and its sent marks go in the same write: a stop before the
             // sweep leaves it for the open's sweep of marked payments and
@@ -2915,7 +2975,7 @@ impl NetworkSession {
                 tracing::warn!(%wallet, %root, "key-wallet abandoned another set than planned: no coin is released");
                 released.clear();
             }
-            (abandoned, released, overridden.is_some(), txs, links)
+            (abandoned, released, overridden.is_some(), txs, links, sent)
         };
         #[cfg(test)]
         let pause = self.hub.pause_abandon_sweep.lock().unwrap().take();
@@ -2985,6 +3045,8 @@ impl NetworkSession {
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
+        self.stop_rebroadcasts(wallet, sent.intersection(&abandoned).copied())
+            .await;
         #[cfg(test)]
         {
             let mut fail = self.hub.fail_after_sweep_of.lock().unwrap();
@@ -4200,10 +4262,6 @@ impl NetworkSession {
             })
             .chain(hold_marks(&rescan_holds))
             .collect();
-        // Before the marks, as an Abandon stops what it abandons.
-        for t in &plan.dead {
-            self.stop_rebroadcast(manager, wallet, *t).await;
-        }
         let noted: Vec<OutPoint> = (plan.copies.iter())
             .flat_map(|(_, tx)| {
                 let held = holds(tx);
@@ -4325,6 +4383,8 @@ impl NetworkSession {
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("dropping a dead transaction: {e}")))?;
+        self.stop_rebroadcasts(wallet, abandoned.iter().copied())
+            .await;
         self.hub.history.with_wallet(wallet, |h| {
             let unheard: Vec<(Txid, Transaction)> = (plan.copies.iter())
                 .filter(|(t, _)| abandoned.contains(t) && !h.txs.contains_key(t))
@@ -4781,6 +4841,57 @@ impl NetworkSession {
             .map(|h| h.saturating_sub(1))
     }
 
+    /// Restores retries when the rebuilt client gets a peer. The sent
+    /// mark identifies Desktop's own send; a pending wallet-store record
+    /// proves it reached the wallet pipeline and has not since been swept.
+    pub(crate) async fn resume_rebroadcasts(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+
+        let Ok(_op) = self.enter().await else {
+            return;
+        };
+        let Ok(manager) = self.manager() else {
+            return;
+        };
+        let generation = manager.spv().run_session();
+        if generation == 0
+            || self
+                .rebroadcast_replay
+                .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        for wallet in manager.wallet_ids().await.into_iter().map(WalletId) {
+            let sent = self.appdb_op(move |db| Ok(load_sent(db, wallet).0)).await;
+            let Ok(sent) = sent else {
+                continue;
+            };
+            for (txid, mark) in sent {
+                if !mark.kept && mark.coins.is_empty() {
+                    continue;
+                }
+                match self
+                    .resend_transaction_inner(wallet, txid, Some(generation))
+                    .await
+                {
+                    Err(EngineError::NoPeers) => {
+                        // Preserve a request made by a newer rebuild.
+                        let _ = self.rebroadcast_replay.compare_exchange(
+                            0,
+                            generation,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                        return;
+                    }
+                    Err(EngineError::SpvNotRunning) => return,
+                    Ok(()) | Err(_) => {}
+                }
+            }
+        }
+    }
+
     /// dash-qt "Resend transaction" (QT-091): hands the stored transaction
     /// to the SPV client again. Returns once handed over (or `NoPeers` when
     /// dash-spv refused to send it); the network's verdict is only logged.
@@ -4793,76 +4904,119 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            this.refuse_tx_action_while_restored()?;
-            let manager = this.manager()?;
-            let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
-            let peers = this.hub.tracker().snapshot().connected_peers;
-            if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
-                return Err(r.into());
-            }
-            #[cfg(test)]
-            let pause = this.hub.pause_resend.lock().unwrap().take();
-            #[cfg(test)]
-            if let Some(pause) = pause {
-                pause.mark_reached();
-                pause.release.notified().await;
-            }
-            // Read again, held against an abandon through the hand-off: one
-            // since the check committed its mark, and its bytes stay unsent.
-            let gate = this.abandon_gate(wallet).read_owned().await;
-            if this.abandon_marked(wallet, txid).await {
-                return Err(EngineError::TxActionRefused(
-                    TxActionRefusal::AlreadyAbandoned,
-                ));
-            }
-            let handle = this.wallet(&wallet).await?;
-            #[cfg(test)]
-            let wire = this.hub.resend_wire.lock().unwrap().clone();
-            // platform-wallet's only broadcast entry point waits for the
-            // network's acceptance (up to dash-spv's 60 s timeout). The send
-            // itself happens at once, so the call returns after a short
-            // hand-off window and leaves the wait to a background task; a
-            // send dash-spv refuses outright (no connection) is reported.
-            let mut task = tokio::spawn(async move {
-                let _gate = gate;
-                #[cfg(test)]
-                if let Some(wire) = wire {
-                    wire.lock().unwrap().push(entry.tx.txid());
-                    return Ok(entry.tx.txid());
-                }
-                let outcome = handle.core().broadcast_transaction(&entry.tx).await;
-                match &outcome {
-                    Ok(_) => tracing::info!(%txid, "resent transaction accepted"),
-                    Err(e) => {
-                        tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen")
-                    }
-                }
-                outcome
-            });
-            {
-                let mut resends = this.resends.lock().unwrap_or_else(|p| p.into_inner());
-                resends.retain(|r| !r.is_finished());
-                resends.push(task.abort_handle());
-            }
-            match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
-                Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
-                    return Err(EngineError::NoPeers);
-                }
-                Ok(Err(e)) => return Err(e.into()),
-                Ok(Ok(_)) | Err(_) => {}
-            }
-            this.hub.note_announced(txid);
-            Ok(())
+            this.resend_transaction_inner(wallet, txid, None).await
         })
         .await
+    }
+
+    async fn resend_transaction_inner(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+        replay_generation: Option<u64>,
+    ) -> Result<(), EngineError> {
+        self.refuse_tx_action_while_restored()?;
+        let manager = self.manager()?;
+        let (entry, f) = self.tx_facts(&manager, wallet, txid, false).await?;
+        let peers = self.hub.tracker().snapshot().connected_peers;
+        if replay_generation.is_none() && self.can_restart_abandoned_sweep(wallet, txid, &f).await {
+            return self.restart_abandoned_sweep(wallet, txid).await;
+        }
+        if let Some(r) = activity_resend_refusal(&f, manager.spv().is_started(), peers) {
+            return Err(r.into());
+        }
+        #[cfg(test)]
+        let pause = self.hub.pause_resend.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause.mark_reached();
+            pause.release.notified().await;
+        }
+        // Track the replay task before a stop can abort the old client's resends.
+        let replay_lifecycle = if let Some(generation) = replay_generation {
+            let lifecycle = self.platform.lifecycle.lock().await;
+            if manager.spv().run_session() != generation || !manager.spv().is_started() {
+                return Err(EngineError::SpvNotRunning);
+            }
+            Some(lifecycle)
+        } else {
+            None
+        };
+        // Read again, held against an abandon through the hand-off: one
+        // since the check committed its mark, and its bytes stay unsent.
+        let gate = self.abandon_gate(wallet).read_owned().await;
+        if self.abandon_marked(wallet, txid).await {
+            return Err(EngineError::TxActionRefused(
+                TxActionRefusal::AlreadyAbandoned,
+            ));
+        }
+        let transaction = if replay_generation.is_some() {
+            let persister = self.live()?.persister;
+            let pending = tokio::task::spawn_blocking(move || {
+                persister
+                    .get_core_tx_record(wallet.0, &txid)
+                    .ok()
+                    .flatten()
+                    .filter(|r| {
+                        matches!(r.context, TransactionContext::Mempool)
+                            && r.transaction.txid() == txid
+                    })
+            })
+            .await?;
+            let Some(record) = pending else {
+                return Ok(());
+            };
+            record.transaction
+        } else {
+            entry.tx
+        };
+        let handle = self.wallet(&wallet).await?;
+        #[cfg(test)]
+        let wire = self.hub.resend_wire.lock().unwrap().clone();
+        // platform-wallet's only broadcast entry point waits for the
+        // network's acceptance (up to dash-spv's 60 s timeout). The send
+        // itself happens at once, so the call returns after a short
+        // hand-off window and leaves the wait to a background task; a
+        // send dash-spv refuses outright (no connection) is reported.
+        let mut task = tokio::spawn(async move {
+            let _gate = gate;
+            #[cfg(test)]
+            if let Some(wire) = wire {
+                wire.lock().unwrap().push(transaction.txid());
+                return Ok(transaction.txid());
+            }
+            let outcome = handle.core().broadcast_transaction(&transaction).await;
+            match &outcome {
+                Ok(_) => tracing::info!(%txid, "resent transaction accepted"),
+                Err(e) => {
+                    tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen")
+                }
+            }
+            outcome
+        });
+        {
+            let mut resends = self.resends.lock().unwrap_or_else(|p| p.into_inner());
+            resends.retain(|r| !r.is_finished());
+            resends.push(task.abort_handle());
+        }
+        drop(replay_lifecycle);
+        match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
+            Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
+                return Err(EngineError::NoPeers);
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Ok(Ok(_)) | Err(_) => {}
+        }
+        self.hub.note_announced(txid);
+        Ok(())
     }
 
     /// iOS "remove unconfirmed" (IOS-034): abandons every transaction of
     /// `wallet` (all loaded wallets for `None`) that Abandon would: out of a
     /// block, not abandoned, and not InstantSend-locked unless a ChainLocked
     /// spend of one of its inputs beat it; and rescans from the lowest
-    /// funding height of the coins they spent. Needs a running SPV client
-    /// for the rescan. Returns how many transactions were dropped
+    /// funding height of the coins they spent. Needs SPV running or
+    /// rebuilding for the rescan. Returns how many transactions were dropped
     /// (descendants included).
     pub async fn drop_unconfirmed(
         self: &Arc<Self>,
@@ -4877,7 +5031,7 @@ impl NetworkSession {
             if let Some(id) = &wallet {
                 this.require_wallet(id)?;
             }
-            if !manager.spv().is_started() {
+            if !this.spv_can_abandon(&manager) {
                 return Err(EngineError::SpvNotRunning);
             }
             let wallets: Vec<WalletId> = match wallet {
@@ -6411,7 +6565,7 @@ mod tests {
 }
 
 /// Tests: whether an abandon asked to stop the rebroadcast of `txid`
-/// ([`NetworkSession::stop_rebroadcast`]).
+/// ([`NetworkSession::stop_rebroadcasts`]).
 #[cfg(test)]
 pub(crate) fn rebroadcast_stop_asked(session: &NetworkSession, txid: Txid) -> bool {
     (session.hub.stopped_rebroadcasts.lock().unwrap().iter()).any(|(t, _)| *t == txid)

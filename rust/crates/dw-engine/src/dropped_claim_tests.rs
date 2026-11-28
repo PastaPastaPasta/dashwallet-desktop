@@ -177,10 +177,8 @@ fn a_payment_on_a_dropped_claims_change_goes_with_it_in_the_session() {
     assert_payment_dropped(&engine, &session, id, &payment);
 }
 
-/// A drop of what is built on a swept claim stops dash-spv's rebroadcast
-/// of the payment before its mark, as an Abandon does.
 #[test]
-fn a_payment_dropped_on_a_swept_claim_stops_its_rebroadcast_before_its_mark() {
+fn a_payment_dropped_on_a_swept_claim_stops_its_rebroadcast_after_its_mark() {
     let (_dir, engine, session, id) = engine_wallet();
     let (funding, claim, payment) = payment_on_a_claims_change(&engine, &session, id);
     let session = reopen(&engine, session);
@@ -194,9 +192,37 @@ fn a_payment_dropped_on_a_swept_claim_stops_its_rebroadcast_before_its_mark() {
     });
     let stopped = session.hub.stopped_rebroadcasts.lock().unwrap().clone();
     assert!(
-        stopped.contains(&(payment.txid(), false)),
-        "not stopped before its mark: {stopped:?}"
+        stopped.contains(&(payment.txid(), true)),
+        "not stopped after its mark: {stopped:?}"
     );
+}
+
+#[test]
+fn a_durable_key_wallet_sweep_rebuilds_the_rebroadcaster() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id) = engine_wallet();
+    let (funding, claim, payment) = payment_on_a_claims_change(&engine, &session, id);
+    super::own_spend_disk_tests::wait_stored(&session, id, &[claim.txid(), payment.txid()]);
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+
+    let persister = session.live().unwrap().persister;
+    super::own_spend_disk_tests::eventually("SPV rebuilt after the sweep", || {
+        manager.spv().run_session() > run
+    });
+    for tx in [claim, payment] {
+        assert!(
+            persister
+                .get_core_tx_record(id.0, &tx.txid())
+                .unwrap()
+                .is_none(),
+            "SPV rebuilt before the sweep was saved"
+        );
+    }
+    assert_eq!(manager.spv().run_session(), run + 1);
 }
 
 /// A mined payment from the claim's change stays when the store drops the
@@ -330,8 +356,8 @@ fn a_claim_the_rule_cant_decide_is_kept_after_a_restart() {
 }
 
 /// A claim whose input script isn't push-only and has no key of the
-/// coin's owner as a push: the rule says unsigned (`Ok(false)`), but a
-/// script that runs can build its key and signature, so it is kept with
+/// coin's owner as a push: the script can build its key and signature at
+/// runtime, so it is kept with
 /// the payment from its change, when the scan finds the coin and at the
 /// next start too.
 #[test]
@@ -341,7 +367,7 @@ fn a_claim_with_an_input_script_that_isnt_push_only_is_kept_after_a_restart() {
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
     assert_eq!(
         crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
-        Ok(false)
+        Err(crate::input_authorization::SpendAuthorizationError::RuntimeAuthorization)
     );
     mempool(&engine, &session, id, &claim);
     let payment = send(
@@ -395,7 +421,7 @@ fn abandoning_a_kept_claim_whose_input_script_isnt_push_only_frees_its_coin() {
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
     assert_eq!(
         crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
-        Ok(false)
+        Err(crate::input_authorization::SpendAuthorizationError::RuntimeAuthorization)
     );
     mempool(&engine, &session, id, &claim);
     let payment = send(
