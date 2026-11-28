@@ -1119,29 +1119,46 @@ fn another_network_is_refused_before_anything_is_read() {
     assert!(f.net.signed().is_empty());
 }
 
-/// Mainnet is off by the flag: the sheet has no Approve path, and an
-/// approval called directly is refused with the grant unused and nothing
-/// read or signed.
+/// Mainnet runs App Connect like any other network: the sheet, the quote
+/// and the approval go through, and the app gets bounded AUTHENTICATION
+/// session keys only.
 #[test]
-fn mainnet_approval_is_refused_even_when_called_directly() {
+fn mainnet_sheet_and_approval_run_with_bounded_authentication_keys() {
     let f = Fixture::on(true);
     let main = link(request(), NetworkSel::Mainnet);
-    assert_eq!(f.sheet(&main), Err(ConnectError::MainnetOff));
-    assert_eq!(
-        f.quote(&main, &Fixture::choice()),
-        Err(ConnectError::MainnetOff)
-    );
-    let grant = f.grant(request().request_hash(), [0; 32], u64::MAX / 2);
-    assert_eq!(
-        f.approve(&main, &Fixture::choice(), &grant),
-        Err(ConnectError::MainnetOff)
-    );
-    assert_eq!(f.retry(&main), Err(ConnectError::MainnetOff));
+    let sheet = f.sheet(&main).unwrap();
+    assert_eq!(sheet.terms.funding_limit, 51_000_000_000);
+    assert_eq!(sheet.max_funding_limit, MAX_FUNDING);
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&main, &choice);
+    let done = f.approve(&main, &choice, &grant).unwrap();
+    assert_eq!(done.keys_added, vec![6, 7, 8]);
+    assert!(!f.unused(&grant));
+    let updates = f.net.updates.lock().unwrap().clone();
+    assert_eq!(updates.len(), 1);
+    let (add, disable) = &updates[0];
+    assert!(disable.is_empty());
+    for k in &add[..2] {
+        assert_eq!(k.purpose(), Purpose::AUTHENTICATION);
+        assert_ne!(k.security_level(), SecurityLevel::MASTER);
+        assert!(k.total_budget().is_some());
+        assert!(k.expires_at().is_some());
+    }
+    assert_eq!(add[2].purpose(), Purpose::ENCRYPTION);
+}
+
+#[test]
+fn a_mainnet_wallet_refuses_a_test_network_request_before_anything_is_read() {
+    let f = Fixture::on(true);
+    for network in [NetworkSel::Testnet, NetworkSel::Devnet] {
+        let wrong = link(request(), network);
+        assert_eq!(f.sheet(&wrong), Err(ConnectError::Network));
+        assert_eq!(
+            f.quote(&wrong, &Fixture::choice()),
+            Err(ConnectError::Network)
+        );
+    }
     assert_eq!(f.net.reads(), 0);
-    assert!(f.unused(&grant));
-    assert!(f.net.signed().is_empty());
-    assert!(!enabled_on(&DashNetwork::Mainnet));
-    assert!(enabled_on(&DashNetwork::Testnet));
 }
 
 #[test]
@@ -1737,7 +1754,6 @@ fn nothing_returned_carries_the_payload() {
 fn statuses_follow_the_dip() {
     use dw_uri::connect::Status;
     assert_eq!(ConnectError::Network.status(), Some(Status::Failed));
-    assert_eq!(ConnectError::MainnetOff.status(), Some(Status::Unsupported));
     assert_eq!(ConnectError::Owner.status(), Some(Status::Invalid));
     assert_eq!(ConnectError::Stale.status(), Some(Status::Stale));
     assert_eq!(ConnectError::Hint.status(), Some(Status::Failed));
@@ -2610,21 +2626,34 @@ fn disconnect_retry_after_unknown_result_does_not_double_spend_or_disable_other_
 }
 
 #[test]
-fn list_quote_and_disconnect_refused_on_mainnet() {
+fn list_quote_and_disconnect_run_on_mainnet() {
     let f = Fixture::on(true);
     let me_b58 = b58(&id(ME));
-    let req = "ab".repeat(20);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 
-    assert_eq!(f.list_apps(&me_b58), Err(ConnectError::MainnetOff));
-    assert_eq!(
-        f.disconnect_quote(&me_b58, &req),
-        Err(ConnectError::MainnetOff)
+    let main = link(request(), NetworkSel::Mainnet);
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&main, &choice);
+    f.approve(&main, &choice, &grant).unwrap();
+
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 1);
+    let req = hex::encode(main.request.request_hash());
+    assert_eq!(listed.apps[0].request, req);
+    assert_eq!(listed.apps[0].keys.len(), 2);
+
+    let q = f.disconnect_quote(&me_b58, &req).unwrap();
+    assert_eq!(q.keys.len(), 2);
+    assert!(q.fee > 0 && q.fee <= DISCONNECT_FEE_BOUND);
+    let g = f.disconnect_grant(q.request, q.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done = f.disconnect(&me_b58, &req, &g).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+    assert!(
+        f.net.signed().ends_with(&[0]),
+        "MASTER key 0 signed the update"
     );
-    assert_eq!(
-        f.disconnect(&me_b58, &req, "g"),
-        Err(ConnectError::MainnetOff)
-    );
-    assert_eq!(f.net.reads(), 0, "mainnet refuses before any Platform read");
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 }
 
 #[test]

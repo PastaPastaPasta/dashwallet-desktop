@@ -801,6 +801,55 @@ fn a_flow_lease_pays_one_payout() {
     assert!(f.reserved(BOB).is_none(), "no second address reserved");
 }
 
+#[test]
+fn two_payouts_racing_on_one_flow_lease_pay_once() {
+    let f = fixture(false);
+    let lib = f.hooked();
+    let grants = vec![f.grant(GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits: 10 * SHIELDED,
+    })];
+    let lease = f
+        .engine
+        .block_on(f.session.begin_flow(
+            f.wallet,
+            FlowKind::ContactPayFromBalance,
+            grants,
+            Some(PaymentSource::Shielded),
+        ))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session
+        .platform
+        .payments
+        .hold_shielded_lease
+        .lock()
+        .unwrap() = Some(Arc::clone(&pause));
+    let call = || f.call(BOB, credits(), &lease, false);
+    let first = f.spawn_shielded(&lib, call());
+    assert!(pause.wait_reached(Duration::from_secs(60)));
+
+    let (first, second) = f.engine.block_on(async {
+        let call = call();
+        let pair = f.session.pay_gates(f.wallet, &call).await.unwrap();
+        let second = shielded_payout::pay_gated(&f.session, f.wallet, &*lib, pair, call);
+        tokio::pin!(second);
+        // FakeShielded's hook check is ready, so the second call waits on the wallet's spend lock.
+        let waiting = futures_util::poll!(second.as_mut()).is_pending();
+        pause.release.notify_one();
+        assert!(
+            waiting,
+            "the second payout must wait while the first holds the lease"
+        );
+        (first.await.unwrap(), second.await)
+    });
+    assert_eq!(first.unwrap().state, PayoutState::Sent);
+    assert_eq!(code(&second.unwrap_err()), "platform.lease_expired");
+    assert_eq!(lib.withdrawn_to().len(), 1);
+    assert_eq!(f.payout_rows().len(), 1);
+    assert!(f.reserved(BOB).is_none(), "no second address reserved");
+}
+
 /// A payout's `begin_flow` refuses a `PlatformOp` grant that caps no
 /// credits before redeeming it: the grant stays for another try.
 #[test]

@@ -27,7 +27,7 @@ import { useActionToast, useRefocus } from "../contacts/afterAction";
 import { RequestButtons } from "../contacts/RequestButtons";
 import { Page } from "../Routes";
 import { ReceivedSection } from "./Received";
-import { GrantSheet, Outcome } from "../tools/common";
+import { GrantSheet } from "../tools/common";
 
 /** What a view of the bell reads: the feed, read on opening, the names its events use, and the
  * actions its request rows run (one model per view, D16). */
@@ -54,7 +54,7 @@ function useRequestDone(walletId: string, pending: ContactSummaryInfo[], root: R
     (i) => root.current?.querySelectorAll<HTMLElement>(".bell-row.has-actions > .bell-row-open")[i] ?? heading(),
   );
   return (o, contact, index) => {
-    toast(o, true);
+    toast(o, false);
     if (o?.ok) arm(contact, index);
   };
 }
@@ -132,24 +132,25 @@ export function NotificationsPopover({
       <h2 className="bell-title" id={`${id}-title`} tabIndex={-1} ref={heading}>
         {t("notifications.title")}
       </h2>
-      {feed.isPending && <p className="placeholder-note">{t("notifications.loading")}</p>}
-      {feed.isError && (
-        <p className="form-problem" role="alert">
-          {t("notifications.readErrorDetail", { error: errorMessage(feed.error) })}
-        </p>
-      )}
-      {empty && (
-        <div className="bell-empty" data-testid="bell-empty">
-          <EmptyArt id={EMPTY.notifications.art} size={40} />
-          <p>{t("notifications.emptyPopover")}</p>
-        </div>
-      )}
-      <ReceivedSection walletId={walletId} network={network} limit={5} onOpen={(txid) => go(() => ui.set({ detail: txid }))} />
-      {cut.pending.length > 0 && (
-        <Requests contacts={cut.pending} more={cut.morePending} actions={actions} hasKeys={hasKeys} onOpen={(c) => go(() => openContact(c))} onDone={onDone} testId="bell-requests" />
-      )}
-      {cut.fresh.length > 0 && <Events title={t("notifications.section.new")} events={cut.fresh} fresh more={cut.moreFresh} nameOf={nameOf} onOpen={(e) => go(() => openEvent(e))} testId="bell-new" />}
-      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="bell-outcome" polite />
+      <div className="bell-content">
+        {feed.isPending && <p className="placeholder-note">{t("notifications.loading")}</p>}
+        {feed.isError && (
+          <p className="form-problem" role="alert">
+            {t("notifications.readErrorDetail", { error: errorMessage(feed.error) })}
+          </p>
+        )}
+        {empty && (
+          <div className="bell-empty" data-testid="bell-empty">
+            <EmptyArt id={EMPTY.notifications.art} size={40} />
+            <p>{t("notifications.emptyPopover")}</p>
+          </div>
+        )}
+        <ReceivedSection walletId={walletId} network={network} limit={5} onOpen={(txid) => go(() => ui.set({ detail: txid }))} />
+        {cut.pending.length > 0 && (
+          <Requests contacts={cut.pending} more={cut.morePending} actions={actions} hasKeys={hasKeys} onOpen={(c) => go(() => openContact(c))} onDone={onDone} testId="bell-requests" />
+        )}
+        {cut.fresh.length > 0 && <Events title={t("notifications.section.new")} events={cut.fresh} fresh more={cut.moreFresh} nameOf={nameOf} onOpen={(e) => go(() => openEvent(e))} testId="bell-new" />}
+      </div>
       <DashButton variant="plainBlue" size="small" className="bell-all" data-testid="bell-see-all" onClick={() => go(() => navigate("notifications"))}>
         {t("notifications.seeAll")}
       </DashButton>
@@ -217,7 +218,6 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
     );
   return (
     <div className="notifications" data-testid="notifications" ref={root}>
-      <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" polite />
       {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && EMPTY.notifications.action && (
         <EmptyState
           testId="notifications-empty"

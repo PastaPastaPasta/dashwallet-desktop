@@ -18,7 +18,7 @@
 //! spend has none after the upgrade. The engine saves it a pending one at
 //! the store's open and before each pass (`shielded_pool::keep_import_row`,
 //! for the journal's open artifact of the spend), which the release fails
-//! or the engine confirms once the scan finds its notes spent; the journal
+//! or the scan confirms from this transition's outputs. The journal
 //! reads the outcome from it (`shielded_pool::spend_outcome`). Once the
 //! journal settled it, the engine saves the row its settlement reads after
 //! each restart (`shielded_pool::keep_settled_import_row`), never a pending
@@ -71,12 +71,18 @@ fn subwallet() -> SubwalletId {
 /// fork's `shielded_pending_spends` (no `anchor_height`), written
 /// `armed_recording` and not `unsent`. None of upstream's own tables.
 fn zero_one_store(path: &Path) {
-    {
-        let mut store = FileBackedShieldedStore::open_path(path, 100).unwrap();
-        for leaf in 0..TREE {
-            store.append_commitment(&cmx(leaf), true).unwrap();
-        }
+    zero_one_store_for(path, ST);
+}
+
+fn keep_base_tree(path: &Path) {
+    let mut store = FileBackedShieldedStore::open_path(path, 100).unwrap();
+    for leaf in 0..TREE {
+        store.append_commitment(&cmx(leaf), true).unwrap();
     }
+}
+
+fn zero_one_store_for(path: &Path, transition: &[u8]) {
+    keep_base_tree(path);
     let db = rusqlite::Connection::open(path).unwrap();
     db.execute_batch(
         "DROP TABLE shielded_pending_spends;
@@ -109,7 +115,7 @@ fn zero_one_store(path: &Path) {
             &ACTIVITY[..],
             &ANCHOR[..],
             &NULLIFIER[..],
-            ST,
+            transition,
         ],
     )
     .unwrap();
@@ -128,6 +134,20 @@ fn cmx(position: u64) -> [u8; 32] {
 /// [`TREE`] of nobody's, then those of `spent` (each nullifier the spend of
 /// an action at the next position).
 async fn network(pool: u64, spent: &[[u8; 32]]) -> dash_sdk::Sdk {
+    let actions: Vec<_> = spent
+        .iter()
+        .enumerate()
+        .map(|(i, nullifier)| ShieldedEncryptedNote {
+            cmx: cmx(TREE + i as u64).to_vec(),
+            nullifier: nullifier.to_vec(),
+            cv_net: vec![],
+            encrypted_note: vec![],
+        })
+        .collect();
+    network_with_actions(pool, actions).await
+}
+
+async fn network_with_actions(pool: u64, actions: Vec<ShieldedEncryptedNote>) -> dash_sdk::Sdk {
     let mut sdk = dash_sdk::Sdk::new_mock();
     let count = 2048
         * u32::from(
@@ -137,15 +157,14 @@ async fn network(pool: u64, spent: &[[u8; 32]]) -> dash_sdk::Sdk {
                 .shielded_queries
                 .max_query_chunks,
         );
-    let nullifiers = std::iter::repeat_n([0xAA; 32], TREE as usize).chain(spent.iter().copied());
-    let notes: Vec<ShieldedEncryptedNote> = nullifiers
-        .enumerate()
-        .map(|(position, nullifier)| ShieldedEncryptedNote {
-            cmx: cmx(position as u64).to_vec(),
-            nullifier: nullifier.to_vec(),
+    let notes: Vec<ShieldedEncryptedNote> = (0..TREE)
+        .map(|position| ShieldedEncryptedNote {
+            cmx: cmx(position).to_vec(),
+            nullifier: vec![0xAA; 32],
             cv_net: vec![],
             encrypted_note: vec![],
         })
+        .chain(actions)
         .collect();
     let total_count = notes.len() as u64;
     for chunk in 0..16 {
@@ -442,33 +461,131 @@ async fn a_released_import_reads_failed_and_settles_not_executed() {
     }
 }
 
-/// An imported spend that executed: the scan finds its note spent and
-/// drops its record, and the engine confirms its row (done), which settles
-/// its artifact `executed`. Nothing of it is left to re-send, and its note
-/// stays spent; the reading repeats, and no row is saved again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_executed_import_reads_done_and_settles_executed() {
+async fn another_installations_spend_does_not_confirm_an_import() {
+    let dir = dw_testutil::private_tempdir();
+    let imported = dir.path().join("upgraded.sqlite");
+    let restored = dir.path().join("restored.sqlite");
+    let original = transfer(1);
+    zero_one_store_for(&imported, &original);
+    keep_base_tree(&restored);
+
+    let copy = open(restored, network(TREE, &[]).await).await;
+    let selected = copy
+        .store()
+        .read()
+        .await
+        .get_unspent_notes(subwallet())
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    let competing = super::shielded_tests::signed_spend(
+        2,
+        &platform_wallet::wallet::shielded::ShieldedDispatchKind::Transfer,
+        ANCHOR,
+        &[selected[0].nullifier],
+    );
+    let (coordinator, artifact) = import_and_scan(imported.clone(), &original, &competing).await;
+    let mut want = row(ShieldedActivityStatus::Failed);
+    want.note_cmxs = vec![[0x31; 32]];
+    assert_eq!(
+        outcome(&coordinator, &artifact).await,
+        Some((ArtifactStatus::NotExecuted, None)),
+    );
+    assert_eq!(rows(&coordinator).await, [want]);
+    let after = held(&coordinator, &imported).await;
+    assert!(!after.record && after.reservation.is_none() && !after.row);
+    assert!(after.spent && !after.spendable);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_import_with_only_spent_input_evidence_reads_unknown() {
     let dir = dw_testutil::private_tempdir();
     let path = dir.path().join("shielded.sqlite");
     zero_one_store(&path);
-    let coordinator = open(path.clone(), network(TREE - 1, &[NULLIFIER]).await).await;
-    assert!(keep(&coordinator, &artifact(OPEN)).await);
-
-    coordinator.sync(true, &CancellationToken::new()).await;
-    let done = (
-        vec![row(ShieldedActivityStatus::Confirmed)],
-        Some((ArtifactStatus::Executed, Some(("executed", None)))),
-    );
-    assert_eq!(read(&coordinator).await, done);
+    let (coordinator, artifact) = import_and_scan(path.clone(), ST, &transfer(2)).await;
+    let want = row(ShieldedActivityStatus::Unknown);
+    assert_eq!(outcome(&coordinator, &artifact).await, Some(FREED));
+    assert_eq!(rows(&coordinator).await, [want]);
     let after = held(&coordinator, &path).await;
     assert!(!after.record && after.reservation.is_none() && !after.row);
     assert!(after.spent && !after.spendable);
-    assert_eq!(read(&coordinator).await, done);
-    assert!(!keep(&coordinator, &artifact(OPEN)).await);
-    let settled = artifact(ArtifactStatus::Executed);
-    assert!(!keep(&coordinator, &settled).await);
-    assert!(!keep_settled(&coordinator, &settled).await);
-    assert_eq!(read(&coordinator).await, done);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn its_own_proved_output_confirms_an_import() {
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join("shielded.sqlite");
+    let original = transfer(1);
+    zero_one_store_for(&path, &original);
+    let (coordinator, artifact) = import_and_scan(path, &original, &original).await;
+    assert_eq!(
+        outcome(&coordinator, &artifact).await,
+        Some((ArtifactStatus::Executed, Some(("executed", None)))),
+    );
+    assert_eq!(
+        rows(&coordinator).await[0].status,
+        ShieldedActivityStatus::Confirmed
+    );
+}
+
+fn transfer(n: u8) -> Vec<u8> {
+    super::shielded_tests::signed_spend(
+        n,
+        &platform_wallet::wallet::shielded::ShieldedDispatchKind::Transfer,
+        ANCHOR,
+        &[NULLIFIER],
+    )
+}
+
+async fn import_and_scan(
+    path: PathBuf,
+    original: &[u8],
+    published: &[u8],
+) -> (NetworkShieldedCoordinator, ShieldedArtifact) {
+    use dpp::serialization::PlatformDeserializableTrusted;
+    use dpp::state_transition::StateTransition;
+    use dpp::state_transition::shielded_transfer_transition::accessors::ShieldedTransferTransitionAccessorsV0;
+
+    let StateTransition::ShieldedTransfer(transfer) =
+        StateTransition::deserialize_from_bytes_trusted(published).unwrap()
+    else {
+        panic!("expected a transfer");
+    };
+    let action = &transfer.actions()[0];
+    let mined = ShieldedEncryptedNote {
+        cmx: action.cmx.to_vec(),
+        nullifier: action.nullifier.to_vec(),
+        cv_net: vec![],
+        encrypted_note: vec![],
+    };
+    // The proved count used for pruning predates the imported spend's
+    // anchor. Only the note scan can close its reservation in this test.
+    let coordinator = open(path, network_with_actions(TREE - 1, vec![mined]).await).await;
+    let artifact = ShieldedArtifact {
+        st_hash: Some(Sha256::digest(original).into()),
+        ..artifact(OPEN)
+    };
+    assert!(keep(&coordinator, &artifact).await);
+    // Model the trial-decrypted change note from the published action.
+    coordinator
+        .store()
+        .write()
+        .await
+        .save_note(
+            subwallet(),
+            &ShieldedNote {
+                position: TREE,
+                cmx: action.cmx,
+                nullifier: [0x18; 32],
+                block_height: H,
+                is_spent: false,
+                value: 200,
+                note_data: vec![0; 115],
+            },
+        )
+        .unwrap();
+    coordinator.sync(true, &CancellationToken::new()).await;
+    (coordinator, artifact)
 }
 
 /// A restart before the spend resolves: the library's row is gone with the
@@ -759,6 +876,13 @@ async fn a_settled_imports_row_is_kept_after_a_restart() {
             let coordinator = open(path.clone(), network(pool, spent).await).await;
             assert!(keep(&coordinator, &artifact(OPEN)).await, "{settled:?}");
             coordinator.sync(true, &CancellationToken::new()).await;
+            if settled == ArtifactStatus::Executed {
+                // The library has proved an output of this transition.
+                let mut store = coordinator.store().write().await;
+                store
+                    .save_activity(subwallet(), &row(ShieldedActivityStatus::Confirmed))
+                    .unwrap();
+            }
             let (rows, outcome) = read(&coordinator).await;
             assert_eq!(rows, [row(status)], "{settled:?}");
             assert_eq!(outcome.map(|o| o.0), Some(settled));

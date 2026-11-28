@@ -161,6 +161,7 @@ pub(crate) struct PlatformRuntime {
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
+    pub(crate) shielded_bind_warnings: Mutex<HashSet<&'static str>>,
     /// App Connect responses sealed and not yet published.
     pub(crate) app_connect: super::app_connect::PendingSends,
     /// A test's pause of the next shielded pass, after its admission and
@@ -591,6 +592,7 @@ impl PlatformRuntime {
             shielded_drain: std::sync::OnceLock::new(),
             drained_held: Mutex::default(),
             shielded_checked_at: AtomicU64::new(0),
+            shielded_bind_warnings: Mutex::default(),
             app_connect: Default::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
@@ -1194,26 +1196,6 @@ impl NetworkSession {
             }
         }
         false
-    }
-
-    /// The removal gate's hold ([`super::shielded_pool::removal_hold`]) of
-    /// any loaded wallet, carried over first: why a restore of this
-    /// network's earlier data is refused while it is open.
-    pub(crate) async fn restore_hold(&self) -> Option<crate::ShieldedHold> {
-        let live = self.live().ok()?;
-        let mut held = None;
-        for id in live.manager.list_wallet_ids_blocking() {
-            match super::shielded_pool::removal_hold(self, &live.manager, &live.appdb, WalletId(id))
-                .await
-            {
-                Some(crate::ShieldedHold::CarriedOver) => {
-                    return Some(crate::ShieldedHold::CarriedOver);
-                }
-                Some(hold) => held = Some(hold),
-                None => {}
-            }
-        }
-        held
     }
 
     /// Whether SPV is starting or running ([`Self::spv_state`] tells which).

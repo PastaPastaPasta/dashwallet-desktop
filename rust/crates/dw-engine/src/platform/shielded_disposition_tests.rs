@@ -286,6 +286,25 @@ fn a_spent_create_with_no_consumed_proof_holds_the_close_and_the_removal() {
     }
 }
 
+#[test]
+fn an_unreadable_registration_proof_refuses_close_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let st_hash = spent_create(&engine, &session, wallet);
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.execute(
+        "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, CAST(X'ff' AS TEXT))",
+        rusqlite::params![scope, key],
+    )
+    .unwrap();
+    assert!(session.live().unwrap().appdb.setting(&scope, &key).is_err());
+    refused(engine.block_on(session.unload_wallet(wallet)));
+    assert!(session.require_wallet(&wallet).is_ok());
+}
+
 /// Where a removal of the wallet is cut (#976): after its app rows are
 /// gone, the consumed proof with them, and before the journal archives its
 /// artifacts.
@@ -628,6 +647,95 @@ fn cancelled_first_send_holds_notes_and_reads_checking() {
         assert!(reserved.iter().any(|(r, ..)| r == n), "{n:?} held");
     }
     refused(engine.block_on(session.unload_wallet(wallet)));
+}
+
+#[test]
+fn a_held_refusal_with_no_live_row_shows_pending_until_release() {
+    use crate::platform::shielded::{ShieldedActivityStatus as Shown, ShieldedRefusal};
+    let dir = dw_testutil::private_tempdir();
+    let first = spends().remove(0);
+    let st_hash = Sha256::digest(&first.st_bytes).into();
+    let id = first.activity_id;
+    let (wallet, journal) = {
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        assert!(
+            engine
+                .block_on(session.dashpay(wallet).shielded_history(0, 10))
+                .unwrap()
+                .is_empty()
+        );
+        store_spends(&engine, &session, wallet);
+        engine
+            .block_on(session.leases.settle_shielded_artifact(
+                wallet,
+                st_hash,
+                ArtifactStatus::Unresolved { unrecorded: false },
+                Some(("unresolved", Some("cancelled"))),
+                false,
+            ))
+            .unwrap();
+        let journal = session
+            .data_dir()
+            .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+        engine.block_on(engine.shutdown()).unwrap();
+        (wallet, journal)
+    };
+    let archived = [0x44u8; 32];
+    assert_eq!(
+        rusqlite::Connection::open(&journal)
+            .unwrap()
+            .execute(
+                "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, kind, anchor, status, at)
+                 SELECT wallet, ?3, origin, ?3, kind, anchor, 'archived', at
+                 FROM shielded_artifact WHERE wallet = ?1 AND activity = ?2",
+                rusqlite::params![&wallet.0[..], &id[..], &archived[..]],
+            )
+            .unwrap(),
+        1
+    );
+    damage_artifact_read(&journal, wallet, archived, true);
+    let engine = engine_at(dir.path());
+    let session = open(&engine);
+    engine
+        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    assert!(bind(&engine, &session, wallet));
+    let dp = session.dashpay(wallet);
+    let read = || {
+        engine
+            .block_on(dp.shielded_history(0, 10))
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == hex::encode(id))
+            .unwrap()
+    };
+    let held = read();
+    assert_eq!(held.status, Shown::Pending);
+    assert_eq!(
+        held.kind,
+        crate::platform::shielded::ShieldedActivityKind::Sent
+    );
+    assert_eq!(held.refusal, Some(ShieldedRefusal::Held));
+    damage_artifact_read(&journal, wallet, archived, false);
+    assert!(admit(&engine, &session, wallet, id[0]).is_err());
+
+    let s = Arc::clone(&session);
+    engine.block_on(async move {
+        let m = s.manager().unwrap();
+        let c = pool::coordinator(&s, &m, None).await.unwrap();
+        let sub = subwallet(wallet);
+        let mut store = c.store().write().await;
+        for n in &first.nullifiers {
+            store.clear_pending(sub, n).unwrap();
+        }
+        let mut row = store.get_activity_by_entry_id(sub, &id).unwrap().unwrap();
+        row.status = ShieldedActivityStatus::Failed;
+        store.save_activity(sub, &row).unwrap();
+    });
+    pass(&engine, &session);
+    assert_eq!(read().status, Shown::Failed);
 }
 
 /// L4: a failed history row settles `not_executed` only once the library
@@ -2329,6 +2437,101 @@ fn a_pass_is_held_while_a_held_spends_row_cannot_be_kept() {
         ],
         [(false, 0), (false, 0), (true, 1)]
     );
+}
+
+#[test]
+fn an_unreadable_import_reports_a_held_pass_to_both_wallets() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet, spend) = launch_with_import(&engine);
+    let healthy = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert!(bind(&engine, &session, healthy));
+    let (cancel, _cancelled) = tokio::sync::watch::channel(false);
+    let (signals, _signalled) = tokio::sync::mpsc::unbounded_channel();
+    *super::super::runtime::guard(&session.platform.supervisor) =
+        Some(super::super::runtime::Supervisor {
+            cancel,
+            signals,
+            task: None,
+            running: true,
+        });
+
+    let s = Arc::clone(&session);
+    let id = spend.activity_id;
+    engine.block_on(async move {
+        let manager = s.manager().unwrap();
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let mut second = spend;
+        second.activity_id = AGAIN;
+        store.arm_redrive(subwallet(wallet), second).unwrap();
+    });
+    let path = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    damage_artifact_read(&path, wallet, id, true);
+    *session.platform.notes_count.lock().unwrap() = Some(Some(0));
+    let before = session.platform.passes_run.load(SeqCst);
+    assert!(!engine.block_on(pool::periodic_pass(
+        Arc::clone(&session),
+        session.manager().unwrap(),
+        |_| true
+    )));
+
+    for id in [wallet, healthy] {
+        let info = engine
+            .block_on(session.dashpay(id).shielded_sync_info())
+            .unwrap();
+        assert!(info.last_pass_failed);
+        let json = serde_json::to_value(info).unwrap();
+        assert!(
+            json["last_pass_failure_reason"]
+                .as_str()
+                .unwrap()
+                .contains("imported spend history")
+        );
+    }
+    let err = engine
+        .block_on(session.dashpay(healthy).shielded_sync())
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("imported spend history"),
+        "{err:?}"
+    );
+    assert_eq!(session.platform.passes_run.load(SeqCst), before);
+}
+
+#[test]
+fn a_malformed_archived_import_does_not_refuse_a_new_dispatch() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet, spend) = launch_with_import(&engine);
+    pool::force_keyset_spends(&session, true);
+    for nullifier in &spend.nullifiers {
+        store_note(&engine, &session, wallet, *nullifier, false);
+    }
+    assert_eq!(free_notes(&engine, &session, wallet, &spend), Some(true));
+    let path = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE shielded_artifact SET status = 'archived' WHERE wallet = ?1 AND activity = ?2",
+            rusqlite::params![&wallet.0[..], &spend.activity_id[..]],
+        )
+        .unwrap();
+    damage_artifact_read(&path, wallet, spend.activity_id, true);
+    assert_eq!(spend_freed_notes(&engine, &session, wallet, &spend), Ok(()));
 }
 
 /// #931: the wait ends with the mark. An imported spend's pending row

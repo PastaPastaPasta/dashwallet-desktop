@@ -5,7 +5,7 @@ import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
 // Localization (MP-14): the app's own text under the two pseudo-locales (./pseudo.ts): the splash,
 // a refused store, a data folder others can change and StorageInUse, and the wallet list's loading and failed states, File ▸ Open URI… with a refused link, About,
-// Pay's tabs, "Links you opened" at each age boundary, amount entry in fiat and its notes, and
+// Pay's recipient field, "Links you opened" at each age boundary, amount entry in fiat and its notes, and
 // Pay's fee warning.
 
 /** Amounts, fiat values, versions, the network's name and engine text. */
@@ -48,7 +48,6 @@ async function linkAges(page: Page, ages: number[]) {
 
 async function payToAddress(page: Page) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(PAYEE);
 }
 
@@ -88,13 +87,13 @@ export const STATES: Record<string, State> = {
       await page.getByTestId("about").waitFor();
     },
   },
-  "pay-tabs": {
+  "pay-recipient": {
     scenario: "dashpay-registered",
-    roots: ["pay-tabs"],
+    roots: ["pay-recipient"],
     go: async (page) => {
       await toolbar(page);
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs").waitFor();
+      await page.getByTestId("pay-recipient").waitFor();
     },
   },
   "saved-links": { scenario: "saved-links", roots: ["saved-links"], go: (page) => linkAges(page, [5 * 60, 2 * 3600, 3 * 86_400]) },

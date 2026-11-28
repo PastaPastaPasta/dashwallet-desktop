@@ -144,9 +144,18 @@ pub(crate) fn recover(root: &Path, network: &DashNetwork) -> Result<PathBuf, Eng
         let _ = std::fs::remove_dir(&path);
         return Err(e);
     }
-    if let Err(e) = sync_dir(root) {
-        tracing::warn!(error = %e, "network-folders.json renamed but its folder not synced");
-    }
+    let sync_redirect = || {
+        #[cfg(test)]
+        if FAIL_FINAL_SYNC.get() {
+            return Err(io::Error::other("injected at the final sync").into());
+        }
+        sync_dir(root)
+    };
+    sync_redirect().map_err(|e| {
+        EngineError::RetryableIo(format!(
+            "{NETWORK_FOLDERS_FILE} renamed but its folder not synced: {e}"
+        ))
+    })?;
     Ok(path)
 }
 
@@ -203,6 +212,7 @@ fn create_owner_only_dir(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 thread_local! {
     static FAIL_BEFORE_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_FINAL_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Replaces the record: a temporary file of this write's own in `root`,
@@ -456,6 +466,23 @@ mod tests {
             resolve(root.path(), &DashNetwork::Mainnet).unwrap(),
             root.path().join("mainnet-recovered-1")
         );
+    }
+
+    #[test]
+    fn a_failed_final_sync_is_a_retryable_error() {
+        let root = dw_testutil::private_tempdir();
+        FAIL_FINAL_SYNC.set(true);
+        let failed = recover(root.path(), &DashNetwork::Testnet);
+        FAIL_FINAL_SYNC.set(false);
+        let e = failed.unwrap_err();
+        assert!(matches!(e, EngineError::RetryableIo(_)), "{e:?}");
+        assert_eq!(
+            resolve(root.path(), &DashNetwork::Testnet).unwrap(),
+            root.path().join("testnet-recovered-1"),
+            "the record already names the folder: it stays"
+        );
+        let dir = recover(root.path(), &DashNetwork::Testnet).unwrap();
+        assert_eq!(dir, root.path().join("testnet-recovered-2"));
     }
 
     #[test]

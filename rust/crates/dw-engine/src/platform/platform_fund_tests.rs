@@ -2470,7 +2470,7 @@ fn arming_names_what_it_did_and_undoing_touches_only_that() {
         let s = Arc::clone(&fx.s);
         (fx.engine)
             .block_on(
-                async move { arm_fund(&s, wallet, (at, 1_000_000), "a".into(), 1, false).await },
+                async move { arm_fund(&s, wallet, (at, 1_000_000), "a".into(), 1, None).await },
             )
             .unwrap()
     };

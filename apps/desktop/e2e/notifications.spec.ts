@@ -57,12 +57,16 @@ test("IOS-075 accepts a request from the bell under a passphrase grant", async (
   const errors = await open(page);
   await openBell(page);
   await expect(request(page, "heidi").getByTestId("bell-accept")).toHaveAccessibleName("Accept heidi");
+  const seeAll = page.getByTestId("bell-see-all");
+  await expect(seeAll).toBeVisible();
+  const before = await seeAll.boundingBox();
   await request(page, "heidi").getByTestId("bell-accept").click();
   await expect(page.getByTestId("grant-sheet")).toBeVisible();
   await authorize(page);
-  await expect(page.getByTestId("bell-outcome")).toHaveText("You and heidi are now contacts.");
+  await expect(page.locator(".toast-host")).toHaveText("You and heidi are now contacts.");
   await expect(request(page, "heidi")).toHaveCount(0);
   await expect(page.getByTestId("bell-request")).toHaveCount(1);
+  expect(await seeAll.boundingBox()).toEqual(before);
   // The popover stayed open through the passphrase sheet; Contacts lists heidi as a contact.
   await page.keyboard.press("Escape");
   await page.getByTestId("sidebar-contacts").click();
@@ -135,7 +139,7 @@ test("D28 after a keyboard accept, focus goes to the next request, then to the p
   await request(page, "heidi").getByTestId("bell-accept").focus();
   await page.keyboard.press("Enter");
   await authorize(page);
-  await expect(page.getByTestId("bell-outcome")).toHaveText("You and heidi are now contacts.");
+  await expect(page.locator(".toast-host")).toHaveText("You and heidi are now contacts.");
   await expect(request(page, "heidi")).toHaveCount(0);
   await expect(request(page, "Grace Hopper").locator(".bell-row-open")).toBeFocused();
   await page.keyboard.press("Tab");

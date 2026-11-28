@@ -7,7 +7,6 @@ async function payTo(page: Page, scenario: string, address: string, amount = "")
   await page.goto(fixtureUrl(scenario, "light"));
   await page.getByTestId("hero-amount").waitFor();
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   if (amount) await page.getByTestId("pay-amount").fill(amount);
   await page.getByTestId("pay-address").fill(address);
 }

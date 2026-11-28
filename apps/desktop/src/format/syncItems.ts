@@ -30,6 +30,7 @@ export interface SyncItem {
   /** `incomplete` for a failed pass that the next one retries shortly, not a bring-up that stopped
    * short until the next start. */
   pass?: boolean;
+  reason?: string;
 }
 
 const item = (name: SyncItemName, state: SyncItemState, percent: number | null = null): SyncItem => ({ name, state, percent });
@@ -60,9 +61,8 @@ export function platformItem(s: DashPaySyncStatus | null | undefined, failed = f
   return item("platform", "done");
 }
 
-/** `null` while Shielded is not on this network or this session. A running pass is syncing, ahead
- * of the last pass's outcome; not established yet is syncing too (passes run again); once
- * established, a failed last pass is incomplete until one succeeds. */
+/** `null` while Shielded is off. A running pass takes precedence over the last pass's outcome.
+ * A local hold shows up even before the account's first successful pass. */
 export function shieldedItem(s: ShieldedSyncInfo | null | undefined, failed = false): SyncItem | null {
   if (s === null) return null;
   if (s === undefined) return item("shielded", failed ? "unread" : "syncing");
@@ -71,6 +71,9 @@ export function shieldedItem(s: ShieldedSyncInfo | null | undefined, failed = fa
   const gate = shieldedReceiveGate(s);
   if (gate === "unlock" || gate === "watchOnly") return item("shielded", gate);
   if (s.syncing) return item("shielded", "syncing", scanShare(s.scan));
+  if (s.lastPassFailed && s.lastPassFailureReason) {
+    return { ...item("shielded", "incomplete"), pass: true, reason: s.lastPassFailureReason };
+  }
   if (!s.established) return item("shielded", "syncing");
   return s.lastPassFailed ? { ...item("shielded", "incomplete"), pass: true } : item("shielded", "done");
 }
@@ -101,7 +104,7 @@ export function itemText(i: SyncItem, percent: (p: number) => string): string {
     case "syncing":
       return i.percent !== null ? t("shell.sync.items.scan", { percent: percent(i.percent) }) : t("shell.sync.items.syncing");
     case "incomplete":
-      return t(i.name === "platform" && !i.pass ? "shell.sync.items.platformIncomplete" : "shell.sync.items.shieldedIncomplete");
+      return i.reason ?? t(i.name === "platform" && !i.pass ? "shell.sync.items.platformIncomplete" : "shell.sync.items.shieldedIncomplete");
     case "unread":
       return t("shell.sync.items.unread");
     case "unlock":

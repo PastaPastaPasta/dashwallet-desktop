@@ -114,6 +114,18 @@ fn engine_wallet_recorded() -> (
     WalletId,
     Arc<Recorder>,
 ) {
+    engine_wallet_recorded_with_options(offline())
+}
+
+fn engine_wallet_recorded_with_options(
+    options: crate::SessionOptions,
+) -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Arc<Recorder>,
+) {
     use crate::EngineConfig;
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
     let dir = tempfile::tempdir().unwrap();
@@ -131,7 +143,9 @@ fn engine_wallet_recorded() -> (
         Arc::clone(&recorder) as Arc<dyn crate::EventSink>,
     )
     .unwrap();
-    let session = open(&engine);
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, options))
+        .unwrap();
     engine
         .block_on(session.vault_op(|v| v.create(None)))
         .unwrap();
