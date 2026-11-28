@@ -189,6 +189,10 @@ pub struct CoinJoinBalances {
     /// minimum, mixed or not (collaterals, change, a consolidated output):
     /// what "Move mixed coins" can take, so what it is offered for.
     pub coinjoin_account: u64,
+    /// Confirmed, unlocked CoinJoin-account coins above the sweep minimum
+    /// held by a coordinator hand-off (`Legacy`, `FinalInputs`, `Collateral`):
+    /// what "Return to Core" (`return_from_mixing`) can recover.
+    pub held_from_mixing: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -325,6 +329,99 @@ pub struct SweepResult {
 const SETTINGS_KEY: &str = "coinjoin.settings";
 /// Per-wallet salt, display hex (`coinjoinsalt get`).
 const SALT_KEY: &str = "coinjoin.salt";
+const HANDOFF_PREFIX: &str = "coinjoin.handoff.";
+pub(crate) const TRACKED_WALLET_KEY: &str = "coinjoin.handoff_tracked";
+const TRACKED_ORIGIN_PREFIX: &str = "coinjoin.handoff_origin.";
+pub(crate) const RETURN_PREFIX: &str = "coinjoin.return.";
+
+fn handoff_key(outpoint: OutPoint) -> String {
+    format!("{HANDOFF_PREFIX}{outpoint}")
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum CoinJoinHandoff {
+    FinalInputs,
+    Collateral(Box<Transaction>),
+    Legacy,
+}
+
+pub(crate) fn read_handoffs(
+    db: &AppDb,
+    scope: &str,
+    coins: &[(OutPoint, Option<Txid>, bool)],
+) -> Result<HashMap<OutPoint, CoinJoinHandoff>, AppDbError> {
+    let mut handoffs = HashMap::new();
+    let tracked_wallet = db.setting(scope, TRACKED_WALLET_KEY)?.as_deref() == Some("1");
+    for &(outpoint, origin, eligible_for_legacy_hold) in coins {
+        let handoff = if let Some(value) = db.setting(scope, &handoff_key(outpoint))? {
+            (hex::decode(value).ok())
+                .and_then(|bytes| dashcore::consensus::deserialize::<Transaction>(&bytes).ok())
+                .filter(|tx| tx.input.len() == 1 && tx.input[0].previous_output == outpoint)
+                .map_or(CoinJoinHandoff::FinalInputs, |tx| {
+                    CoinJoinHandoff::Collateral(Box::new(tx))
+                })
+        } else if eligible_for_legacy_hold && !tracked_wallet {
+            if let Some(origin) = origin
+                && db.setting(scope, &tracked_origin_key(origin))?.as_deref() == Some("1")
+            {
+                continue;
+            }
+            CoinJoinHandoff::Legacy
+        } else {
+            continue;
+        };
+        handoffs.insert(outpoint, handoff);
+    }
+    Ok(handoffs)
+}
+
+fn tracked_origin_key(template: Txid) -> String {
+    format!("{TRACKED_ORIGIN_PREFIX}{template}")
+}
+
+pub(crate) fn coinjoin_template(tx: &Transaction) -> Txid {
+    let mut template = tx.clone();
+    for input in &mut template.input {
+        input.script_sig = ScriptBuf::new();
+    }
+    template.txid()
+}
+
+impl NetworkSession {
+    pub(crate) async fn mark_coinjoin_handoffs_tracked(
+        &self,
+        wallet_id: WalletId,
+    ) -> Result<(), EngineError> {
+        let scope = dw_appdb::local_scope(&wallet_id.to_string());
+        self.appdb_op(move |db| db.set_setting_durable(&scope, TRACKED_WALLET_KEY, Some("1")))
+            .await
+    }
+
+    async fn record_coinjoin_handoff(
+        &self,
+        wallet_id: WalletId,
+        inputs: Vec<OutPoint>,
+        collateral: Option<&Transaction>,
+        origins: Vec<Txid>,
+    ) -> Result<(), EngineError> {
+        let scope = dw_appdb::local_scope(&wallet_id.to_string());
+        let value = collateral.map_or_else(
+            || "final".into(),
+            dashcore::consensus::encode::serialize_hex,
+        );
+        self.appdb_op(move |db| {
+            let keys: Vec<String> = inputs.into_iter().map(handoff_key).collect();
+            let origins: Vec<String> = origins.into_iter().map(tracked_origin_key).collect();
+            let updates: Vec<(&str, Option<&str>)> = keys
+                .iter()
+                .map(|key| (key.as_str(), Some(value.as_str())))
+                .chain(origins.iter().map(|key| (key.as_str(), Some("1"))))
+                .collect();
+            db.set_settings_durable(&scope, &updates)
+        })
+        .await
+    }
+}
 
 /// The setting that stores `salt`, read from a Dash Core wallet
 /// (`cj_salt`) at import.
@@ -777,6 +874,15 @@ impl MixViewCoin {
         self.coin.coinjoin_account && is_collateral_amount(self.value())
     }
 
+    fn collateral_available(&self) -> bool {
+        self.free()
+            || (!self.coin.user_locked
+                && matches!(
+                    self.coin.coinjoin_handoff,
+                    Some(CoinJoinHandoff::Collateral(_))
+                ))
+    }
+
     fn bip44(&self, network: dashcore::Network) -> bool {
         self.path
             .as_ref()
@@ -804,7 +910,7 @@ impl MixView {
     fn has_collateral_inputs(&self, only_confirmed: bool) -> bool {
         self.coins.iter().any(|c| {
             c.collateral()
-                && c.free()
+                && c.collateral_available()
                 && if only_confirmed {
                     c.final_enough()
                 } else {
@@ -938,7 +1044,12 @@ impl MixView {
         let mut map: BTreeMap<String, (Address, Vec<&MixViewCoin>)> = BTreeMap::new();
         for c in &self.coins {
             let usable_account = c.bip44(network) || c.coin.coinjoin_account;
-            if !usable_account || !c.trusted() || !c.free() {
+            // Funding transactions must not consume our own unconfirmed
+            // change. If its parent is later abandoned, a sibling input
+            // recorded in the sweep journal could otherwise stay held with
+            // no valid transaction to resolve it. InstantSend-locked
+            // outputs are final enough for the coordinator.
+            if !usable_account || !c.final_enough() || !c.free() {
                 continue;
             }
             if !c.coin.utxo.is_spendable(self.height) {
@@ -1060,6 +1171,19 @@ fn compute_balances(
         })
         .map(|c| c.value())
         .sum();
+    let held_from_mixing = (view.coins.iter())
+        .filter(|c| {
+            c.coin.coinjoin_account
+                && c.coin.coinjoin_handoff.is_some()
+                && !c.coin.user_locked
+                && c.coin.utxo.is_confirmed
+                && c.value() > dw_coinjoin::recovery::SWEEP_MIN_COIN
+                && c.path
+                    .as_ref()
+                    .is_some_and(|p| is_coinjoin_path(p, network))
+        })
+        .map(|c| c.value())
+        .sum();
     (
         CoinJoinBalances {
             anonymizable,
@@ -1068,6 +1192,7 @@ fn compute_balances(
             fully_mixed,
             mixable_unfinished,
             coinjoin_account,
+            held_from_mixing,
         },
         average,
     )
@@ -1434,8 +1559,10 @@ impl NetworkSession {
     ) -> Result<CoinJoinStatus, EngineError> {
         let wallet_id = fence.wallet_id();
         let view = self.mix_view(fence).await?;
-        self.hub
-            .set_fully_mixed(wallet_id, view.balances.fully_mixed);
+        self.hub.set_fully_mixed(
+            wallet_id,
+            view.fully_mixed_spendable().map(MixViewCoin::value).sum(),
+        );
         let status = self.status_from_view(wallet_id, &view);
         self.coinjoin
             .status
@@ -1980,6 +2107,7 @@ impl NetworkSession {
         coins: &[&MixViewCoin],
         plan: &TxPlan,
     ) -> Result<Txid, EngineError> {
+        let _dispatch = self.coinjoin.claim_resend(wallet_id)?;
         let network = self.network.core_network();
         let signer = self
             .vault
@@ -2040,6 +2168,17 @@ impl NetworkSession {
             self.release_coinjoin_addresses(wallet_id, &reserved).await;
             return Err(e);
         }
+        if let Err(e) = self
+            .record_coinjoin_handoff(wallet_id, Vec::new(), None, vec![coinjoin_template(&tx)])
+            .await
+        {
+            self.release_coinjoin_addresses(wallet_id, &reserved).await;
+            return Err(e);
+        }
+        if let Err(e) = self.write_sweep_outs(wallet_id, &[&tx], true, false).await {
+            self.release_coinjoin_addresses(wallet_id, &reserved).await;
+            return Err(e);
+        }
         // Reserved under the fence, as the signed transaction's own claim.
         let owner = SpendOwner::Tx(tx.txid());
         self.spends
@@ -2055,15 +2194,18 @@ impl NetworkSession {
                 self.hub.pump.mark_history(wallet_id, None);
                 Ok(txid)
             }
-            Err(platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(r)) => {
-                // May be on the network: keep inputs and outputs as they are.
-                tracing::warn!(reason = %r, "CoinJoin funding transaction outcome unknown");
-                Ok(tx.txid())
-            }
-            Err(e) => {
+            Err(e @ platform_wallet::PlatformWalletError::TransactionBroadcast(_)) => {
+                let cleanup = self.write_sweep_outs(wallet_id, &[&tx], false, false).await;
                 self.spends.release(&wallet_id, owner);
                 self.release_coinjoin_addresses(wallet_id, &reserved).await;
+                if let Err(cleanup) = cleanup {
+                    tracing::warn!(%wallet_id, error = %cleanup, "rejected CoinJoin funding row was not cleaned up");
+                }
                 Err(CoinJoinFailure::BroadcastRejected(e.to_string()).into())
+            }
+            Err(e) => {
+                tracing::warn!(reason = %e, "CoinJoin funding transaction outcome unknown");
+                Ok(tx.txid())
             }
         }
     }
@@ -2156,12 +2298,15 @@ impl NetworkSession {
         let mut candidates: Vec<&MixViewCoin> = view
             .coins
             .iter()
-            .filter(|c| c.collateral() && c.final_enough() && c.free())
+            .filter(|c| c.collateral() && c.final_enough() && c.collateral_available())
             .collect();
         candidates.shuffle(&mut rand::thread_rng());
         let Some(coin) = candidates.first() else {
             return Ok(None);
         };
+        if let Some(CoinJoinHandoff::Collateral(tx)) = &coin.coin.coinjoin_handoff {
+            return Ok(Some(((**tx).clone(), coin.coin.utxo.outpoint, Vec::new())));
+        }
         let Some(path) = coin.path.clone() else {
             return Ok(None);
         };
@@ -2541,12 +2686,13 @@ impl NetworkSession {
         let settings = self.coinjoin.settings();
         let (stop, stop_rx) = watch::channel(false);
         let owner = SpendOwner::mixing_session();
-        let rebalance_inputs: Vec<OutPoint> = (rebalance.iter())
+        let mut claimed: Vec<OutPoint> = (rebalance.iter())
             .flat_map(|e| e.inputs.iter().map(|c| c.outpoint))
             .collect();
+        claimed.push(collateral_input);
         if self
             .spends
-            .reserve_unless_held(wallet_id, owner, &rebalance_inputs)
+            .reserve_unless_held(wallet_id, owner, &claimed)
             .is_err()
         {
             return Err(collateral_addrs);
@@ -2554,8 +2700,7 @@ impl NetworkSession {
         let key = {
             let mut mixers = self.coinjoin.mixers();
             let Some(m) = mixers.get_mut(&wallet_id).filter(|m| m.mixing) else {
-                self.spends
-                    .release_some(&wallet_id, owner, rebalance_inputs);
+                self.spends.release_some(&wallet_id, owner, claimed);
                 return Err(collateral_addrs);
             };
             let key = m.next_session;
@@ -2580,7 +2725,6 @@ impl NetworkSession {
             m.status = Some(StatusCode::TryingToConnect);
             key
         };
-        self.spends.reserve(wallet_id, owner, [collateral_input]);
         let network = self.network.core_network();
         let params = match rebalance {
             Some(entry) => {
@@ -2593,6 +2737,7 @@ impl NetworkSession {
             wallet_id,
             owner,
             reserved: Mutex::new(Vec::new()),
+            collateral_handed_off: AtomicBool::new(false),
         };
         let weak = Arc::downgrade(self);
         self.rt.spawn(async move {
@@ -2606,8 +2751,10 @@ impl NetworkSession {
             };
             let outcome = run_session(&adapter, params, observe, stop_rx).await;
             let Some(this) = weak.upgrade() else { return };
-            this.release_coinjoin_addresses(wallet_id, &collateral_addrs)
-                .await;
+            if !adapter.collateral_handed_off.load(Ordering::Relaxed) {
+                this.release_coinjoin_addresses(wallet_id, &collateral_addrs)
+                    .await;
+            }
             this.spends
                 .release_some(&wallet_id, owner, [collateral_input]);
             let height = this
@@ -2871,10 +3018,14 @@ impl NetworkSession {
             .filter(|c| c.coin.coinjoin_account)
             .collect();
         let takes = |c: &MixViewCoin| {
-            c.free()
-                && c.path
-                    .as_ref()
-                    .is_some_and(|p| is_coinjoin_path(p, network))
+            (if target == SweepTarget::ReturnToCore {
+                c.coin.coinjoin_handoff.is_some() && !c.coin.user_locked
+            } else {
+                c.free()
+            }) && c
+                .path
+                .as_ref()
+                .is_some_and(|p| is_coinjoin_path(p, network))
         };
         let unconfirmed = (account.iter())
             .filter(|c| {
@@ -2893,14 +3044,22 @@ impl NetworkSession {
         let values: Vec<u64> = coins.iter().map(MixViewCoin::value).collect();
         let max_inputs = sweep_max_inputs(self);
         let fee = crate::send::MIN_FEE_PER_KB;
-        let chunks = match target {
-            SweepTarget::Bip44 => {
+        let mut chunks = match target {
+            SweepTarget::Bip44 | SweepTarget::ReturnToCore => {
                 dw_coinjoin::recovery::plan_sweep_chunked(&values, fee, max_inputs)
             }
             SweepTarget::CoinJoin => {
                 dw_coinjoin::recovery::plan_consolidation(&values, fee, max_inputs)
             }
         };
+        if target == SweepTarget::ReturnToCore {
+            for chunk in &mut chunks {
+                if dw_coinjoin::denoms::is_denominated(chunk.amount) {
+                    chunk.amount -= 1;
+                    chunk.fee += 1;
+                }
+            }
+        }
         // A consolidation pays for itself only when the drain needs it: more
         // coins than one shield lock takes, and fewer coins after it (m4).
         let taken: usize = chunks.iter().map(|c| c.coins.len()).sum();
@@ -3086,18 +3245,23 @@ impl NetworkSession {
         wallet_id: WalletId,
         txs: &[&Transaction],
         keep: bool,
+        returning: bool,
     ) -> Result<(), EngineError> {
         if txs.is_empty() {
             return Ok(());
         }
         let scope = dw_appdb::local_scope(&wallet_id.to_string());
-        let rows: Vec<(String, Option<String>)> = txs
-            .iter()
-            .map(|tx| {
-                let o = SweepOut { tx: (*tx).clone() };
-                (o.key(), keep.then(|| o.value()))
-            })
-            .collect();
+        let mut rows = Vec::new();
+        for tx in txs {
+            let o = SweepOut { tx: (*tx).clone() };
+            rows.push((o.key(), keep.then(|| o.value())));
+            if returning {
+                rows.push((
+                    format!("{RETURN_PREFIX}{}", o.txid()),
+                    keep.then(|| "1".into()),
+                ));
+            }
+        }
         self.appdb_op(move |db| {
             let writes: Vec<(&str, Option<&str>)> = rows
                 .iter()
@@ -3138,6 +3302,9 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.refuse_while_mixing(wallet_id)?;
+            if target == SweepTarget::ReturnToCore {
+                this.refuse_while_restored()?;
+            }
             let picked = {
                 let fence = this.coin_fence(wallet_id).await?;
                 this.sweep_coins(wallet_id, &fence, target, false).await?
@@ -3164,9 +3331,26 @@ impl NetworkSession {
                 "NetworkSession.mixed_coins_sweep_plan.shielded".into(),
             ));
         }
-        let (picked, amounts, quote_id) = self.sweep_plan(wallet_id, SweepTarget::Bip44).await?;
+        self.sweep_to_core_plan(wallet_id, SweepTarget::Bip44).await
+    }
+
+    /// Quotes an explicit self-payment of confirmed inputs held after mixing.
+    pub async fn return_from_mixing_plan(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> Result<SweepPlan, EngineError> {
+        self.sweep_to_core_plan(wallet_id, SweepTarget::ReturnToCore)
+            .await
+    }
+
+    async fn sweep_to_core_plan(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        target: SweepTarget,
+    ) -> Result<SweepPlan, EngineError> {
+        let (picked, amounts, quote_id) = self.sweep_plan(wallet_id, target).await?;
         Ok(SweepPlan {
-            destination,
+            destination: SweepDestination::Wallet,
             total: picked.total(),
             chunks: picked.chunk_infos(),
             fully_mixed: amounts.fully_mixed,
@@ -3216,6 +3400,17 @@ impl NetworkSession {
             ));
         }
         self.sweep(wallet_id, SweepTarget::Bip44, quote_id, grant_id)
+            .await
+    }
+
+    /// Sends the confirmed plan to new addresses of this same wallet.
+    pub async fn return_from_mixing(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        quote_id: String,
+        grant_id: String,
+    ) -> Result<SweepResult, EngineError> {
+        self.sweep(wallet_id, SweepTarget::ReturnToCore, quote_id, grant_id)
             .await
     }
 
@@ -3380,6 +3575,9 @@ impl NetworkSession {
             // Through the last broadcast: no mixing starts meanwhile, and
             // none runs now.
             let _claim = this.coinjoin.claim_sweep(wallet_id)?;
+            if target == SweepTarget::ReturnToCore {
+                this.refuse_while_restored()?;
+            }
             // A sweep takes every mixed coin: none while the dispatch
             // journal, which holds signed locks' inputs, is not read
             // (review Opus closure C-1).
@@ -3439,6 +3637,8 @@ impl NetworkSession {
             let mut fees: Vec<u64> = Vec::with_capacity(picked.chunks.len());
             // A consolidation's reserved CoinJoin address, per signed chunk.
             let mut addresses: Vec<Address> = Vec::new();
+            // Return to Core receive addresses already picked in this sweep.
+            let mut return_addresses: HashSet<Address> = HashSet::new();
             let mut sign_failure = None;
             let release_all = |signed: &[(Transaction, u64)]| {
                 for (unsent, _) in signed {
@@ -3453,6 +3653,15 @@ impl NetworkSession {
                         .next_receive_address_for_account(0)
                         .await
                         .map_err(EngineError::from),
+                    SweepTarget::ReturnToCore => {
+                        let addr = this
+                            .return_receive_address(wallet_id, &return_addresses)
+                            .await;
+                        if let Ok(ref a) = addr {
+                            return_addresses.insert(a.clone());
+                        }
+                        addr
+                    }
                     SweepTarget::CoinJoin => this
                         .reserve_coinjoin_addresses(wallet_id, 1, false)
                         .await
@@ -3514,7 +3723,8 @@ impl NetworkSession {
                 }
             }
             let txs: Vec<&Transaction> = signed.iter().map(|(tx, _)| tx).collect();
-            if let Err(e) = (this.write_sweep_outs(wallet_id, &txs, true)).await {
+            let returning = target == SweepTarget::ReturnToCore;
+            if let Err(e) = (this.write_sweep_outs(wallet_id, &txs, true, returning)).await {
                 release_all(&signed);
                 this.release_coinjoin_addresses(wallet_id, &addresses).await;
                 return Err(e);
@@ -3540,7 +3750,10 @@ impl NetworkSession {
                         let settled = settle_sweep_failure(&this.spends, wallet_id, &signed, n, &e);
                         let unsent: Vec<&Transaction> =
                             signed[settled.unsent..].iter().map(|(tx, _)| tx).collect();
-                        if let Err(e) = this.write_sweep_outs(wallet_id, &unsent, false).await {
+                        if let Err(e) = this
+                            .write_sweep_outs(wallet_id, &unsent, false, returning)
+                            .await
+                        {
                             // Kept: the inputs stay held, and a resend sends
                             // the never-sent chunks then.
                             tracing::warn!(error = %e, "could not drop unsent sweep chunks");
@@ -3596,6 +3809,7 @@ pub struct SweepResend {
 enum SweepTarget {
     /// A fresh BIP44 receive address per chunk ("Move mixed coins").
     Bip44,
+    ReturnToCore,
     /// A fresh address of the same CoinJoin account per chunk (the
     /// consolidation before a move to Shielded).
     CoinJoin,
@@ -4332,6 +4546,7 @@ struct EngineMixingWallet {
     owner: SpendOwner,
     /// Addresses reserved for this session's outputs.
     reserved: Mutex<Vec<Address>>,
+    collateral_handed_off: AtomicBool,
 }
 
 impl EngineMixingWallet {
@@ -4351,7 +4566,12 @@ impl EngineMixingWallet {
         Ok(s.spends
             .held_by_other(&self.wallet_id, self.owner, outpoints)
             || outpoints.iter().any(|o| {
-                !(view.coins.iter()).any(|c| c.coin.utxo.outpoint == *o && !c.coin.user_locked)
+                !(view.coins.iter()).any(|c| {
+                    c.coin.utxo.outpoint == *o
+                        && !c.coin.user_locked
+                        && (!c.coin.reserved || c.coin.mixing_held)
+                        && c.coin.utxo.is_spendable(view.height)
+                })
             }))
     }
 
@@ -4377,6 +4597,7 @@ impl NetworkSession {
             wallet_id,
             owner,
             reserved: Mutex::new(Vec::new()),
+            collateral_handed_off: AtomicBool::new(false),
         };
         (wallet, owner)
     }
@@ -4483,9 +4704,50 @@ impl MixingWallet for EngineMixingWallet {
     }
 
     fn hold_until_spent(&self, _outpoints: &[OutPoint]) {
-        // The inputs stay in the session's pending spends; the loop records
-        // them as held (with the time) when the session reports success and
-        // releases them after the observation timeout.
+        // The in-memory claim and the durable handoff record already hold them.
+    }
+
+    async fn handoff_collateral(&self, collateral: &Transaction) -> Result<(), WalletError> {
+        let s = self.session()?;
+        let [input] = collateral.input.as_slice() else {
+            return Err(WalletError("invalid collateral input count".into()));
+        };
+        let o = input.previous_output;
+        let fence = s
+            .coin_fence(self.wallet_id)
+            .await
+            .map_err(|e| WalletError(e.to_string()))?;
+        let view = s
+            .pass_view(&fence)
+            .await
+            .map_err(|e| WalletError(e.to_string()))?
+            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
+        let available = view.coins.iter().any(|c| {
+            c.coin.utxo.outpoint == o
+                && c.collateral()
+                && c.final_enough()
+                && c.coin.utxo.is_spendable(view.height)
+                && !c.coin.user_locked
+                && match &c.coin.coinjoin_handoff {
+                    Some(CoinJoinHandoff::Collateral(prior)) => prior.as_ref() == collateral,
+                    Some(CoinJoinHandoff::FinalInputs | CoinJoinHandoff::Legacy) => false,
+                    None => c.coin.mixing_held,
+                }
+        });
+        if !available || s.spends.held_by_other(&self.wallet_id, self.owner, &[o]) {
+            return Err(WalletError("the collateral input is unavailable".into()));
+        }
+        s.record_coinjoin_handoff(
+            self.wallet_id,
+            vec![o],
+            Some(collateral),
+            vec![coinjoin_template(collateral)],
+        )
+        .await
+        .map_err(|e| WalletError(e.to_string()))?;
+        self.collateral_handed_off.store(true, Ordering::Relaxed);
+        drop(fence);
+        Ok(())
     }
 
     async fn sign_inputs(
@@ -4511,19 +4773,16 @@ impl MixingWallet for EngineMixingWallet {
         let ours: Vec<OutPoint> = (inputs.iter())
             .map(|(i, _)| tx.input[*i].previous_output)
             .collect();
+        let held = s.leases.unresolved_lock_inputs(self.wallet_id);
+        if let Some(o) = ours.iter().find(|o| held.contains(o)) {
+            return Err(WalletError(format!(
+                "input {o} is held: an asset lock spends it, unresolved (Resolve stuck funding)"
+            )));
+        }
         if self.withdrawn_under(&s, &fence, &ours).await? {
             return Err(WalletError(
                 "an input was locked, left the wallet or is claimed by another payment".into(),
             ));
-        }
-        let held = s.leases.unresolved_lock_inputs(self.wallet_id);
-        if let Some(o) = (inputs.iter())
-            .map(|(i, _)| tx.input[*i].previous_output)
-            .find(|o| held.contains(o))
-        {
-            return Err(WalletError(format!(
-                "input {o} is held: an asset lock spends it, unresolved (Resolve stuck funding)"
-            )));
         }
         let signer = s
             .vault
@@ -4558,6 +4817,9 @@ impl MixingWallet for EngineMixingWallet {
         )
         .await
         .map_err(|e| WalletError(e.to_string()))?;
+        s.record_coinjoin_handoff(self.wallet_id, ours, None, vec![coinjoin_template(tx)])
+            .await
+            .map_err(|e| WalletError(e.to_string()))?;
         Ok(inputs
             .iter()
             .map(|(i, _)| signed.input[*i].clone())
@@ -4580,6 +4842,7 @@ impl NetworkSession {
             wallet_id,
             owner: SpendOwner::mixing_session(),
             reserved: Mutex::new(Vec::new()),
+            collateral_handed_off: AtomicBool::new(false),
         };
         adapter.sign_inputs(tx, inputs).await
     }
@@ -4927,6 +5190,7 @@ mod tests {
                 dust_locked: false,
                 reserved: false,
                 mixing_held: false,
+                coinjoin_handoff: None,
                 lock_input: false,
                 unresolved_lock: false,
                 awaiting_history: false,
@@ -4941,6 +5205,33 @@ mod tests {
     const A: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
     const B: &str = "yfGodgKENPQ1ePSRfbEHfuz1BBPD48vsDk";
     const C: &str = "yTcx2EJ24TUobNtGfN8UKEQZ5fUziT8yRE";
+
+    #[test]
+    fn funding_does_not_pair_a_confirmed_coin_with_unsecured_change() {
+        let rounds = rounds::ROUNDS_NOT_DENOMINATED;
+        let confirmed = coin(1, 50_000_000, false, rounds, false, A);
+        let mut change = coin(2, 25_000_000, false, rounds, false, A);
+        change.coin.is_change = true;
+        change.coin.utxo.is_confirmed = false;
+        change.coin.utxo.is_trusted = true;
+        let mut instant_locked = change.clone();
+        instant_locked.coin.utxo.outpoint = OutPoint::new(Txid::from_byte_array([3; 32]), 0);
+        instant_locked.coin.utxo.is_instantlocked = true;
+        let expected = [
+            confirmed.coin.utxo.outpoint,
+            instant_locked.coin.utxo.outpoint,
+        ];
+        let view = MixView {
+            height: 200,
+            coins: vec![confirmed, change, instant_locked],
+            balances: CoinJoinBalances::default(),
+            total: 0,
+            average_rounds: 0.0,
+        };
+        let network = dashcore::Network::Testnet;
+        assert_eq!(view.funding_inputs(network, true), expected);
+        assert_eq!(view.funding_inputs(network, false), expected);
+    }
 
     #[test]
     fn test_qt_041_balances_follow_core_definitions() {

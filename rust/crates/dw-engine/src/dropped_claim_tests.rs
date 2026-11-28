@@ -700,7 +700,7 @@ fn b_scanned_again(
 }
 
 /// T6: a peer relays S again after the engine dropped it with its claim.
-/// By the next start at the latest S is dropped again, and b isn't held.
+/// If key-wallet no longer dismisses it, withhold its change and drop it again.
 #[test]
 fn a_payment_relayed_again_after_its_drop_is_dropped_again() {
     let (_dir, engine, session, id) = engine_wallet();
@@ -714,11 +714,204 @@ fn a_payment_relayed_again_after_its_drop_is_dropped_again() {
     });
     b_scanned_again(&engine, &session, id, &b_funding);
 
+    let manager = session.manager().unwrap();
+    let (t, s) = (claim.txid(), payment.txid());
+    engine.block_on(async move {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let core = &mut wm.get_wallet_info_mut(&id.0).unwrap().core_wallet;
+        core.undismiss(&t);
+        core.undismiss(&s);
+    });
+    let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    *session.hub.pause_abandon.lock().unwrap() = Some(Arc::clone(&pause));
+    let completed = session
+        .hub
+        .dead_hooks_done
+        .load(std::sync::atomic::Ordering::SeqCst);
     relay(&engine, &session, id, &payment);
+    let reached = pause.wait_reached(std::time::Duration::from_secs(10));
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let offered = spendable(&engine, &session, id, change);
+    pause.release.notify_one();
+    assert!(reached, "the same session rechecks the dropped payment");
+    assert!(!offered, "S's change was offered while the drop waited");
+    super::own_spend_disk_tests::eventually("the replayed payment is dropped", || {
+        session
+            .hub
+            .dead_hooks_done
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > completed
+    });
+    let manager = session.manager().unwrap();
+    engine.block_on(async {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        assert!(core.is_dismissed(&s));
+        assert!(
+            core.accounts
+                .all_accounts()
+                .iter()
+                .all(|a| !a.has_transaction(&s))
+        );
+        assert!(
+            core.accounts
+                .all_funding_accounts()
+                .iter()
+                .all(|a| !a.utxos.contains_key(&change))
+        );
+    });
+    drop(manager);
     let session = reopen(&engine, session);
     assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
     let session = reopen(&engine, session);
     assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+}
+
+#[test]
+fn a_queued_relay_drop_requires_the_current_wallet_and_mark() {
+    use crate::history::{DropCause, DropInfo};
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    for reopened in [false, true] {
+        let (_dir, engine, session, id) = engine_wallet();
+        let (funding, _, claim, payment) =
+            payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+        let coin = OutPoint::new(funding.txid(), 0);
+        let (claim, txid) = (claim.txid(), payment.txid());
+        super::own_spend_disk_tests::wait_stored(&session, id, &[txid]);
+        let record = (session.live().unwrap().persister)
+            .get_core_tx_record(id.0, &txid)
+            .unwrap()
+            .unwrap();
+        session.hub.history.with_wallet(id, |h| {
+            h.drops
+                .insert(claim, DropInfo::new(DropCause::InvalidClaim));
+        });
+        let registration = session.hub.drop_registration(id);
+        let completed = session.hub.dead_hooks_done.load(SeqCst);
+        let pause = Arc::new(crate::coins::TestPause::default());
+        let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+        *session.hub.pause_swept_dead.lock().unwrap() = Some(Arc::clone(&pause));
+        session.hub.apply_wallet_event(
+            &platform_wallet::events::WalletEvent::TransactionDetected {
+                wallet_id: id.0,
+                record: Box::new(record),
+                balance: Default::default(),
+                account_balances: Default::default(),
+                locked_outpoints: Vec::new(),
+                addresses_derived: Vec::new(),
+            },
+        );
+        assert!(pause.wait_reached(std::time::Duration::from_secs(10)));
+        if reopened {
+            engine.block_on(session.unload_wallet(id)).unwrap();
+            engine.block_on(session.load_wallet(id)).unwrap();
+            assert_ne!(session.hub.drop_registration(id), registration);
+            session.hub.history.with_wallet(id, |h| {
+                h.drops
+                    .insert(claim, DropInfo::new(DropCause::InvalidClaim));
+            });
+        } else {
+            session.hub.history.with_wallet(id, |h| {
+                h.drops.remove(&claim);
+            });
+            assert_eq!(session.hub.drop_registration(id), registration);
+        }
+        pause.release.notify_one();
+        super::own_spend_disk_tests::eventually("the queued callback finishes", || {
+            session.hub.dead_hooks_done.load(SeqCst) > completed
+        });
+        assert!(!engine.block_on(session.abandon_marked(id, txid)));
+        assert!(!session.hub.history.get(&id, &txid).unwrap().is_abandoned());
+        assert!(!session.hub.rescan_held(&id).contains(&coin));
+        assert!(!spendable(&engine, &session, id, coin));
+    }
+}
+
+#[test]
+fn a_failed_drop_write_keeps_the_claims_change_excluded() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_, funding, claim) = funding_and_spend(&engine, &session, id);
+    mempool(&engine, &session, id, &claim);
+    let change = OutPoint::new(claim.txid(), 1);
+    assert!(spendable(&engine, &session, id, change));
+    let session = reopen(&engine, session);
+    session.hub.skip_withhold.store(true, SeqCst);
+    assert!(spendable(&engine, &session, id, change));
+    let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    *session.hub.pause_abandon.lock().unwrap() = Some(Arc::clone(&pause));
+    session.hub.fail_abandon_mark.store(true, SeqCst);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert!(pause.wait_reached(std::time::Duration::from_secs(10)));
+    assert!(!spendable(&engine, &session, id, change));
+    pause.release.notify_one();
+    engine.block_on(async { drop(session.wallet_lifecycle.hold().await) });
+    assert!(!session.hub.fail_abandon_mark.load(SeqCst));
+    assert!(!engine.block_on(session.abandon_marked(id, claim.txid())));
+    let manager = session.manager().unwrap();
+    engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        assert_eq!(
+            session.hub.excluded_coins(id, core).get(&change),
+            Some(&crate::ExclusionReason::PendingUnproven)
+        );
+    });
+    assert!(!spendable(&engine, &session, id, change));
+}
+
+#[test]
+fn another_wallet_cannot_select_change_from_a_dropped_claim() {
+    use super::own_spend_disk_tests::{Accept, fresh_address, prepare, second_wallet};
+
+    let (_dir, engine, session, id) = engine_wallet();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other);
+    let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+    claim.output[0].value -= CHANGE;
+    claim.output.push(TxOut {
+        value: CHANGE,
+        script_pubkey: to.script_pubkey(),
+    });
+    let output = OutPoint::new(claim.txid(), 2);
+    mempool(&engine, &session, id, &claim);
+    assert!(spendable(&engine, &session, other, output));
+    assert_eq!(balances(&session, other).total, CHANGE);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the claim was marked dropped", || {
+        dropped_records(&session, id).contains(&claim.txid())
+    });
+    assert!(
+        session
+            .hub
+            .history
+            .get(&other, &claim.txid())
+            .is_some_and(|e| !e.is_abandoned())
+    );
+    assert!(!spendable(&engine, &session, other, output));
+    let (_, prepared) = prepare(
+        &engine,
+        &session,
+        other,
+        CoinSource::Outpoints(vec![output]),
+        CHANGE / 2,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert!(prepared.is_err());
+    super::own_spend_disk_tests::eventually("the recipient excludes the invalid output", || {
+        balances(&session, other).total == 0
+    });
 }
 
 /// S is dropped, nothing it made counts, and b, scanned again where the
@@ -983,6 +1176,244 @@ fn a_locked_sibling_keeps_a_pending_payment_on_a_dropped_claim() {
         "S2 is kept after the store's drop"
     );
     assert!(!dropped(&engine, &session, id, locked.txid()), "S1 is kept");
+}
+
+#[test]
+fn a_locked_sibling_of_a_dead_parent_keeps_its_pending_child() {
+    a_settled_dead_tree_keeps_its_pending_child(false);
+}
+
+#[test]
+fn a_dropped_claim_that_settles_keeps_its_pending_grandchild() {
+    a_settled_dead_tree_keeps_its_pending_child(true);
+}
+
+fn a_settled_dead_tree_keeps_its_pending_child(settle_claim: bool) {
+    use crate::history::DropCause;
+    use std::collections::BTreeMap;
+
+    let (_dir, engine, session, id) = engine_wallet();
+    let b_to = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let b_funding = super::own_spend_disk_tests::funding(3, &[b_to], PAID);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    mined(&engine, &session, id, BIRTH - 40, vec![b_funding]);
+    let (_, claim, parent) = payment_on_a_claims_change(&engine, &session, id);
+    let change = change_of(&parent, &own_scripts(&engine, &session, id));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change, b]),
+        CHANGE / 2 + PAID / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let lock = spend_of(
+        OutPoint::new(claim.txid(), 0),
+        vec![(elsewhere(), CHANGE / 4)],
+    );
+    let dead = BTreeMap::from([
+        (claim.txid(), DropCause::InvalidClaim),
+        (parent.txid(), DropCause::InvalidSource),
+    ]);
+    session.hub.history.with_wallet(id, |h| {
+        h.mark_abandoned(&[
+            (claim.txid(), claim.clone()),
+            (parent.txid(), parent.clone()),
+            (lock.txid(), lock.clone()),
+        ]);
+        let settled = if settle_claim {
+            claim.txid()
+        } else {
+            lock.txid()
+        };
+        h.txs.get_mut(&settled).unwrap().instant_locked = true;
+        for (t, cause) in &dead {
+            h.drops.insert(*t, crate::history::DropInfo::new(*cause));
+        }
+    });
+    let (s, manager) = (Arc::clone(&session), session.manager().unwrap());
+    engine
+        .block_on(session.on_runtime(async move {
+            let wm = manager.wallet_manager_arc();
+            wm.write()
+                .await
+                .get_wallet_info_mut(&id.0)
+                .unwrap()
+                .core_wallet
+                .restore_dismissed(dead.keys().copied(), []);
+            s.abandon_on_dead(&manager, id, &dead, crate::tx_actions::DeadSource::Restore)
+                .await;
+            Ok(())
+        }))
+        .unwrap();
+    assert!(!dropped(&engine, &session, id, payment.txid()));
+    assert!(!spendable(&engine, &session, id, b));
+    assert!(
+        dropped_records(&session, id).is_empty(),
+        "the veto precedes the marks"
+    );
+}
+
+#[test]
+fn reopening_revalidates_drop_marks_when_the_original_claim_settles() {
+    use super::own_spend_disk_tests::{fresh_address, funding, wait_stored};
+    use crate::history::DropCause;
+
+    let (_dir, engine, session, id) = engine_wallet();
+    let funding_b = funding(3, &[fresh_address(&engine, &session, id)], PAID);
+    let b = OutPoint::new(funding_b.txid(), 0);
+    mined(&engine, &session, id, BIRTH - 40, vec![funding_b]);
+    let (_, claim, parent) = payment_on_a_claims_change(&engine, &session, id);
+    let change = change_of(&parent, &own_scripts(&engine, &session, id));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change, b]),
+        CHANGE / 2 + PAID / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[parent.txid(), payment.txid()]);
+    mined(&engine, &session, id, BIRTH - 20, vec![claim.clone()]);
+    let dead = crate::tx_actions::Dead::from([
+        (claim.txid(), DropCause::InvalidClaim),
+        (parent.txid(), DropCause::InvalidSource),
+    ]);
+    let own = session
+        .hub
+        .history
+        .get(&id, &parent.txid())
+        .unwrap()
+        .own_inputs;
+    crate::tx_actions::forget_swept(
+        &session.live().unwrap().appdb,
+        id,
+        &[claim.txid(), parent.txid()],
+        &dead,
+        &[],
+        &[(parent.txid(), parent.clone(), own)],
+        None,
+    )
+    .unwrap();
+    let session = reopen(&engine, session);
+    assert!(!dropped_records(&session, id).contains(&parent.txid()));
+    assert!(!engine.block_on(session.abandon_marked(id, payment.txid())));
+    assert!(
+        !session
+            .hub
+            .history
+            .get(&id, &payment.txid())
+            .unwrap()
+            .is_abandoned()
+    );
+    assert!(!session.hub.rescan_held(&id).contains(&b));
+    assert!(!spendable(&engine, &session, id, b));
+}
+
+#[test]
+fn a_settled_spend_of_a_planned_descendants_dead_parent_vetoes_the_drop() {
+    dead_parent_drop_order(true, true);
+}
+
+#[test]
+fn dropping_two_dead_trees_in_either_order_does_not_rewind_for_their_change() {
+    for first in [true, false] {
+        dead_parent_drop_order(first, false);
+    }
+}
+
+fn dead_parent_drop_order(first_parent_first: bool, settle_second: bool) {
+    use super::own_spend_disk_tests::{foreign, fresh_address, funding, synced};
+    use crate::history::{DropCause, DropInfo};
+
+    let (_dir, engine, session, id) = engine_wallet();
+    mined(&engine, &session, id, BIRTH + 10, vec![foreign()]);
+    let first = funding(4, &[fresh_address(&engine, &session, id)], PAID);
+    let second = funding(
+        5,
+        &[
+            fresh_address(&engine, &session, id),
+            fresh_address(&engine, &session, id),
+        ],
+        PAID,
+    );
+    for tx in [&first, &second] {
+        mempool(&engine, &session, id, tx);
+    }
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(first.txid(), 0)]),
+        PAID / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let p_change = change_of(&p, &own_scripts(&engine, &session, id));
+    let q = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![p_change, OutPoint::new(second.txid(), 0)]),
+        PAID,
+        false,
+    );
+    mempool(&engine, &session, id, &q);
+    let dead_ids = [first.txid(), second.txid()];
+    session.hub.history.with_wallet(id, |h| {
+        h.mark_abandoned(&[(first.txid(), first), (second.txid(), second)]);
+        for t in dead_ids {
+            h.drops.insert(t, DropInfo::new(DropCause::InvalidSource));
+        }
+        if settle_second {
+            let sibling = spend_of(OutPoint::new(dead_ids[1], 1), vec![(elsewhere(), PAID / 2)]);
+            h.mark_abandoned(&[(sibling.txid(), sibling.clone())]);
+            h.txs.get_mut(&sibling.txid()).unwrap().instant_locked = true;
+        }
+    });
+    let drop_in_order = if first_parent_first {
+        dead_ids
+    } else {
+        [dead_ids[1], dead_ids[0]]
+    };
+    let tip = synced(&engine, &session, id);
+    let (s, manager) = (Arc::clone(&session), session.manager().unwrap());
+    engine
+        .block_on(session.on_runtime(async move {
+            let wm = manager.wallet_manager_arc();
+            wm.write()
+                .await
+                .get_wallet_info_mut(&id.0)
+                .unwrap()
+                .core_wallet
+                .restore_dismissed(dead_ids, []);
+            for t in drop_in_order {
+                s.abandon_on_dead(
+                    &manager,
+                    id,
+                    &crate::tx_actions::Dead::from([(t, DropCause::InvalidSource)]),
+                    crate::tx_actions::DeadSource::Restore,
+                )
+                .await;
+                if settle_second {
+                    break;
+                }
+            }
+            Ok(())
+        }))
+        .unwrap();
+    assert_eq!(dropped(&engine, &session, id, p.txid()), !settle_second);
+    assert_eq!(dropped(&engine, &session, id, q.txid()), !settle_second);
+    assert_eq!(
+        synced(&engine, &session, id),
+        tip,
+        "unmined funding did not rewind the scan"
+    );
+    if settle_second {
+        assert!(dropped_records(&session, id).is_empty());
+    }
 }
 
 /// S spent b, and after a restart a transaction from another device of the
