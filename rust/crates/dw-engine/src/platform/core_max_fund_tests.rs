@@ -4,7 +4,7 @@
 //! signing, and the lock pending and resumed on its own outpoint.
 
 use super::super::core_max::CoreCoins;
-use super::super::credits::CoreMaxShort;
+use super::super::credits::{CoreMaxArrivalBlock, CoreMaxShort};
 use super::super::shield_drain::DrainCoin;
 use super::*;
 
@@ -54,10 +54,20 @@ fn max_fund(
     lib: &Arc<FakeFund>,
     max_duffs: u64,
 ) -> (Result<PlatformFundOutcome, CreditsError>, String) {
+    let coin_set = super::super::core_max::coin_set(&lib.core.lock().unwrap().coins);
+    fund_quoted(fx, lib, max_duffs, coin_set)
+}
+
+fn fund_quoted(
+    fx: &Fixture,
+    lib: &Arc<FakeFund>,
+    max_duffs: u64,
+    coin_set: [u8; 32],
+) -> (Result<PlatformFundOutcome, CreditsError>, String) {
     let (wallet, grant) = (fx.wallet, grant(fx, max_duffs, 0));
     let g = grant.clone();
     let out = run(fx, lib, move |s, lib| async move {
-        fund::fund(&s, wallet, &*lib, FundAmount::All, &g).await
+        fund::fund(&s, wallet, &*lib, FundAmount::QuotedAll { coin_set }, &g).await
     });
     (out, grant)
 }
@@ -103,7 +113,7 @@ fn core_max_fund_quote_and_execute_agree() {
     );
 
     lib.answer(Answer::Done(None));
-    let (out, _) = max_fund(&fx, &lib, quote.grant.max_duffs);
+    let (out, _) = fund_quoted(&fx, &lib, quote.grant.max_duffs, max.coin_set);
     let out = out.unwrap();
     assert!(
         matches!(out.state, PlatformFundState::Applied { .. }),
@@ -123,24 +133,37 @@ fn core_max_fund_quote_and_execute_agree() {
     drop(fx.s.coinjoin.claim_sweep(fx.wallet).unwrap());
 }
 
-/// Coins that changed since the quote to a smaller sum (one spent, one
-/// swapped for a smaller coin) are `coins_changed` under the quote's grant,
+/// A changed input set is `coins_changed` under the quote's grant,
 /// before the lease: nothing stored, the grant unused; a quote of the coins
 /// as they are funds.
 #[test]
 fn core_max_fund_refuses_coins_changed_since_the_quote() {
     let fx = Fixture::new(0);
     let lib = maxer(&fx, account());
-    let quoted = max_quote(&fx, &lib).unwrap().grant.max_duffs;
+    let quoted = max_quote(&fx, &lib).unwrap();
     let spent = CoreCoins {
         coins: account().coins[..1].to_vec(),
         ..account()
     };
     let mut swapped = account();
     swapped.coins[1] = bip44(9, swapped.coins[1].value - 1);
-    for read in [spent, swapped] {
+    let mut same_sum = account();
+    let value = same_sum.coins.pop().unwrap().value;
+    same_sum
+        .coins
+        .extend([bip44(8, value / 2), bip44(9, value / 2)]);
+    let mut same_count = account();
+    same_count.coins[0] = bip44(9, same_count.coins[0].value);
+    let mut received = account();
+    received.coins.push(bip44(10, 1_000));
+    for read in [spent, swapped, same_sum, same_count, received] {
         *lib.core.lock().unwrap() = read;
-        let (out, g) = max_fund(&fx, &lib, quoted);
+        let (out, g) = fund_quoted(
+            &fx,
+            &lib,
+            quoted.grant.max_duffs,
+            quoted.max.unwrap().coin_set,
+        );
         assert_eq!(out.unwrap_err(), CreditsError::CoinsChanged);
         unused(&fx, &g);
         nothing_stored(&fx, &lib);
@@ -228,6 +251,7 @@ fn core_max_fund_refuses_below_the_floor() {
         left_duffs: 3_000,
         arriving_duffs: 8_000,
         arriving: vec![late(1, 8_000)],
+        ..CoreCoins::default()
     };
     let lib = maxer(&fx, read);
     let below = CreditsError::BelowMinimum {
@@ -237,6 +261,8 @@ fn core_max_fund_refuses_below_the_floor() {
             left_duffs: 3_000,
             arriving_duffs: 8_000,
             arriving_clears: true,
+            arriving_block: None,
+            other_arriving_duffs: 0,
         }),
     };
     assert_eq!(max_quote(&fx, &lib).unwrap_err(), below);
@@ -252,18 +278,22 @@ fn core_max_fund_refuses_below_the_floor() {
 fn core_max_fund_says_whether_the_arriving_coins_would_clear() {
     let fx = Fixture::new(0);
     let floor = fee() / 1_000 + 1;
-    let clears = |coins: Vec<DrainCoin>, arriving: Vec<DrainCoin>| {
+    let readiness = |coins: Vec<DrainCoin>, arriving: Vec<DrainCoin>| {
         let read = CoreCoins {
             coins,
             left_duffs: 0,
             arriving_duffs: arriving.iter().map(|c| c.value).sum(),
             arriving,
+            ..CoreCoins::default()
         };
         match max_quote(&fx, &maxer(&fx, read)).unwrap_err() {
-            CreditsError::BelowMinimum { max: Some(m), .. } => m.arriving_clears,
+            CreditsError::BelowMinimum { max: Some(m), .. } => {
+                (m.arriving_clears, m.arriving_block)
+            }
             refused => panic!("{refused:?}"),
         }
     };
+    let clears = |coins, arriving| readiness(coins, arriving).0;
     let at = |n: usize| floor + crate::fees::asset_lock_fee_bound(n);
     assert!(!clears(vec![], vec![]));
     assert!(!clears(vec![bip44(0, 1_000)], vec![]));
@@ -276,9 +306,15 @@ fn core_max_fund_says_whether_the_arriving_coins_would_clear() {
         held: true,
         ..late(0, 10 * at(1))
     };
-    assert!(!clears(vec![], vec![locked]));
+    assert_eq!(
+        readiness(vec![], vec![locked]),
+        (false, Some(CoreMaxArrivalBlock::Held))
+    );
     let many: Vec<_> = (1..=50).map(|i| late(i, 1_000_000)).collect();
-    assert!(!clears(vec![bip44(0, 1_000)], many.clone()));
+    assert_eq!(
+        readiness(vec![bip44(0, 1_000)], many.clone()),
+        (false, Some(CoreMaxArrivalBlock::InputCap))
+    );
     assert!(clears(vec![bip44(0, 1_000)], many[..49].to_vec()));
 }
 
