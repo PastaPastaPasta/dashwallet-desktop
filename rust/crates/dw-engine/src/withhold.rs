@@ -274,6 +274,7 @@ impl SessionHub {
             || (self.history).read_wallet(id, |h| {
                 !h.rescan_holds.is_empty()
                     || !h.fork_kept_locks.is_empty()
+                    || !h.fork_kept_ancestor_inputs.is_empty()
                     || !h.uncertain_fork_spends.is_empty()
                     || !h.restored_fork_inputs.is_empty()
                     || h.fork_restores.holding()
@@ -308,9 +309,10 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 
 /// Unspent inputs of forked-out payments. A retained history entry holds its
 /// inputs until key-wallet records the spend again or Abandon clears the lock.
-/// The overflow and unrecorded-spender holds last for the session.
+/// Holds for removed ancestors, overflow and unrecorded spenders last for the session.
 fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
     if h.fork_kept_locks.is_empty()
+        && h.fork_kept_ancestor_inputs.is_empty()
         && h.uncertain_fork_spends.is_empty()
         && h.restored_fork_inputs.is_empty()
         && !h.fork_restores.holding()
@@ -333,6 +335,7 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
         .filter_map(|t| h.txs.get(t))
         .filter(|e| e.context.block_info().is_none() && !e.is_abandoned())
         .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .chain(h.fork_kept_ancestor_inputs.values().flatten().copied())
         .chain(h.uncertain_fork_spends.values().flatten().copied())
         .chain(h.restored_fork_inputs.iter().copied())
         .chain(h.fork_restores.held())

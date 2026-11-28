@@ -708,7 +708,7 @@ pub(crate) struct SessionHub {
     /// Tests: SPV's progress reports leave the sync reading as the test
     /// set it.
     #[cfg(test)]
-    pub(crate) pin_progress: std::sync::atomic::AtomicBool,
+    pin_progress: std::sync::atomic::AtomicBool,
     /// Tests: the next history load's read of the dropped records fails.
     #[cfg(test)]
     pub(crate) fail_dropped_read: std::sync::atomic::AtomicBool,
@@ -791,6 +791,8 @@ pub(crate) struct SessionHub {
     /// its sweep.
     #[cfg(test)]
     pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_shared_abandon_sign: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next dropped payment's release of key-wallet's
     /// reservation, before it runs.
     #[cfg(test)]
@@ -1125,6 +1127,8 @@ impl SessionHub {
             last_abandon_hold: Mutex::new(None),
             #[cfg(test)]
             pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            pause_shared_abandon_sign: Mutex::new(None),
             #[cfg(test)]
             pause_release: Mutex::new(None),
             #[cfg(test)]
@@ -1713,6 +1717,14 @@ impl SessionHub {
 
     pub(crate) fn tracker(&self) -> std::sync::MutexGuard<'_, SyncTracker> {
         self.tracker.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pin_progress(&self, progress: &SyncProgress) {
+        let mut tracker = self.tracker();
+        self.pin_progress
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        tracker.on_progress(progress);
     }
 
     /// How many fork truncations the hub applied to any wallet this
@@ -2927,12 +2939,12 @@ impl EventHandler for SessionHub {
     }
 
     fn on_progress(&self, progress: &SyncProgress) {
-        #[cfg(test)]
-        if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
         let (changed, masternodes_synced, tip) = {
             let mut tracker = self.tracker();
+            #[cfg(test)]
+            if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             (
                 tracker.on_progress(progress),
                 tracker.masternodes_synced(),

@@ -163,6 +163,8 @@ pub enum FundAmount {
     Duffs { duffs: u64 },
     /// Every final coin of BIP44 account 0, the fee out of the lock.
     All,
+    /// Execute a Core Max quote for this exact set of inputs.
+    QuotedAll { coin_set: [u8; 32] },
 }
 
 /// What a Core Max quote adds.
@@ -174,6 +176,16 @@ pub struct CoreMax {
     pub left_duffs: u64,
     /// Coins of the account not final yet, which stay.
     pub arriving_duffs: u64,
+    /// Identifier of the final outpoints used by this quote.
+    pub coin_set: [u8; 32],
+}
+
+/// Why Max would still refuse the combined plan if the arriving coins confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CoreMaxArrivalBlock {
+    Held,
+    InputCap,
 }
 
 /// What a Core Max refused below the lock's floor would move.
@@ -190,6 +202,9 @@ pub struct CoreMaxShort {
     /// final: none held, within the input cap, worth the floor plus the
     /// lock's fee bound over all the coins. False with nothing arriving.
     pub arriving_clears: bool,
+    pub arriving_block: Option<CoreMaxArrivalBlock>,
+    /// Coins still arriving in accounts Max cannot use.
+    pub other_arriving_duffs: u64,
 }
 
 /// What a withdrawal of `amount` takes and pays out, at the network's
