@@ -2150,9 +2150,7 @@ impl HistoryStore {
         let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
         let history = wallets.entry(wallet).or_default();
         for txid in removed {
-            if let Some(inputs) = locks.inputs.get(txid) {
-                history.remember_session_lock(*txid, inputs);
-            }
+            history.remember_if_buffered(txid, &locks);
         }
         let held = forked_ancestor_inputs(&wallets, wallet, height, removed, unconfirmed);
         let history = wallets.entry(wallet).or_default();
@@ -3608,6 +3606,39 @@ mod tests {
             vec![kept_collateral],
             "truncate"
         );
+    }
+
+    /// A fork promotes a buffered InstantSend lock only for a removed
+    /// transaction the history holds: repeated forks naming buffered
+    /// txids with no record leave the session locks as they were.
+    #[test]
+    fn a_fork_promotes_only_buffered_locks_with_a_record() {
+        let store = HistoryStore::default();
+        let wallet = WalletId([1; 32]);
+        let (held, _) = own_registration(1);
+        store.with_wallet(wallet, |h| {
+            h.upsert(&registration_record(&held, bip44()), None)
+        });
+        let unrelated = [
+            Txid::from_byte_array([0x71; 32]),
+            Txid::from_byte_array([0x72; 32]),
+        ];
+        {
+            let mut locks = store.early_locks.write().unwrap();
+            let inputs: Vec<_> = held.input.iter().map(|i| i.previous_output).collect();
+            locks.remember(held.txid(), &inputs);
+            for t in unrelated {
+                locks.remember(t, &[OutPoint::new(t, 0)]);
+            }
+        }
+        for t in unrelated {
+            store.truncate(wallet, 0, &[t], &[]);
+            store.read_wallet(&wallet, |h| assert!(h.session_locks.is_empty()));
+        }
+        store.truncate(wallet, 0, &[held.txid()], &[]);
+        store.read_wallet(&wallet, |h| {
+            assert_eq!(h.session_locks, HashSet::from([held.txid()]));
+        });
     }
 
     /// TB-RESMOKE r-4-18/19: a contact spends the output we paid them, which
