@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use dashcore::{OutPoint, Txid};
 use dw_appdb::SharedSessionRow;
@@ -24,7 +25,7 @@ use key_wallet::transaction_checking::TransactionContext;
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
-use super::super::protx::ops::{Beats, beaten_height};
+use super::super::protx::ops::{FinalBeats, ProvisionalBeats};
 use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
     SharedSession, SharedStage, SharedWarning, UnreadableSession,
@@ -464,24 +465,48 @@ fn overlay_own_signatures(session: &mut Session, rec: &Recorded, signed: &[u8]) 
 }
 
 /// What the wallet sees of the chain for a session's state (§9.2): its
-/// history and unspent coins, and in tests the registrations the pin
-/// can't decode (BL-187), as confirmed txids.
+/// paired history and finality proof ([`FinalBeats`]), unspent coins, and
+/// lazily-built provisional conflicts and registration index scanned at most
+/// once per listing (#982).
 pub(crate) struct ChainView {
-    pub history: HashMap<Txid, TxEntry>,
+    pub beats: FinalBeats,
     pub unspent: HashSet<OutPoint>,
-    /// What may beat the session's transactions.
-    pub beats: Beats,
-    /// What a block beats while it may still become final: recovery's
-    /// progress only.
-    pub(super) seen: Beats,
+    /// Provisional conflicts ("may still become final"): display/recovery
+    /// progress only, never releases.
+    seen_conflicted: OnceLock<HashMap<Txid, (u32, dashcore::BlockHash)>>,
+    /// Transactions in history indexed by their first input outpoint, built
+    /// once per listing and shared across every frozen registration (#982).
+    by_first_input: OnceLock<HashMap<OutPoint, Vec<Txid>>>,
     /// The coins this wallet's pending spends hold, an abandon's among them.
     pub pending: HashSet<OutPoint>,
 }
 
 impl ChainView {
-    /// [`beaten_height`] of the transaction `txid` spending `inputs`.
+    pub(crate) fn new(
+        beats: FinalBeats,
+        unspent: HashSet<OutPoint>,
+        pending: HashSet<OutPoint>,
+    ) -> Self {
+        Self {
+            beats,
+            unspent,
+            seen_conflicted: OnceLock::new(),
+            by_first_input: OnceLock::new(),
+            pending,
+        }
+    }
+
+    pub(crate) fn history(&self) -> &HashMap<Txid, TxEntry> {
+        self.beats.history()
+    }
+
+    pub(crate) fn provisional(&self) -> ProvisionalBeats<'_> {
+        self.beats.provisional_with(&self.seen_conflicted)
+    }
+
+    /// [`FinalBeats::beaten_height`] of the transaction `txid` spending `inputs`.
     pub(crate) fn beaten(&self, inputs: &[OutPoint], txid: Option<&Txid>) -> Option<u32> {
-        beaten_height(&self.history, &self.beats, inputs, txid)
+        self.beats.beaten_height(inputs, txid)
     }
 
     /// Whether one of `coins` is unspent and free of every pending spend:
@@ -493,7 +518,7 @@ impl ChainView {
     }
 
     pub(crate) fn confirmed_height(&self, txid: &Txid) -> Option<u32> {
-        self.history
+        self.history()
             .get(txid)
             .and_then(|e| e.context.block_info())
             .map(|b| b.height())
@@ -501,21 +526,28 @@ impl ChainView {
 
     /// The session's registration in the wallet's history: the
     /// transaction spending exactly the frozen template's inputs, in order,
-    /// to its outputs, whatever its scriptSigs. A participant holds only
-    /// its own signed copy, whose txid isn't the ProTx hash unless it
-    /// signed last, so the txid can't find it (§3.2 step 6, "or see the
-    /// ProRegTx"); a copy mined with another valid scriptSig has another
-    /// txid than the one the coordinator sent (review r1 of 1b, m-2); and
-    /// the pinned library reads a version-3 payload with the version-2
-    /// layout (BL-187), so the payload isn't compared. Of several copies,
-    /// [`copy_rank`]'s best.
-    fn registration(&self, session: &Session, sent: Option<&Txid>) -> Option<Txid> {
-        if session.stage < Stage::Frozen {
-            return None;
-        }
-        let template = decode_frozen(session).ok()?.tx;
-        self.history
+    /// to its outputs, whatever its scriptSigs. Uses a single-scan index by
+    /// first input shared across all sessions in a listing (#982).
+    fn registration_of_tx(
+        &self,
+        template: &dw_protx::shared::SpecialTx,
+        sent: Option<&Txid>,
+    ) -> Option<Txid> {
+        let first = template.input.first()?.previous_output;
+        let history = self.history();
+        let index = self.by_first_input.get_or_init(|| {
+            let mut map: HashMap<OutPoint, Vec<Txid>> = HashMap::new();
+            for (id, e) in history {
+                if let Some(inp) = e.tx.input.first() {
+                    map.entry(inp.previous_output).or_default().push(*id);
+                }
+            }
+            map
+        });
+        let bucket = index.get(&first)?;
+        bucket
             .iter()
+            .filter_map(|id| Some((id, history.get(id)?)))
             .filter(|(_, e)| {
                 e.tx.input.len() == template.input.len()
                     && (e.tx.input.iter().zip(&template.input))
@@ -524,6 +556,14 @@ impl ChainView {
             })
             .min_by_key(|(id, e)| copy_rank(id, &e.context, sent))
             .map(|(id, _)| *id)
+    }
+
+    fn registration(&self, session: &Session, sent: Option<&Txid>) -> Option<Txid> {
+        if session.stage < Stage::Frozen {
+            return None;
+        }
+        let template = decode_frozen(session).ok()?.tx;
+        self.registration_of_tx(&template, sent)
     }
 }
 
@@ -624,11 +664,14 @@ pub(crate) fn complete_txid(session: &Session) -> Option<Txid> {
         return None;
     }
     let frozen = decode_frozen(session).ok()?;
-    frozen
-        .tx
-        .input
-        .iter()
-        .all(|i| !i.script_sig.is_empty())
+    complete_txid_of(session, &frozen)
+}
+
+fn complete_txid_of(
+    session: &Session,
+    frozen: &dw_protx::shared::session::funding::Frozen,
+) -> Option<Txid> {
+    (session.stage >= Stage::Combined && frozen.tx.input.iter().all(|i| !i.script_sig.is_empty()))
         .then(|| frozen.tx.txid())
 }
 
@@ -645,11 +688,31 @@ pub(crate) fn session_hash(l: &Loaded, chain: &ChainView) -> Option<Txid> {
         .or(complete)
 }
 
+fn session_hash_with(
+    l: &Loaded,
+    frozen: Option<&dw_protx::shared::session::funding::Frozen>,
+    chain: &ChainView,
+) -> Option<Txid> {
+    let frozen = frozen?;
+    let complete = complete_txid_of(&l.session, frozen);
+    if l.session.stage >= Stage::Frozen {
+        chain
+            .registration_of_tx(&frozen.tx, complete.as_ref())
+            .or(complete)
+    } else {
+        complete
+    }
+}
+
 /// The session's stage (§3, §9.2), first match: confirmed, conflicted or
 /// out; dead (a reserved input spent before `out_at`); then the envelope's.
 pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
-    let txid = session_hash(l, chain)
-        .or_else(|| l.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()));
+    let hash = session_hash(l, chain);
+    derive_stage_with(l, chain, hash)
+}
+
+fn derive_stage_with(l: &Loaded, chain: &ChainView, hash: Option<Txid>) -> SharedStage {
+    let txid = hash.or_else(|| l.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()));
     if let Some(height) = txid.as_ref().and_then(|t| chain.confirmed_height(t)) {
         return SharedStage::Confirmed { height };
     }
@@ -676,29 +739,29 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
 }
 
 /// Whether an out session at `stage` that a final block hasn't settled is
-/// beaten ([`beaten_height`]) by a block that may still become final
-/// ([`ChainView::seen`]): it can't confirm on this branch, so nothing hands
-/// it off again until that block is final (`conflicted`) or a reorg drops
-/// it (#954). With its signed bytes saved, a spend this wallet records of
-/// any of their inputs beats it, a participant's too (one paying this
-/// wallet). Recovery shows a block spending this wallet's own coins as
-/// `confirming`; for a participant's, the row waits without it. It releases
-/// nothing: the stage and every release read final blocks only.
+/// beaten ([`ProvisionalBeats::beaten_height`]) by a block that may still
+/// become final: it can't confirm on this branch, so nothing hands it off
+/// again until that block is final (`conflicted`) or a reorg drops it (#954).
+/// It releases nothing: the stage and every release read final blocks only.
 pub(crate) fn contested(l: &Loaded, chain: &ChainView, stage: &SharedStage) -> bool {
-    let txid = session_hash(l, chain)
-        .or_else(|| l.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()));
+    let hash = session_hash(l, chain);
+    contested_with(l, chain, stage, hash)
+}
+
+fn contested_with(l: &Loaded, chain: &ChainView, stage: &SharedStage, hash: Option<Txid>) -> bool {
+    let txid = hash.or_else(|| l.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()));
     l.out()
         && !matches!(
             stage,
             SharedStage::Confirmed { .. } | SharedStage::Conflicted
         )
-        && beaten_height(
-            &chain.history,
-            &chain.seen,
-            &signed_inputs(&l.row).unwrap_or_else(|| l.conflict_inputs()),
-            txid.as_ref(),
-        )
-        .is_some()
+        && chain
+            .provisional()
+            .beaten_height(
+                &signed_inputs(&l.row).unwrap_or_else(|| l.conflict_inputs()),
+                txid.as_ref(),
+            )
+            .is_some()
 }
 
 /// [`ShareTermsView::service_read`]: Core's reading of each entry of
@@ -839,12 +902,14 @@ pub(crate) fn check_no_abandon(row: &SharedSessionRow) -> Result<(), Masternodes
     }
 }
 
-/// The record of a stored session, its stage derived now.
+/// The record of a stored session, its stage derived now. Decodes the
+/// frozen template and resolves the registration hash once (#982).
 pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
     let s = &l.session;
-    let stage = derive_stage(l, chain);
-    let mine = l.recorded.as_ref().map(|r| r.share_index);
     let frozen = decode_frozen(s).ok();
+    let hash = session_hash_with(l, frozen.as_ref(), chain);
+    let stage = derive_stage_with(l, chain, hash);
+    let mine = l.recorded.as_ref().map(|r| r.share_index);
     let rows = s
         .shares
         .iter()
@@ -883,7 +948,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
         node_run_by: s.operator_secret_holder.clone(),
         fee: l.recorded.as_ref().and_then(|r| r.fee),
         debit: l.recorded.as_ref().map(Recorded::debit),
-        pro_tx_hash: session_hash(l, chain).map(|t| t.to_string()),
+        pro_tx_hash: hash.map(|t| t.to_string()),
         txid: l.row.txid.clone(),
         reserved: reserved_of(&l.row)
             .iter()
@@ -891,7 +956,7 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .collect(),
         next: after_abandon(
             &l.row,
-            match contested(l, chain, &stage) {
+            match contested_with(l, chain, &stage, hash) {
                 true => SharedNext::Nothing,
                 false => next_of(l, stage),
             },

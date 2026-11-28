@@ -13,9 +13,9 @@
 //! D25), so no build after a restart can spend them in a second
 //! transaction.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_appdb::{AttemptEnd, Holder, MasternodeOpRow};
@@ -27,10 +27,11 @@ use super::super::protx_records::{
 };
 use super::super::shared::list_settled;
 use crate::coins::{CoinFence, WalletCoin, now_secs, read_coins};
-use crate::history::{Finality, TxEntry, instant_locked, spender_heights};
+use crate::history::{
+    Finality, SweptBy, TxEntry, conflicted_with_swept, instant_locked, rival_spender_heights,
+};
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
-use key_wallet::transaction_checking::BlockInfo;
 
 /// Discard's refusal while the history lists its payment pending.
 const DISCARD_LISTED: &str = "discarding the operation: its payment is still listed in History; abandon it there first, then discard again";
@@ -140,94 +141,247 @@ pub(crate) fn decode_inputs(text: &str) -> Vec<OutPoint> {
         .collect()
 }
 
-/// What [`state_of`] reads of the wallet: [`NetworkSession::op_view`].
+/// What [`OpView::state_of`] reads of the wallet: [`NetworkSession::op_view_for`].
+/// Pairs the wallet's history and finality data inside [`FinalBeats`] so
+/// callers cannot mix a history with another read's finality proof (#982).
 pub(crate) struct OpView {
-    pub history: HashMap<Txid, TxEntry>,
     pub unspent: HashSet<OutPoint>,
-    pub chainlock: Option<u32>,
-    pub finality: Finality,
+    pub beats: FinalBeats,
 }
 
 impl OpView {
-    /// The history, the unspent coins and the [`Beats`] they read, for
-    /// [`state_of`].
-    pub(crate) fn with_beats(self) -> (HashMap<Txid, TxEntry>, HashSet<OutPoint>, Beats) {
-        let beats = Beats::of(&self.history, self.chainlock, self.finality);
-        (self.history, self.unspent, beats)
+    /// Derives `row`'s state from the paired history, unspent set and final
+    /// beats.
+    pub(crate) fn state_of(&self, row: &MasternodeOpRow) -> ProTxOperationState {
+        self.beats.state_of(row, &self.unspent)
     }
 }
 
-/// What may beat an operation ([`Beats::of`]): only a block the SPV header
-/// chain proves final under a ChainLock ([`Finality`]), as a reorg can
-/// undo any other and a record kept from a fork a restart reloads names a
-/// block the chain no longer holds. A block that beats one the history
-/// holds InstantSend-locked is also ChainLocked (DIP-10, key-wallet's
-/// order). Each release that a beaten operation allows (its inputs and
-/// collateral, its payout-change barrier, the hold on a later update)
-/// reads it.
-pub(crate) struct Beats {
-    /// The history's [`crate::history::conflicted`] blocks, of those that
-    /// count.
+/// A wallet's history paired with the [`Finality`] proof built for it (#982):
+/// only a block the SPV header chain proves final under a ChainLock beats
+/// anything here, as a reorg can undo any other and a record kept from a fork
+/// a restart reloads names a block the chain no longer holds. A block that
+/// beats one the history holds InstantSend-locked is also ChainLocked (DIP-10,
+/// key-wallet's order). Non-claim `swept_by:` conflict-sweep notes (#953) are
+/// paired with the history so operations funded from a swept (never abandoned)
+/// payment's change settle as `conflicted` once the winning block is final.
+///
+/// Every release (input and collateral locks, payout-change barriers, later
+/// update holds) reads [`FinalBeats`]; provisional progress displays read the
+/// separate [`ProvisionalBeats`] type, which release methods never accept.
+pub(crate) struct FinalBeats {
+    history: HashMap<Txid, TxEntry>,
+    swept_by: BTreeMap<Txid, SweptBy>,
+    /// The history's [`conflicted_with_swept`] blocks proven final.
     conflicted: HashMap<Txid, (u32, dashcore::BlockHash)>,
     finality: Finality,
-    /// [`Beats::seen`]: a block counts unless the chain is known not to
-    /// hold it ([`Finality::may_hold`]).
-    seen: bool,
     chainlock: Option<u32>,
 }
 
-impl Beats {
-    pub(crate) fn of(
-        history: &HashMap<Txid, TxEntry>,
-        chainlock: Option<u32>,
-        finality: Finality,
-    ) -> Self {
-        Self::new(history, chainlock, finality, false)
-    }
+/// What a block beats while it may still become final, in the same
+/// InstantSend order: for progress displays (`contested`, recovery
+/// `confirming`) only, never a release (#982). Borrows its [`FinalBeats`] so
+/// the history is never cloned or mismatched.
+pub(crate) struct ProvisionalBeats<'a> {
+    final_beats: &'a FinalBeats,
+    seen_conflicted: &'a HashMap<Txid, (u32, dashcore::BlockHash)>,
+}
 
-    /// What a block beats while it may still become final, in the same
-    /// InstantSend order: what a progress display reads, never a release.
-    pub(crate) fn seen(
-        history: &HashMap<Txid, TxEntry>,
-        chainlock: Option<u32>,
-        finality: Finality,
-    ) -> Self {
-        Self::new(history, chainlock, finality, true)
-    }
+/// Both final and provisional conflict readings of one transaction from a
+/// single scan of the wallet's history (#982).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RecoveryConflict {
+    /// Final block beating the transaction: `(by_preferred, height)`.
+    pub final_hit: Option<(bool, u32)>,
+    /// Provisional ("may still become final") block: `(by_preferred, height)`.
+    pub seen_hit: Option<(bool, u32)>,
+}
 
-    fn new(
-        history: &HashMap<Txid, TxEntry>,
+impl FinalBeats {
+    pub(crate) fn new(
+        history: HashMap<Txid, TxEntry>,
+        swept_by: BTreeMap<Txid, SweptBy>,
         chainlock: Option<u32>,
         finality: Finality,
-        seen: bool,
     ) -> Self {
-        let counts = |b: &BlockInfo| counts(&finality, seen, b);
-        let conflicted = crate::history::conflicted(history, chainlock, counts);
+        let conflicted =
+            conflicted_with_swept(&history, &swept_by, chainlock, |b| finality.proves(b));
         Self {
+            history,
+            swept_by,
             conflicted,
             finality,
-            seen,
             chainlock,
         }
     }
 
-    /// The height of `rival`'s block when it beats a transaction the
-    /// history holds InstantSend-locked (`locked`) or not.
-    fn height(&self, rival: &TxEntry, locked: bool) -> Option<u32> {
+    pub(crate) fn history(&self) -> &HashMap<Txid, TxEntry> {
+        &self.history
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finality(&self) -> &Finality {
+        &self.finality
+    }
+
+    /// Borrows a [`ProvisionalBeats`] view over the same history, caching the
+    /// provisional conflict map in `cache` so it is computed at most once.
+    pub(crate) fn provisional_with<'a>(
+        &'a self,
+        cache: &'a OnceLock<HashMap<Txid, (u32, dashcore::BlockHash)>>,
+    ) -> ProvisionalBeats<'a> {
+        let seen_conflicted = cache.get_or_init(|| {
+            conflicted_with_swept(&self.history, &self.swept_by, self.chainlock, |b| {
+                self.finality.may_hold(b)
+            })
+        });
+        ProvisionalBeats {
+            final_beats: self,
+            seen_conflicted,
+        }
+    }
+
+    /// The height of `rival`'s block when it proves a beat over a transaction
+    /// the history holds InstantSend-locked (`locked`) or not.
+    fn final_height(&self, rival: &TxEntry, locked: bool) -> Option<u32> {
         let block = rival.context.block_info()?;
-        let counts = |b: &BlockInfo| counts(&self.finality, self.seen, b);
-        crate::history::block_beats(&rival.context, locked, self.chainlock, counts)
-            .then(|| block.height())
+        crate::history::block_beats(&rival.context, locked, self.chainlock, |b| {
+            self.finality.proves(b)
+        })
+        .then(|| block.height())
     }
 
-    fn conflicted_height(&self, txid: &Txid) -> Option<u32> {
-        self.conflicted.get(txid).map(|(height, _)| *height)
+    fn seen_height(&self, rival: &TxEntry, locked: bool) -> Option<u32> {
+        let block = rival.context.block_info()?;
+        crate::history::block_beats(&rival.context, locked, self.chainlock, |b| {
+            self.finality.may_hold(b)
+        })
+        .then(|| block.height())
     }
 
-    /// Tests: [`Beats`] of `history` on a header chain that holds each of
+    fn locked_in(&self, txid: Option<&Txid>) -> bool {
+        txid.and_then(|t| self.history.get(t))
+            .is_some_and(instant_locked)
+    }
+
+    fn indirect_height(
+        &self,
+        conflicted: &HashMap<Txid, (u32, dashcore::BlockHash)>,
+        inputs: &[OutPoint],
+        txid: Option<&Txid>,
+    ) -> Option<u32> {
+        let locked = self.locked_in(txid);
+        let parents = (inputs.iter())
+            .filter(|_| !locked)
+            .filter_map(|o| conflicted.get(&o.txid).map(|(h, _)| *h));
+        txid.and_then(|t| conflicted.get(t).map(|(h, _)| *h))
+            .into_iter()
+            .chain(parents)
+            .min()
+    }
+
+    /// The lowest height of a final block holding another transaction than
+    /// `except` that spends one of `inputs`, `preferred` ones first at the
+    /// same height.
+    pub(crate) fn conflict_of(
+        &self,
+        inputs: &[OutPoint],
+        except: Option<&Txid>,
+        preferred: &[Txid],
+    ) -> Option<(Txid, u32)> {
+        let locked = self.locked_in(except);
+        self.history
+            .iter()
+            .filter(|(id, entry)| {
+                Some(*id) != except
+                    && entry
+                        .tx
+                        .input
+                        .iter()
+                        .any(|input| inputs.contains(&input.previous_output))
+            })
+            .filter_map(|(id, entry)| Some((*id, self.final_height(entry, locked)?)))
+            .min_by_key(|(id, height)| (*height, !preferred.contains(id), *id))
+    }
+
+    /// The lowest height of a final block holding another transaction than
+    /// `except` that spends one of `inputs`.
+    pub(crate) fn conflict_height(
+        &self,
+        inputs: &[OutPoint],
+        except: Option<&Txid>,
+    ) -> Option<u32> {
+        self.conflict_of(inputs, except, &[])
+            .map(|(_, height)| height)
+    }
+
+    /// The lowest height of a final block that beats `txid` spending `inputs`,
+    /// directly or through a beaten parent (including a swept parent, #953).
+    pub(crate) fn beaten_height(&self, inputs: &[OutPoint], txid: Option<&Txid>) -> Option<u32> {
+        self.conflict_height(inputs, txid)
+            .into_iter()
+            .chain(self.indirect_height(&self.conflicted, inputs, txid))
+            .min()
+    }
+
+    /// [`Self::beaten_height`] of `tx`.
+    pub(crate) fn tx_beaten_height(&self, tx: &Transaction) -> Option<u32> {
+        let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+        self.beaten_height(&inputs, Some(&tx.txid()))
+    }
+
+    /// A row's state (§5), from the row, the paired history, `unspent` coins
+    /// and final beats. Undecodable signed bytes read as `sent` or `signed`,
+    /// never as a state that would let the row go.
+    pub(crate) fn state_of(
+        &self,
+        row: &MasternodeOpRow,
+        unspent: &HashSet<OutPoint>,
+    ) -> ProTxOperationState {
+        if row.signed_tx.is_none() {
+            let inputs = decode_inputs(&row.fee_inputs);
+            return if inputs.iter().all(|o| unspent.contains(o)) {
+                ProTxOperationState::NeedsSignature
+            } else {
+                ProTxOperationState::InputsSpent
+            };
+        }
+        let unsettled = if row.sent_at.is_some() {
+            ProTxOperationState::Sent
+        } else if row.last_error.is_some() {
+            ProTxOperationState::NotSent
+        } else {
+            ProTxOperationState::Signed
+        };
+        let Some(tx) = signed_tx(row) else {
+            return unsettled;
+        };
+        let txid = tx.txid();
+        if let Some(block) = self.history.get(&txid).and_then(|e| e.context.block_info()) {
+            return ProTxOperationState::Confirmed {
+                height: block.height(),
+            };
+        }
+        match self.tx_beaten_height(&tx) {
+            Some(_) => ProTxOperationState::Conflicted,
+            None => unsettled,
+        }
+    }
+
+    /// `state` once Activity's abandon is applied (MG-10 §1.10, D49).
+    pub(crate) fn abandon_settled(
+        &self,
+        row: &MasternodeOpRow,
+        state: ProTxOperationState,
+        abandoned: &HashSet<Txid>,
+    ) -> ProTxOperationState {
+        abandon_settled(row, state, &self.history, abandoned)
+    }
+
+    /// Tests: [`FinalBeats`] of `history` on a header chain that holds each of
     /// its blocks, under a ChainLock at `chainlock` (none proves nothing).
     #[cfg(test)]
-    pub(crate) fn on_chain(history: &HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> Self {
+    pub(crate) fn on_chain(history: HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> Self {
         let mut active: HashMap<u32, dashcore::BlockHash> = (history.values())
             .filter_map(|e| e.context.block_info())
             .map(|b| (b.height(), b.block_hash()))
@@ -240,19 +394,110 @@ impl Beats {
             chainlock: lock,
             active,
         };
-        Self::of(history, chainlock, finality)
+        Self::new(history, BTreeMap::new(), chainlock, finality)
     }
 }
 
-fn counts(finality: &Finality, seen: bool, block: &BlockInfo) -> bool {
-    match seen {
-        true => finality.may_hold(block),
-        false => finality.proves(block),
+impl ProvisionalBeats<'_> {
+    /// Provisional ("may still become final") beaten height for display only
+    /// (`contested`). Never used for a release.
+    pub(crate) fn beaten_height(&self, inputs: &[OutPoint], txid: Option<&Txid>) -> Option<u32> {
+        let locked = self.final_beats.locked_in(txid);
+        let direct = self
+            .final_beats
+            .history
+            .iter()
+            .filter(|(id, entry)| {
+                Some(*id) != txid
+                    && entry
+                        .tx
+                        .input
+                        .iter()
+                        .any(|input| inputs.contains(&input.previous_output))
+            })
+            .filter_map(|(_, entry)| self.final_beats.seen_height(entry, locked))
+            .min();
+        direct
+            .into_iter()
+            .chain(
+                self.final_beats
+                    .indirect_height(self.seen_conflicted, inputs, txid),
+            )
+            .min()
+    }
+
+    /// Computes both the final and provisional conflict readings for recovery
+    /// in a single scan of the wallet's history (#982).
+    pub(crate) fn recovery_conflict(
+        &self,
+        inputs: &[OutPoint],
+        except: Option<&Txid>,
+        preferred: &[Txid],
+    ) -> RecoveryConflict {
+        let locked = self.final_beats.locked_in(except);
+        let mut best_final: Option<(u32, bool, Txid)> = None;
+        let mut best_seen: Option<(u32, bool, Txid)> = None;
+        for (id, entry) in &self.final_beats.history {
+            if Some(id) == except
+                || !entry
+                    .tx
+                    .input
+                    .iter()
+                    .any(|input| inputs.contains(&input.previous_output))
+            {
+                continue;
+            }
+            if let Some(sh) = self.final_beats.seen_height(entry, locked) {
+                let key = (sh, !preferred.contains(id), *id);
+                if best_seen.is_none_or(|b| key < b) {
+                    best_seen = Some(key);
+                }
+                if let Some(fh) = self.final_beats.final_height(entry, locked) {
+                    let fkey = (fh, !preferred.contains(id), *id);
+                    if best_final.is_none_or(|b| fkey < b) {
+                        best_final = Some(fkey);
+                    }
+                }
+            }
+        }
+        let merge =
+            |direct: Option<(u32, bool, Txid)>, indirect: Option<u32>| match (direct, indirect) {
+                (Some((d, _, _)), Some(lo)) if lo < d => Some((false, lo)),
+                (Some((d, not_pref, _)), _) => Some((!not_pref, d)),
+                (None, Some(lo)) => Some((false, lo)),
+                (None, None) => None,
+            };
+        let final_indirect =
+            self.final_beats
+                .indirect_height(&self.final_beats.conflicted, inputs, except);
+        let seen_indirect = self
+            .final_beats
+            .indirect_height(self.seen_conflicted, inputs, except);
+        RecoveryConflict {
+            final_hit: merge(best_final, final_indirect),
+            seen_hit: merge(best_seen, seen_indirect),
+        }
     }
 }
 
 pub(crate) fn signed_tx(row: &MasternodeOpRow) -> Option<Transaction> {
     dashcore::consensus::deserialize(row.signed_tx.as_deref()?).ok()
+}
+
+/// The `(Some(txid), outpoint)` pairs of signed `rows` that may not yet be in
+/// the wallet's history, so [`rival_spender_heights`] still catches mined
+/// rivals of their inputs (#982).
+pub(crate) fn extra_op_inputs(rows: &[MasternodeOpRow]) -> Vec<(Option<Txid>, OutPoint)> {
+    let mut out = Vec::new();
+    for row in rows {
+        if let Some(tx) = signed_tx(row) {
+            let txid = Some(tx.txid());
+            for i in &tx.input {
+                out.push((txid, i.previous_output));
+            }
+        }
+    }
+    out
 }
 
 /// Tests: answers `session`'s header lookups with the zero hash the
@@ -271,80 +516,13 @@ pub(crate) fn flat_headers(
     }));
 }
 
-/// A row's state (§5), from the row, the wallet's history, its unspent
-/// coins and what may beat it ([`Beats`]). Undecodable
-/// signed bytes read as `sent` or `signed`, never as a state that would let
-/// the row go.
-pub(crate) fn state_of(
-    row: &MasternodeOpRow,
-    history: &HashMap<Txid, TxEntry>,
-    unspent: &HashSet<OutPoint>,
-    beats: &Beats,
-) -> ProTxOperationState {
-    if row.signed_tx.is_none() {
-        let inputs = decode_inputs(&row.fee_inputs);
-        return if inputs.iter().all(|o| unspent.contains(o)) {
-            ProTxOperationState::NeedsSignature
-        } else {
-            ProTxOperationState::InputsSpent
-        };
-    }
-    let unsettled = if row.sent_at.is_some() {
-        ProTxOperationState::Sent
-    } else if row.last_error.is_some() {
-        ProTxOperationState::NotSent
-    } else {
-        ProTxOperationState::Signed
-    };
-    let Some(tx) = signed_tx(row) else {
-        return unsettled;
-    };
-    let txid = tx.txid();
-    if let Some(block) = history.get(&txid).and_then(|e| e.context.block_info()) {
-        return ProTxOperationState::Confirmed {
-            height: block.height(),
-        };
-    }
-    match tx_beaten_height(&tx, history, beats) {
-        Some(_) => ProTxOperationState::Conflicted,
-        None => unsettled,
-    }
-}
-
-/// The height of the lowest block of [`Beats`] that beats the transaction
-/// `txid` spending `inputs`, so that it can never confirm: a block spending
-/// one of `inputs` ([`conflict_height`]), or the history's descendant rule
-/// ([`crate::history::conflicted`], which reads an abandoned parent too)
-/// for it or for a transaction it spends. One the history holds
-/// InstantSend-locked is never beaten through its parent.
-pub(crate) fn beaten_height(
-    history: &HashMap<Txid, TxEntry>,
-    beats: &Beats,
-    inputs: &[OutPoint],
-    txid: Option<&Txid>,
-) -> Option<u32> {
-    let locked = locked_in(history, txid);
-    let parents = (inputs.iter())
-        .filter(|_| !locked)
-        .filter_map(|o| beats.conflicted_height(&o.txid));
-    (conflict_height(history, inputs, txid, beats).into_iter())
-        .chain(txid.and_then(|t| beats.conflicted_height(t)))
-        .chain(parents)
-        .min()
-}
-
-fn locked_in(history: &HashMap<Txid, TxEntry>, txid: Option<&Txid>) -> bool {
-    txid.and_then(|t| history.get(t))
-        .is_some_and(instant_locked)
-}
-
 /// `state` once Activity's abandon is applied (MG-10 §1.10, D49): a `sent`
 /// registration or key change whose txid the wallet's abandoned marks name
 /// (an Abandon's durable commit point), and that isn't InstantSend-locked,
 /// is `abandoned`. Terminal: its fee inputs are released and it is never
 /// resent. Core may still mine it, so its payout-change barrier stays
 /// (MG-13 P16), it holds the signing of a later update of its masternode,
-/// and the key checks (D51) read [`state_of`], where it is `sent`.
+/// and the key checks (D51) read [`FinalBeats::state_of`], where it is `sent`.
 pub(crate) fn abandon_settled(
     row: &MasternodeOpRow,
     state: ProTxOperationState,
@@ -368,53 +546,6 @@ pub(crate) fn abandon_settled(
     } else {
         state
     }
-}
-
-/// The lowest height of a block of [`Beats`] holding another transaction
-/// than `except` that spends one of `inputs`: MG-04's operations and the
-/// shared sessions alike (D70). One the history holds InstantSend-locked
-/// is beaten only by a ChainLocked block.
-pub(crate) fn conflict_height(
-    history: &HashMap<Txid, TxEntry>,
-    inputs: &[OutPoint],
-    except: Option<&Txid>,
-    beats: &Beats,
-) -> Option<u32> {
-    conflict_of(history, inputs, except, &[], beats).map(|(_, height)| height)
-}
-
-/// [`conflict_height`] with the transaction in that block, `preferred`
-/// ones first at the same height.
-pub(crate) fn conflict_of(
-    history: &HashMap<Txid, TxEntry>,
-    inputs: &[OutPoint],
-    except: Option<&Txid>,
-    preferred: &[Txid],
-    beats: &Beats,
-) -> Option<(Txid, u32)> {
-    let locked = locked_in(history, except);
-    history
-        .iter()
-        .filter(|(id, entry)| {
-            Some(*id) != except
-                && entry
-                    .tx
-                    .input
-                    .iter()
-                    .any(|input| inputs.contains(&input.previous_output))
-        })
-        .filter_map(|(id, entry)| Some((*id, beats.height(entry, locked)?)))
-        .min_by_key(|(id, height)| (*height, !preferred.contains(id), *id))
-}
-
-/// [`beaten_height`] of `tx`.
-fn tx_beaten_height(
-    tx: &Transaction,
-    history: &HashMap<Txid, TxEntry>,
-    beats: &Beats,
-) -> Option<u32> {
-    let inputs: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-    beaten_height(history, beats, &inputs, Some(&tx.txid()))
 }
 
 pub(crate) const OVERDUE_SECS: u64 = 10_800;
@@ -636,19 +767,38 @@ impl NetworkSession {
             .ok_or(MasternodesError::OperationNotFound)
     }
 
-    /// The wallet's history, unspent coins, best ChainLock height and the
-    /// [`Finality`] of its blocks, for [`state_of`].
-    pub(crate) async fn op_view(&self, wallet: WalletId) -> Result<OpView, MasternodesError> {
+    /// The wallet's unspent outpoints only, skipping history clones, sweep
+    /// notes and SPV header reads (#982).
+    pub(crate) async fn unspent_outpoints(
+        &self,
+        wallet: WalletId,
+    ) -> Result<HashSet<OutPoint>, MasternodesError> {
         let w = self.wallet(&wallet).await?;
-        self.op_view_of(wallet, &w).await
+        let state = crate::wallet_read::info_of(&w).await?;
+        Ok((read_coins(&state.core_wallet).coins.into_iter())
+            .map(|c| c.utxo.outpoint)
+            .collect())
     }
 
-    /// [`Self::op_view`] of the wallet `w`, already looked up: a wallet that
-    /// left since is an error.
+    /// The wallet's history, unspent coins, best ChainLock height and paired
+    /// [`FinalBeats`], for [`OpView::state_of`], checking rival spends of
+    /// `extra` signed rows that may not yet be in history (#982).
+    pub(crate) async fn op_view_for(
+        &self,
+        wallet: WalletId,
+        extra: &[(Option<Txid>, OutPoint)],
+    ) -> Result<OpView, MasternodesError> {
+        let w = self.wallet(&wallet).await?;
+        self.op_view_of(wallet, &w, extra).await
+    }
+
+    /// [`Self::op_view_for`] of the wallet `w`, already looked up: a wallet
+    /// that left since is an error.
     pub(crate) async fn op_view_of(
         &self,
         wallet: WalletId,
         w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+        extra: &[(Option<Txid>, OutPoint)],
     ) -> Result<OpView, MasternodesError> {
         let (unspent, applied) = {
             let state = crate::wallet_read::info_of(w).await?;
@@ -658,29 +808,35 @@ impl NetworkSession {
             (unspent, crate::history_ops::applied_chainlock(&state))
         };
         let history = self.hub.history.read(&wallet, |h| h.clone());
+        let swept_by = self
+            .appdb_op(move |db| crate::tx_actions::load_swept_by(db, wallet))
+            .await?;
         let finality = self
-            .finality(|at_most| spender_heights(&[&history], at_most))
+            .finality(|at_most| rival_spender_heights(&[&history], &[&swept_by], extra, at_most))
             .await;
         let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
             .max(self.hub.best_chainlock().map(|(h, _)| h))
             .max(finality.chainlock.map(|(h, _)| h));
         Ok(OpView {
-            history,
             unspent,
-            chainlock,
-            finality,
+            beats: FinalBeats::new(history, swept_by, chainlock, finality),
         })
     }
 
     /// The [`Finality`] of the blocks at the heights `heights` names at or
     /// below the best ChainLock: the SPV header chain's hashes there, read
     /// while it holds the ChainLock's block. Nothing is proven without a
-    /// ChainLock or that block.
+    /// ChainLock or that block, and when no candidate height exists no SPV
+    /// header is read (#982).
     pub(crate) async fn finality(&self, heights: impl FnOnce(u32) -> BTreeSet<u32>) -> Finality {
         let Some(chainlock) = self.hub.best_chainlock() else {
             return Finality::default();
         };
-        match self.headers_under(chainlock, heights(chainlock.0)).await {
+        let wanted = heights(chainlock.0);
+        if wanted.is_empty() {
+            return Finality::default();
+        }
+        match self.headers_under(chainlock, wanted).await {
             Some(active) => Finality {
                 chainlock: Some(chainlock),
                 active,
@@ -704,13 +860,23 @@ impl NetworkSession {
         wallet: WalletId,
         row: &MasternodeOpRow,
     ) -> Result<ProTxOperationState, MasternodesError> {
-        let (history, unspent, beats) = self.op_view(wallet).await?.with_beats();
+        if row.signed_tx.is_none() {
+            let unspent = self.unspent_outpoints(wallet).await?;
+            let inputs = decode_inputs(&row.fee_inputs);
+            return Ok(if inputs.iter().all(|o| unspent.contains(o)) {
+                ProTxOperationState::NeedsSignature
+            } else {
+                ProTxOperationState::InputsSpent
+            });
+        }
+        let extra = extra_op_inputs(std::slice::from_ref(row));
+        let op_view = self.op_view_for(wallet, &extra).await?;
         let abandoned = self.abandoned_txids(wallet).await?;
         let view = self
             .dissolution_view(wallet, std::slice::from_ref(row))
             .await;
-        let state = list_settled(row, state_of(row, &history, &unspent, &beats), &view);
-        Ok(abandon_settled(row, state, &history, &abandoned))
+        let state = list_settled(row, op_view.state_of(row), &view);
+        Ok(op_view.beats.abandon_settled(row, state, &abandoned))
     }
 
     /// `Ok` when a resend of `row` may hand its bytes off: it reads
@@ -899,19 +1065,20 @@ impl NetworkSession {
         if rows.iter().all(|r| r.fee_inputs == "[]") {
             return Ok(());
         }
-        let (history, unspent, beats) = self.op_view(wallet).await?.with_beats();
+        let extra = extra_op_inputs(&rows);
+        let op_view = self.op_view_for(wallet, &extra).await?;
         let abandoned = self.abandoned_txids(wallet).await?;
         let buried = self.buried();
         let settled: Vec<(String, Vec<OutPoint>, bool)> = rows
             .iter()
             .filter(|r| r.fee_inputs != "[]")
             .filter_map(|r| {
-                let state = state_of(r, &history, &unspent, &beats);
-                let state = abandon_settled(r, state, &history, &abandoned);
+                let state = op_view.state_of(r);
+                let state = op_view.beats.abandon_settled(r, state, &abandoned);
                 let settled = match state {
                     ProTxOperationState::Confirmed { .. } | ProTxOperationState::Abandoned => true,
                     ProTxOperationState::Conflicted => signed_tx(r)
-                        .and_then(|tx| tx_beaten_height(&tx, &history, &beats))
+                        .and_then(|tx| op_view.beats.tx_beaten_height(&tx))
                         .is_some_and(&buried),
                     _ => false,
                 };
@@ -967,10 +1134,11 @@ impl NetworkSession {
         if !rows.iter().any(|r| r.locked_collateral) {
             return Ok(());
         }
-        let (history, unspent, beats) = self.op_view(wallet).await?.with_beats();
-        let (beaten, live): (Vec<_>, Vec<_>) = rows.iter().partition(|r| {
-            state_of(r, &history, &unspent, &beats) == ProTxOperationState::Conflicted
-        });
+        let extra = extra_op_inputs(&rows);
+        let op_view = self.op_view_for(wallet, &extra).await?;
+        let (beaten, live): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .partition(|r| op_view.state_of(r) == ProTxOperationState::Conflicted);
         let named: HashSet<OutPoint> = live.iter().filter_map(|r| row_collateral(r)).collect();
         let release: Vec<(String, OutPoint)> = beaten
             .iter()
@@ -1298,23 +1466,13 @@ mod tests {
         };
         let mut r = row();
         r.fee_inputs = encode_inputs(&[o]);
-        let history = HashMap::new();
+        let beats = FinalBeats::on_chain(HashMap::new(), None);
         assert_eq!(
-            state_of(
-                &r,
-                &history,
-                &HashSet::from([o]),
-                &Beats::on_chain(&history, None)
-            ),
+            beats.state_of(&r, &HashSet::from([o])),
             ProTxOperationState::NeedsSignature
         );
         assert_eq!(
-            state_of(
-                &r,
-                &history,
-                &HashSet::new(),
-                &Beats::on_chain(&history, None)
-            ),
+            beats.state_of(&r, &HashSet::new()),
             ProTxOperationState::InputsSpent
         );
     }
@@ -1324,21 +1482,13 @@ mod tests {
         let mut r = row();
         r.signed_tx = Some(vec![0xff]);
         r.txid = Some("x".into());
-        let (h, u) = (HashMap::new(), HashSet::new());
-        assert_eq!(
-            state_of(&r, &h, &u, &Beats::on_chain(&h, None)),
-            ProTxOperationState::Signed
-        );
+        let u = HashSet::new();
+        let beats = FinalBeats::on_chain(HashMap::new(), None);
+        assert_eq!(beats.state_of(&r, &u), ProTxOperationState::Signed);
         r.last_error = Some("send.no_peers".into());
-        assert_eq!(
-            state_of(&r, &h, &u, &Beats::on_chain(&h, None)),
-            ProTxOperationState::NotSent
-        );
+        assert_eq!(beats.state_of(&r, &u), ProTxOperationState::NotSent);
         r.sent_at = Some(1);
-        assert_eq!(
-            state_of(&r, &h, &u, &Beats::on_chain(&h, None)),
-            ProTxOperationState::Sent
-        );
+        assert_eq!(beats.state_of(&r, &u), ProTxOperationState::Sent);
     }
 
     #[test]
@@ -1415,7 +1565,7 @@ mod tests {
                 );
             }
             history.insert(own.txid(), entry(own.clone(), None));
-            let final_ = Beats::on_chain(&history, Some(9));
+            let final_ = FinalBeats::on_chain(history.clone(), Some(9));
             for except in [
                 None,
                 Some(own.txid()),
@@ -1423,29 +1573,25 @@ mod tests {
                 Some(candidates[2].txid()),
             ] {
                 assert_eq!(
-                    conflict_height(&history, &[input], except.as_ref(), &final_),
+                    final_.conflict_height(&[input], except.as_ref()),
                     original(&history, except.as_ref())
                 );
             }
             let preferred = candidates[1].txid();
             assert_eq!(
-                conflict_of(&history, &[input], Some(&own.txid()), &[preferred], &final_),
+                final_.conflict_of(&[input], Some(&own.txid()), &[preferred]),
                 Some((preferred, 7))
             );
             assert_eq!(
-                conflict_of(
-                    &history,
-                    &[input],
-                    Some(&own.txid()),
-                    &[candidates[2].txid()],
-                    &final_
-                )
-                .unwrap()
-                .1,
+                final_
+                    .conflict_of(&[input], Some(&own.txid()), &[candidates[2].txid()])
+                    .unwrap()
+                    .1,
                 7
             );
             assert_eq!(
-                conflict_of(&history, &[input], Some(&own.txid()), &[], &final_)
+                final_
+                    .conflict_of(&[input], Some(&own.txid()), &[])
                     .unwrap()
                     .0,
                 candidates[0].txid().min(candidates[1].txid())
@@ -1456,22 +1602,18 @@ mod tests {
                 ..row()
             };
             assert_eq!(
-                state_of(&r, &history, &HashSet::new(), &final_),
+                final_.state_of(&r, &HashSet::new()),
                 ProTxOperationState::Conflicted
             );
             assert_eq!(
-                state_of(
-                    &r,
-                    &history,
-                    &HashSet::new(),
-                    &Beats::on_chain(&history, None)
-                ),
+                FinalBeats::on_chain(history.clone(), None).state_of(&r, &HashSet::new()),
                 ProTxOperationState::Sent,
                 "no ChainLock"
             );
             history.insert(own.txid(), entry(own.clone(), Some(9)));
+            let confirmed = FinalBeats::on_chain(history.clone(), Some(9));
             assert_eq!(
-                state_of(&r, &history, &HashSet::new(), &final_),
+                confirmed.state_of(&r, &HashSet::new()),
                 ProTxOperationState::Confirmed { height: 9 }
             );
         }
@@ -1523,18 +1665,22 @@ mod tests {
             ..row()
         };
         let k_inputs = [OutPoint::new(p.txid(), 0)];
-        let read_with = |history: &HashMap<Txid, TxEntry>, beats: &Beats| {
+        let read_with = |beats: &FinalBeats| {
             (
-                beaten_height(history, beats, &k_inputs, Some(&k.txid())),
-                state_of(&r, history, &HashSet::new(), beats),
+                beats.beaten_height(&k_inputs, Some(&k.txid())),
+                beats.state_of(&r, &HashSet::new()),
             )
         };
         let read = |history: &HashMap<Txid, TxEntry>, chainlock| {
-            read_with(history, &Beats::on_chain(history, chainlock))
+            read_with(&FinalBeats::on_chain(history.clone(), chainlock))
         };
         let shown = |history: &HashMap<Txid, TxEntry>, chainlock, finality| {
-            let seen = Beats::seen(history, chainlock, finality);
-            beaten_height(history, &seen, &k_inputs, Some(&k.txid()))
+            let final_beats =
+                FinalBeats::new(history.clone(), BTreeMap::new(), chainlock, finality);
+            let cache = OnceLock::new();
+            final_beats
+                .provisional_with(&cache)
+                .beaten_height(&k_inputs, Some(&k.txid()))
         };
         let sent = (None, ProTxOperationState::Sent);
         let beaten = |h| (Some(h), ProTxOperationState::Conflicted);
@@ -1546,7 +1692,7 @@ mod tests {
         history.insert(rival.txid(), entry(&rival, Some(9), false));
         assert_eq!(read(&history, None), sent, "no ChainLock");
         assert_eq!(read(&history, Some(8)), sent, "above the ChainLock");
-        let on = |cl| Beats::on_chain(&history, cl).finality;
+        let on = |cl| FinalBeats::on_chain(history.clone(), cl).finality().clone();
         assert_eq!(
             shown(&history, None, on(None)),
             Some(9),
@@ -1558,7 +1704,7 @@ mod tests {
             "shown above it"
         );
         assert_eq!(read(&history, cl), beaten(9), "K not in the history");
-        let mut stale = Beats::on_chain(&history, cl).finality;
+        let mut stale = FinalBeats::on_chain(history.clone(), cl).finality().clone();
         stale
             .active
             .insert(9, dashcore::BlockHash::from_byte_array([9; 32]));
@@ -1567,12 +1713,8 @@ mod tests {
             None,
             "a replaced block shown"
         );
-        let stale = Beats::of(&history, cl, stale);
-        assert_eq!(
-            read_with(&history, &stale),
-            sent,
-            "a block the chain replaced"
-        );
+        let stale = FinalBeats::new(history.clone(), BTreeMap::new(), cl, stale);
+        assert_eq!(read_with(&stale), sent, "a block the chain replaced");
         history.insert(k.txid(), entry(&k, None, false));
         assert_eq!(read(&history, cl), beaten(9));
         history.insert(early.txid(), entry(&early, Some(7), false));
@@ -1585,7 +1727,7 @@ mod tests {
         let direct = spend(OutPoint::new(p.txid(), 0), 6);
         history.insert(direct.txid(), entry(&direct, Some(12), false));
         assert_eq!(read(&history, Some(11)), sent, "K locked, a plain block");
-        let on = |cl| Beats::on_chain(&history, cl).finality;
+        let on = |cl| FinalBeats::on_chain(history.clone(), cl).finality().clone();
         assert_eq!(
             shown(&history, Some(11), on(Some(11))),
             None,

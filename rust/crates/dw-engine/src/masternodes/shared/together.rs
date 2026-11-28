@@ -222,7 +222,7 @@ fn envelope(
 
 /// What a session's stage is derived from (D94), read once per call.
 pub(crate) struct TogetherView {
-    pub chain: ChainView,
+    pub chain: Arc<ChainView>,
     pub list: Option<ListView>,
     /// D81's height the list's entries aren't above.
     pub list_bound: u32,
@@ -333,7 +333,7 @@ fn signs_request(tx: &Transaction, request: &SpecialTx) -> bool {
 /// and its height.
 fn collateral_spend(chain: &ChainView, collateral: OutPoint) -> Option<(u32, &Transaction)> {
     chain
-        .history
+        .history()
         .values()
         .filter(|e| e.tx.input.iter().any(|i| i.previous_output == collateral))
         .filter_map(|e| Some((e.context.block_info()?.height(), &e.tx)))
@@ -443,7 +443,15 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<TogetherView, MasternodesError> {
-        let chain = self.shared_chain(wallet).await?;
+        let chain = Arc::new(self.shared_chain(wallet).await?);
+        self.together_read_with(wallet, chain).await
+    }
+
+    pub(crate) async fn together_read_with(
+        &self,
+        wallet: WalletId,
+        chain: Arc<ChainView>,
+    ) -> Result<TogetherView, MasternodesError> {
         let list = match self.manager() {
             Ok(manager) => Some(self.protx_list(&manager).await),
             Err(_) => None,

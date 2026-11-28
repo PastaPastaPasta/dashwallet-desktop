@@ -337,7 +337,7 @@ pub(super) fn in_history(
     hash: [u8; 32],
 ) -> Result<(u32, ProRegTxV3), MasternodesError> {
     let entry = chain
-        .history
+        .history()
         .get(&Txid::from_byte_array(hash))
         .ok_or(MasternodesError::SharedRegistrationUnknown)?;
     let height = entry
@@ -497,7 +497,7 @@ impl NetworkSession {
         let valid_from = history.as_ref().map(|reg| penalty_free_from(&reg.mn()));
         let penalty = chain
             .as_ref()
-            .and_then(|chain| chain.history.get(&Txid::from_byte_array(hash)))
+            .and_then(|chain| chain.history().get(&Txid::from_byte_array(hash)))
             .and_then(|entry| {
                 decode_shared_protx(&hex::encode(dashcore::consensus::serialize(&entry.tx)))
             })

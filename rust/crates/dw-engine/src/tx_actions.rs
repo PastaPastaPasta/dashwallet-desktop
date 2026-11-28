@@ -358,22 +358,115 @@ pub(crate) struct DropNotes {
     pub deaths: crate::history::Deaths,
 }
 
+/// Reads every `swept_by:` conflict-sweep note of `wallet` (#953).
+pub(crate) fn load_swept_by(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<BTreeMap<Txid, crate::history::SweptBy>, dw_appdb::AppDbError> {
+    let scope = wallet.to_string();
+    let mut out = BTreeMap::new();
+    for (key, value) in appdb.settings_with_prefix_lossy(&scope, SWEPT_BY_PREFIX)? {
+        let Some(rest) = key.strip_prefix(SWEPT_BY_PREFIX) else {
+            continue;
+        };
+        let note = Txid::from_str(rest)
+            .ok()
+            .zip(value)
+            .and_then(|(t, v)| crate::history::SweptBy::decode(&t, &v));
+        if let Some(note) = note {
+            out.insert(note.tx.txid(), note);
+        }
+    }
+    Ok(out)
+}
+
+/// Every transaction id referenced by `wallet`'s stored `masternode_ops` or
+/// `shared_sessions` rows (their own txids and their inputs' txids), so
+/// `prune_sweep_notes` keeps the `swept_by:` ancestor chain those rows need
+/// to settle as `conflicted` after a restart (#953).
+fn masternode_sweep_roots(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<BTreeSet<Txid>, dw_appdb::AppDbError> {
+    use crate::masternodes::protx::ops::{decode_inputs, signed_tx};
+    use crate::masternodes::shared::store::{conflict_coins, reserved_of, signed_inputs};
+    let w = wallet.to_string();
+    let mut roots = BTreeSet::new();
+    for row in appdb.masternode_ops(&w)? {
+        if let Some(t) = row.txid.as_deref().and_then(|s| Txid::from_str(s).ok()) {
+            roots.insert(t);
+        }
+        for o in decode_inputs(&row.fee_inputs) {
+            roots.insert(o.txid);
+        }
+        if let Some(tx) = signed_tx(&row) {
+            roots.insert(tx.txid());
+            for i in &tx.input {
+                roots.insert(i.previous_output.txid);
+            }
+        }
+    }
+    for row in appdb.shared_sessions(&w)? {
+        if let Some(t) = row.txid.as_deref().and_then(|s| Txid::from_str(s).ok()) {
+            roots.insert(t);
+        }
+        for o in reserved_of(&row)
+            .into_iter()
+            .chain(conflict_coins(&row))
+            .chain(signed_inputs(&row).into_iter().flatten())
+        {
+            roots.insert(o.txid);
+        }
+    }
+    Ok(roots)
+}
+
+/// Every `swept_by:` txid reachable from `roots` through `deaths.inputs_of`
+/// (including `roots` themselves).
+fn kept_swept_ancestors(roots: &BTreeSet<Txid>, deaths: &crate::history::Deaths) -> HashSet<Txid> {
+    let mut kept = HashSet::new();
+    let mut next: Vec<Txid> = roots.iter().copied().collect();
+    while let Some(u) = next.pop() {
+        if kept.insert(u) {
+            next.extend(
+                deaths
+                    .inputs_of(&u)
+                    .map(|o| o.txid)
+                    .filter(|p| deaths.swept_by.contains_key(p)),
+            );
+        }
+    }
+    kept
+}
+
 /// Whether a load deletes a sweep or claim-sweep note: a note of a transaction
 /// key-wallet stores (`stored`) or the history holds live again, and one
 /// nothing names. A note is named by an origin's gone parents, a
-/// transaction of the history spending its transaction, or a transaction
-/// of the drops' chains ([`crate::history::drop_chains`]) spending it, so
-/// a chain keeps each note its walk needs.
+/// transaction of the history spending its transaction, a transaction
+/// of the drops' chains ([`crate::history::drop_chains`]) spending it, or
+/// a masternode operation / shared session ancestor chain (`extra_kept`,
+/// #953), so a chain keeps each note its walk needs.
+#[cfg(test)]
 fn obsolete_sweep_note<'a>(
     notes: &'a DropNotes,
     txs: &'a HashMap<Txid, TxEntry>,
     stored: &'a HashSet<Txid>,
+) -> impl Fn(&Txid) -> bool + 'a {
+    obsolete_sweep_note_with(notes, txs, stored, BTreeSet::new())
+}
+
+fn obsolete_sweep_note_with<'a>(
+    notes: &'a DropNotes,
+    txs: &'a HashMap<Txid, TxEntry>,
+    stored: &'a HashSet<Txid>,
+    extra_roots: BTreeSet<Txid>,
 ) -> impl Fn(&Txid) -> bool + 'a {
     let named: HashSet<&Txid> = (notes.drops.values())
         .filter_map(|(_, origin)| origin.as_ref())
         .flat_map(|o| &o.gone)
         .collect();
     let chains = crate::history::drop_chains(&notes.drops, &notes.deaths);
+    let mn_kept = kept_swept_ancestors(&extra_roots, &notes.deaths);
     let parents: HashSet<Txid> = (txs.values().flat_map(|e| e.tx.input.iter()))
         .map(|i| i.previous_output)
         .chain(chains.iter().flat_map(|t| notes.deaths.inputs_of(t)))
@@ -382,7 +475,7 @@ fn obsolete_sweep_note<'a>(
     move |t| {
         stored.contains(t)
             || txs.get(t).is_some_and(|e| !e.is_abandoned())
-            || (!named.contains(t) && !parents.contains(t))
+            || (!named.contains(t) && !parents.contains(t) && !mn_kept.contains(t))
     }
 }
 
@@ -3545,8 +3638,14 @@ impl NetworkSession {
     /// so no load can find a child of it orphaned and a chain's walk keeps
     /// what it reads ([`obsolete_sweep_note`]). A note a drop names stays.
     async fn prune_sweep_notes(&self, wallet: WalletId, stored: &HashSet<Txid>) {
-        let (notes, claims) = match self
-            .appdb_op(move |db| Ok((drop_notes(db, wallet)?, claims_swept(db, wallet)?)))
+        let (notes, claims, mn_roots) = match self
+            .appdb_op(move |db| {
+                Ok((
+                    drop_notes(db, wallet)?,
+                    claims_swept(db, wallet)?,
+                    masternode_sweep_roots(db, wallet)?,
+                ))
+            })
             .await
         {
             Ok(notes) => notes,
@@ -3556,7 +3655,7 @@ impl NetworkSession {
             }
         };
         let keys: Vec<String> = (self.hub.history).read(&wallet, |txs| {
-            let obsolete = obsolete_sweep_note(&notes, txs, stored);
+            let obsolete = obsolete_sweep_note_with(&notes, txs, stored, mn_roots);
             notes
                 .deaths
                 .swept_by
@@ -4343,6 +4442,8 @@ impl NetworkSession {
                 // no other drop names as gone (Q81d S6).
                 if !gone.is_empty() {
                     let notes = drop_notes(db, wallet)?;
+                    let mn_roots = masternode_sweep_roots(db, wallet)?;
+                    let mn_kept = kept_swept_ancestors(&mn_roots, &notes.deaths);
                     let named: BTreeSet<&Txid> = (notes.drops.iter())
                         .filter(|(t, _)| !dropped.contains(*t))
                         .filter_map(|(_, (_, origin))| origin.as_ref())
@@ -4350,7 +4451,7 @@ impl NetworkSession {
                         .collect();
                     rows.extend(
                         (gone.iter())
-                            .filter(|p| !named.contains(p))
+                            .filter(|p| !named.contains(p) && !mn_kept.contains(*p))
                             .map(|p| (format!("{SWEPT_BY_PREFIX}{p}"), None)),
                     );
                 }

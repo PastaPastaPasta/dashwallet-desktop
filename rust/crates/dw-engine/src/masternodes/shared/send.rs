@@ -205,7 +205,7 @@ impl NetworkSession {
         let own = self
             .reserved_inputs(wallet, &l.row, &rec.outpoints())
             .await?;
-        let unspent = self.op_view(wallet).await?.unspent;
+        let unspent = self.unspent_outpoints(wallet).await?;
         let frozen = self.consent_checks(l, ctx, &unspent, true, None)?;
         let approved = l.approved.as_ref().map(|a| a.consent_hash.as_str());
         if approved != Some(ProRegTxV3::display_hash(&frozen.consent_hash).as_str()) {
@@ -342,7 +342,7 @@ impl NetworkSession {
     ) -> Result<(), MasternodesError> {
         let chain = self.shared_chain(wallet).await?;
         let facts = self.coin_facts(wallet, row, &chain).await?;
-        let (coins, fee) = match facts.test(&chain.history) {
+        let (coins, fee) = match facts.test(chain.history()) {
             AbandonCoins::Usable { coins, fee } => (coins, fee),
             AbandonCoins::TooSmall { fee, available } => {
                 return Err(EngineError::Send(SendFailure::AmountWithFeeExceedsBalance {
@@ -473,7 +473,7 @@ impl NetworkSession {
         let Some(bytes) = row.abandon_tx.as_deref() else {
             return Err(refusal("legacy"));
         };
-        match spend_state(row, entry, &chain.history) {
+        match spend_state(row, entry, chain.history()) {
             Some(AbandonSpendState::AbandonedInActivity) => {
                 return Err(refusal("abandon_cancelled"));
             }
@@ -485,7 +485,10 @@ impl NetworkSession {
         }
         let tx: Transaction = dashcore::consensus::deserialize(bytes)
             .map_err(|_| EngineError::Internal("the saved abandon spend".into()))?;
-        let Some(fee) = self.abandon_fee(wallet, row, entry, &chain.history).await? else {
+        let Some(fee) = self
+            .abandon_fee(wallet, row, entry, chain.history())
+            .await?
+        else {
             return Err(refusal("legacy"));
         };
         let fence = self.coin_fence(wallet).await?;

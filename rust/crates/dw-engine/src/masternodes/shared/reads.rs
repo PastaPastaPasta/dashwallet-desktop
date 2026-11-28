@@ -34,7 +34,7 @@ fn reward_destination(
         }
         let terms: ProTxTerms = serde_json::from_str(&row.terms)
             .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
-        let state = ops::state_of(row, &chain.history, &chain.unspent, &chain.beats);
+        let state = chain.beats.state_of(row, &chain.unspent);
         updates.push((row, terms.payout_address, state));
     }
     let confirmed = updates
@@ -88,7 +88,12 @@ impl NetworkSession {
         wallet: WalletId,
         hash: [u8; 32],
     ) -> Result<SharedShares, MasternodesError> {
-        let chain = self.shared_chain(wallet).await?;
+        let w = wallet.to_string();
+        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        let shared_rows = self.shared_rows(wallet).await?;
+        let mut extra = ops::extra_op_inputs(&rows);
+        extra.extend(super::flow::extra_shared_inputs(&shared_rows));
+        let chain = self.shared_chain_for(wallet, &extra).await?;
         let reg = registration_of(&chain, hash)?;
         let mine = self.my_shares(wallet, &reg.shares).await?;
         let active = self.v24_active().await?;
@@ -117,18 +122,15 @@ impl NetworkSession {
         } else {
             SharedEligibility::ListUnavailable
         };
-        let registration_session =
-            loaded_all(self.shared_rows(wallet).await?, self.network.core_network())
-                .into_iter()
-                .find(|loaded| {
-                    matches!(derive_stage(loaded, &chain), SharedStage::Confirmed { .. })
-                        && session_hash(loaded, &chain) == Some(Txid::from_byte_array(hash))
-                });
+        let registration_session = loaded_all(shared_rows, self.network.core_network())
+            .into_iter()
+            .find(|loaded| {
+                matches!(derive_stage(loaded, &chain), SharedStage::Confirmed { .. })
+                    && session_hash(loaded, &chain) == Some(Txid::from_byte_array(hash))
+            });
         let session = registration_session
             .as_ref()
             .map(|loaded| loaded.row.id.clone());
-        let w = wallet.to_string();
-        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
         let shown = display_hex(&hash);
         let shares = reg
             .shares

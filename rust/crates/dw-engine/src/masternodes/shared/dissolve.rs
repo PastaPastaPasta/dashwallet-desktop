@@ -462,7 +462,7 @@ impl NetworkSession {
                 // registration's block in the wallet's history.
                 Err(_) => chain
                     .as_ref()
-                    .and_then(|c| c.history.get(&txid))
+                    .and_then(|c| c.history().get(&txid))
                     .and_then(|e| e.context.block_info())
                     .map(|b| b.height()),
             };
@@ -487,7 +487,7 @@ impl NetworkSession {
     ) -> Result<Vec<u8>, MasternodesError> {
         let chain = self.shared_chain(wallet).await?;
         chain
-            .history
+            .history()
             .get(&Txid::from_byte_array(hash))
             .map(|e| dashcore::consensus::serialize(&e.tx))
             .ok_or(MasternodesError::SharedRegistrationUnknown)

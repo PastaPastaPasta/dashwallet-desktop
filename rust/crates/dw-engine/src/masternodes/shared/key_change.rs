@@ -303,7 +303,7 @@ fn seen_payees(
     registered: &[CollateralShare],
 ) -> Vec<CollateralShare> {
     let mut shares = registered.to_vec();
-    for entry in chain.history.values() {
+    for entry in chain.history().values() {
         if entry.context.block_info().is_none()
             || entry.tx.tx_type().to_u16() != TRANSACTION_PROVIDER_UPDATE_SHARE
         {
@@ -347,7 +347,7 @@ fn check_seen_payees(
 /// ProUpSharedRegTx with the payload this wallet signed under another
 /// txid, as a registration's copies (`copy_rank`).
 fn mined_height(chain: &ChainView, signed: Option<&[u8]>, sent: Option<&Txid>) -> Option<u32> {
-    let original = sent.and_then(|t| chain.history.get(t));
+    let original = sent.and_then(|t| chain.history().get(t));
     if let Some(e) =
         original.filter(|e| matches!(e.context, TransactionContext::InChainLockedBlock(_)))
     {
@@ -358,7 +358,7 @@ fn mined_height(chain: &ChainView, signed: Option<&[u8]>, sent: Option<&Txid>) -
         .filter(|s| s.tx_type == TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR)
         .map(|s| s.payload);
     chain
-        .history
+        .history()
         .iter()
         .filter(|(id, entry)| {
             entry.context.block_info().is_some()

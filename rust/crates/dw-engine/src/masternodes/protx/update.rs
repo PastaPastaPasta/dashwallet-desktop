@@ -27,7 +27,7 @@ use super::build::{
     to_sign,
 };
 use super::keys::{Claim, p2pkh_id, parse_operator_key};
-use super::ops::{abandon_settled, state_of};
+use super::ops::extra_op_inputs;
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::send::l1_address;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -127,11 +127,12 @@ impl NetworkSession {
                 Err(EngineError::WalletNotFound(_)) => continue,
                 w => w?,
             };
-            let (history, unspent, beats) = self.op_view_of(wallet, &w).await?.with_beats();
+            let extra = extra_op_inputs(&rows);
+            let op_view = self.op_view_of(wallet, &w, &extra).await?;
             let abandoned = self.abandoned_txids(wallet).await?;
             out.extend(rows.into_iter().map(|r| {
-                let state = state_of(&r, &history, &unspent, &beats);
-                let state = abandon_settled(&r, state, &history, &abandoned);
+                let state = op_view.state_of(&r);
+                let state = op_view.beats.abandon_settled(&r, state, &abandoned);
                 (r, state)
             }));
         }

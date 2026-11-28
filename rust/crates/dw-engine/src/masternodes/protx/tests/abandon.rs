@@ -1224,3 +1224,125 @@ fn mg954_operations_hold_against_a_plain_block_rival_until_a_chainlock_locked_or
     assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
     f.assert_released(&hash, &key_change_op, &registration, collateral);
 }
+
+/// #953: P is never abandoned. A key change and a registration are paid from
+/// P's unconfirmed change. A rival spend of P's input is mined through
+/// key-wallet (the sweep path), so P and its descendants leave the history
+/// without an abandoned mark. Once a ChainLock covers the rival's block,
+/// both operations read `conflicted`: a later update is admitted, the payout
+/// barrier clears and the collateral unlocks.
+#[test]
+fn mg953_operations_on_a_swept_payments_change_settle_once_a_rival_is_mined() {
+    let f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+
+    // Rival spends P's input to an external address (never abandoned here),
+    // mined through key-wallet so `TransactionsSwept` sweeps P and its children.
+    let rival = Fx::rival_of(input);
+    let block_hash = f.mined(60, vec![rival]);
+    assert!(
+        f.session.hub.history.get(&f.wallet, &p.txid()).is_none(),
+        "key-wallet swept P out of history"
+    );
+    f.forks.lock().unwrap().insert(60, block_hash);
+    f.chain_lock_applied(60, block_hash);
+    f.session.hub.note_chainlock(60, block_hash);
+    f.tip(66);
+
+    f.quote_barriers(&pro_tx_hash);
+    assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #953 after a restart: P is never abandoned and is swept when a rival of
+/// its input is mined through key-wallet. After restarting the wallet (which
+/// runs `prune_sweep_notes`), evidence of P's sweep survives, so the
+/// operations still read `conflicted`, a later update is admitted, the
+/// barrier clears and the collateral unlocks.
+#[test]
+fn mg953_operations_on_a_swept_payments_change_stay_conflicted_after_a_restart() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let mut f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+
+    let rival = Fx::rival_of(input);
+    let block_hash = f.mined(60, vec![rival]);
+    assert!(
+        f.session.hub.history.get(&f.wallet, &p.txid()).is_none(),
+        "key-wallet swept P out of history"
+    );
+    f.forks.lock().unwrap().insert(60, block_hash);
+    f.chain_lock_applied(60, block_hash);
+    {
+        let live = f.session.live().unwrap();
+        crate::kill9::eventually("the store keeps the ChainLock", || {
+            live.persister.flush(f.wallet.0).unwrap();
+            let stored = live.store.load().unwrap();
+            let applied = (stored.wallets.get(&f.wallet.0))
+                .and_then(|w| w.wallet_info.metadata.last_applied_chain_lock.clone());
+            applied.is_some_and(|cl| (cl.block_height, cl.block_hash) == (60, block_hash))
+        });
+    }
+
+    f.restart(&[(3, MASTERNODE_COLLATERAL)]);
+    let vout = payload(&reg_tx).collateral_outpoint.vout;
+    f.hold(
+        OutPoint::new(reg_tx.txid(), vout),
+        reg_tx.output[vout as usize].clone(),
+    );
+    f.record(reg_tx.clone(), on_chain(7));
+    *f.seam.list.lock().unwrap() = Some(vec![entry_of(&reg_tx)]);
+    f.forks.lock().unwrap().insert(60, block_hash);
+    f.session.hub.note_chainlock(60, block_hash);
+    f.tip(66);
+
+    f.quote_barriers(&pro_tx_hash);
+    assert!(!f.barrier_ops().contains(&key_change_op.id), "cleared");
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #953: P is never abandoned, and a rival of P's input is only in the
+/// mempool (including a sweep with no winning block, e.g. an unmined rival).
+/// Every hold stays: the operations remain `sent`, the barrier stays, the
+/// collateral stays locked and a later update is refused.
+#[test]
+fn mg953_a_swept_payments_rival_only_in_the_mempool_keeps_every_hold() {
+    let f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let pro_tx_hash = reg_tx.txid().to_byte_array();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+
+    let rival = Fx::rival_of(input);
+    f.record(rival.clone(), TransactionContext::Mempool);
+    f.session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: f.wallet.0,
+            txids: vec![p.txid()],
+            superseded_by: rival.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    f.tip(66);
+    let ops = (&key_change_op, &registration);
+    f.assert_held(
+        "mempool rival",
+        &hash,
+        &pro_tx_hash,
+        ops,
+        collateral,
+        ProTxOperationState::Sent,
+    );
+}
