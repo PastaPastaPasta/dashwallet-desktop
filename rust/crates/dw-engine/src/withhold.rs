@@ -27,7 +27,7 @@ use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoIn
 
 use crate::WalletId;
 use crate::events::SessionHub;
-use crate::history::{TxEntry, WalletHistory, instant_locked};
+use crate::history::{EarlyInstantLocks, TxEntry, WalletHistory, instant_locked};
 
 /// Why a coin is kept out of spending and every balance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -211,13 +211,16 @@ impl SessionHub {
         let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let skip = false;
-        let (withheld, kept) = (self.history).read_wallet(&wallet, |h| {
+        let (withheld, kept) = (self.history).read_wallet_with_locks(&wallet, |h, locks| {
             let withheld = if skip {
                 BTreeSet::new()
             } else {
                 pending_unproven(core, h)
             };
-            (withheld, fork_kept_inputs(core, h, check_mined_locks))
+            (
+                withheld,
+                fork_kept_inputs(core, h, check_mined_locks.then_some(locks)),
+            )
         });
         let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
@@ -286,16 +289,21 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// winner's block that spends them (key-wallet no longer holds them), an
 /// abandon the ChainLock exception lets through, and the end of the session.
 /// Also includes restored inputs from removed ancestors and from spends
-/// whose lock may have been evicted.
+/// whose lock may have been evicted. With `recovery`'s lock buffer, it also
+/// holds what a truncation the history has not applied yet would: coins a
+/// buffered verified lock spends whose spender key-wallet does not record,
+/// inputs of a session lock still mined in the history and, once the buffer
+/// has evicted evidence, inputs of any mined spender key-wallet does not
+/// record.
 fn fork_kept_inputs(
     core: &ManagedWalletInfo,
     h: &WalletHistory,
-    check_mined_locks: bool,
+    recovery: Option<&EarlyInstantLocks>,
 ) -> BTreeSet<OutPoint> {
     if h.fork_kept_locks.is_empty()
         && h.fork_kept_ancestor_inputs.is_empty()
         && h.uncertain_fork_spends.is_empty()
-        && (!check_mined_locks || h.session_locks.is_empty())
+        && recovery.is_none_or(|l| h.session_locks.is_empty() && l.spends.is_empty() && !l.overflow)
     {
         return BTreeSet::new();
     }
@@ -310,22 +318,40 @@ fn fork_kept_inputs(
     };
     let funding = core.accounts.all_funding_accounts();
     let unspent = |o: &OutPoint| funding.iter().any(|a| a.utxos.contains_key(o));
+    let live = |e: &TxEntry, t: &Txid, mined: bool| {
+        !e.is_abandoned() && e.context.block_info().is_some() == mined && !recorded(t)
+    };
+    let inputs = |e: &TxEntry| e.tx.input.iter().map(|i| i.previous_output).collect();
+    let kept = (h.fork_kept_locks.iter())
+        .filter_map(|t| h.txs.get(t).filter(|e| live(e, t, false)).map(inputs));
     // A wallet that has advanced past the fork can have a lower history
-    // checkpoint while the history still holds a verified lock as mined.
-    let unreconciled = check_mined_locks
-        .then_some(&h.session_locks)
-        .into_iter()
-        .flatten()
-        .map(|t| (t, true));
-    (h.fork_kept_locks.iter())
-        .map(|t| (t, false))
-        .chain(unreconciled)
-        .filter_map(|(t, mined)| {
-            let e = h.txs.get(t)?;
-            (!e.is_abandoned() && e.context.block_info().is_some() == mined && !recorded(t))
-                .then_some(e)
-        })
-        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+    // checkpoint while the history still holds a verified lock as mined,
+    // or holds no record of its spender yet.
+    let unreconciled = recovery.into_iter().flat_map(|locks| {
+        let session = (h.session_locks.iter())
+            .filter_map(|t| h.txs.get(t).filter(|e| live(e, t, true)).map(inputs));
+        let evicted = (h.txs.iter())
+            .filter(|_| locks.overflow)
+            .filter(|(t, e)| live(e, t, true))
+            .map(|(_, e)| inputs(e));
+        session.chain(evicted)
+    });
+    let buffered = recovery.into_iter().flat_map(|locks| {
+        let spent = move |o: &&OutPoint| {
+            locks.spends.get(*o).is_some_and(|by| {
+                by.iter()
+                    .any(|t| !recorded(t) && h.txs.get(t).is_none_or(|e| !e.is_abandoned()))
+            })
+        };
+        (funding.iter())
+            .flat_map(|a| a.utxos.keys())
+            .filter(spent)
+            .copied()
+            .collect::<Vec<_>>()
+    });
+    kept.chain(unreconciled)
+        .flat_map(|i: Vec<OutPoint>| i)
+        .chain(buffered)
         .chain(h.fork_kept_ancestor_inputs.values().flatten().copied())
         .chain(h.uncertain_fork_spends.values().flatten().copied())
         .filter(unspent)
