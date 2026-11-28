@@ -774,3 +774,90 @@ fn export_standby_runs_on_mainnet() {
         );
     }
 }
+
+/// Issue #990: `mn_resend_operation` refuses `dissolve` and `update_share` rows
+/// on mainnet before redeeming the grant, and lets them reach the engine off
+/// mainnet. Non-shared rows still reach the engine on mainnet.
+#[test]
+fn shared_operation_resends_are_refused_on_mainnet_before_the_grant() {
+    use dw_engine::masternodes::ProTxOperationKind;
+
+    let (demo, wallet) = demo_on(dw_engine::DashNetwork::Mainnet);
+    let wallet_id = crate::state::parse_wallet_id(&wallet).unwrap();
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+
+    for (kind, id) in [
+        (ProTxOperationKind::Dissolve, "11".repeat(16)),
+        (ProTxOperationKind::UpdateShare, "22".repeat(16)),
+    ] {
+        dw_engine::test_support::seed_masternode_op(&session, wallet_id, kind, &id);
+        let grant = op_grant(&demo, &wallet, 1_000);
+        let e = demo.err(
+            "mn_resend_operation",
+            json!({ "walletId": wallet, "operation": id, "grant": grant }),
+            "app.shared_send_off",
+        );
+        assert_eq!(
+            e["data"],
+            json!({ "kind": "sharedSendNetwork", "network": "mainnet" }),
+            "{id}"
+        );
+        redeem(&demo, &wallet, &grant)
+            .unwrap_or_else(|e| panic!("mn_resend_operation({id}) used the grant: {e}"));
+        assert!(
+            redeem(&demo, &wallet, &grant).is_err(),
+            "a grant redeems once"
+        );
+    }
+
+    // A non-shared row and an unknown id still reach the engine on mainnet.
+    let reg_id = "33".repeat(16);
+    dw_engine::test_support::seed_masternode_op(
+        &session,
+        wallet_id,
+        ProTxOperationKind::Registration,
+        &reg_id,
+    );
+    let grant = op_grant(&demo, &wallet, 1_000);
+    demo.err(
+        "mn_resend_operation",
+        json!({ "walletId": wallet, "operation": reg_id, "grant": grant }),
+        "masternodes.unsupported",
+    );
+    redeem(&demo, &wallet, &grant).expect("registration refusal kept the grant");
+
+    let missing_id = "44".repeat(16);
+    let grant = op_grant(&demo, &wallet, 1_000);
+    demo.err(
+        "mn_resend_operation",
+        json!({ "walletId": wallet, "operation": missing_id, "grant": grant }),
+        "masternodes.operation_not_found",
+    );
+    redeem(&demo, &wallet, &grant).expect("not-found refusal kept the grant");
+
+    // Off mainnet, resending a dissolve or update_share row reaches the engine.
+    for network in [
+        dw_engine::DashNetwork::Testnet,
+        dw_engine::DashNetwork::Regtest,
+    ] {
+        let (demo, wallet) = demo_on(network.clone());
+        let wallet_id = crate::state::parse_wallet_id(&wallet).unwrap();
+        let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+        for (kind, id) in [
+            (ProTxOperationKind::Dissolve, "11".repeat(16)),
+            (ProTxOperationKind::UpdateShare, "22".repeat(16)),
+        ] {
+            dw_engine::test_support::seed_masternode_op(&session, wallet_id, kind, &id);
+            let grant = op_grant(&demo, &wallet, 1_000);
+            if let Err(e) = demo.call(
+                "mn_resend_operation",
+                json!({ "walletId": wallet, "operation": id, "grant": grant }),
+            ) {
+                assert!(
+                    !e["code"].as_str().unwrap().starts_with("app."),
+                    "{id} on {network:?}: {e}"
+                );
+            }
+        }
+    }
+}

@@ -339,3 +339,93 @@ pub struct FinishedReplay {
     /// confirmations count from.
     pub processed_rise: u32,
 }
+
+/// Inserts a signed, unsent `masternode_ops` row of `kind` for `wallet`,
+/// with no network or masternode list, so other crates can exercise
+/// `resend_operation` against a stored row. Returns the row id.
+pub fn seed_masternode_op(
+    session: &NetworkSession,
+    wallet: crate::WalletId,
+    kind: crate::masternodes::ProTxOperationKind,
+    id: &str,
+) -> String {
+    use crate::masternodes::{MasternodeType, ProTxOperationKind, ProTxTerms};
+    use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
+
+    let live = session.live().expect("a live session");
+    let pro_tx_hash = "ab".repeat(32);
+    let tx = Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0x11; 32]), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 100_000,
+            script_pubkey: ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    let signed_tx = dashcore::consensus::serialize(&tx);
+    let txid = tx.txid().to_string();
+    let fee = 1_000;
+    let terms = ProTxTerms {
+        masternode_type: MasternodeType::Regular,
+        version: 2,
+        service: "203.0.113.7:19999".into(),
+        owner_address: String::new(),
+        owner_index: Some(0),
+        voting_address: String::new(),
+        voting_index: Some(0),
+        operator_public_key: "8".repeat(96),
+        operator_index: None,
+        operator_reward: 0,
+        payout_address: String::new(),
+        collateral: None,
+        collateral_outpoint: None,
+        collateral_address: None,
+        platform: None,
+        platform_node_index: None,
+    };
+    let request = match kind {
+        ProTxOperationKind::Dissolve => serde_json::to_string(&serde_json::json!({
+            "pro_tx_hash": pro_tx_hash,
+            "share_index": 0,
+            "fee": fee,
+            "penalty": 0,
+            "actor_output": 100_000,
+        }))
+        .unwrap(),
+        _ => "{}".into(),
+    };
+    let kind_str = match kind {
+        ProTxOperationKind::Registration => "registration",
+        ProTxOperationKind::UpdateRegistrar => "update_registrar",
+        ProTxOperationKind::UpdateShare => "update_share",
+        ProTxOperationKind::Dissolve => "dissolve",
+    };
+    let row = dw_appdb::MasternodeOpRow {
+        id: id.into(),
+        kind: kind_str.into(),
+        terms: serde_json::to_string(&terms).unwrap(),
+        request,
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: "[]".into(),
+        signed_tx: Some(signed_tx),
+        txid: Some(txid),
+        pro_tx_hash: Some(pro_tx_hash),
+        locked_collateral: false,
+        fee,
+        created_at: 1,
+        signed_at: Some(1),
+        sent_at: None,
+        last_error: Some("send.no_peers".into()),
+    };
+    live.appdb
+        .insert_masternode_op_durable(&wallet.to_string(), &row, &[], 1)
+        .expect("insert seeded masternode op");
+    id.into()
+}

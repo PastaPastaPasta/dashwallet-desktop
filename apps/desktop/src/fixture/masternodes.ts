@@ -852,6 +852,12 @@ function protxHandlers(wallet: (w: World, walletId: string) => FixtureWallet, us
       wallet(world, walletId);
       const m = world.masternodes;
       const o = opOf(world, walletId, operation);
+      if ((o.kind === "dissolve" || o.kind === "update_share") && world.launch.network.kind === "mainnet") {
+        throw fail("app.shared_send_off", "this version sends shared-masternode transactions on test networks only", {
+          kind: "sharedSendNetwork",
+          network: world.launch.network.dirName,
+        });
+      }
       const state = readState(m, o).kind;
       if (state !== "signed" && state !== "not_sent" && state !== "sent") throw stateError(state);
       // `resend_conflict` (D43, D49), each other update of the masternode newest first: an abandoned one may still be

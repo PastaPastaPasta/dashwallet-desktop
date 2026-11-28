@@ -182,7 +182,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `Masternodes::lock_shared_terms` | dw-engine/src/masternodes/shared.rs | `mn_shared_lock` |
 | `Masternodes::mark_withdrawal` | dw-engine/src/masternodes/withdrawals.rs | excluded (masternodes): deferred (MG-10 S4) |
 | `Masternodes::masternode` | dw-engine/src/masternodes/reads.rs | `mn_masternode` |
-| `Masternodes::operations` | dw-engine/src/masternodes/protx.rs | `mn_operations` |
+| `Masternodes::operations` | dw-engine/src/masternodes/protx.rs | `mn_operations`, `mn_resend_operation` |
 | `Masternodes::payouts` | dw-engine/src/masternodes/reads.rs | `mn_payouts` |
 | `Masternodes::prepare_external_registration` | dw-engine/src/masternodes/protx.rs | `mn_prepare_external_registration` |
 | `Masternodes::preview_dissolve` | dw-engine/src/masternodes/shared.rs | `mn_shared_preview_dissolve` |

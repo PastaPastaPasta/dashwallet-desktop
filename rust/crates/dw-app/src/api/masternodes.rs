@@ -221,8 +221,10 @@ commands! {
     }
 
     /// Hands a signed operation that didn't go out to the network again,
-    /// under a `masternodeOp` grant covering its `debit`.
-    #[facade("Masternodes::resend_operation")]
+    /// under a `masternodeOp` grant covering its `debit`. Refuses `dissolve`
+    /// and `update_share` rows on mainnet before the grant is redeemed
+    /// (`app.shared_send_off`).
+    #[facade("Masternodes::resend_operation", "Masternodes::operations")]
     fn mn_resend_operation(
         state,
         wallet_id: String,
@@ -230,11 +232,25 @@ commands! {
         grant: String,
     ) -> ProTxOperation {
         let wallet = parse_wallet_id(&wallet_id)?;
-        let op = state
-            .masternodes()
-            .await?
-            .resend_operation(wallet, operation, grant)
-            .await?;
+        let session = state.session().await?;
+        let masternodes = session.masternodes();
+        if !shared_sends_allowed(session.network())
+            && masternodes
+                .operations(wallet)
+                .await?
+                .into_iter()
+                .any(|o| {
+                    o.id == operation
+                        && matches!(
+                            o.kind,
+                            dw_engine::masternodes::ProTxOperationKind::Dissolve
+                                | dw_engine::masternodes::ProTxOperationKind::UpdateShare
+                        )
+                })
+        {
+            require_shared_send_on(session.network())?;
+        }
+        let op = masternodes.resend_operation(wallet, operation, grant).await?;
         Ok(op.into())
     }
 
@@ -542,10 +558,8 @@ commands! {
     #[facade("Masternodes::sign_shared_funding")]
     fn mn_shared_sign(state, wallet_id: String, session: String, grant: String) -> SharedOutcome {
         let wallet = parse_wallet_id(&wallet_id)?;
-        require_shared_send(&state).await?;
-        let outcome = state
-            .masternodes()
-            .await?
+        let masternodes = require_shared_send(&state).await?;
+        let outcome = masternodes
             .sign_shared_funding(wallet, session, grant)
             .await?;
         Ok(outcome.into())
@@ -559,10 +573,8 @@ commands! {
     #[facade("Masternodes::send_shared_registration")]
     fn mn_shared_send(state, wallet_id: String, session: String, grant: String) -> SharedOutcome {
         let wallet = parse_wallet_id(&wallet_id)?;
-        require_shared_send(&state).await?;
-        let outcome = state
-            .masternodes()
-            .await?
+        let masternodes = require_shared_send(&state).await?;
+        let outcome = masternodes
             .send_shared_registration(wallet, session, grant)
             .await?;
         Ok(outcome.into())
@@ -649,10 +661,8 @@ commands! {
         grant: String,
     ) -> ProTxOperation {
         let wallet = parse_wallet_id(&wallet_id)?;
-        require_shared_send(&state).await?;
-        let op = state
-            .masternodes()
-            .await?
+        let masternodes = require_shared_send(&state).await?;
+        let op = masternodes
             .dissolve(wallet, request.into(), grant)
             .await?;
         Ok(op.into())
@@ -723,10 +733,8 @@ commands! {
         grant: String,
     ) -> ProTxOperation {
         let wallet = parse_wallet_id(&wallet_id)?;
-        require_shared_send(&state).await?;
-        let op = state
-            .masternodes()
-            .await?
+        let masternodes = require_shared_send(&state).await?;
+        let op = masternodes
             .send_standby(wallet, pro_tx_hash, share, fee, variant.into(), grant)
             .await?;
         Ok(op.into())
@@ -803,8 +811,7 @@ commands! {
         grant: String,
     ) -> MaintenanceSent {
         let wallet = parse_wallet_id(&wallet_id)?;
-        require_shared_send(&state).await?;
-        let masternodes = state.masternodes().await?;
+        let masternodes = require_shared_send(&state).await?;
         let kind = masternodes.shared_session(wallet, session.clone()).await?.kind;
         maintenance_send_allowed(kind.into())?;
         Ok(masternodes.send_maintenance(wallet, session, grant).await?.into())
@@ -815,20 +822,19 @@ commands! {
 /// everywhere but mainnet (MG's ruling for this release). [`SHARED_SEND_GATE`]
 /// lists what it gates: `mn_shared_sign` (a participant's funding signature
 /// lets the coordinator send), `mn_shared_send`, `mn_shared_dissolve`,
-/// `mn_shared_send_standby` and `mn_shared_send_maintenance` refuse before
-/// the engine is called, and `update_share` must check it once a command
-/// binds it. Reads, standby create and export, approvals, the maintenance
-/// starts and the abandon calls (`abandon_shared_session`,
+/// `mn_shared_send_standby`, `mn_shared_send_maintenance` and
+/// `mn_resend_operation` (for `dissolve` and `update_share` rows) refuse
+/// before the grant is redeemed, and `update_share` must check it once a
+/// command binds it. Reads, standby create and export, approvals, the
+/// maintenance starts and the abandon calls (`abandon_shared_session`,
 /// `resend_shared_abandon`, the unreadable abandon) send nothing of a share
 /// and are never gated.
 pub(crate) fn shared_sends_allowed(network: &DashNetwork) -> bool {
     !matches!(network, DashNetwork::Mainnet)
 }
 
-/// [`shared_sends_allowed`] for the open session's network, as an error.
-async fn require_shared_send(state: &AppState) -> Result<(), AppError> {
-    let session = state.session().await?;
-    let network = session.network();
+/// [`shared_sends_allowed`] for `network`, as an error.
+fn require_shared_send_on(network: &DashNetwork) -> Result<(), AppError> {
     if shared_sends_allowed(network) {
         return Ok(());
     }
@@ -839,6 +845,17 @@ async fn require_shared_send(state: &AppState) -> Result<(), AppError> {
     .with(ErrorData::SharedSendNetwork {
         network: network.dir_name(),
     }))
+}
+
+/// [`shared_sends_allowed`] for the open session's network, returning that
+/// session's [`dw_engine::masternodes::Masternodes`] so the check and the call
+/// use the same session.
+async fn require_shared_send(
+    state: &AppState,
+) -> Result<dw_engine::masternodes::Masternodes, AppError> {
+    let session = state.session().await?;
+    require_shared_send_on(session.network())?;
+    Ok(session.masternodes())
 }
 
 /// `mn_shared_send_maintenance` sends a dissolution together only.
@@ -873,11 +890,13 @@ pub(crate) const SHARED_SEND_GATE: &[(&str, SendGate)] = &[
     ("Masternodes::dissolve", SendGate::Gated),
     ("Masternodes::send_standby", SendGate::Gated),
     ("Masternodes::send_maintenance", SendGate::Gated),
+    ("Masternodes::resend_operation", SendGate::Gated),
     ("mn_shared_sign", SendGate::Gated),
     ("mn_shared_send", SendGate::Gated),
     ("mn_shared_dissolve", SendGate::Gated),
     ("mn_shared_send_standby", SendGate::Gated),
     ("mn_shared_send_maintenance", SendGate::Gated),
+    ("mn_resend_operation", SendGate::Gated),
     ("Masternodes::update_share", SendGate::GatedWhenBound),
     ("Masternodes::abandon_shared_session", SendGate::Never),
     ("Masternodes::resend_shared_abandon", SendGate::Never),
@@ -986,6 +1005,7 @@ mod tests {
         ".sign_shared_funding(",
         ".send_shared_registration(",
         ".update_share(",
+        ".resend_operation(",
     ];
 
     #[test]
@@ -1015,7 +1035,9 @@ mod tests {
                 continue;
             }
             assert!(NAMES.contains(name), "{name} isn't a command");
-            let checks = body(commands, name).contains("require_shared_send(");
+            let b = body(commands, name);
+            let checks =
+                b.contains("require_shared_send(") || b.contains("require_shared_send_on(");
             assert_eq!(checks, *gate == SendGate::Gated, "{name}");
         }
         // Every command that makes a send call is in the table, gated.
@@ -1036,6 +1058,7 @@ mod tests {
             "mn_shared_dissolve",
             "mn_shared_send_standby",
             "mn_shared_send_maintenance",
+            "mn_resend_operation",
         ] {
             assert!(
                 SHARED_SEND_GATE.contains(&(send, SendGate::Gated)),

@@ -3298,7 +3298,9 @@ export function mnOperations(walletId: string): Promise<Array<ProTxOperation>> {
 
 /**
  * Hands a signed operation that didn't go out to the network again,
- * under a `masternodeOp` grant covering its `debit`.
+ * under a `masternodeOp` grant covering its `debit`. Refuses `dissolve`
+ * and `update_share` rows on mainnet before the grant is redeemed
+ * (`app.shared_send_off`).
  */
 export function mnResendOperation(walletId: string, operation: string, grant: string): Promise<ProTxOperation> {
   return invoke<ProTxOperation>("mn_resend_operation", { walletId, operation, grant });

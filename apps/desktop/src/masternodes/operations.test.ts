@@ -104,7 +104,14 @@ describe("In progress (§1.10)", () => {
       expect(opRow(op("r", state), main)).toMatchObject({ primary: null, more: ["discard"] });
       expect(opRow(op("r", state), test).primary).not.toBeNull();
     }
-    expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" }), main).primary).toBe("resend");
+    expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" }), main)).toMatchObject({ primary: null, more: [] });
+    expect(opRow(op("d", { kind: "not_sent" }, { kind: "dissolve" }), main)).toMatchObject({ primary: null, more: ["discard"] });
+    expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" }), test).primary).toBe("resend");
+    expect(opRow(op("d", { kind: "sent" }, { kind: "dissolve" })).primary).toBeNull();
+    expect(opRow(op("us", { kind: "sent" }, { kind: "update_share" }), main)).toMatchObject({ primary: null, more: [] });
+    expect(opRow(op("us", { kind: "not_sent" }, { kind: "update_share" }), main)).toMatchObject({ primary: null, more: ["discard"] });
+    expect(opRow(op("us", { kind: "sent" }, { kind: "update_share" }), test).primary).toBe("resend");
+    expect(opRow(op("us", { kind: "sent" }, { kind: "update_share" })).primary).toBeNull();
   });
 
   it("offers no Send again on a registration or registrar update still waiting for its block, only once overdue", () => {
