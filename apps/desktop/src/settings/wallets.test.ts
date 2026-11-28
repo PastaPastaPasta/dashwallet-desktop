@@ -163,6 +163,26 @@ describe("wallets list", () => {
 });
 
 describe("remove wallet", () => {
+  it("settings_removal_of_a_wallet_whose_held_coin_now_awaits_shows_the_waiting_text_before_confirming", async () => {
+    const model = new RemoveWalletModel(b, B);
+    await model.load();
+    // heldAwaiting turns true after the sheet opened, right before the user confirms removal.
+    fixture.world.wallets[1].summary.balances = {
+      ...fixture.world.wallets[1].summary.balances!,
+      heldUnfinished: 50_000_000,
+      heldAwaiting: true,
+    };
+    await model.remove(PASS);
+    expect(model.step).toBe("awaiting");
+    expect(fixture.calls).toContain("balance");
+    expect(fixture.calls).not.toContain("remove_wallet");
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
+    // Explicit "remove anyway" completes the removal.
+    await model.removeAnyway();
+    expect(model.step).toBe("done");
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A]);
+  });
+
   it("IOS110_removeNeedsAWipeGrant", async () => {
     const model = new RemoveWalletModel(b, B);
     await model.load();
