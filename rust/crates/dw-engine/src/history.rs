@@ -2150,7 +2150,14 @@ impl HistoryStore {
         let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
         let history = wallets.entry(wallet).or_default();
         for txid in removed {
-            history.remember_if_buffered(txid, &locks);
+            if let Some(inputs) = locks.inputs.get(txid)
+                && (history.txs.contains_key(txid)
+                    || inputs
+                        .iter()
+                        .any(|o| history.txs.contains_key(&o.txid) || history.owns_output(o)))
+            {
+                history.remember_session_lock(*txid, inputs);
+            }
         }
         let held = forked_ancestor_inputs(&wallets, wallet, height, removed, unconfirmed);
         let history = wallets.entry(wallet).or_default();
@@ -3638,6 +3645,27 @@ mod tests {
         store.truncate(wallet, 0, &[held.txid()], &[]);
         store.read_wallet(&wallet, |h| {
             assert_eq!(h.session_locks, HashSet::from([held.txid()]));
+        });
+    }
+
+    /// A fork that removes P and T, whose verified lock is buffered while
+    /// the history holds no record of T, keeps T locked and holds P's
+    /// inputs.
+    #[test]
+    fn a_fork_holds_a_removed_parents_inputs_for_an_unrecorded_locked_child() {
+        let store = HistoryStore::default();
+        let wallet = WalletId([1; 32]);
+        let (p, _) = own_registration(1);
+        store.with_wallet(wallet, |h| {
+            h.upsert(&registration_record(&p, bip44()), None)
+        });
+        let t = Txid::from_byte_array([0x73; 32]);
+        (store.early_locks.write().unwrap()).remember(t, &[OutPoint::new(p.txid(), 0)]);
+        store.truncate(wallet, 0, &[p.txid(), t], &[]);
+        let inputs: Vec<_> = p.input.iter().map(|i| i.previous_output).collect();
+        store.read_wallet(&wallet, |h| {
+            assert!(h.session_locks.contains(&t));
+            assert_eq!(h.fork_kept_ancestor_inputs.get(&p.txid()), Some(&inputs));
         });
     }
 
