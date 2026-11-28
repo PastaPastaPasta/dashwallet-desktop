@@ -741,10 +741,15 @@ pub(crate) fn unmined_own_spends(
             spenders.entry(i.previous_output).or_default().push((w, we));
         }
     }
-    let beaten = |t: &Txid, e: &TxEntry| {
+    let beaten = |t: &Txid, e: &TxEntry, mined_only: bool| {
         (e.tx.input.iter()).any(|i| {
-            (spenders.get(&i.previous_output))
-                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e, chainlock)))
+            (spenders.get(&i.previous_output)).is_some_and(|v| {
+                v.iter().any(|(w, we)| {
+                    *w != t
+                        && (!mined_only || we.context.block_info().is_some())
+                        && beats(we, e, chainlock)
+                })
+            })
         })
     };
     // A beaten payment's descendants out of a block can never confirm either
@@ -760,17 +765,17 @@ pub(crate) fn unmined_own_spends(
         }
     }
     let mut todo: Vec<Txid> = (txs.iter())
-        .filter(|(t, e)| unmined(e) && beaten(t, e))
+        .filter(|(t, e)| unmined(e) && !instant_locked(e) && beaten(t, e, true))
         .map(|(t, _)| *t)
         .collect();
     let mut dead = HashSet::new();
     while let Some(t) = todo.pop() {
-        if dead.insert(t) && !txs.get(&t).is_some_and(instant_locked) {
+        if dead.insert(t) {
             todo.extend(children.get(&t).into_iter().flatten());
         }
     }
     (candidates.into_iter())
-        .filter(|(t, _, _)| !dead.contains(*t))
+        .filter(|(t, _, e)| !dead.contains(*t) && !beaten(t, e, false))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -1505,6 +1510,8 @@ pub(crate) struct WalletHistory {
     /// The transactions this app dropped as ones that can never confirm,
     /// from their `dropped:` marks and as each drop runs.
     pub drops: HashMap<Txid, DropInfo>,
+    /// Claims proved invalid whose drop has yet to commit.
+    pub(crate) checking_claims: BTreeSet<Txid>,
     /// The own inputs of dropped transactions listed from their abandoned
     /// marks alone, as their `dropped:` marks keep them: what their rows
     /// show, which nothing spends or releases.
@@ -1543,11 +1550,14 @@ pub(crate) struct WalletHistory {
     /// Verified locks whose transaction or one of its inputs belongs to
     /// this wallet. In memory only.
     pub(crate) session_locks: HashSet<Txid>,
+    session_lock_parents: HashMap<Txid, Vec<Txid>>,
     /// Of [`Self::session_locks`], those a fork took out of their block
     /// that key-wallet removed: the history keeps them out of a block,
     /// locked, and the coins key-wallet gave back for them stay out of
     /// spending (`crate::withhold`) until key-wallet records them again.
     pub(crate) fork_kept_locks: HashSet<Txid>,
+    /// Inputs of removed ancestors of locked transactions, held for this session.
+    pub(crate) fork_kept_ancestor_inputs: HashMap<Txid, Vec<OutPoint>>,
     /// Own spends removed by a fork after the early-lock buffer evicted
     /// evidence. Their inputs stay held for this session irrespective of
     /// later changes to the history entry.
@@ -1607,6 +1617,21 @@ pub(crate) struct WalletHistory {
 }
 
 impl WalletHistory {
+    pub(crate) fn invalid_mark(&self, txid: &Txid) -> Option<DropCause> {
+        let cause = self.drops.get(txid)?.cause;
+        matches!(cause, DropCause::InvalidClaim | DropCause::InvalidSource).then_some(cause)
+    }
+
+    /// A claim or descendant dropped as invalid that has not since settled.
+    pub(crate) fn dead_claim(&self, txid: &Txid) -> Option<DropCause> {
+        let cause = self.invalid_mark(txid)?;
+        (!self
+            .txs
+            .get(txid)
+            .is_some_and(|e| e.context.block_info().is_some() || self.knows_instant_lock(txid, e)))
+        .then_some(cause)
+    }
+
     pub(crate) fn knows_instant_lock(&self, txid: &Txid, entry: &TxEntry) -> bool {
         instant_locked(entry) || (!entry.abandoned && self.session_locks.contains(txid))
     }
@@ -1638,9 +1663,30 @@ impl WalletHistory {
     }
 
     pub(crate) fn remember_if_buffered(&mut self, txid: &Txid, locks: &EarlyInstantLocks) {
-        if locks.inputs.contains_key(txid) && self.txs.contains_key(txid) {
-            self.session_locks.insert(*txid);
+        if let Some(inputs) = locks.inputs.get(txid)
+            && self.txs.contains_key(txid)
+        {
+            self.remember_session_lock(*txid, inputs);
         }
+    }
+
+    fn remember_session_lock(&mut self, txid: Txid, inputs: &[OutPoint]) {
+        self.session_locks.insert(txid);
+        self.session_lock_parents
+            .entry(txid)
+            .or_insert_with(|| inputs.iter().map(|o| o.txid).collect());
+    }
+
+    pub(crate) fn lock_parent_links(&self) -> impl Iterator<Item = (&Txid, &[Txid])> {
+        let live = self.session_lock_parents.iter().filter(|&(t, _)| {
+            self.txs
+                .get(t)
+                .is_none_or(|e| self.knows_instant_lock(t, e))
+        });
+        self.lock_parents
+            .iter()
+            .chain(live)
+            .map(|(t, parents)| (t, parents.as_slice()))
     }
 
     pub(crate) fn upsert_with_locks(
@@ -1660,8 +1706,9 @@ impl WalletHistory {
             .filter(|o| matches!(o.role, OutputRole::Received | OutputRole::Change))
         {
             let outpoint = OutPoint::new(record.txid, output.index);
-            self.session_locks
-                .extend(locks.spends.get(&outpoint).into_iter().flatten());
+            for txid in locks.spends.get(&outpoint).into_iter().flatten() {
+                self.remember_session_lock(*txid, &locks.inputs[txid]);
+            }
         }
         new
     }
@@ -1701,7 +1748,9 @@ impl WalletHistory {
         self.own_outputs.remove(txid);
         self.hidden_registrations.remove(txid);
         self.lock_parents.remove(txid);
+        self.session_lock_parents.remove(txid);
         self.fork_kept_locks.remove(txid);
+        self.fork_kept_ancestor_inputs.remove(txid);
     }
 
     /// The ProRegTxs kept out of sight that the history has no own entry
@@ -2009,6 +2058,66 @@ impl EarlyInstantLocks {
     }
 }
 
+fn forked_ancestor_inputs(
+    wallets: &HashMap<WalletId, WalletHistory>,
+    wallet: WalletId,
+    height: u32,
+    removed: &[Txid],
+    unconfirmed: &[Txid],
+) -> Vec<(Txid, Vec<OutPoint>)> {
+    let mut held = Vec::new();
+    if removed.is_empty() {
+        return held;
+    }
+    let removed: HashSet<_> = removed.iter().copied().collect();
+    let mut parents: Vec<_> = wallets
+        .values()
+        .flat_map(WalletHistory::lock_parent_links)
+        .flat_map(|(_, parents)| parents.iter().copied())
+        .chain(
+            wallets
+                .get(&wallet)
+                .into_iter()
+                .flat_map(|h| unconfirmed.iter().filter_map(move |t| h.txs.get(t)))
+                .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output.txid)),
+        )
+        .collect();
+    let mut walked = HashSet::new();
+    while let Some(parent) = parents.pop() {
+        if !walked.insert(parent) {
+            continue;
+        }
+        let forked = removed.contains(&parent);
+        // A different wallet may still show the old block, or may already
+        // have removed this record and kept its inputs.
+        for h in wallets.values() {
+            if let Some(inputs) = h.fork_kept_ancestor_inputs.get(&parent) {
+                parents.extend(inputs.iter().map(|o| o.txid));
+                if forked {
+                    held.push((parent, inputs.clone()));
+                }
+                break;
+            }
+            if let Some(entry) = h.txs.get(&parent)
+                && (forked
+                    || (!entry.is_abandoned()
+                        && entry
+                            .context
+                            .block_info()
+                            .is_none_or(|b| b.height() > height)))
+            {
+                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
+                parents.extend(inputs.clone().map(|o| o.txid));
+                if forked {
+                    held.push((parent, inputs.collect()));
+                }
+                break;
+            }
+        }
+    }
+    held
+}
+
 impl HistoryStore {
     pub fn with_wallet<R>(&self, wallet: WalletId, f: impl FnOnce(&mut WalletHistory) -> R) -> R {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
@@ -2037,12 +2146,16 @@ impl HistoryStore {
     pub(crate) fn truncate(
         &self,
         wallet: WalletId,
+        height: u32,
         removed: &[Txid],
         unconfirmed: &[Txid],
     ) -> Vec<Txid> {
-        self.with_wallet_records(wallet, |history, locks| {
-            history.truncate(removed, unconfirmed, locks.overflow)
-        })
+        let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
+        let held = forked_ancestor_inputs(&wallets, wallet, height, removed, unconfirmed);
+        let history = wallets.entry(wallet).or_default();
+        history.fork_kept_ancestor_inputs.extend(held);
+        history.truncate(removed, unconfirmed, locks.overflow)
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the
@@ -2070,6 +2183,14 @@ impl HistoryStore {
     pub fn read_all<R>(&self, f: impl FnOnce(&[&HashMap<Txid, TxEntry>]) -> R) -> R {
         let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
         f(&map.values().map(|h| &h.txs).collect::<Vec<_>>())
+    }
+
+    pub(crate) fn read_wallets<R>(
+        &self,
+        f: impl FnOnce(&HashMap<WalletId, WalletHistory>) -> R,
+    ) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        f(&map)
     }
 
     /// A copy of one wallet's entries (empty when unknown).
@@ -2181,12 +2302,12 @@ impl HistoryStore {
         }
         let mut marked = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
-            let entry = h.txs.get(txid);
-            if verified_inputs
-                .is_some_and(|inputs| entry.is_some() || inputs.iter().any(|o| h.owns_output(o)))
+            if let Some(inputs) = verified_inputs
+                && (h.txs.contains_key(txid) || inputs.iter().any(|o| h.owns_output(o)))
             {
-                h.session_locks.insert(*txid);
+                h.remember_session_lock(*txid, inputs);
             }
+            let entry = h.txs.get(txid);
             if h.loaded
                 && entry.is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
                 && h.set_instant_locked(txid)
@@ -3421,7 +3542,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 3);
         store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
-        store.truncate(wallet, &[removed.txid()], &[kept.txid()]);
+        store.truncate(wallet, 0, &[removed.txid()], &[kept.txid()]);
         assert_eq!(
             store.registration_collaterals(&wallet),
             vec![kept_collateral],
@@ -4173,6 +4294,44 @@ mod tests {
         let mut claims = unmined_own_spends(&txs, &sent, None);
         claims.sort();
         assert_eq!(claims, vec![(coin(23), l)], "only the locked child claims");
+    }
+
+    #[test]
+    fn unmined_own_spends_keep_a_childs_claim_when_its_parents_restored_rival_lost() {
+        let a = OutPoint::new(Txid::from_byte_array([20; 32]), 0);
+        let d = OutPoint::new(Txid::from_byte_array([21; 32]), 0);
+        let b = OutPoint::new(Txid::from_byte_array([22; 32]), 0);
+        let spend = |n, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n, &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let parent = spend(1, &[a], TransactionContext::Mempool);
+        let p = parent.tx.txid();
+        let mut rival = spend(2, &[a, b], TransactionContext::Mempool);
+        rival.instant_locked = true;
+        let winner = spend(3, &[b], in_block(10, 0));
+        let child = spend(4, &[OutPoint::new(p, 0), d], TransactionContext::Mempool);
+        let c = child.tx.txid();
+        let txs = [parent, rival, winner, child]
+            .into_iter()
+            .map(|e| (e.tx.txid(), e))
+            .collect();
+        let sent = crate::tx_actions::Sent::from([(
+            c,
+            crate::tx_actions::SentMark {
+                inputs: Default::default(),
+                coins: BTreeSet::from([d]),
+                tx: None,
+                kept: false,
+            },
+        )]);
+
+        assert_eq!(unmined_own_spends(&txs, &sent, Some(10)), [(d, c)]);
     }
 
     /// #170 case 3: a payment out of a block that key-wallet holds no record

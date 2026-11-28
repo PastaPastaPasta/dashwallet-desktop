@@ -173,7 +173,7 @@ describe("unfinished transfers card: refused transfers to Shielded (#402)", () =
     });
     const two = cardView(list([one, partly(2, "recoverable", "20000000000")]), IDLE, duffs, errorText, true);
     expect(two).toMatchObject({
-      text: "2 transfers to Shielded that Platform refused have 50000000 duffs left. It's still yours. This version can recover it on test networks only.",
+      text: "2 transfers to Shielded that Platform refused have 50000000 duffs left. They're still yours. This version can recover them on test networks only.",
       actions: ["details"],
     });
     expect(C.sheet.testNetworksOnly).toBe("Test networks only");
@@ -509,6 +509,16 @@ describe("RecoveryModel recover (#402)", () => {
     expect(C.sheet.recoverOff).toBe("This version can recover what's left of a refused transfer on test networks only.");
   });
 
+  it.each([
+    { kind: "notApplied", error: "credits.below_minimum" } as const,
+    appError("credits.below_minimum"),
+  ])("a remainder that falls below the fee after the quote says it is too small", async (reply) => {
+    const { model } = recoverSetup(READY, reply);
+    await model.askRecover(one, duffs);
+    await model.confirmRecover();
+    expect(model.state).toEqual({ kind: "done", text: "The value left on this transfer is too small to recover." });
+  });
+
   it("a lock already recovered or used up elsewhere reads the list again, and claims no result", async () => {
     const { model, api } = recoverSetup({ kind: "finished" });
     const settled = vi.fn();
@@ -517,6 +527,7 @@ describe("RecoveryModel recover (#402)", () => {
     stop();
     await Promise.resolve();
     expect(settled).toHaveBeenCalledTimes(1);
+    expect(model.state).toEqual({ kind: "done", text: "This transfer was already recovered or used up." });
     expect(model.results.has(lockKey(one))).toBe(false);
     expect(model.asking).toBeNull();
     expect(api.recoverTransfer).not.toHaveBeenCalled();

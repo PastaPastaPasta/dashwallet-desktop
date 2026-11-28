@@ -69,14 +69,14 @@ test("Settings ▸ General's sheets name Close and Cancel from the catalog", asy
   await expect(ask.getByRole("button", { name: long("common.cancel"), exact: true })).toBeFocused();
 });
 
-test("a copy button's name, its Copied label and the toast come from the catalog", async ({ page }) => {
+test("a copy button's name and its toast come from the catalog", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => undefined } });
   });
   await settings(page, "light", "en-XA");
   const button = page.getByTestId("settings-data-dir").getByRole("button", { name: long("settings.general.dataDirectoryCopy"), exact: true });
   await button.click();
-  await expect(button.locator(".copied-label")).toHaveText(`✓ ${long("components.copy.copied")}`);
+  await expect(button.locator(".copy-icon-check")).toHaveText("✓");
   await expect(page.locator(".toast")).toHaveText(long("components.copy.copied"));
 });
 

@@ -19,13 +19,6 @@ export const app = {
     tryAgain: "Try again",
     restart: "Restart Dash Wallet",
   },
-  /** Pay's tabs. */
-  pay: {
-    loading: "Loading…",
-    tabs: "Pay",
-    contact: "To a contact",
-    address: "To an address",
-  },
   /** File ▸ Open URI… */
   openUri: {
     title: "Open URI",

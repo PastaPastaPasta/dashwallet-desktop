@@ -872,7 +872,12 @@ impl NetworkSession {
             // with it (#739).
             if complete && !dropped.is_empty() {
                 let _ = self
-                    .abandon_on_dead(&live.manager, wallet, &dropped, true)
+                    .abandon_on_dead(
+                        &live.manager,
+                        wallet,
+                        &dropped,
+                        crate::tx_actions::DeadSource::Load,
+                    )
                     .await;
             }
             // The excluded coins (`crate::withhold`) read the history: the

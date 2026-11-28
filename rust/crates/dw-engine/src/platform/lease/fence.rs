@@ -17,7 +17,7 @@
 //! carries its funding key, written in the marker's transaction and in
 //! every `Sent` bundle that re-appends it.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -259,9 +259,26 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     ) -> Result<bool, String> {
         Err("this journal keeps no drained holds".into())
     }
-    /// Every shielded artifact of `wallet` (schema 11), archived ones
-    /// included.
-    fn shielded_artifacts(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
+    fn open_shielded_import_activity(&self, _wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+
+    fn shielded_dispatch_holds(&self, _wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    fn shielded_refusal_activity(
+        &self,
+        _wallet: &[u8; 32],
+        _activities: &[[u8; 32]],
+    ) -> Result<BTreeMap<[u8; 32], dw_appdb::dispatch::ShieldedHistoryRefusal>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    /// The shielded artifacts of `wallet` (schema 11).
+    fn shielded_artifacts(
+        &self,
+        _wallet: &[u8; 32],
+        _include_archived: bool,
+    ) -> Result<Vec<ShieldedArtifact>, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
     /// Settles `wallet`'s artifacts of transition `st_hash` from the
@@ -552,8 +569,36 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
             .map_err(|e| e.to_string())
     }
 
-    fn shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
-        (self.all_shielded_artifacts(wallet)).map_err(|e| e.to_string())
+    fn open_shielded_import_activity(&self, wallet: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+        self.open_shielded_import_activity(wallet)
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_dispatch_holds(&self, wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>, String> {
+        self.shielded_dispatch_holds(wallet)
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_refusal_activity(
+        &self,
+        wallet: &[u8; 32],
+        activities: &[[u8; 32]],
+    ) -> Result<BTreeMap<[u8; 32], dw_appdb::dispatch::ShieldedHistoryRefusal>, String> {
+        self.shielded_refusal_activity(wallet, activities)
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_artifacts(
+        &self,
+        wallet: &[u8; 32],
+        include_archived: bool,
+    ) -> Result<Vec<ShieldedArtifact>, String> {
+        if include_archived {
+            self.all_shielded_artifacts(wallet)
+        } else {
+            self.shielded_artifacts(wallet)
+        }
+        .map_err(|e| e.to_string())
     }
 
     fn settle_shielded_artifact(

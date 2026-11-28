@@ -720,7 +720,7 @@ impl NetworkSession {
         wallet: WalletId,
     ) -> Result<(), crate::platform::PlatformError> {
         if self.platform.funds_off() {
-            return Err(crate::platform::PlatformError::Unavailable);
+            return Err(crate::platform::PlatformError::SessionOff);
         }
         match self.wallet_platform_held(wallet) {
             true => Err(crate::platform::PlatformError::Restored),
@@ -1184,7 +1184,13 @@ impl NetworkSession {
             }
             for (wallet, dead, _) in seeds {
                 if !dead.is_empty() {
-                    self.abandon_on_dead(manager, wallet, &dead, false).await?;
+                    self.abandon_on_dead(
+                        manager,
+                        wallet,
+                        &dead,
+                        crate::tx_actions::DeadSource::Restore,
+                    )
+                    .await?;
                     #[cfg(test)]
                     (self.hub.restore.pass_runs.lock().unwrap())
                         .push((wallet, dead.keys().copied().collect()));

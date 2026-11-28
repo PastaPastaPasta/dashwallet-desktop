@@ -35,8 +35,8 @@ use crate::{DashNetwork, NetworkSession, WalletId};
 /// network did before it (`payout_source`).
 pub(crate) const FEATURE: &str = "shielded_contact_payment";
 
-/// Whether a contact payment from the Shielded balance runs on `network`:
-/// not on mainnet; testnet, devnet and regtest pay.
+/// The contact payout's mainnet feature gate. The separate Shielded spend
+/// build gate also refuses payouts outside testnet.
 pub(crate) fn enabled_on(network: &DashNetwork) -> bool {
     *network != DashNetwork::Mainnet
 }
