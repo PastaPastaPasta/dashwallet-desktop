@@ -1360,6 +1360,8 @@ export const masternodes = {
       copySigning: "Copy signing request",
       everyoneSigned: "Everyone signed. Send the registration: {debit} leaves this wallet.",
       sent: "Sent · waiting for 1 confirmation",
+      /** `sent` when the last hand-off was refused: that attempt reached no network (an earlier one may have). */
+      sentRefused: "The last send didn't reach the network",
       confirmed: "The registration confirmed. The masternode stands.",
       dead: "One of your reserved coins was spent elsewhere, so this session can't continue.",
       /** MG-10 §2.3.1, dissolve together. */

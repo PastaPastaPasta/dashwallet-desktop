@@ -13,6 +13,7 @@ import {
   debitParts,
   grantCap,
   handoffLine,
+  sentRowLine,
   isIpv4Service,
   mainnetHoldsBack,
   NO_SENDS,
@@ -233,6 +234,13 @@ describe("sign and send copy", () => {
     expect(handoffLine({ ...sent, lastError: "send.no_peers" }, refused)).toBe("The wallet couldn't hand the registration to the network: sentence for send.no_peers.");
     expect(handoffLine({ ...sent, lastError: "send.broadcast_rejected" }, refused)).toBe("The wallet couldn't hand the registration to the network: error send.broadcast_rejected.");
     expect(handoffLine({ ...coordinator({ kind: "combined" }, "send"), lastError: "send.no_peers" }, refused)).toBeNull();
+  });
+
+  it("never reads a refused hand-off as waiting for its confirmation", () => {
+    const sent = coordinator({ kind: "sent" }, "wait");
+    expect(sentRowLine(sent)).toBe("Sent · waiting for 1 confirmation");
+    for (const code of REFUSED_HANDOFF) expect(sentRowLine({ ...sent, lastError: code }), code).toBe("The last send didn't reach the network");
+    for (const code of ["send.broadcast_unknown", "send.resend_in_progress", "send.some_new_code"]) expect(sentRowLine({ ...sent, lastError: code }), code).toBe("Sent · waiting for 1 confirmation");
   });
 
   it("words an unknown hand-off in its own lower-case sentence, never Pay's", () => {
