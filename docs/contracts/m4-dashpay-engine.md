@@ -1063,7 +1063,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 45dbd28f6ee9c342f35e6fc9cdde2ce93cd962dbbc638ab8be0e375012e7fc0e version: 118 -->
+<!-- surface-sha256: 9ebff86fd08ddd74daac35cc0884d1e1a0f7aa62310d09f4635be96e2b0117f1 version: 122 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1689,7 +1689,6 @@ impl InvitationError {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConnectError {
     Network,
-    MainnetOff,
     Unsupported,
     Invalid,
     Stale,
