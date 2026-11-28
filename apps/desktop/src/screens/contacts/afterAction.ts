@@ -5,12 +5,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWallets } from "../../api/queries";
 import { ui } from "../../app/ui";
-import { showToast } from "../../components/toast";
+import { clearAlert, showAlert, showToast } from "../../components/toast";
 import type { ActionOutcome } from "../../contacts/actions";
 import { t } from "../../i18n";
 
 /** Says an outcome in a toast when the view it ran in cannot (D23): that view is gone (closed,
- * left) or shows no outcome of its own (`shownHere` false). An outcome that ends after the window
+ * left) or shows no outcome of its own (`shownHere` false). A refusal is an alert that stays until
+ * Dismiss or the same action's next outcome. An outcome that ends after the window
  * moved to another wallet always toasts, under the name of the wallet it ran in (D27). */
 export function useActionToast(walletId: string): (outcome: ActionOutcome | null, shownHere: boolean) => void {
   const wallets = useWallets();
@@ -30,9 +31,13 @@ export function useActionToast(walletId: string): (outcome: ActionOutcome | null
       const all = list.current ?? [];
       const shown = all.find((w) => w.walletId === ui.get().walletId) ?? all[0];
       const elsewhere = shown !== undefined && shown.walletId !== walletId;
+      const key = `contacts:${walletId}:${o.kind}:${o.contact ?? ""}`;
+      clearAlert(key);
       if (shownHere && !gone.current && !elsewhere) return;
       const wallet = all.find((w) => w.walletId === walletId)?.name ?? t("contacts.toast.anotherWallet");
-      showToast(elsewhere ? t("contacts.toast.inWallet", { wallet, text: o.text }) : o.text);
+      const text = elsewhere ? t("contacts.toast.inWallet", { wallet, text: o.text }) : o.text;
+      if (o.ok) showToast(text);
+      else showAlert(text, key);
     },
     [walletId],
   );
