@@ -22,7 +22,7 @@ const world = (page: Page, fn: string) => page.evaluate(`(${fn})(window.__dwFixt
 async function payPage(page: Page, scenario: string, theme: Theme, lang: string) {
   await page.goto(fixtureUrl(scenario, theme, `&lang=${lang}`));
   await page.getByTestId("toolbar").waitFor();
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("sidebar-pay").click();
 }
 
 async function toAddress(page: Page, theme: Theme, lang: string, scenario = "funded") {
@@ -34,6 +34,7 @@ async function filled(page: Page, theme: Theme, lang: string, broadcast?: string
   await toAddress(page, theme, lang);
   if (broadcast) await world(page, `(w) => (w.send.broadcast = "${broadcast}")`);
   await page.getByTestId("pay-address").fill(PAYEE);
+  await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
   await page.getByTestId("pay-amount").fill("0.5");
   await page.getByTestId("pay-fee-line").waitFor();
 }
