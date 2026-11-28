@@ -1184,7 +1184,7 @@ impl NetworkSession {
             }
             for (wallet, dead, _) in seeds {
                 if !dead.is_empty() {
-                    self.abandon_on_dead(manager, wallet, &dead, false).await;
+                    self.abandon_on_dead(manager, wallet, &dead, false).await?;
                     #[cfg(test)]
                     (self.hub.restore.pass_runs.lock().unwrap())
                         .push((wallet, dead.keys().copied().collect()));

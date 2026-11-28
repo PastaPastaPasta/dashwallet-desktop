@@ -871,7 +871,8 @@ impl NetworkSession {
             // dropped as unsigned, or on what this app dropped, is dropped
             // with it (#739).
             if complete && !dropped.is_empty() {
-                self.abandon_on_dead(&live.manager, wallet, &dropped, true)
+                let _ = self
+                    .abandon_on_dead(&live.manager, wallet, &dropped, true)
                     .await;
             }
             // The excluded coins (`crate::withhold`) read the history: the

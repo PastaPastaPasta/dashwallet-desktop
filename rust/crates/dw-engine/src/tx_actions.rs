@@ -2470,9 +2470,7 @@ impl NetworkSession {
                 && !(self.hub.history)
                     .read(&wallet, |txs| (d.holds)(txs, &info.core_wallet, &settled))
             {
-                return Err(EngineError::Internal(
-                    "the drop's check no longer holds under the lock".into(),
-                ));
+                return Ok(BTreeSet::new());
             }
             let (descendants, mut links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
@@ -4699,7 +4697,7 @@ impl NetworkSession {
         wallet: WalletId,
         dead: &Dead,
         at_load: bool,
-    ) {
+    ) -> Result<(), EngineError> {
         if at_load {
             self.prune_dropped(wallet, dead).await;
         }
@@ -4757,7 +4755,7 @@ impl NetworkSession {
                 (child, drop)
             })
             .collect();
-        self.drop_trees(manager, wallet, drops).await;
+        self.drop_trees(manager, wallet, drops).await
     }
 
     /// Forgets the `dropped:` rows and the store repair's records of `dead`
@@ -4856,17 +4854,23 @@ impl NetworkSession {
                 (claim, drop)
             })
             .collect();
-        self.drop_trees(manager, wallet, drops).await;
+        let _ = self.drop_trees(manager, wallet, drops).await;
     }
 
     /// Abandons each root of `drops` with what descends from it, in one
     /// batch; one refused, or whose check fails under the lock, is kept.
-    async fn drop_trees(&self, manager: &Manager, wallet: WalletId, drops: Vec<(Txid, DeadDrop)>) {
+    async fn drop_trees(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        drops: Vec<(Txid, DeadDrop)>,
+    ) -> Result<(), EngineError> {
         if drops.is_empty() {
-            return;
+            return Ok(());
         }
         let _batch = self.hub.abandon_batch(wallet);
         let (mut done, mut lowest) = (BTreeSet::new(), None::<u32>);
+        let mut failure = None;
         for (root, drop) in drops {
             if done.contains(&root) {
                 continue;
@@ -4883,16 +4887,24 @@ impl NetworkSession {
             {
                 Ok(set) => done.extend(set),
                 Err(e) => {
-                    tracing::warn!(%wallet, txid = %root, error = %e, "kept a transaction that can never confirm or is built on one")
+                    tracing::warn!(%wallet, txid = %root, error = %e, "kept a transaction that can never confirm or is built on one");
+                    match e {
+                        EngineError::TxActionRefused(refusal)
+                            if !matches!(refusal, TxActionRefusal::RecordUnreadable(_)) => {}
+                        e => {
+                            failure.get_or_insert(e);
+                        }
+                    }
                 }
             }
         }
-        if done.is_empty() && lowest.is_none() {
-            return;
-        }
-        if let Err(e) = self.finish_abandons(manager, wallet, &done, lowest).await {
+        if (!done.is_empty() || lowest.is_some())
+            && let Err(e) = self.finish_abandons(manager, wallet, &done, lowest).await
+        {
             tracing::warn!(%wallet, error = %e, "the abandon of transactions that can never confirm did not finish");
+            failure.get_or_insert(e);
         }
+        failure.map_or(Ok(()), Err)
     }
 
     /// Hooks the held reports of the wallets with holds to the locks the
@@ -4950,7 +4962,7 @@ impl NetworkSession {
                     return;
                 };
                 let _lifecycle = session.wallet_lifecycle.hold().await;
-                (session.abandon_on_dead(&manager, id, &dead, false)).await;
+                let _ = session.abandon_on_dead(&manager, id, &dead, false).await;
                 #[cfg(test)]
                 (session.hub.dead_hooks_done).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             });

@@ -644,7 +644,10 @@ fn the_mark_clears_only_after_the_drop_dead_pass() {
 }
 
 #[test]
-fn the_final_pass_drops_a_late_descendant_of_a_store_dropped_claim() {
+fn the_final_pass_retries_a_late_descendants_failed_drop_before_clearing() {
+    use std::sync::atomic::Ordering::SeqCst;
+    use std::time::Duration;
+
     use super::store_repair_tests::{claim_on_a_held_coin, dropped, stored};
 
     let (_dir, engine, session, id) = super::engine_wallet();
@@ -652,7 +655,16 @@ fn the_final_pass_drops_a_late_descendant_of_a_store_dropped_claim() {
     let (vout, output) = (1, &claim.output[1]);
     let owner =
         dashcore::Address::from_script(&output.script_pubkey, dashcore::Network::Regtest).unwrap();
-    let receive = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let change = engine.block_on(async {
+        session
+            .wallet(&id)
+            .await
+            .unwrap()
+            .core()
+            .next_change_address_for_account(0)
+            .await
+            .unwrap()
+    });
     let child = super::signed_by_wallet(
         &engine,
         &session,
@@ -660,17 +672,37 @@ fn the_final_pass_drops_a_late_descendant_of_a_store_dropped_claim() {
         &owner,
         super::spend_of(
             OutPoint::new(claim.txid(), vout),
-            vec![(receive.script_pubkey(), output.value - 1_000)],
+            vec![(change.script_pubkey(), output.value - 1_000)],
         ),
     );
     let session = restored_with(&engine, session, "");
     assert!(!stored(session.data_dir(), id, claim.txid()));
     mempool(&engine, &session, id, &child);
-    eventually("the late child is pending before the pass", || {
-        !dropped(&engine, &session, id, child.txid())
+    let child_id = child.txid();
+    wait_stored(&session, id, &[child_id]);
+    assert!(!dropped(&engine, &session, id, child_id));
+
+    let gate = &session.hub.restore;
+    *gate.backoff.lock().unwrap() = Some(Duration::from_secs(60));
+    session.hub.fail_abandon_mark.store(true, SeqCst);
+    all_synced(&session);
+    eventually("the failed drop is reported", || {
+        !mark_present(&session)
+            || engine
+                .block_on(session.restore_status())
+                .unwrap()
+                .is_some_and(|status| status.clear_failed)
     });
+    assert!(!session.hub.fail_abandon_mark.load(SeqCst));
+    assert!(mark_present(&session), "the failed drop must keep RESTORED");
+    assert!(!dropped(&engine, &session, id, child_id));
+    let child_change = OutPoint::new(child_id, 0);
+    assert!(!spendable_for(&engine, &session, id, child_change, 10_000));
+
+    gate.wake_for_retry();
     cleared(&session);
-    assert!(dropped(&engine, &session, id, child.txid()));
+    assert!(dropped(&engine, &session, id, child_id));
+    assert!(!spendable_for(&engine, &session, id, child_change, 10_000));
 }
 
 /// H4: the mark stays while the services aren't synced.
