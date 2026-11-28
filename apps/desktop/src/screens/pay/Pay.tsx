@@ -74,12 +74,47 @@ export function Pay({
   }, []);
   const inputProblem = validation?.text === entry.text ? validation.problem : null;
 
-  const amount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
+  const rawAmount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
+  const amountOrigin = useRef<"none" | "user" | "link" | "coreMax">(prefill?.amount ? "link" : "none");
+  const setAmountFrom = useCallback((origin: "none" | "user" | "link" | "coreMax", text: string) => {
+    amountOrigin.current = text.trim() === "" ? "none" : origin;
+    rawAmount.setText(text);
+  }, [rawAmount.setText]);
+  const amount: ReturnType<typeof usePayAmount> = {
+    ...rawAmount,
+    setText: (next) => {
+      if (typeof next === "string") return setAmountFrom("user", next);
+      rawAmount.setText((prev) => {
+        const value = next(prev);
+        amountOrigin.current = value.trim() === "" ? "none" : "user";
+        return value;
+      });
+    },
+    fiat: {
+      ...rawAmount.fiat,
+      onChange: (text: string) => {
+        amountOrigin.current = text.trim() === "" ? "none" : "user";
+        rawAmount.fiat.onChange(text);
+      },
+    },
+  };
   const [label, setLabel] = useState(prefill?.label ?? "");
+  const labelOrigin = useRef<"none" | "user" | "link">(prefill?.label ? "link" : "none");
+  const setLabelFrom = (origin: "none" | "user" | "link", value: string) => {
+    labelOrigin.current = value === "" ? "none" : origin;
+    setLabel(value);
+  };
   const [message, setMessage] = useState(prefill?.message ?? "");
+  const messageOrigin = useRef<"none" | "user" | "link">(prefill?.message ? "link" : "none");
+  const setMessageFrom = (origin: "none" | "user" | "link", value: string) => {
+    messageOrigin.current = value === "" ? "none" : origin;
+    setMessage(value);
+  };
   const [linkUsername, setLinkUsername] = useState(prefill?.username ?? null);
   const [note, setNote] = useState("");
   const [source, setSource] = useState<PaySource>("core");
+  const sourceNow = useRef(source);
+  sourceNow.current = source;
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
   const [subtractFee, setSubtractFeeFirst] = useState(subtractFeeByDefault);
   const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
@@ -113,15 +148,21 @@ export function Pay({
   const [lostFound, setLostFound] = useState<{ text: string; resolved: boolean } | null>(null);
   const [reopen, setReopen] = useState<{ spec: string; at: number } | null>(null);
   const resolve = useResolveLock(walletId, identity, contact);
-  const changeRecipient = (text: string) => {
+  const resetRecipient = (text: string) => {
     updateEntry(editRecipient(entryNow.current, text));
     setLinkUsername(null);
+    if (amountOrigin.current === "link") setAmountFrom("none", "");
+    if (labelOrigin.current === "link") setLabelFrom("none", "");
+    if (messageOrigin.current === "link") setMessageFrom("none", "");
     setFound(null);
     setShownAs(null);
     setAcceptedContact(null);
     setChecked(null);
     setLostFound(null);
     setReopen(null);
+  };
+  const changeRecipient = (text: string) => {
+    resetRecipient(text);
     if (contact !== null) {
       setNote("");
       setSource("core");
@@ -132,8 +173,15 @@ export function Pay({
   };
   const clearAddress = () => {
     changeRecipient("");
-    setLabel("");
-    setMessage("");
+    setLabelFrom("none", "");
+    setMessageFrom("none", "");
+  };
+  const clearAddressForm = () => {
+    resetRecipient("");
+    setLabelFrom("none", "");
+    setMessageFrom("none", "");
+    setMore([]);
+    ui.set({ payPrefill: null });
   };
   const focusRecipient = () => requestAnimationFrame(() => recipientField.current?.focus());
   const pickContact = (picked: PickedPayee) => {
@@ -146,23 +194,27 @@ export function Pay({
     ui.set({ payContact: { walletId, identity: owner.identity, contact: picked.payee.contact }, payCoins: null });
     requestAnimationFrame(() => amountField.current?.focus());
   };
-  const pickUser = (hit: FoundHit) => {
+  const pickUser = (hit: FoundHit, input?: string) => {
     if (owner.kind !== "identity") return;
+    if (input !== undefined) {
+      const current = entryNow.current;
+      if (current.address !== null || current.text.trim() !== input || scanner.busy || contact !== null || found !== null) return;
+    }
     if (hit.relation === "contact") {
       pickContact({
         payee: payeeOf({ contact: hit.identity, alias: null, displayName: hit.displayName, username: hit.username }),
         unverified: hit.unverified,
       });
     } else {
-      lastSearch.current = entryNow.current.text;
+      lastSearch.current = input !== undefined ? "" : entryNow.current.text;
       clearAddress();
       setFound(hit);
     }
   };
   const fillRequest = (s: Scanned) => {
-    if (s.amount !== null) amount.setText(shown.full(s.amount));
-    if (s.label) setLabel(s.label);
-    if (s.message) setMessage(s.message);
+    if (s.amount !== null && (amountOrigin.current === "none" || amountOrigin.current === "link")) setAmountFrom("link", shown.full(s.amount));
+    if (s.label) setLabelFrom("link", s.label);
+    if (s.message) setMessageFrom("link", s.message);
   };
   const onScanned = useRef<(s: Scanned) => void>(() => undefined);
   onScanned.current = (s) => {
@@ -174,14 +226,11 @@ export function Pay({
   useEffect(() => () => scanner.dispose(), [scanner]);
 
   const sheets = usePaySheets(payFormKey(walletId, contact ?? undefined), walletId, draft, () => {
-    amount.setText("");
+    setAmountFrom("none", "");
     setSubtractFee(subtractFeeByDefault());
     setAdvanced(DEFAULT_ADVANCED);
     if (contact !== null) setNote("");
-    else {
-      clearAddress();
-      setMore([]);
-    }
+    else clearAddressForm();
   }, contact === null ? "link" : null);
   const { phase } = sheets;
   const backToForm = () => {
@@ -278,10 +327,19 @@ export function Pay({
     if (again) setReopen({ spec: specKey, at: Date.now() });
     void estimate.refetch();
   };
-  const max = useMax(walletId, advanced, shown, (text) => {
-    amount.setText(text);
-    setSubtractFee(true);
-  }, multi ? more.reduce((n, r) => n + (r.amount ?? 0), 0) : 0, multi && !rowsSettled, revision);
+  const max = useMax(
+    walletId,
+    advanced,
+    shown,
+    (text) => {
+      setAmountFrom("coreMax", text);
+      setSubtractFee(true);
+    },
+    multi ? more.reduce((n, r) => n + (r.amount ?? 0), 0) : 0,
+    multi && !rowsSettled,
+    revision,
+    () => entryNow.current.address?.route !== "platform" && sourceNow.current === "core",
+  );
   const review = (from: "review" | "psbt") => {
     if (!ready || !estimate.data || !spec) return;
     openedBy.current = from;
@@ -324,8 +382,9 @@ export function Pay({
             onValidation={validate}
             onAddress={(next, input) => {
               const current = entryNow.current;
-              if (current.address !== null || current.text.trim() !== input || scanner.busy) return;
+              if (current.address !== null || current.text.trim() !== input || scanner.busy || contact !== null || found !== null) return;
               updateEntry({ ...current, text: next.address, address: next });
+              if (next.route === "platform" && amountOrigin.current === "coreMax") setAmountFrom("none", "");
               fillRequest(next);
               if (next.username !== null) setLinkUsername(next.username);
             }}
@@ -351,7 +410,7 @@ export function Pay({
           <>
             <section className="pay-card card-l1">
               {platform ? (
-                <PayFromPlatform key={revision} walletId={walletId} network={network} to={address.address} amount={amount} onSent={clearAddress} recipientBusy={scanner.busy} recipientRevision={revision} inputRef={bindAmountField} />
+                <PayFromPlatform key={revision} walletId={walletId} network={network} to={address.address} amount={amount} onSent={clearAddressForm} recipientBusy={scanner.busy} recipientRevision={revision} inputRef={bindAmountField} />
               ) : (
                 <>
                   {balance.active ? <BalanceAmount shown={shown} amount={amount} inputRef={bindAmountField} /> : (
@@ -364,10 +423,10 @@ export function Pay({
                   ) : (
                     <>
                       <FormField label={t("pay.toAddress.label")} hint={t("pay.toAddress.labelHint")}>
-                        {(p) => <input {...p} data-testid="pay-label" value={label} autoComplete="off" onChange={(e) => setLabel(e.target.value)} />}
+                        {(p) => <input {...p} data-testid="pay-label" value={label} autoComplete="off" onChange={(e) => setLabelFrom("user", e.target.value)} />}
                       </FormField>
                       <FormField label={t("pay.toAddress.message")} hint={t("pay.toAddress.messageHint")}>
-                        {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />}
+                        {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessageFrom("user", e.target.value)} />}
                       </FormField>
                     </>
                   )}
@@ -429,7 +488,7 @@ export function Pay({
       {picking && (
         <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={(address, name) => {
           changeRecipient(address);
-          setLabel((old) => old || name);
+          if (labelOrigin.current === "none" && name) setLabelFrom("link", name);
           setPicking(false);
           focusRecipient();
         }} onClose={() => setPicking(false)} />
@@ -475,7 +534,7 @@ export function Pay({
                 d && !d.paymentLock ? { ...d, paymentLock: { txid: unknown, since: Math.floor(Date.now() / 1000), source: "platform", reference: unknown } } : d,
               );
             if (paid) {
-              amount.setText("");
+              setAmountFrom("none", "");
               setNote("");
               setSource("core");
             }

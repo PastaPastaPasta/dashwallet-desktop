@@ -144,20 +144,34 @@ export function usePaySheets(key: string, walletId: string, draft: DraftApi, cle
   const client = useQueryClient();
   const [confirm, setConfirm] = useState<Extract<Phase, { kind: "confirm" }> | null>(null);
   const stored = useSyncExternalStore(subscribeKept, () => kept.get(key) ?? null);
+  const clearRef = useRef(clear);
+  clearRef.current = clear;
+  const scope = useRef(0);
   const mounted = useRef(true);
+  const lastKey = useRef(key);
+  if (lastKey.current !== key) {
+    lastKey.current = key;
+    scope.current += 1;
+  }
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      scope.current += 1;
       // The page's draft closes with it.
       draftClosed(key);
     };
   }, [key]);
-  const live = () => mounted.current;
-  // `null`: a notice, which leaves the form as it was.
-  const settled = (o: Outcome | null) => {
-    if (o && o.kind !== "failed") clear();
-    if (mounted.current) setConfirm(null);
+  const scoped = () => {
+    const started = scope.current;
+    const live = () => mounted.current && scope.current === started;
+    // `null`: a notice, which leaves the form as it was.
+    const settled = (o: Outcome | null) => {
+      if (!live()) return;
+      if (o && o.kind !== "failed") clearRef.current();
+      setConfirm(null);
+    };
+    return { live, settled };
   };
   const phase: Phase =
     stored?.kind === "result"
@@ -173,6 +187,7 @@ export function usePaySheets(key: string, walletId: string, draft: DraftApi, cle
     cancel: () => setConfirm(null),
     /** Send was pressed, `sending` the payment as the review showed it. */
     begin: (sending: Sending): PayAttempt => {
+      const { live, settled } = scoped();
       const attempt = payAttempt(key, beginPayment(key, sending), live, settled);
       return {
         ...attempt,
@@ -180,15 +195,20 @@ export function usePaySheets(key: string, walletId: string, draft: DraftApi, cle
         // are spent on it, so a form mounted again (after a lock) starts empty rather than offering it again.
         broadcasting: (s) => {
           attempt.broadcasting(s);
-          if (filledBy === "link") ui.set({ payPrefill: null, payCoins: null });
+          if (filledBy === "link" && live()) ui.set({ payPrefill: null, payCoins: null });
         },
       };
     },
     /** A result that is no payment's (Create Unsigned's "changed"). */
-    outcome: (o: Outcome) => payAttempt(key, beginPayment(key, { amount: 0, fee: 0 }), live, settled).outcome(o),
+    outcome: (o: Outcome) => {
+      const { live, settled } = scoped();
+      payAttempt(key, beginPayment(key, { amount: 0, fee: 0 }), live, settled).outcome(o);
+    },
     retry: (): ((o: Outcome) => void) | null => {
       const attempt = beginRetry(key);
-      return attempt === null ? null : payAttempt(key, attempt, live).outcome;
+      if (attempt === null) return null;
+      const { live } = scoped();
+      return payAttempt(key, attempt, live).outcome;
     },
     done: (show: boolean) => {
       if (stored?.kind !== "result") return;
@@ -336,7 +356,16 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */
-export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: (amountText: string) => void, othersTotal = 0, othersPending = false, recipientRevision = "") {
+export function useMax(
+  walletId: string,
+  advanced: Advanced,
+  shown: Shown,
+  set: (amountText: string) => void,
+  othersTotal = 0,
+  othersPending = false,
+  recipientRevision = "",
+  acceptResult: () => boolean = () => true,
+) {
   const b = useBackend();
   const [error, setError] = useState<string | null>(null);
   const fee = feeMode(advanced);
@@ -345,6 +374,8 @@ export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: 
   others.current = othersTotal;
   const revision = useRef(recipientRevision);
   revision.current = recipientRevision;
+  const accept = useRef(acceptResult);
+  accept.current = acceptResult;
   const run = async () => {
     setError(null);
     if (!fee || othersPending) return;
@@ -352,9 +383,9 @@ export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: 
     try {
       const max = await b.maxSpendable(walletId, coinSource(advanced), fee);
       // With added recipients, Max is what is left once they are paid.
-      if (recipientRevision === revision.current && asked === others.current) set(shown.full(Math.max(0, max - asked)));
+      if (recipientRevision === revision.current && asked === others.current && accept.current()) set(shown.full(Math.max(0, max - asked)));
     } catch (e) {
-      if (recipientRevision === revision.current) setError(sendErrorText(e, shown.chain, shown.amountUnit)?.text ?? errorMessage(e));
+      if (recipientRevision === revision.current && accept.current()) setError(sendErrorText(e, shown.chain, shown.amountUnit)?.text ?? errorMessage(e));
     }
   };
   return { run, error, disabled: !fee || othersPending };

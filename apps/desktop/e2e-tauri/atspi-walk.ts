@@ -37,6 +37,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { MARKER_SCRIPT } from "./atspi-marker.ts";
 import { APP, CHAIN, driverGone, dwcli, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 import { canonical, removeOwned } from "./scratch.ts";
 
@@ -252,45 +253,7 @@ async function main() {
   /** The node the tree must show for the element `css`, read from the DOM: a dialog's name; a
    * button's, link's, tab's or field's own name; else the first visible heading in it, else its
    * first visible button or link. Null when it has none. */
-  const markerOf = (css: string) =>
-    wd.script<Marker | null>(
-      `const el = document.querySelector(arguments[0]);
-      if (!el) return null;
-      const squash = (s) => (s ?? "").replace(/\\s+/g, " ").trim();
-      const byIds = (ids) => squash(ids.split(/\\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" "));
-      const nameOf = (e) => {
-        const by = e.getAttribute("aria-labelledby");
-        if (by) return byIds(by);
-        if (e.getAttribute("aria-label")) return squash(e.getAttribute("aria-label"));
-        if (e.labels?.length) return squash([...e.labels].map((l) => l.textContent).join(" "));
-        return squash(e.textContent);
-      };
-      const shown = (e) => e.getClientRects().length > 0;
-      const control = (e) => {
-        const role = e.getAttribute("role");
-        if (role === "tab") return ["PAGE_TAB", nameOf(e)];
-        if (e.matches("a[href]") || role === "link") return ["LINK", nameOf(e)];
-        if (e.matches("button") || role === "button") return [e.hasAttribute("aria-pressed") ? "TOGGLE_BUTTON" : "PUSH_BUTTON", nameOf(e)];
-        if (e.matches("select")) return ["COMBO_BOX", nameOf(e)];
-        if (e.matches("input[type=checkbox]")) return ["CHECK_BOX", nameOf(e)];
-        if (e.matches("input[type=password]")) return ["PASSWORD_TEXT", nameOf(e)];
-        if (e.matches("input:not([type=radio]), textarea")) return ["ENTRY", nameOf(e)];
-        return null;
-      };
-      let m = null;
-      if (el.matches('[role="dialog"]')) m = ["DIALOG", nameOf(el)];
-      else m = control(el);
-      if (!m) {
-        const h = [...el.querySelectorAll("h1, h2, h3, h4, h5, h6")].find(shown);
-        if (h) m = ["HEADING", squash(h.textContent)];
-      }
-      if (!m) {
-        const c = [...el.querySelectorAll("button, a[href]")].find(shown);
-        if (c) m = control(c);
-      }
-      return m && m[1] ? m : null;`,
-      [css],
-    );
+  const markerOf = (css: string) => wd.script<Marker | null>(MARKER_SCRIPT, [css]);
   /** Walks `screen` once every element of `css` is showing; the first of them is only on this
    * state, and the tree must show its marker (`markerOf`). On a redacted screen the marker is a
    * heading or a dialog's name, never a word of the phrase. */

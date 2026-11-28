@@ -36,7 +36,7 @@ type Props = {
   onAddress: (address: AddressRecipient, input: string) => void;
   scanner: PayScanModel;
   onContact: (contact: PickedPayee) => void;
-  onFound: (hit: FoundHit) => void;
+  onFound: (hit: FoundHit, input?: string) => void;
   onAddressBook: () => void;
   onClear: () => void;
 };
@@ -86,23 +86,26 @@ export function RecipientField({
   const resolved = check && check === checked && !resolution.isFetching && !resolution.isError ? resolution.data : null;
   useEffect(() => {
     if (resolved?.kind === "address") onAddress(resolved, check);
-    if (resolved?.kind === "user") onFound(resolved.hit);
+    if (resolved?.kind === "user") onFound(resolved.hit, check);
   }, [resolved, check, onAddress, onFound]);
 
+  const addressFallback = parsed.kind === "address" && resolved?.kind === "invalid" && !selectedUser && identity !== null;
   const search = parsed.kind === "name" && !selectedUser ? parsed.text : "";
-  const localText = useDebounced(search.replace(/^@/, ""), SEARCH_DEBOUNCE_MS);
+  const localQuery = search || (addressFallback ? parsed.text : "");
+  const localText = useDebounced(localQuery.replace(/^@/, ""), SEARCH_DEBOUNCE_MS);
   const prefix = networkPrefix(search.replace(/^@/, ""));
   const lookup = useDebounced(prefix, NETWORK_DEBOUNCE_MS);
   const browsing = popup === "contacts";
-  const local = usePayPicker(walletId, browsing || search ? identity : null, browsing ? "" : localText);
+  const local = usePayPicker(walletId, browsing || localQuery ? identity : null, browsing ? "" : localText);
   const frequent = useFrequentContacts(walletId, browsing ? identity : null);
   const remote = useNetworkSearch(walletId, identity ?? "", identity && lookup === prefix ? lookup : null);
-  const listing = browsing || localText === search.replace(/^@/, "") ? pickerListing({ data: local.data, placeholder: local.isPlaceholderData, failed: local.isError }) : null;
+  const listing = browsing || localText === localQuery.replace(/^@/, "") ? pickerListing({ data: local.data, placeholder: local.isPlaceholderData, failed: local.isError }) : null;
   const remoteReady = prefix === null || (lookup === prefix && !remote.isFetching && !remote.isPending);
-  const hits = remoteReady && !remote.isError && !browsing ? remote.data : undefined;
+  const hits = remoteReady && !remote.isError && !browsing && search !== "" ? remote.data : undefined;
   const networkHits = listing ? pickerHits(hits, listing) : null;
   const options = listing ? recipientSuggestions(listing, hits) : [];
-  const open = !disabled && (browsing || (!selectedUser && !address && popup === "search" && search !== "" && identity !== null));
+  const fallbackMatched = addressFallback && options.length > 0;
+  const open = !disabled && (browsing || (!selectedUser && !address && popup === "search" && identity !== null && (search !== "" || fallbackMatched)));
 
   const recent = open && browsing ? (frequent.data ?? []) : [];
   const optionRows = [
@@ -140,7 +143,8 @@ export function RecipientField({
     none: namesFinished && prefix !== null ? "anyone" : null,
   });
   const contactLinkNeedsOwner = parsed.kind === "userLink" && identity === null;
-  const invalid = resolved?.kind === "invalid" ? resolved.error
+  const invalid = fallbackMatched ? null
+    : resolved?.kind === "invalid" ? resolved.error
     : check && check === checked && resolution.isError ? errorMessage(resolution.error)
     : contactLinkNeedsOwner ? t("pay.error.noIdentity")
     : namesFinished ? t("pay.error.invalidAddress")
@@ -153,14 +157,19 @@ export function RecipientField({
     if (hasOptions && browsing && selectedUser) listbox.current?.focus({ preventScroll: true });
   }, [hasOptions, browsing, selectedUser !== null]);
 
+  const dismissOnEscape = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.nativeEvent.isComposing || e.key !== "Escape" || !popup) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+    if (selectedUser) root.current?.querySelector<HTMLButtonElement>('[data-testid="pay-contacts"]')?.focus();
+    else inputRef.current?.focus();
+    return true;
+  };
   const onKey = (e: KeyboardEvent<HTMLElement>) => {
     if (e.nativeEvent.isComposing) return;
-    if (e.key === "Escape" && popup) {
-      e.preventDefault();
-      e.stopPropagation();
-      close();
-      if (selectedUser) root.current?.querySelector<HTMLButtonElement>('[data-testid="pay-contacts"]')?.focus();
-    } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && (search || browsing)) {
+    if (dismissOnEscape(e)) return;
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && (search || fallbackMatched || browsing)) {
       e.preventDefault();
       if (popup === null) setPopup("search");
       if (optionRows.length === 0) return;
@@ -185,7 +194,7 @@ export function RecipientField({
   };
 
   return (
-    <div className="form-field pay-recipient" data-testid="pay-recipient" ref={root} onBlur={(e) => { if (!root.current?.contains(e.relatedTarget)) close(); }} onDragOver={(e) => {
+    <div className="form-field pay-recipient" data-testid="pay-recipient" ref={root} onKeyDown={(e) => { dismissOnEscape(e); }} onBlur={(e) => { if (!root.current?.contains(e.relatedTarget)) close(); }} onDragOver={(e) => {
       if ([...e.dataTransfer.items].some((i) => i.kind === "file" && i.type.startsWith("image/"))) e.preventDefault();
     }} onDrop={dropImage}>
       {selectedUser ? <span id={`${id}-label`}>{title}</span> : <label htmlFor={id}>{title}</label>}
@@ -222,7 +231,7 @@ export function RecipientField({
                 onText(e.target.value);
               }}
               onFocus={() => {
-                if (search && popup === null) setPopup("search");
+                if ((search || fallbackMatched) && popup === null) setPopup("search");
               }}
               onPaste={(e) => {
                 const file = imageOf(e.clipboardData);
@@ -328,11 +337,18 @@ export function RecipientField({
                   </p>
                 )}
                 {!listing || (!browsing && !remoteReady) ? <p role="status">{t("pay.recipient.checking")}</p> : (
-                  !local.isError && !remote.isError && optionRows.length === 0 && (
-                    <p role="status" data-testid={browsing ? "pay-picker-empty" : "pay-picker-none"}>
-                      {t(browsing ? "pay.contact.noContacts" : prefix === null ? "pay.contact.keepTyping" : "pay.contact.noOneFound")}
-                    </p>
-                  )
+                  <>
+                    {browsing && listing.updating && (
+                      <p role="status" data-testid="pay-picker-updating">
+                        {t("pay.contact.updating")}
+                      </p>
+                    )}
+                    {!local.isError && (browsing || !remote.isError) && optionRows.length === 0 && (!browsing || !listing.updating) && (
+                      <p role="status" data-testid={browsing ? "pay-picker-empty" : "pay-picker-none"}>
+                        {t(browsing ? "pay.contact.noContacts" : prefix === null ? "pay.contact.keepTyping" : "pay.contact.noOneFound")}
+                      </p>
+                    )}
+                  </>
                 )}
               </>
             )}
