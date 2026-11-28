@@ -95,10 +95,11 @@ export function useReloadOnSync(reload: () => void) {
   useEffect(() => latest(), [synced]);
 }
 
-/** An outcome line under an action: the result, or what went wrong. */
-export function Outcome({ ok, text, testId, polite = false }: { ok: boolean; text: string | null; testId: string; polite?: boolean }) {
+/** An outcome line under an action: the result, or what went wrong. `reserved`: keeps one line's
+ * room when empty so nearby controls stay in place when the result appears or clears. */
+export function Outcome({ ok, text, testId, polite = false, reserved = false }: { ok: boolean; text: string | null; testId: string; polite?: boolean; reserved?: boolean }) {
   return (
-    <p className={`outcome ${ok ? "form-ok" : "form-problem"}`} role={ok || polite ? "status" : "alert"} data-testid={testId}>
+    <p className={`outcome ${ok ? "form-ok" : "form-problem"}${reserved ? " outcome-reserved" : ""}`} role={ok || polite ? "status" : "alert"} data-testid={testId}>
       {text}
     </p>
   );

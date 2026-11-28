@@ -3303,6 +3303,15 @@ input[type="radio"]:disabled {
   margin: 0;
 }
 
+.outcome.outcome-reserved {
+  margin: 0;
+  min-block-size: var(--dw-type-footnote-line);
+}
+
+.outcome.outcome-reserved:empty {
+  position: static;
+}
+
 .onboarding-warning,
 .sheet-warning,
 .settings-backup-failed {
@@ -3649,6 +3658,20 @@ input[type="radio"]:disabled {
 }
 
 .settings-hint {
+  margin: 0;
+}
+
+.updates-feedback {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+  width: 100%;
+  min-block-size: var(--dw-type-footnote-line);
+}
+
+.updates-feedback .field-hint,
+.updates-feedback .form-problem {
   margin: 0;
 }
 

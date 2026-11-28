@@ -19,6 +19,7 @@ export function UpdatesCard() {
     if ((await save({ checkUpdatesAutomatically: on })) && on) await model.check();
   };
 
+  const problem = model.problem ?? notSaved;
   return (
     <SettingsCard title={t("settings.updates.title")} testId="settings-updates">
       {view.kind === "unavailable" ? (
@@ -43,7 +44,6 @@ export function UpdatesCard() {
             {t("settings.updates.auto")}
           </label>
           <Hint id={hint}>{t("settings.updates.autoHint")}</Hint>
-          <UpdateState view={view} model={model} />
           {(view.kind === "idle" || view.kind === "checking" || view.kind === "upToDate" || view.kind === "found") && (
             <div className="settings-row">
               <DashButton variant="tintedBlue" size="small" data-testid="settings-updates-check" disabled={model.busy} onClick={() => void model.check()}>
@@ -51,9 +51,14 @@ export function UpdatesCard() {
               </DashButton>
             </div>
           )}
+          <div className="updates-feedback">
+            {!(problem && view.kind === "upToDate") && <UpdateState view={view} model={model} />}
+            <Problem text={problem} testId="settings-updates-problem" />
+          </div>
         </>
-      ) : null}
-      <Problem text={model.problem ?? notSaved} testId="settings-updates-problem" />
+      ) : (
+        <Problem text={problem} testId="settings-updates-problem" />
+      )}
     </SettingsCard>
   );
 }

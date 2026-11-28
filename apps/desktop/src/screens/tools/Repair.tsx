@@ -70,7 +70,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
   const fraction = model.progressFraction;
   return (
     <div className="tool-stack" data-testid="tools-repair">
-      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="repair-outcome" polite />
+      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="repair-outcome" polite reserved />
       <ToolCard title={t("tools.repair.rescanTitle")} testId="repair-rescan">
         <p className="placeholder-note">{t("tools.repair.rescanHint")}</p>
         {model.rescanning ? (
