@@ -12,7 +12,11 @@
 #     --dist-dir <dir> \
 #     --feed-dir <dir> \
 #     --sigs-dir <dir> \
-#     --gpg-key <PRIMARY_FINGERPRINT_OR_KEY_ID>
+#     --gpg-key <PRIMARY_FINGERPRINT_OR_KEY_ID> \
+#     [--passphrase-fd <n>]
+#
+# --passphrase-fd is for release-sign.yml, where nobody can type: gpg reads the key's passphrase from that
+# file descriptor and never opens a pinentry.
 set -euo pipefail
 
 version=
@@ -20,6 +24,7 @@ dist_dir=
 feed_dir=
 sigs_dir=
 gpg_key=
+passphrase_fd=
 
 while (($#)); do
   case "$1" in
@@ -28,6 +33,7 @@ while (($#)); do
     --feed-dir) feed_dir=${2:?}; shift 2 ;;
     --sigs-dir) sigs_dir=${2:?}; shift 2 ;;
     --gpg-key) gpg_key=${2:?}; shift 2 ;;
+    --passphrase-fd) passphrase_fd=${2:?}; shift 2 ;;
     *) echo "sign-checksums: unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -40,6 +46,7 @@ rc=0
 [[ -d "$dist_dir" ]] || die "--dist-dir must exist"
 ((rc)) || [[ -d "$feed_dir" ]] || die "--feed-dir must exist"
 [[ -n "$sigs_dir" && -n "$gpg_key" ]] || die "--sigs-dir and --gpg-key are required"
+[[ -z "$passphrase_fd" || "$passphrase_fd" =~ ^[0-9]+$ ]] || die "--passphrase-fd must be a file descriptor number"
 
 sha256_line() {
   local dir=$1 name=$2
@@ -101,7 +108,9 @@ fi
 LC_ALL=C sort -k2 "$sums" -o "$sums"
 
 rm -f "$asc"
-gpg --armor --detach-sign --digest-algo SHA256 --local-user "$gpg_key" --output "$asc" "$sums"
+gpg_sign=(gpg --armor --detach-sign --digest-algo SHA256 --local-user "$gpg_key")
+[[ -z "$passphrase_fd" ]] || gpg_sign+=(--batch --pinentry-mode loopback --passphrase-fd "$passphrase_fd")
+"${gpg_sign[@]}" --output "$asc" "$sums"
 gpg --verify "$asc" "$sums"
 
 cp "$sums" "$dist_dir/SHA256SUMS"
