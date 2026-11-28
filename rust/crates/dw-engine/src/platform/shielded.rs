@@ -661,7 +661,9 @@ impl DashPay {
         on_pool_keyset(&self.session, wallet, move |session, lib| async move {
             match amount {
                 FundAmount::Duffs { duffs } => pool::shield_quote(&session, &lib, duffs).await,
-                FundAmount::All => pool::shield_max_quote(&session, wallet, &lib).await,
+                FundAmount::All | FundAmount::QuotedAll { .. } => {
+                    pool::shield_max_quote(&session, wallet, &lib).await
+                }
             }
         })
         .await
@@ -670,7 +672,7 @@ impl DashPay {
     /// Core → Shielded: an asset lock of `amount` from the Core balance
     /// under a `Shield` lease begun from `grant`, then Platform's
     /// ShieldFromAssetLock of it to the wallet's own shielded address.
-    /// `All` drains BIP44 account 0 (`core_max.rs`).
+    /// `QuotedAll` drains the confirmed set of BIP44 account 0 coins.
     pub async fn shield_from_core(
         &self,
         amount: FundAmount,

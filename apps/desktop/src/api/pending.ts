@@ -15,7 +15,10 @@ export const CREDITS_PER_DUFF = 1000n;
 
 /** A shield's or a fund's amount: `duffs` with the fee on top, or, for a Core Max (`all`), everything
  * in the Dash wallet's account 0 with the fee out of it. */
-export const fundAmount = (r: { duffs: number; all?: boolean }): FundAmount => (r.all ? { kind: "all" } : { kind: "duffs", duffs: r.duffs });
+export function fundAmount(r: { duffs: number; all?: boolean }, coinSet?: string): FundAmount {
+  if (!r.all) return { kind: "duffs", duffs: r.duffs };
+  return coinSet ? { kind: "quotedAll", coinSet } : { kind: "all" };
+}
 
 /** The refusals only a Core Max meets (`shielded.*` or `credits.*`): mixing, another move of the coins,
  * coins changed since the quote. With `max` (the request was a Core Max) also its own words for a
@@ -42,7 +45,12 @@ export function coreMaxRefusal(e: unknown, max: boolean, duffs: (d: number) => s
     case "below_minimum":
       if (!max || data?.kind !== "maxMinimum") return null;
       if (data.duffs > 0) return t(data.leftDuffs > 0 ? "transfer.maxBelowMinimum" : "transfer.maxBelowMinimumAll", { amount: duffs(data.duffs), min: duffs(data.min) });
-      if (data.arrivingDuffs > 0) return t(data.arrivingClears ? "transfer.maxAllArriving" : "transfer.maxArrivingTooSmall", { arriving: duffs(data.arrivingDuffs) });
+      if (data.arrivingBlock === "held") return t("transfer.maxLocked");
+      if (data.arrivingDuffs > 0) {
+        const key = data.arrivingClears ? "transfer.maxAllArriving" : data.arrivingBlock === "inputCap" ? "transfer.maxArrivingCantMove" : "transfer.maxArrivingTooSmall";
+        return t(key, { arriving: duffs(data.arrivingDuffs) });
+      }
+      if (data.otherArrivingDuffs > 0) return t("transfer.maxArrivingCantMove", { arriving: duffs(data.otherArrivingDuffs) });
       return t(data.leftDuffs > 0 ? "transfer.maxNothing" : "transfer.maxEmpty");
     default:
       return null;

@@ -215,13 +215,11 @@ test("keyboard only: send a contact request", async ({ page }) => {
   await page.keyboard.press("Enter");
   await authorizeFrom(page, send);
 
-  // The outcome shows (that a reader hears it is the "Add contact" test below), and focus has a
-  // place in the card that now says it went.
-  const outcome = page.getByTestId("add-contact-outcome");
+  const outcome = page.locator(".toast-host");
   await expect(outcome).toHaveText("Contact request sent to Mallory.");
   await expect(outcome).toHaveAttribute("role", "status");
   await expect(page.getByTestId("add-contact-line")).toHaveText("Contact request sent.");
-  await expect(page.getByTestId("add-contact-status")).toBeFocused();
+  await expect(page.getByTestId("add-contact-show")).toBeFocused();
   await expectAxeClean(page);
 
   // Close gives focus back to Add contact; Pending lists the request.
@@ -950,8 +948,8 @@ test("keyboard only: while a contact payment is sent, Confirm payment keeps focu
 // button; Enter and the passphrase run it.
 const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page: Page) => Promise<Locator> }[] = [
   {
-    where: "Add contact ▸ Send request (add-contact-outcome)",
-    region: '[data-testid="add-contact-outcome"]',
+    where: "Add contact ▸ Send request (shared toast)",
+    region: ".toast-host",
     said: "Contact request sent to Mallory.",
     reach: async (page) => (await toSendRequest(page)).send,
   },

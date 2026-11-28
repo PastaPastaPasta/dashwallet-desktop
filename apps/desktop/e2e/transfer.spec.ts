@@ -92,6 +92,27 @@ test.describe("Transfer grants", () => {
       await expect(page.getByTestId(done)).toHaveText(route === "coreToShielded" ? "Added to Shielded" : "Added to Platform");
     });
 
+  for (const [route, go, refused] of [
+    ["coreToShielded", "shielded-go", "shielded-refusal"],
+    ["coreToPlatform", "platform-fund-go", "platform-fund-refusal"],
+  ] as const) {
+    test(`${route} Max refuses a replacement coin of the same value after Confirm`, async ({ page }) => {
+      await open(page, "funded");
+      await openTransfer(page, route);
+      await page.getByTestId("transfer-max").click();
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId(go).click();
+      await expect(page.getByTestId("grant-sheet")).toBeVisible();
+      await page.evaluate(() => {
+        const w = window.__dwFixture!.world.wallets[0];
+        const coin = w.coins.find((c) => c.confirmations > 0 && !c.coinjoinDenominated)!;
+        coin.outpoint = { ...coin.outpoint, vout: coin.outpoint.vout + 100 };
+      });
+      await authorize(page);
+      await expect(page.getByTestId(refused)).toContainText("Your Dash wallet changed since this was worked out. Review the amount again.");
+    });
+  }
+
   for (const [route, go, amount, maxDuffs] of [
     ["coreToShielded", "shielded-go", "0.001", 101_000],
     ["coreToPlatform", "platform-fund-go", "0.5", 50_001_000],

@@ -36,12 +36,11 @@ import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, unverified
 import { useEligibility, useMyUserLink, useNetworkSearch, useScreenScanMode } from "../../contacts/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
-import { Outcome } from "../tools/common";
 import { Tabs } from "../Routes";
 import { dropDetailFocusUnless, focusDetailWhenShown, focusInView, useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
 import { Row } from "./ContactList";
-import { EnableButton, EnableFailure, SendRequestButton } from "./RequestButton";
+import { EnableButton, SendRequestButton } from "./RequestButton";
 
 /** What Add Contact acts for: the wallet, whose contacts (BL-153's status), the identity's actions
  * (`null` without one) and its unfiltered contacts (D14; `undefined` while unread). */
@@ -163,24 +162,22 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
     ctx.owner.kind !== "identity" ? ownerLine(ctx.owner) : claimLine(cardLine(relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching }), c.claim, now);
   const actions = useOptionalModel(ctx.actions);
   const name = candidateName(c);
-  const outcome = actions?.outcome?.kind === "send" && actions.outcome.contact === c.identity ? actions.outcome : null;
 
   // A new candidate takes focus (D15).
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => focusInView(heading.current), [c]);
-  // Send leaves once the re-read says the request went: focus goes to the line that says so (D5).
-  const status = useRef<HTMLDivElement>(null);
+  const action = useRef<HTMLDivElement>(null);
   const toast = useActionToast(ctx.walletId);
-  const arm = useRefocus(() => line?.next === "send", () => status.current);
-  const sent = (o: ActionOutcome | null) => {
-    toast(o, true);
-    if (o?.ok) arm("send");
+  const arm = useRefocus((next) => line?.next === next, () => action.current?.querySelector("button") ?? heading.current);
+  const done = (next: "send" | "enable", o: ActionOutcome | null) => {
+    toast(o, false);
+    if (o?.ok) arm(next);
   };
 
   let button = null;
   switch (line?.next) {
     case "send":
-      button = <SendRequestButton key="send" actions={actions} contact={c.identity} name={name} scan={c.claim?.scan ?? null} testId="add-contact-send" onDone={sent} />;
+      button = <SendRequestButton key="send" actions={actions} contact={c.identity} name={name} scan={c.claim?.scan ?? null} testId="add-contact-send" onDone={(o) => done("send", o)} />;
       break;
     case "showContact":
     case "showRequest":
@@ -192,7 +189,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       );
       break;
     case "enable":
-      button = <EnableButton key="enable" actions={actions} testId="add-contact-enable" onDone={(o) => toast(o, true)} />;
+      button = <EnableButton key="enable" actions={actions} testId="add-contact-enable" onDone={(o) => done("enable", o)} />;
       break;
     case "join":
       button = (
@@ -233,29 +230,30 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
         {c.unverified ? <Chip tone="warning">{t("contacts.unverified")}</Chip> : <Chip tone="info">{t("contacts.addContact.verified")}</Chip>}
         <span className="add-contact-source">{t(`contacts.addContact.sources.${c.source}`)}</span>
       </p>
-      {note && (
-        <p className="placeholder-note" data-testid="add-contact-claim">
-          {note}
-        </p>
+      {c.claim && (
+        <div className="add-contact-claim-slot">
+          {note && <p className="placeholder-note" data-testid="add-contact-claim">{note}</p>}
+        </div>
       )}
-      <div className="add-contact-status" ref={status} data-testid="add-contact-status">
-        {line === undefined ? (
-          <p role="status">{t("contacts.addContact.checking")}</p>
-        ) : (
-          line.text && (
+      <div className="add-contact-status" data-testid="add-contact-status">
+        <div className={c.unverified ? "add-contact-note-slot is-unverified" : "add-contact-note-slot"}>
+          {warning ? (
+            <p className="sheet-warning" role="note" data-testid="add-contact-unverified">
+              {warning}
+            </p>
+          ) : line?.text && (
             <p className="placeholder-note" data-testid="add-contact-line">
               {line.text}
             </p>
-          )
-        )}
-        {warning && (
-          <p className="sheet-warning" role="note" data-testid="add-contact-unverified">
-            {warning}
-          </p>
-        )}
-        {button && <span className="add-contact-actions">{button}</span>}
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" polite />
-        <EnableFailure actions={actions} testId="add-contact-enable-outcome" />
+          )}
+        </div>
+        <div className="add-contact-action-slot" ref={action}>
+          {line === undefined ? (
+            <div className="add-contact-action-skeleton" role="status">
+              <span className="sr-only">{t("contacts.addContact.checking")}</span>
+            </div>
+          ) : button}
+        </div>
       </div>
     </div>
   );

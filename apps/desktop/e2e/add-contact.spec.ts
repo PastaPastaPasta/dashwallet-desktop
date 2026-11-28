@@ -81,20 +81,27 @@ test("IOS-073 finds a user by username and sends a contact request under a passp
   await expect(page.getByTestId("add-contact-username")).toHaveText("@mallory");
   await expect(page.getByTestId("add-contact-verified")).toContainText("Verified on the Dash network");
   await expect(page.getByTestId("add-contact-verified")).toContainText("Found by username search");
-  await page.getByTestId("add-contact-send").click();
-  await expect(page.getByTestId("add-contact-send")).toHaveText("Sending…");
+  await fontsReady(page);
+  const send = page.getByTestId("add-contact-send");
+  const show = page.getByTestId("add-contact-show");
+  const controls = [page.getByTestId("add-contact-tabs"), field(page)];
+  const boxes = () => Promise.all(controls.map((control) => control.boundingBox()));
+  const before = await boxes();
+  const actionBox = await send.boundingBox();
+  await send.click();
+  await expect(send).toHaveText("Sending…");
   await expect(page.getByTestId("grant-sheet")).toContainText("authorize this Dash Platform operation");
   await authorize(page);
-  await expect(page.getByTestId("add-contact-outcome")).toHaveText("Contact request sent to Mallory.");
-  // The re-read: the card says it went, the list shows it pending, and focus has a place (D5).
+  await expect(page.locator(".toast-host")).toHaveText("Contact request sent to Mallory.");
   await expect(page.getByTestId("add-contact-line")).toHaveText("Contact request sent.");
-  await expect(page.getByTestId("add-contact-send")).toHaveCount(0);
-  await expect(page.getByTestId("add-contact-status")).toBeFocused();
+  await expect(show).toBeFocused();
+  expect(await boxes()).toEqual(before);
+  expect(await show.boundingBox()).toEqual(actionBox);
   // Newest first.
   await expect(names(page, "pending")).toHaveText(["Mallory", "Frank"]);
   await expect(hit(page, "Mallory").locator(".contact-row-note")).toHaveText("Request sent");
   // Show Request selects it, where DP2-09's pane acts.
-  await page.getByTestId("add-contact-show").click();
+  await show.click();
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Request sent");
   expect(errors).toEqual([]);
 });
@@ -245,7 +252,7 @@ test("IOS-073 D7 an auto-accept code says so, and its send carries the claim onc
   expect(kept).toEqual([]);
   await page.getByTestId("add-contact-send").click();
   await authorize(page);
-  await expect(page.getByTestId("add-contact-outcome")).toHaveText("Contact request sent to Mallory.");
+  await expect(page.locator(".toast-host")).toHaveText("Contact request sent to Mallory.");
   // The send carried the claim: the fixture spent it.
   expect(await page.evaluate(() => window.__dwFixture!.world.dashpay.scans.map((s) => s.spent))).toEqual([true]);
 });

@@ -359,7 +359,7 @@ export class PlatformFundFlow extends Model {
   }
 
   /** Confirm: the quote's grant, then the call (one at a time). */
-  async run(grant: GrantRequest): Promise<void> {
+  async run(grant: GrantRequest, coinSet?: string): Promise<void> {
     const request = this.request;
     if (this.running || request === null) return;
     let ran = false;
@@ -372,7 +372,7 @@ export class PlatformFundFlow extends Model {
         this.step = "running";
         if (request.kind === "add") this.preparing.start();
         this.changed();
-        return request.kind === "add" ? this.api.platformFund(this.walletId, fundAmount(request), g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
+        return request.kind === "add" ? this.api.platformFund(this.walletId, fundAmount(request, coinSet), g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
       });
       if (got) {
         this.outcome = got.value;
