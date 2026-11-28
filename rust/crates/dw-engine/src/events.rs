@@ -2506,7 +2506,14 @@ impl SessionHub {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
                 self.check_funded(id, BTreeSet::from([record.txid]));
+                #[cfg(test)]
+                let skip = self
+                    .skip_dead_hook
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let skip = false;
                 if matches!(record.context, TransactionContext::Mempool)
+                    && !skip
                     && let Some(start) = self.swept_dead.get()
                     && let Some(registration) = self.drop_registration_locked(id, &unloaded)
                 {

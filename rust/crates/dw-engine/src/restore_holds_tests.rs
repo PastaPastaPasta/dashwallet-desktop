@@ -643,6 +643,37 @@ fn the_mark_clears_only_after_the_drop_dead_pass() {
     assert!(spendable(&engine, &session, id, b), "sends are allowed");
 }
 
+#[test]
+fn the_final_pass_drops_a_late_descendant_of_a_store_dropped_claim() {
+    use super::store_repair_tests::{claim_on_a_held_coin, dropped, stored};
+
+    let (_dir, engine, session, id) = super::engine_wallet();
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let (vout, output) = (1, &claim.output[1]);
+    let owner =
+        dashcore::Address::from_script(&output.script_pubkey, dashcore::Network::Regtest).unwrap();
+    let receive = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let child = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(
+            OutPoint::new(claim.txid(), vout),
+            vec![(receive.script_pubkey(), output.value - 1_000)],
+        ),
+    );
+    let session = restored_with(&engine, session, "");
+    assert!(!stored(session.data_dir(), id, claim.txid()));
+    (session.hub.skip_dead_hook).store(true, std::sync::atomic::Ordering::SeqCst);
+    mempool(&engine, &session, id, &child);
+    eventually("the late child is pending before the pass", || {
+        !dropped(&engine, &session, id, child.txid())
+    });
+    cleared(&session);
+    assert!(dropped(&engine, &session, id, child.txid()));
+}
+
 /// H4: the mark stays while the services aren't synced.
 #[test]
 fn the_mark_stays_until_all_synced() {
@@ -1987,6 +2018,46 @@ fn a_pass_before_a_watch_only_wallet_is_added_does_not_check_it() {
     );
 }
 
+#[test]
+fn a_pass_before_attaching_keys_does_not_release_the_wallet() {
+    use crate::platform::{FlowKind, LeaseError};
+
+    let (_dir, engine, session) = engine_without_wallet();
+    let id = import(&engine, &session);
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    let dir = mark_dir(&session);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("PLATFORM_PENDING"), "platform-pending\n").unwrap();
+    let session = reopen(&engine, session);
+    assert!(!session.vault().has_wallet_secret(&id.0));
+    let restore = &session.hub.restore;
+    *restore.core_synced.lock().unwrap() = Some(false);
+    restore.note_platform_pass();
+    restore.note_shielded_pass();
+    restore.note_wallet_platform_pass([id]);
+    restore.note_wallet_shielded_pass([id]);
+
+    assert_eq!(import(&engine, &session), id);
+    *restore.core_synced.lock().unwrap() = Some(true);
+    restore.wake.notify_one();
+    eventually("the network's residue clears", || {
+        !residue_present(&session)
+    });
+    let status = engine.block_on(session.restore_status()).unwrap().unwrap();
+    assert!(status.platform_only);
+    assert_eq!(status.waiting, [crate::RestoreWait::PlatformPass]);
+    let shield = || engine.block_on(session.begin_lease(id, FlowKind::Shield, &[]));
+    assert!(matches!(shield(), Err(LeaseError::Restored)));
+
+    restore.note_wallet_platform_pass([id]);
+    restore.note_wallet_shielded_pass([id]);
+    eventually("the post-attach pass clears the wallet's row", || {
+        !platform_row(&session, id)
+    });
+    assert!(!matches!(shield(), Err(LeaseError::Restored)));
+    assert_eq!(engine.block_on(session.restore_status()).unwrap(), None);
+}
+
 /// A Platform pass noted for a wallet before it is added in the session
 /// does not count for it: once the residue clears, the added wallet keeps
 /// its Platform row until a pass after its registration.
@@ -2071,6 +2142,7 @@ fn residue_with_a_closed_wallet() -> (
 fn a_wallet_closed_at_the_platform_check_is_held_until_checked_after_its_load() {
     use crate::platform::{FlowKind, LeaseError};
     use dw_vault::{Credential, GrantPurpose};
+    use std::sync::atomic::Ordering::SeqCst;
     let (_dir, engine, session, id, other) = residue_with_a_closed_wallet();
     all_synced(&session);
     eventually("the residue clears", || !residue_present(&session));
@@ -2081,6 +2153,11 @@ fn a_wallet_closed_at_the_platform_check_is_held_until_checked_after_its_load() 
     assert!(!platform_row(&session, id), "the checked wallet has a row");
     let session = reopen_with(&engine, session, false);
     let restore = &session.hub.restore;
+    eventually("the watcher checks the closed wallet's row", || {
+        restore.row_scan_attempts.load(SeqCst) > 0
+    });
+    std::thread::sleep(std::time::Duration::from_millis(2_500));
+    assert_eq!(restore.row_scan_attempts.load(SeqCst), 1);
     *restore.core_synced.lock().unwrap() = Some(true);
     let dead = Txid::from_byte_array([0x27; 32]);
     (session.live().unwrap().appdb)
