@@ -1532,8 +1532,8 @@ pub(crate) struct WalletHistory {
     pub(crate) uncertain_fork_spends: HashMap<Txid, BTreeSet<OutPoint>>,
     /// Inputs restored by a fork whose hold cannot rely on a spender row.
     pub(crate) restored_fork_inputs: BTreeSet<OutPoint>,
-    /// The latest detected fork's unspent wallet inputs. A verified lock
-    /// arriving after detection can identify a restored coin in this set.
+    /// Coins forks this session restored or found unspent. A verified lock
+    /// arriving after the fork can identify a restored coin in this set.
     detected_fork_coins: HashSet<OutPoint>,
     /// Own spends a fork removed before the wallet knew their lock.
     /// A later verified lock can restore the pending row and its hold.
@@ -2090,10 +2090,11 @@ impl HistoryStore {
             let changed = history.truncate(removed, unconfirmed, locks.overflow);
             match restored {
                 ForkRestorations::Reported(coins) => {
+                    history.detected_fork_coins.extend(coins);
                     locks.hold_restorations(history, coins);
                 }
                 ForkRestorations::Detected(unspent) => {
-                    history.detected_fork_coins = unspent.iter().copied().collect();
+                    history.detected_fork_coins.extend(unspent);
                     history.restored_fork_inputs.extend(
                         locks
                             .spends
@@ -2115,7 +2116,10 @@ impl HistoryStore {
 
     pub(crate) fn hold_fork_restorations(&self, wallet: WalletId, restored: &[OutPoint]) -> bool {
         !restored.is_empty()
-            && self.with_wallet_records(wallet, |h, locks| locks.hold_restorations(h, restored))
+            && self.with_wallet_records(wallet, |h, locks| {
+                h.detected_fork_coins.extend(restored);
+                locks.hold_restorations(h, restored)
+            })
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the

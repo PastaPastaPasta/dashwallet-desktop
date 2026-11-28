@@ -468,6 +468,17 @@ fn a_verified_lock_after_detection_holds_an_unrecorded_spenders_input() {
 }
 
 #[test]
+fn a_verified_lock_after_a_truncation_event_holds_an_unrecorded_spenders_input() {
+    let s = unrecorded_spender(false);
+    s.fork();
+    assert_restored_input(&s, false);
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+}
+
+#[test]
 fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
     let s = unrecorded_spender(false);
     s.overflow_early_locks();
