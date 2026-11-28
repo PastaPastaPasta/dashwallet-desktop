@@ -168,6 +168,16 @@ fn uri_path(raw: &[u8], windows: bool) -> String {
 /// A read-only connection that ignores `-wal`/`-shm`, takes no lock and
 /// creates no file (`immutable=1`).
 pub fn open_immutable(path: &Path) -> rusqlite::Result<Connection> {
+    #[cfg(windows)]
+    let absolute;
+    #[cfg(windows)]
+    let path = if path.is_absolute() {
+        path
+    } else {
+        absolute = std::path::absolute(path)
+            .map_err(|_| rusqlite::Error::InvalidPath(path.to_path_buf()))?;
+        &absolute
+    };
     Connection::open_with_flags(
         file_uri(path, "immutable=1"),
         OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -312,6 +322,19 @@ mod tests {
     fn file_uri_escapes_uri_syntax() {
         let uri = file_uri(Path::new(r"C:\a b\c#d.sqlite"), "immutable=1");
         assert_eq!(uri, "file:///C:/a%20b/c%23d.sqlite?immutable=1");
+    }
+
+    #[test]
+    fn opens_existing_database_through_relative_directory() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = Path::new(dir.path().file_name().unwrap()).join("wallet #1.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute("CREATE TABLE reopened (value INTEGER)", [])
+            .unwrap();
+        drop(db);
+
+        let db = open_immutable(&path).unwrap();
+        assert!(has_table(&db, "reopened").unwrap());
     }
 
     #[test]

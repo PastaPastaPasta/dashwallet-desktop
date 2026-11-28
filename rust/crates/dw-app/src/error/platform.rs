@@ -202,6 +202,8 @@ impl From<ShieldedError> for AppError {
                         left_duffs: m.left_duffs,
                         arriving_duffs: m.arriving_duffs,
                         arriving_clears: m.arriving_clears,
+                        arriving_block: m.arriving_block,
+                        other_arriving_duffs: m.other_arriving_duffs,
                     },
                     None => ErrorData::Number { value: min },
                 }),
@@ -250,6 +252,12 @@ impl From<PlatformError> for AppError {
         let message = e.to_string();
         let (code, data): (super::ErrorCode, _) = match e {
             P::Unavailable => (PlatformCode::Unavailable.into(), None),
+            P::SessionOff => (
+                PlatformCode::Unavailable.into(),
+                Some(ErrorData::Feature {
+                    feature: "platform".into(),
+                }),
+            ),
             P::Timeout => (PlatformCode::Timeout.into(), None),
             P::ProofInvalid => (PlatformCode::ProofInvalid.into(), None),
             P::TrustMismatch => (PlatformCode::TrustMismatch.into(), None),
@@ -622,6 +630,8 @@ impl From<CreditsError> for AppError {
                         left_duffs: m.left_duffs,
                         arriving_duffs: m.arriving_duffs,
                         arriving_clears: m.arriving_clears,
+                        arriving_block: m.arriving_block,
+                        other_arriving_duffs: m.other_arriving_duffs,
                     },
                     None => ErrorData::Limit { duffs: min },
                 }),
@@ -681,6 +691,18 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_disabled_session_is_distinct_from_an_unreachable_network() {
+        let disabled = AppError::from(PlatformError::SessionOff);
+        let unreachable = AppError::from(PlatformError::Unavailable);
+        assert_eq!(disabled.code, unreachable.code);
+        assert!(matches!(
+            disabled.data,
+            Some(ErrorData::Feature { feature }) if feature == "platform"
+        ));
+        assert!(unreachable.data.is_none());
+    }
+
     /// Every variant's code equals the engine's `code()`: the strings here
     /// are copies of the contract's, and must not drift from it.
     #[test]
@@ -688,6 +710,7 @@ mod tests {
         let s = || String::from("x");
         let platform = [
             PlatformError::Unavailable,
+            PlatformError::SessionOff,
             PlatformError::Timeout,
             PlatformError::ProofInvalid,
             PlatformError::TrustMismatch,
@@ -1066,11 +1089,13 @@ mod tests {
             duffs: 1_200,
             left_duffs: 40_000,
             arriving_duffs: 5_000,
-            arriving_clears: true,
+            arriving_clears: false,
+            arriving_block: Some(dw_engine::platform::CoreMaxArrivalBlock::Held),
+            other_arriving_duffs: 10_000,
         });
         let max = serde_json::json!({
             "kind": "maxMinimum", "min": 30_000, "duffs": 1_200, "leftDuffs": 40_000,
-            "arrivingDuffs": 5_000, "arrivingClears": true
+            "arrivingDuffs": 5_000, "arrivingClears": false, "arrivingBlock": "held", "otherArrivingDuffs": 10_000
         });
         let below = [
             (

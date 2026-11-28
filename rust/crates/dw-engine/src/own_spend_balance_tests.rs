@@ -2736,13 +2736,13 @@ fn a_payment_marked_abandoned_is_never_resent() {
     refused(&session);
 }
 
-/// An Abandon stops dash-spv's rebroadcast of every transaction it
-/// abandons, before it writes their marks; so does Remove unconfirmed
-/// transactions.
 #[test]
-fn an_abandon_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
+fn an_abandon_rebuilds_the_rebroadcaster_after_its_mark() {
     let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
     let txid = payment.txid();
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
     let abandoned = try_abandon(&engine, &session, id, txid).unwrap();
     assert!(abandoned.contains(&txid), "{abandoned:?}");
     let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
@@ -2752,17 +2752,374 @@ fn an_abandon_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
         "not every abandoned transaction was stopped"
     );
     assert!(
-        stopped.iter().all(|(_, marked)| !marked),
-        "stopped after the mark: {stopped:?}"
+        stopped.iter().all(|(_, marked)| *marked),
+        "stopped before the mark: {stopped:?}"
     );
+    eventually("SPV rebuilt", || manager.spv().run_session() > run);
+    assert_eq!(manager.spv().run_session(), run + 1);
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    assert!(matches!(
+        engine.block_on(session.resend_transaction(id, txid)),
+        Err(crate::EngineError::TxActionRefused(
+            crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+        ))
+    ));
+    assert!(wire.lock().unwrap().is_empty());
 }
 
 #[test]
-fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
-    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+fn a_rebuilt_spv_retries_an_unrelated_pending_send() {
+    let (_dir, engine, session, id, payment, _, paid) = pending_payment_of_one_coin();
+    let other = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 1)]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
     start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    eventually("SPV rebuilt", || {
+        manager.spv().run_session() > run && session.sync_snapshot().unwrap().running
+    });
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+    );
+    eventually("the unrelated payment is registered again", || {
+        !wire.lock().unwrap().is_empty()
+    });
+    assert_eq!(*wire.lock().unwrap(), [other.txid()]);
+}
+
+fn ready_replay(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+) -> Arc<std::sync::Mutex<Vec<Txid>>> {
+    start_offline_spv(engine, session);
+    session
+        .hub
+        .tracker()
+        .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(
+            "127.0.0.1:9".parse().unwrap(),
+        ));
+    session.rebroadcast_replay.store(
+        session.manager().unwrap().spv().run_session(),
+        std::sync::atomic::Ordering::Release,
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    wire
+}
+
+#[test]
+fn replay_after_a_failed_sent_mark_read_retries_without_another_peer() {
+    let (_dir, engine, session, _, payment, _, _) = pending_payment_of_one_coin();
+    let wire = ready_replay(&engine, &session);
+    dw_appdb::fault::arm(
+        &session.data_dir().join(dw_appdb::APP_DB_FILE),
+        "settings.read_sent:",
+        dw_appdb::fault::Stage::Before,
+    );
+    engine.block_on(session.resume_rebroadcasts());
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn replay_after_a_failed_wallet_record_read_keeps_the_generation_for_reconnect() {
+    let (_dir, engine, session, _, payment, _, _) = pending_payment_of_one_coin();
+    let wire = ready_replay(&engine, &session);
+    let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
+        .unwrap();
+    conn.execute_batch("ALTER TABLE core_transactions RENAME TO offline_transactions")
+        .unwrap();
+    engine.block_on(session.resume_rebroadcasts());
+    assert!(wire.lock().unwrap().is_empty());
+    conn.execute_batch("ALTER TABLE offline_transactions RENAME TO core_transactions")
+        .unwrap();
+    engine.block_on(session.resume_rebroadcasts());
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn a_peer_up_during_rebroadcast_rearm_retries_the_saved_payment() {
+    let (_dir, engine, session, _id, payment, _, _) = pending_payment_of_one_coin();
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    session.rebroadcast_replay.store(
+        manager.spv().run_session(),
+        std::sync::atomic::Ordering::Release,
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_rebroadcast_rearm.lock().unwrap() = Some(Arc::clone(&pause));
+
+    let s = Arc::clone(&session);
+    engine
+        .block_on(session.on_runtime(async move {
+            let first = Arc::clone(&s);
+            let first = tokio::spawn(async move { first.resume_rebroadcasts().await });
+            while !pause.reached.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+            let peer = "127.0.0.1:9".parse().unwrap();
+            s.hub
+                .tracker()
+                .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(peer));
+            let replay = s.resume_rebroadcasts();
+            tokio::pin!(replay);
+            let early = tokio::time::timeout(std::time::Duration::from_millis(50), &mut replay)
+                .await
+                .is_ok();
+            pause.release.notify_one();
+            first.await?;
+            if !early {
+                replay.await;
+            }
+            Ok(())
+        }))
+        .unwrap();
+    assert_eq!(*wire.lock().unwrap(), [payment.txid()]);
+}
+
+#[test]
+fn abandon_keeps_its_input_out_while_an_in_flight_send_delays_spv_stop() {
+    use dashcore::Network;
+    use dashcore::network::address::Address as NetAddress;
+    use dashcore::network::constants::ServiceFlags;
+    use dashcore::network::message::{NetworkMessage, RawNetworkMessage, RawNetworkMessageCodec};
+    use dashcore::network::message_network::VersionMessage;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_util::codec::Framed;
+
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let peer = socket.local_addr().unwrap();
+    let mut options = super::offline();
+    options.spv_peers = vec![peer.to_string()];
+    let (_dir, engine, session, id, _) = super::engine_wallet_recorded_with_options(options);
+    let recipient = fresh_address(&engine, &session, id);
+    let paid = funding(7, &[recipient], COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let (sent, sent_rx) = std::sync::mpsc::channel();
+    let server = session.rt.spawn(async move {
+        let socket = TcpListener::from_std(socket).unwrap();
+        let (mut v2, _) = socket.accept().await.unwrap();
+        v2.read_exact(&mut [0]).await.unwrap();
+        v2.shutdown().await.unwrap();
+        drop(v2);
+        let (stream, _) = socket.accept().await.unwrap();
+        let mut stream = Framed::new(stream, RawNetworkMessageCodec);
+        let wrap = |payload| RawNetworkMessage {
+            magic: Network::Regtest.magic(),
+            payload,
+        };
+        while let Some(Ok(message)) = stream.next().await {
+            match message.payload {
+                NetworkMessage::Version(_) => {
+                    let services =
+                        ServiceFlags::NETWORK | ServiceFlags::COMPACT_FILTERS | ServiceFlags::BLOOM;
+                    let address = NetAddress::new(&peer, services);
+                    let version = VersionMessage::new(
+                        services,
+                        0,
+                        address.clone(),
+                        address,
+                        7,
+                        "/proof-fixture/".into(),
+                        TIP as i32,
+                        true,
+                        [0; 32],
+                    );
+                    stream
+                        .send(wrap(NetworkMessage::Version(version)))
+                        .await
+                        .unwrap();
+                    stream.send(wrap(NetworkMessage::Verack)).await.unwrap();
+                }
+                NetworkMessage::Ping(nonce) => {
+                    stream
+                        .send(wrap(NetworkMessage::Pong(nonce)))
+                        .await
+                        .unwrap();
+                }
+                NetworkMessage::Tx(tx) => {
+                    let _ = sent.send(tx.txid());
+                }
+                _ => {}
+            }
+        }
+    });
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    eventually("the test peer connected", || {
+        session.sync_snapshot().unwrap().connected_peers == 1
+    });
+
+    let wallet = engine.block_on(session.wallet(&id)).unwrap();
+    let send_on_wire = |tx: Transaction| {
+        let txid = tx.txid();
+        let wallet = Arc::clone(&wallet);
+        let task = session
+            .rt
+            .spawn(async move { wallet.core().broadcast_transaction(&tx).await });
+        assert_eq!(
+            sent_rx
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .unwrap(),
+            txid
+        );
+        task
+    };
+    let old = send_on_wire(payment.clone());
+    old.abort();
+    let _ = engine.block_on(old);
+    let broadcast = send_on_wire(Transaction {
+        lock_time: 1,
+        ..foreign()
+    });
+    assert!(
+        !broadcast.is_finished(),
+        "the client read lock must still be held"
+    );
+
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let offered = spendable(&engine, &session, id, a);
+    let max = || {
+        engine.block_on(session.max_spendable(
+            id,
+            CoinSource::Outpoints(vec![a]),
+            crate::send::FeeMode::Recommended { target_blocks: 6 },
+        ))
+    };
+    let max_offered = max().is_ok_and(|value| value > 0);
+    let listed = listed_coins(&engine, &session, id).contains(&a);
+    let still_waiting = !broadcast.is_finished() && session.sync_snapshot().unwrap().running;
+    broadcast.abort();
+    let _ = engine.block_on(broadcast);
+    assert!(still_waiting, "the old client had already stopped");
+    assert!(
+        !offered && !max_offered && !listed,
+        "A came back while the old retry map still existed"
+    );
+
+    eventually("the old client stopped and A is spendable", || {
+        manager.spv().run_session() > run && spendable(&engine, &session, id, a)
+    });
+    assert!(listed_coins(&engine, &session, id).contains(&a));
+    assert_eq!(max().unwrap(), COIN);
+    server.abort();
+}
+
+#[test]
+fn a_key_wallet_sweep_keeps_the_given_back_coin_out_until_spv_stops() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let a = OutPoint::new(paid.txid(), 0);
+    let b = OutPoint::new(paid.txid(), 1);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    let lifecycle = engine.block_on(session.platform.lifecycle.lock());
+
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined_under_its_chainlock(&engine, &session, id, TIP + 1, vec![winner]);
+    eventually("key-wallet swept the payment", || {
+        session
+            .hub
+            .history
+            .read_wallet(&id, |h| h.swept.contains(&payment.txid()))
+    });
+    assert_eq!(manager.spv().run_session(), run);
+    assert!(
+        !spendable(&engine, &session, id, b),
+        "B came back before stop"
+    );
+    assert!(!listed_coins(&engine, &session, id).contains(&b));
+
+    drop(lifecycle);
+    eventually("the old client stopped and B is spendable", || {
+        manager.spv().run_session() > run && spendable(&engine, &session, id, b)
+    });
+    assert!(!spendable(&engine, &session, id, a));
+}
+
+#[test]
+fn a_durable_abandon_stops_the_old_spv_before_the_batch_ends() {
+    let (_dir, engine, session, id, payment, _, _) = pending_payment_of_one_coin();
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
+    let batch = engine.block_on(session.wallet_lifecycle.hold());
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    eventually("the old client stopped while the batch is open", || {
+        !session.sync_snapshot().unwrap().running
+    });
+    assert!(!manager.spv().is_started());
+    assert_eq!(manager.spv().run_session(), run);
+    drop(batch);
+    eventually("a new client started after the batch", || {
+        manager.spv().run_session() > run
+    });
+}
+
+#[test]
+fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_after_its_mark() {
+    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
+    let other = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 1)]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
+    start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let run = manager.spv().run_session();
     let removed = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
-    assert!(removed >= 1, "nothing removed");
+    assert!(removed >= 2);
     let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
     assert!(
         stopped.iter().any(|(t, _)| *t == payment.txid()),
@@ -2770,9 +3127,14 @@ fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark(
     );
     assert_eq!(stopped.len(), removed as usize, "{stopped:?}");
     assert!(
-        stopped.iter().all(|(_, marked)| !marked),
-        "stopped after the mark: {stopped:?}"
+        stopped.iter().all(|(_, marked)| *marked),
+        "stopped before the mark: {stopped:?}"
     );
+    eventually("SPV rebuilt after Repair", || {
+        manager.spv().run_session() > run
+    });
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(manager.spv().run_session(), run + 1);
 }
 
 /// A payment between two loaded wallets abandoned as received, in Activity
@@ -2821,7 +3183,7 @@ fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
     }
 
     try_abandon(&engine, &session, id, p.txid()).unwrap();
-    assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
+    assert_eq!(stopped(), [(p.txid(), true)], "the sender's abandon");
 }
 
 /// A receipt whose funding the recipient's history also holds: that coin
@@ -3179,10 +3541,8 @@ fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
     a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
 }
 
-/// #170 case 3: the drop of a beaten payment stops dash-spv's rebroadcast
-/// of it before its mark, as an Abandon does.
 #[test]
-fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_before_its_mark() {
+fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_after_its_mark() {
     let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let p = send(
@@ -3203,8 +3563,8 @@ fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_before_its_mark() {
     assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
     let stopped = session.hub.stopped_rebroadcasts.lock().unwrap().clone();
     assert!(
-        stopped.contains(&(p.txid(), false)),
-        "not stopped before its mark: {stopped:?}"
+        stopped.contains(&(p.txid(), true)),
+        "not stopped after its mark: {stopped:?}"
     );
 }
 
@@ -6147,6 +6507,151 @@ fn winner_in_a_replaced_block(mode: Again) {
     assert_eq!(held_report(&session, id), (x, 0, awaits), "{state}");
 }
 
+/// #951: P of A with change, Q of P's change with change, and C of Q's
+/// change and D, all stored unmined; restarted, then P and Q swept for W,
+/// another device's spend of A paying the wallet, out of a block: C goes,
+/// holding D. W is mined at `TIP + 1` in block B. After a reopen the header
+/// chain holds B' at `TIP + 1` and the ChainLock is of `TIP + 2` on that
+/// branch: W's stored record of B is no proof, so D awaits. Returns A, D,
+/// the funding, P, Q, C and the value of D.
+#[allow(clippy::type_complexity)]
+fn grandchild_beside_a_stale_winner() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    (OutPoint, OutPoint),
+    Transaction,
+    (Transaction, Transaction, Transaction),
+    u64,
+) {
+    let (dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let spend = |coins: Vec<OutPoint>, value: u64| {
+        let tx = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(coins),
+            value,
+            false,
+        );
+        mempool(&engine, &session, id, &tx);
+        let change = change_of(&tx, &own_scripts(&engine, &session, id));
+        (tx, change)
+    };
+    let (p, p_change) = spend(vec![a], COIN / 2);
+    let (q, q_change) = spend(vec![p_change], COIN / 8);
+    let (c, _) = spend(vec![q_change, d], COIN);
+    wait_stored(&session, id, &[p.txid(), q.txid(), c.txid()]);
+    let session = reopen(&engine, session);
+
+    let w = rival(&engine, &session, id, &paid, a.vout);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid(), q.txid()],
+            superseded_by: w.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, c.txid()), "C dropped");
+    assert!(session.hub.dropped_holds(id).contains(&d), "C holds D");
+    let x = paid.output[d.vout as usize].value;
+    let b = super::block_with(vec![w.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, b)]);
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "W mined in B");
+
+    let replaced = super::block_with(vec![foreign()]).block_hash();
+    let next = super::block_with(vec![foreign(), foreign()]).block_hash();
+    let session = reopen(&engine, session);
+    reload_with_headers(
+        &engine,
+        &session,
+        id,
+        &[(TIP + 1, replaced), (TIP + 2, next)],
+    );
+    chain_lock(&engine, &session, id, TIP + 2, next);
+    reconciled(&engine, &session, id);
+    let w_block = (session.hub.history).read_wallet(&id, |h| {
+        (h.txs.get(&w.txid()))
+            .and_then(|e| e.context.block_info())
+            .map(|b| b.block_hash())
+    });
+    assert_eq!(w_block, Some(b), "W's record of B comes back");
+    assert_eq!(held_report(&session, id), (x, 0, true), "B replaced");
+    (dir, engine, session, id, (a, d), paid, (p, q, c), x)
+}
+
+/// Mines `txs` at `TIP + 3` on the branch of
+/// [`grandchild_beside_a_stale_winner`] and ChainLocks `TIP + 4`, strictly
+/// above it, no other evidence naming that height.
+fn mined_on_the_new_branch(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txs: Vec<Transaction>,
+) {
+    let replaced = super::block_with(vec![foreign()]).block_hash();
+    let next = super::block_with(vec![foreign(), foreign()]).block_hash();
+    let txs: Vec<Transaction> = txs.into_iter().chain([foreign()]).collect();
+    let at_3 = super::block_with(txs.clone()).block_hash();
+    let at_4 = super::block_with(vec![foreign(), foreign(), foreign()]).block_hash();
+    header_chain(
+        session,
+        &[
+            (TIP + 1, replaced),
+            (TIP + 2, next),
+            (TIP + 3, at_3),
+            (TIP + 4, at_4),
+        ],
+    );
+    mined(engine, session, id, TIP + 3, txs);
+    chain_lock(engine, session, id, TIP + 4, at_4);
+    reconciled(engine, session, id);
+}
+
+/// #951: on [`grandchild_beside_a_stale_winner`], the reopen keeps P's
+/// sweep note, though only Q's note names P: C's walk reads C, Q, then P.
+/// A rival's spend of A, P's input, mined on the new branch and
+/// ChainLocked above it, kills P, so D awaits nothing, held still.
+#[test]
+fn a_grandparents_sweep_note_survives_a_reopen_and_settles_the_drop_beside_a_stale_winner() {
+    let (_dir, engine, session, id, (a, d), paid, (p, q, _), x) =
+        grandchild_beside_a_stale_winner();
+    assert!(swept_by_note(&session, id, q.txid()).is_some(), "Q's note");
+    assert!(swept_by_note(&session, id, p.txid()).is_some(), "P's note");
+    let other = rival(&engine, &session, id, &paid, a.vout);
+    mined_on_the_new_branch(&engine, &session, id, vec![other]);
+    assert!(session.hub.dropped_holds(id).contains(&d), "D is held");
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, false),
+        "another spend of A final"
+    );
+}
+
+/// #951: as above, but P itself is mined on the new branch and
+/// ChainLocked: P spends its own input, so C, built on P through Q, can
+/// still confirm, and D awaits it.
+#[test]
+fn a_grandchilds_root_mined_beside_a_stale_winner_keeps_the_wallet_awaiting() {
+    let (_dir, engine, session, id, (_, d), _, (p, _, _), x) = grandchild_beside_a_stale_winner();
+    mined_on_the_new_branch(&engine, &session, id, vec![p]);
+    assert!(session.hub.dropped_holds(id).contains(&d), "D is held");
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, true),
+        "P mined and ChainLocked"
+    );
+}
+
 /// D held, its drop's winner W ChainLocked: nothing awaits.
 fn settled_holding_d() -> (
     tempfile::TempDir,
@@ -6272,7 +6777,7 @@ fn a_held_coin_spent_in_a_block_not_yet_final_keeps_the_wallet_awaiting() {
     let block = super::block_with(vec![spend.clone()]).block_hash();
     header_chain(&session, &[(TIP + 1, w_block), (TIP + 2, block)]);
     mined(&engine, &session, id, TIP + 2, vec![spend]);
-    reconciled(&engine, &session, id);
+    reconciles_done(&engine, &session);
     assert_eq!(observed(&engine, &session, id).get(&d), Some(&(TIP + 2)));
     assert_eq!(held_report(&session, id), (0, 0, true), "not final");
 

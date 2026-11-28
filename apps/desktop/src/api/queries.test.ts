@@ -30,6 +30,11 @@ describe("platformActivityRefetchMs", () => {
     expect(platformActivityRefetchMs([row({ state: "failed", mayLand: true })])).toBe(PENDING_MOVE_REFETCH_MS);
   });
 
+  it.each(["fromCore", "fromShielded", "recovered", "registrationRefund"] as const)("refreshes pending %s credits until settlement", (kind) => {
+    expect(platformActivityRefetchMs([row({ kind, state: "pending" })])).toBe(PENDING_MOVE_REFETCH_MS);
+    expect(platformActivityRefetchMs([row({ kind, state: "done" })])).toBe(false);
+  });
+
   it("stops when nothing can still land", () => {
     expect(platformActivityRefetchMs([row({ state: "failed" }), row({ state: "replaced" }), row({ kind: "incoming" }), row({})])).toBe(false);
     expect(platformActivityRefetchMs([])).toBe(false);

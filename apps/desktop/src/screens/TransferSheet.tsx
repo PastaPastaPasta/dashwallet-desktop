@@ -56,7 +56,7 @@ import { GrantSheet } from "./tools/common";
 import { platformHoldText } from "../api/platformHold";
 
 /** The balances the sheet shows and checks, from the reads Home's cards use. */
-export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
+export function useTransferPools(walletId: string, network: NetworkInfo, hold: ReturnType<typeof usePlatformHold>): Pools {
   const b = useBackend();
   const spendable = useQuery({ queryKey: [...keys.coinsAll(walletId), "transferSpendable"], queryFn: () => b.maxSpendable(walletId, { kind: "any" }, { kind: "perKb", duffsPerKb: 1000 }) });
   const coins = useUtxos(walletId, true);
@@ -65,14 +65,14 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const status = statusRead.isError ? null : statusRead.data;
   const pools = usePoolBalances(walletId);
   const addresses = usePlatformAddresses(walletId).data;
-  const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
   const sync = useSyncStatus().data;
   const core = spendable.data ?? null;
   const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
-    coreCoins: coins.isError ? undefined : (coins.data?.filter((c) => !c.userLocked && !c.reserved).reduce((n, c) => n + c.amount, 0) ?? null),
+    coreCoins: coins.isError ? undefined : (coins.data?.filter((c) => !c.reserved && (!c.userLocked || (c.confirmations === 0 && !c.instantLocked && c.excluded === null))).reduce((n, c) => n + c.amount, 0) ?? null),
+    coreCoinRows: coins.data,
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
     shielded: status ? { active: status.active, syncing: shieldedSyncing(status), wait: shieldedWait(status), duffs: shieldedDuffs(status), spendsOff: shieldedSpendsOff(status) } : status,
     platform:
@@ -260,6 +260,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   // A Core Max is offered while the Dash wallet holds any coin not locked or reserved: its refusal says why it
   // moves none.
   const coins = isCoreRoute(route) && pools.coreCoins !== undefined ? pools.coreCoins : probe;
+  const coreCoinRows = isCoreRoute(route) ? pools.coreCoinRows : undefined;
   const canMax = !!coins && probe !== null;
   // With nothing a Core Max could take, the line under the amount says so (beside Max it squeezed the field).
   const noCoins = why === null && isCoreRoute(route) && coins === 0;
@@ -267,7 +268,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   // the route can't run.
   useEffect(() => {
     if (amount !== undefined) t.typed(route, blocked ? null : amount, probe);
-  }, [t, route, amount, blocked, probe]);
+  }, [t, route, amount, blocked, probe, text]);
+  useEffect(() => line.clearWholeRefusal(), [line, coreCoinRows]);
   useEffect(() => () => line.set(null), [line]);
   const amountProblem = text.trim() !== "" && amount === null ? T.invalidAmount : route === "coreToPlatform" && amount != null && probe !== null && amount > probe ? tr("transfer.notEnoughSpendable", { amount: fmt(probe) }) : null;
   const { status: mixing } = useCoinJoinView(walletId, network);
@@ -324,6 +326,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
             onFocus={(e) => hidden && e.target.select()}
             onChange={(e) => {
               if (line.maxing) line.set(null);
+              line.clearWholeRefusal();
               t.edited(route);
               flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value);
             }}
@@ -568,9 +571,10 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   useModel(shielded);
   useModel(fund);
   useModel(move);
-  const pools = useTransferPools(walletId, network);
+  const hold = usePlatformHold(walletId, move);
+  const pools = useTransferPools(walletId, network, hold);
   const status = useShieldedStatus(walletId).data ?? null;
-  const { block } = usePlatformHold(walletId, move);
+  const { block } = hold;
   const defaultHere = defaultRoute(pools);
   const mainnet = network.kind === "mainnet";
   useEffect(() => t.setMainnet(mainnet), [t, mainnet]);

@@ -103,10 +103,9 @@ struct Shared {
 /// A refused open's way out that [`Engine::recover_in_fresh_folder`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Refused {
-    /// [`EngineError::StoreRefused`] with
-    /// [`WayOut::Damaged`](dw_store_upgrade::copy::WayOut::Damaged): may
-    /// start over.
-    Damaged,
+    /// The refused open offers Set up from recovery phrase, for a damaged
+    /// store or a backup retired by wallet removal.
+    Recover,
     /// [`EngineError::StoreRefused`] with
     /// [`WayOut::Restore`](dw_store_upgrade::copy::WayOut::Restore), its
     /// restore not refused for a shielded hold: may not start over.
@@ -141,9 +140,6 @@ impl Shared {
     fn note_open<T>(&self, network: &DashNetwork, opened: &mut Result<T, EngineError>) {
         use dw_store_upgrade::copy::WayOut;
         let state = match opened {
-            Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Damaged => {
-                Some(Refused::Damaged)
-            }
             Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Restore => {
                 if self.refused(network) == Some(Refused::RestoreHeld) {
                     r.screen.offer_recover();
@@ -151,6 +147,9 @@ impl Shared {
                 } else {
                     Some(Refused::Restore)
                 }
+            }
+            Err(EngineError::StoreRefused(r)) if r.screen.offers_recover() => {
+                Some(Refused::Recover)
             }
             Err(EngineError::StoreRestore(r))
                 if r.state == crate::store_upgrade::RestoreState::NotStarted
@@ -268,11 +267,8 @@ impl Engine {
     /// engine's and the next. Nothing in the network's current folder is
     /// written, and none of its stores is opened: the refused data stays as
     /// it is. Returns the new folder. `InvalidArgument` while the network
-    /// is open, or unless its last open in this engine was refused by the
-    /// store-upgrade check as damaged (`SnapshotSourceDamaged`, the
-    /// `wayOut.damaged` screen), or Restore earlier data was refused for a
-    /// shielded hold since an open refused with `wayOut.restore` or at that
-    /// open's swap (R-1); every other refusal keeps its own way out.
+    /// is open, or unless its last refused open offered Set up from
+    /// recovery phrase or the restore was refused for a shielded hold (R-1).
     pub async fn recover_in_fresh_folder(
         &self,
         network: DashNetwork,
@@ -289,10 +285,10 @@ impl Engine {
                 }
                 if !matches!(
                     shared.refused(&network),
-                    Some(Refused::Damaged | Refused::RestoreHeld)
+                    Some(Refused::Recover | Refused::RestoreHeld)
                 ) {
                     return Err(EngineError::InvalidArgument(format!(
-                        "the last open of {network} was not refused as damaged, nor its restore for a shielded hold; nothing to start over from"
+                        "Set up from recovery phrase is unavailable after the last open of {network}"
                     )));
                 }
                 let (root, net) = (shared.config.data_root.clone(), network.clone());
@@ -402,11 +398,6 @@ impl Engine {
             )));
         }
         let dir = self.network_dir(network)?;
-        if let Some(session) = sessions.get(network).cloned()
-            && let Some(hold) = session.restore_hold().await
-        {
-            return Err(EngineError::ShieldedSpendHeld(hold));
-        }
         let requested = self
             .handle
             .spawn_blocking(move || crate::store_upgrade::request_restore(&dir))

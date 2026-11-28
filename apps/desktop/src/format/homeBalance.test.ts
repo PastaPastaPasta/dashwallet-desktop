@@ -4,6 +4,7 @@ import type { ListArrival } from "../components/emptyStates";
 import { compact, masked } from "./amount";
 import {
   breakdownRows,
+  coreDetails,
   coreSubtitle,
   HERO_FIRST_READ_QUIET_MS,
   HERO_NEW_BLOCK_HOLD_MS,
@@ -15,7 +16,7 @@ import {
   homeBalance,
   newHeroWatch,
   POOL_ROWS,
-  shieldedSubtitle,
+  shieldedDetails,
   watchHero,
   type HeroReading,
   type HeroSync,
@@ -28,20 +29,28 @@ const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, lo
 const fmt = (duffs: number) => (duffs / COIN).toFixed(2);
 
 describe("Home's balance", () => {
+  it("keeps Core pending out of both the hero total and the Core amount", () => {
+    const withPending = { ...core, withheld: COIN / 2 };
+    const b = homeBalance(withPending, 5 * COIN, COIN / 2);
+    expect(b.pools.core).toBe(3 * COIN);
+    expect(b.total).toBe(8.5 * COIN);
+    expect(coreSubtitle(withPending, fmt, "Dash wallet")).toBe("1.50 pending");
+  });
+
   it("is Core (mixed coins included) plus Shielded plus Platform", () => {
     const b = homeBalance(core, 5 * COIN, COIN / 2);
-    expect(b.total).toBe(9.5 * COIN);
-    expect(b.pools).toEqual({ core: 4 * COIN, shielded: 5 * COIN, platform: COIN / 2 });
+    expect(b.total).toBe(8.5 * COIN);
+    expect(b.pools).toEqual({ core: 3 * COIN, shielded: 5 * COIN, platform: COIN / 2 });
   });
 
   it("counts only known pools in the hero, and keeps why the others have no number", () => {
     for (const [shielded, platform] of [["loading", "failed"], ["absent", "loading"], ["failed", "absent"]] as const) {
       const b = homeBalance(core, shielded, platform);
-      expect(b.total).toBe(4 * COIN);
-      expect(b.pools).toEqual({ core: 4 * COIN, shielded, platform });
+      expect(b.total).toBe(3 * COIN);
+      expect(b.pools).toEqual({ core: 3 * COIN, shielded, platform });
     }
     expect(homeBalance(core, 0, 0).pools).toMatchObject({ shielded: 0, platform: 0 });
-    expect(homeBalance(core, 5 * COIN, "failed").total).toBe(9 * COIN);
+    expect(homeBalance(core, 5 * COIN, "failed").total).toBe(8 * COIN);
   });
 
   it("counts only what can be spent: immature and locked funds stay out of the hero and the Core row", () => {
@@ -52,15 +61,27 @@ describe("Home's balance", () => {
 
   it("names what is pending, immature and locked under the Core row", () => {
     expect(coreSubtitle(core, fmt, "Dash wallet")).toBe("1.00 pending");
+    expect(coreDetails(core, fmt)).toBe("Unconfirmed, including change from your sends");
     const held = { ...core, unconfirmed: 0, immature: 2 * COIN, locked: 10 * COIN };
     expect(coreSubtitle(held, fmt, "Dash wallet")).toBe("2.00 immature · 10.00 locked");
     expect(coreSubtitle({ ...held, immature: 0, locked: 0 }, fmt, "Dash wallet")).toBe("Dash wallet");
+    expect(coreDetails(held, fmt)).toBe("2.00 immature · 10.00 locked");
   });
 
   it("names under the Shielded row what payments that may still go through hold, and how many", () => {
-    expect(shieldedSubtitle({ count: 1, credits: "30000000000", duffs: 3 * COIN / 10 }, fmt, "Private balance")).toBe("0.30 held for a payment");
-    expect(shieldedSubtitle({ count: 2, credits: "60000000000", duffs: 6 * COIN / 10 }, fmt, "Private balance")).toBe("0.60 held for 2 payments");
-    expect(shieldedSubtitle(null, fmt, "Private balance")).toBe("Private balance");
+    expect(shieldedDetails({ count: 1, credits: "30000000000", duffs: 3 * COIN / 10 }, fmt)).toBe("0.30 held for a payment");
+    expect(shieldedDetails({ count: 2, credits: "60000000000", duffs: 6 * COIN / 10 }, fmt)).toBe("0.60 held for 2 payments");
+    expect(shieldedDetails(null, fmt)).toBe("");
+  });
+
+  it("names Shielded's pending credits on the Shielded row without changing its spendable amount", () => {
+    const b = homeBalance(core, 0, COIN / 2);
+    expect(shieldedDetails(null, fmt, "50000000000")).toBe("Pending history (in + out): 0.50");
+    expect(shieldedDetails({ count: 1, credits: "30000000999", duffs: 3 * COIN / 10 }, fmt, "50000000000")).toBe("Pending history (in + out): 0.50 · 30,000,000,999 credits held for a payment");
+    expect(shieldedDetails(null, fmt, "1")).toBe("Pending history (in + out): 1 credit");
+    expect(shieldedDetails(null, fmt, "1001")).toBe("Pending history (in + out): 1,001 credits");
+    expect(b.pools.shielded).toBe(0);
+    expect(POOL_ROWS.find((row) => row.pool === "platform")?.subtitle).toBe("Platform addresses");
   });
 
   it("always lists Core, Shielded and Platform, in that order", () => {
@@ -69,42 +90,27 @@ describe("Home's balance", () => {
 });
 
 describe("Home's breakdown rows", () => {
-  const rows = (shielded: PoolReading, platform: PoolReading, discreet = false) => breakdownRows(homeBalance(core, shielded, platform).pools, discreet);
+  const rows = (shielded: PoolReading, platform: PoolReading) => breakdownRows(homeBalance(core, shielded, platform).pools).map((row) => row.pool);
 
-  it("hides a pool only when the wallet has none or it is known to be empty", () => {
+  it("reserves the same cells while a supported pool has zero spendable funds", () => {
+    expect(rows(0, 0)).toEqual(rows(COIN, COIN));
+    expect(rows("absent", "absent")).toEqual(["core"]);
+  });
+
+  it("omits a pool only when the wallet has none", () => {
     expect(rows(5 * COIN, COIN / 2)).toEqual(["core", "shielded", "platform"]);
-    expect(rows(0, COIN / 2)).toEqual(["core", "platform"]);
+    expect(rows(0, COIN / 2)).toEqual(["core", "shielded", "platform"]);
     expect(rows("absent", COIN / 2)).toEqual(["core", "platform"]);
-    expect(rows(1, 0)).toEqual(["core", "shielded"]);
+    expect(rows(1, 0)).toEqual(["core", "shielded", "platform"]);
   });
 
   it("keeps the row of a pool still being read or whose read failed", () => {
-    expect(rows("loading", 0)).toEqual(["core", "shielded"]);
-    expect(rows(0, "failed")).toEqual(["core", "platform"]);
+    expect(rows("loading", 0)).toEqual(["core", "shielded", "platform"]);
+    expect(rows(0, "failed")).toEqual(["core", "shielded", "platform"]);
     expect(rows("loading", "failed")).toEqual(["core", "shielded", "platform"]);
     expect(rows("absent", "loading")).toEqual(["core", "platform"]);
   });
 
-  it("keeps an empty Shielded row while a payment holds part of it", () => {
-    const held = (shielded: PoolReading, platform: PoolReading) => breakdownRows(homeBalance(core, shielded, platform).pools, false, true);
-    expect(held(0, 0)).toEqual(["core", "shielded"]);
-    expect(held(0, COIN)).toEqual(["core", "shielded", "platform"]);
-    expect(held("absent", 0)).toEqual([]);
-  });
-
-  it("has no breakdown when Core alone would repeat the hero", () => {
-    expect(rows(0, 0)).toEqual([]);
-    expect(rows("absent", "absent")).toEqual([]);
-    expect(rows("absent", 0)).toEqual([]);
-  });
-
-  it("in discreet mode, shows Core and every pool the wallet has, whatever they hold", () => {
-    expect(rows(0, 0, true)).toEqual(["core", "shielded", "platform"]);
-    expect(rows(5 * COIN, 0, true)).toEqual(["core", "shielded", "platform"]);
-    expect(rows("absent", 0, true)).toEqual(["core", "platform"]);
-    expect(rows("absent", COIN, true)).toEqual(["core", "platform"]);
-    expect(rows("absent", "absent", true)).toEqual([]);
-  });
 });
 
 describe("the hero's digits", () => {

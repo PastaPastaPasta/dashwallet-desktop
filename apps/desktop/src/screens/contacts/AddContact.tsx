@@ -2,14 +2,14 @@
 // candidate a hit, a scan or a `dashpay://user` link shows. The card's Send is DP2-09's
 // `ContactActions.send` (D5); its other next steps select the contact, where DP2-09's pane acts.
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent, type ReactNode, type RefObject } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import { useBackend, useQrMatrix } from "../../api/queries";
 import { navigate, ui, type AddContactIntent, type ContactPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { Chip, DashButton, Icon } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
-import { QrCode } from "../../components/qr";
+import { QrCode, QrPlaceholder } from "../../components/qr";
 import { CopyDashButton } from "../../components/copy";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import {
@@ -36,12 +36,11 @@ import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, unverified
 import { useEligibility, useMyUserLink, useNetworkSearch, useScreenScanMode } from "../../contacts/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
-import { Outcome } from "../tools/common";
 import { Tabs } from "../Routes";
 import { dropDetailFocusUnless, focusDetailWhenShown, focusInView, useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
 import { Row } from "./ContactList";
-import { EnableButton, EnableFailure, SendRequestButton } from "./RequestButton";
+import { EnableButton, SendRequestButton } from "./RequestButton";
 
 /** What Add Contact acts for: the wallet, whose contacts (BL-153's status), the identity's actions
  * (`null` without one) and its unfiltered contacts (D14; `undefined` while unread). */
@@ -75,6 +74,14 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
   // A link verifies once per link and wallet (D13). A new intent starts afresh on Search, with a
   // network row's hit shown at once (its full hit from the cached search when there).
   const searchHits = useNetworkSearch(ctx.walletId, identity ?? "", intent?.hit && identity ? networkPrefix(intent.query) : null);
+  // Search's text lives here so a tab switch keeps it. A search hit's card is for the text it was
+  // picked under: other text drops it, so Send never goes to a hit the list no longer shows.
+  const [text, setText] = useState(intent?.query ?? "");
+  const pickedFor = useRef<string | null>(null);
+  const pickHit = (hit: HitFields, under: string) => {
+    pickedFor.current = networkPrefix(under);
+    model.pick(hit);
+  };
   const seen = useRef<AddContactIntent | ContactPrefill | null>(null);
   useEffect(() => {
     const current = link ?? intent;
@@ -85,15 +92,44 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       return;
     }
     setTab("search");
+    const query = intent?.query ?? "";
+    setText(query);
     const h = intent?.hit;
     if (!h) return model.clear();
-    model.pick(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true, readSeq: 0 });
+    pickHit(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true, readSeq: 0 }, query);
   }, [model, link, intent, searchHits.data]);
+  const typed = networkPrefix(text);
+  const stale = model.candidate?.source === "search" && typed !== pickedFor.current;
+  useEffect(() => {
+    if (stale) model.clear();
+  }, [model, stale]);
   // Leaving stops a screen capture still waiting.
   useEffect(() => () => model.cancelScreen(), [model]);
 
   const scan = model.scan;
   const linkState = (scan.kind === "verifying" || scan.kind === "failed") && scan.source === "link" ? scan : null;
+  const candidate = stale ? null : model.candidate;
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (candidate) focusInView(heading.current);
+  }, [candidate]);
+
+  const result = candidate ? (
+    <CandidateCard key={candidate.identity} ctx={ctx} candidate={candidate} heading={heading} />
+  ) : linkState && link ? (
+    <div className="add-contact-candidate" data-testid="add-contact-link">
+      <p className="contact-row-username" data-testid="add-contact-username">
+        <bdi>@{link.username}</bdi>
+      </p>
+      {linkState.kind === "verifying" ? (
+        <p role="status" data-testid="add-contact-checking">
+          {t.rich("contacts.addContact.checkingLink", { username: <bdi>@{link.username}</bdi> })}
+        </p>
+      ) : (
+        <ScanProblem text={linkState.text} retry={linkState.retry ? () => void model.retry() : null} testId="add-contact-link-error" />
+      )}
+    </div>
+  ) : null;
   return (
     <section className="add-contact add-contact-slot card-l1" aria-labelledby="add-contact-title" data-testid="add-contact">
       <header className="add-contact-header">
@@ -104,27 +140,16 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
           {t("contacts.addContact.close")}
         </DashButton>
       </header>
-      {/* A new candidate is a new card: a send still running for the last one toasts (D5). */}
-      {model.candidate && <CandidateCard key={model.candidate.identity} ctx={ctx} candidate={model.candidate} />}
-      {linkState && link && (
-        <div className="add-contact-candidate" data-testid="add-contact-link">
-          <p className="contact-row-username" data-testid="add-contact-username">
-            <bdi>@{link.username}</bdi>
-          </p>
-          {linkState.kind === "verifying" ? (
-            <p role="status" data-testid="add-contact-checking">
-              {t.rich("contacts.addContact.checkingLink", { username: <bdi>@{link.username}</bdi> })}
-            </p>
-          ) : (
-            <ScanProblem text={linkState.text} retry={linkState.retry ? () => void model.retry() : null} testId="add-contact-link-error" />
-          )}
-        </div>
-      )}
-      {identity !== null && (
+      {identity === null ? result : (
         <Tabs label={t("contacts.addContact.tabsLabel")} tabs={ADD_TABS} current={tab} onSelect={setTab} testId="add-contact-tabs">
-          {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h) => model.pick(h)} />}
-          {tab === "scan" && <ScanTab model={model} />}
-          {tab === "myQr" && <MyQrTab walletId={ctx.walletId} identity={identity} />}
+          {tab === "search" && <SearchTab ctx={ctx} identity={identity} intent={intent} text={text} onText={setText} onPick={(h) => pickHit(h, text)} result={result} />}
+          {tab === "scan" && <ScanTab model={model} result={result} />}
+          {tab === "myQr" && (
+            <div className="add-contact-my-qr">
+              {result}
+              <MyQrTab walletId={ctx.walletId} identity={identity} />
+            </div>
+          )}
         </Tabs>
       )}
     </section>
@@ -152,7 +177,7 @@ function ScanProblem({ text, retry, testId }: { text: string; retry: (() => void
 }
 
 /** The candidate (D4–D7, D13, D14, D34, D36): who, whether Platform vouched for them, and the one next step. */
-function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Candidate }) {
+function CandidateCard({ ctx, candidate: c, heading }: { ctx: AddContext; candidate: Candidate; heading: RefObject<HTMLHeadingElement | null> }) {
   const t = useT();
   const identity = ctx.owner.kind === "identity" ? ctx.owner.identity : null;
   const relation = currentRelation(c, ctx.listed);
@@ -163,24 +188,19 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
     ctx.owner.kind !== "identity" ? ownerLine(ctx.owner) : claimLine(cardLine(relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching }), c.claim, now);
   const actions = useOptionalModel(ctx.actions);
   const name = candidateName(c);
-  const outcome = actions?.outcome?.kind === "send" && actions.outcome.contact === c.identity ? actions.outcome : null;
 
-  // A new candidate takes focus (D15).
-  const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => focusInView(heading.current), [c]);
-  // Send leaves once the re-read says the request went: focus goes to the line that says so (D5).
-  const status = useRef<HTMLDivElement>(null);
+  const action = useRef<HTMLDivElement>(null);
   const toast = useActionToast(ctx.walletId);
-  const arm = useRefocus(() => line?.next === "send", () => status.current);
-  const sent = (o: ActionOutcome | null) => {
-    toast(o, true);
-    if (o?.ok) arm("send");
+  const arm = useRefocus((next) => line?.next === next, () => action.current?.querySelector("button") ?? heading.current);
+  const done = (next: "send" | "enable", o: ActionOutcome | null) => {
+    toast(o, false);
+    if (o?.ok) arm(next);
   };
 
   let button = null;
   switch (line?.next) {
     case "send":
-      button = <SendRequestButton key="send" actions={actions} contact={c.identity} name={name} scan={c.claim?.scan ?? null} testId="add-contact-send" onDone={sent} />;
+      button = <SendRequestButton key="send" actions={actions} contact={c.identity} name={name} scan={c.claim?.scan ?? null} testId="add-contact-send" onDone={(o) => done("send", o)} />;
       break;
     case "showContact":
     case "showRequest":
@@ -192,7 +212,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       );
       break;
     case "enable":
-      button = <EnableButton key="enable" actions={actions} testId="add-contact-enable" onDone={(o) => toast(o, true)} />;
+      button = <EnableButton key="enable" actions={actions} testId="add-contact-enable" onDone={(o) => done("enable", o)} />;
       break;
     case "join":
       button = (
@@ -233,29 +253,27 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
         {c.unverified ? <Chip tone="warning">{t("contacts.unverified")}</Chip> : <Chip tone="info">{t("contacts.addContact.verified")}</Chip>}
         <span className="add-contact-source">{t(`contacts.addContact.sources.${c.source}`)}</span>
       </p>
-      {note && (
-        <p className="placeholder-note" data-testid="add-contact-claim">
-          {note}
-        </p>
+      {c.claim && (
+        <div className="add-contact-claim-slot">
+          {note && <p className="placeholder-note" data-testid="add-contact-claim">{note}</p>}
+        </div>
       )}
-      <div className="add-contact-status" ref={status} data-testid="add-contact-status">
-        {line === undefined ? (
-          <p role="status">{t("contacts.addContact.checking")}</p>
-        ) : (
-          line.text && (
-            <p className="placeholder-note" data-testid="add-contact-line">
-              {line.text}
-            </p>
-          )
+      <div className="add-contact-status" data-testid="add-contact-status">
+        {c.unverified && (
+          <div className="add-contact-unverified-slot">
+            {warning && <p className="sheet-warning" role="note" data-testid="add-contact-unverified">{warning}</p>}
+          </div>
         )}
-        {warning && (
-          <p className="sheet-warning" role="note" data-testid="add-contact-unverified">
-            {warning}
-          </p>
-        )}
-        {button && <span className="add-contact-actions">{button}</span>}
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" polite />
-        <EnableFailure actions={actions} testId="add-contact-enable-outcome" />
+        <div className="add-contact-action-row">
+          <div className="add-contact-action-slot" ref={action}>
+            {line === undefined ? (
+              <div className="add-contact-action-skeleton" role="status">
+                <span className="sr-only">{t("contacts.addContact.checking")}</span>
+              </div>
+            ) : button}
+          </div>
+          {line?.text && <p className="placeholder-note add-contact-action-note" data-testid="add-contact-line">{line.text}</p>}
+        </div>
       </div>
     </div>
   );
@@ -283,29 +301,41 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 }
 
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
-function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: HitFields) => void }) {
+function SearchTab({
+  ctx,
+  identity,
+  intent,
+  text,
+  onText,
+  onPick,
+  result,
+}: {
+  ctx: AddContext;
+  identity: string;
+  intent: AddContactIntent | null;
+  text: string;
+  onText: (text: string) => void;
+  onPick: (hit: HitFields) => void;
+  result: ReactNode;
+}) {
   const t = useT();
-  const [text, setText] = useState(query);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const tabs = document.activeElement?.closest('[role="tablist"]');
     if (!tabs || !input.current?.closest(".add-contact")?.contains(tabs)) focusInView(input.current);
-  }, [query]);
-  // Another intent's search text (Show more on another search).
-  useEffect(() => setText(query), [query]);
+  }, [intent]);
   const typed = networkPrefix(text);
   const debounced = useDebounced(typed, NETWORK_DEBOUNCE_MS);
-  // Clearing the field hides the hits at once.
-  const prefix = typed === null ? null : debounced;
+  const prefix = typed === debounced ? debounced : null;
   const search = useNetworkSearch(ctx.walletId, identity, prefix);
   const results = (): ReactNode => {
-    if (prefix === null)
+    if (typed === null)
       return (
         <p className="placeholder-note" data-testid="add-contact-search-hint">
           {t("contacts.addContact.searchHint")}
         </p>
       );
-    if (search.isPending || (search.isError && search.isFetching))
+    if (prefix === null || search.isPending || (search.isError && search.isFetching))
       return (
         <p className="contacts-network-note" role="status">
           {t("contacts.searching")}
@@ -356,9 +386,10 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
     <div className="add-contact-search">
       <label className="search-field" data-testid="add-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
-        <input ref={input} type="search" value={text} placeholder={t("contacts.addContact.searchField")} aria-label={t("contacts.addContact.searchField")} onChange={(e) => setText(e.target.value)} />
+        <input ref={input} type="search" value={text} placeholder={t("contacts.addContact.searchField")} aria-label={t("contacts.addContact.searchField")} onChange={(e) => onText(e.target.value)} />
       </label>
-      {results()}
+      <div className={typed !== null || result ? "add-contact-search-results has-space" : "add-contact-search-results"}>{results()}</div>
+      {result}
     </div>
   );
 }
@@ -371,7 +402,7 @@ function carried(e: DragEvent | ClipboardEvent): { file: File | null; text: stri
 }
 
 /** Scan (D9, D10): a drop, Open Image…, a screen region, a paste. */
-function ScanTab({ model }: { model: AddContactModel }) {
+function ScanTab({ model, result }: { model: AddContactModel; result: ReactNode }) {
   const t = useT();
   const mode = useScreenScanMode();
   const [over, setOver] = useState(false);
@@ -450,6 +481,7 @@ function ScanTab({ model }: { model: AddContactModel }) {
           }}
         />
       </label>
+      {result}
       {status && (
         <p role="status" data-testid="add-contact-scan-status">
           {status}
@@ -468,10 +500,11 @@ export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: {
   const link = useMyUserLink(walletId, identity);
   const state = myQr(link, username);
   const matrix = useQrMatrix(state.kind === "link" ? state.link : undefined);
+  const loadingQr = <QrPlaceholder size={qrSize} label={t("contacts.addContact.myQrLoading")} testId="add-contact-qr-loading" />;
   let body;
   switch (state.kind) {
     case "loading":
-      body = <p role="status">{t("contacts.addContact.myQrLoading")}</p>;
+      body = loadingQr;
       break;
     case "noUsername":
       body = (
@@ -498,28 +531,26 @@ export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: {
       );
       break;
     case "link":
-      body = (
-        <>
-          {matrix.data ? (
-            <QrCode matrix={matrix.data} size={qrSize} label={t("contacts.addContact.qrLabel")} testId="add-contact-qr" />
-          ) : (
-            <div className="qr-placeholder" style={{ width: qrSize, height: qrSize }} aria-hidden="true" />
-          )}
-          <p className="mono add-contact-link-text" data-testid="add-contact-qr-link">
-            {state.link}
-          </p>
-          <span className="add-contact-actions">
-            <CopyDashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" text={state.link}>
-              {t("contacts.addContact.copyLink")}
-            </CopyDashButton>
-          </span>
-        </>
-      );
+      body = matrix.data
+        ? <QrCode matrix={matrix.data} size={qrSize} label={t("contacts.addContact.qrLabel")} testId="add-contact-qr" />
+        : loadingQr;
   }
   return (
     <div className="add-contact-my-qr" data-testid="add-contact-my-qr">
       <p className="placeholder-note">{t("contacts.addContact.myQrHint")}</p>
       {body}
+      {(state.kind === "loading" || state.kind === "link") && (
+        <div className="add-contact-qr-footer">
+          {state.kind === "link" && (
+            <>
+              <p className="mono add-contact-link-text" data-testid="add-contact-qr-link">{state.link}</p>
+              <CopyDashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" text={state.link}>
+                {t("contacts.addContact.copyLink")}
+              </CopyDashButton>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

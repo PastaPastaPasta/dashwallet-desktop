@@ -4,6 +4,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { absentAsUnavailable } from "../api/pending";
+import { requestRestore } from "../api/generated/commands";
 import { IpcBackend } from "../api/tauri";
 import { OpenFailureActions } from "../screens/StoreRefusal";
 import { installFixture, type FixtureHandle } from "./index";
@@ -73,6 +74,7 @@ describe("fixture pending commands", () => {
   it("asks for the restore and restarts; the next start opens the earlier data, restored", async () => {
     clearMocks();
     fixture = installFixture({ scenario: "funded", openRefused: "refusedRestore", restoreAvailable: true });
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_refused" });
     expect(await backend.restoreAvailable()).toBe(true);
     await new OpenFailureActions(backend).restore();
     expect(fixture.world.restoreCalls).toEqual(["restoreAvailable", "requestRestore"]);
@@ -82,6 +84,20 @@ describe("fixture pending commands", () => {
     installFixture({ scenario: "funded" });
     expect(await backend.openNetwork()).toMatchObject({ network: { restored: true } });
     expect(await backend.activeNetwork()).toMatchObject({ restored: true });
+  });
+
+  it("only accepts a restore after the same network's qualifying refusal", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "funded", openRefused: "refusedRestore", restoreAvailable: true });
+    await expect(backend.requestRestore()).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(fixture.world.restoreRequested).toBeUndefined();
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_refused" });
+    await expect(requestRestore("mainnet")).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(fixture.world.restoreRequested).toBeUndefined();
+    fixture.world.openRefusal = undefined;
+    await backend.openNetwork();
+    await expect(backend.requestRestore()).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(fixture.world.restoreRequested).toBeUndefined();
   });
 
   it("reads restore_available as absent, and the restore commands as unavailable, in a dw-app without them", async () => {
@@ -610,15 +626,22 @@ describe("fixture Add from Dash wallet", () => {
   it("quotes a Core Max (`all`) as core_max.rs does: every final main coin, the fee out of it, and runs only under exactly its grant", async () => {
     const all = { kind: "all" } as const;
     for (const [quote, run] of [
-      [() => backend.platformFundQuote(W, all), (grant: string) => backend.platformFund(W, all, grant)],
-      [() => backend.shieldQuote(W, all), (grant: string) => backend.shieldFromCore(W, all, grant)],
+      [() => backend.platformFundQuote(W, all), (grant: string, coinSet: string) => backend.platformFund(W, { kind: "quotedAll", coinSet }, grant)],
+      [() => backend.shieldQuote(W, all), (grant: string, coinSet: string) => backend.shieldFromCore(W, { kind: "quotedAll", coinSet }, grant)],
     ] as const) {
       const q = await quote();
-      expect(q.max).not.toBeNull();
+      const coinSet = q.max!.coinSet;
+      expect(coinSet).toBeTruthy();
       expect(q.duffs + q.feeDuffs).toBe(q.totalDuffs);
       expect(q.grant.maxDuffs).toBe(q.totalDuffs);
-      await expect(run((await duffsGrant(q.totalDuffs + 1)).id)).rejects.toMatchObject({ code: expect.stringMatching(/\.coins_changed$/) });
-      await expect(run((await duffsGrant(q.totalDuffs)).id)).resolves.toBeDefined();
+      const exact = (await duffsGrant(q.totalDuffs)).id;
+      const coin = fixture.world.wallets[0].coins.find((c) => c.spendable)!;
+      const vout = coin.outpoint.vout;
+      coin.outpoint.vout += 100;
+      await expect(run(exact, coinSet)).rejects.toMatchObject({ code: expect.stringMatching(/\.coins_changed$/) });
+      coin.outpoint.vout = vout;
+      await expect(run((await duffsGrant(q.totalDuffs + 1)).id, coinSet)).rejects.toMatchObject({ code: expect.stringMatching(/\.coins_changed$/) });
+      await expect(run(exact, coinSet)).resolves.toBeDefined();
     }
   });
 
@@ -752,7 +775,7 @@ describe("fixture Core Max of coins still arriving", () => {
     const fee = 1_148;
     for (const [route, floor] of [["shield", 10_001], ["fund", 56_001]] as const) {
       for (const [amount, arrivingClears] of [[floor + fee, true], [floor + fee - 1, false]] as const) {
-        expect(await maxOfArriving(route, amount), `${route} ${amount}`).toEqual({ kind: "maxMinimum", min: floor, duffs: 0, leftDuffs: 0, arrivingDuffs: amount, arrivingClears });
+        expect(await maxOfArriving(route, amount), `${route} ${amount}`).toEqual({ kind: "maxMinimum", min: floor, duffs: 0, leftDuffs: 0, arrivingDuffs: amount, arrivingClears, arrivingBlock: null, otherArrivingDuffs: 0 });
       }
     }
   });

@@ -679,6 +679,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
     if (world.networkSwitch) world.networkSwitch.reopenFails = false;
     world.noPlatform = undefined;
+    world.restoreRefusedNetwork = undefined;
     // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
     if (world.restoreRequested) {
       world.restoreRequested = false;
@@ -694,9 +695,11 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     (world.restoreCalls ??= []).push("restoreAvailable");
     return world.restoreAvailable === true;
   },
-  request_restore: (_: { network: string | null }, { world }: Ctx) => {
+  request_restore: ({ network }: { network: string | null }, { world }: Ctx) => {
     (world.restoreCalls ??= []).push("requestRestore");
-    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`));
+    const target = network ?? world.launch.network.dirName;
+    if (target !== world.restoreRefusedNetwork) throw fail("invalid_argument", "the last open of this network was not refused with Restore earlier data");
+    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${target}`));
     world.restoreRequested = true;
     return null;
   },
@@ -927,14 +930,14 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   platform_fund: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): PlatformFundOutcome => {
     const { world } = ctx;
     const q = fundQuoteOf(ctx, walletId, amount, "platform_fund");
+    if (q.max && (amount.kind !== "quotedAll" || amount.coinSet !== q.max.coinSet)) throw fail("credits.coins_changed", "the coins changed since the quote");
     const duffs = q.duffs;
     const p = platformOf(world, "platform_fund");
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs)
       throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "funding", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
-    // A Core Max's grant is its quote's coins' sum: coins read again to another sum are not the quote's.
-    if (amount.kind === "all" && g.grant.purpose.maxDuffs !== q.totalDuffs) throw fail("credits.coins_changed", "the coins changed since the quote");
+    if (q.max && g.grant.purpose.maxDuffs !== q.totalDuffs) throw fail("credits.coins_changed", "the coins changed since the quote");
     useGrant(world, grant);
     const txid = `f0${(p.activity.length + 1).toString(16).padStart(2, "0")}`.padEnd(64, "d");
     const pending = p.nextFund !== "done";

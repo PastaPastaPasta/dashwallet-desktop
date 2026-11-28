@@ -2121,6 +2121,29 @@ impl TrackedLocks for SessionTracked {
     }
 }
 
+/// The pin can spawn a readiness retry after its attempt returns. A private
+/// current-thread runtime ties that retry to the attempt and the abandon gate.
+pub(super) async fn await_asset_lock_resume<T: Send + 'static>(
+    gate: tokio::sync::OwnedRwLockReadGuard<()>,
+    resume: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, crate::EngineError> {
+    let (_cancel, mut cancelled) = tokio::sync::oneshot::channel::<()>();
+    tokio::task::spawn_blocking(move || {
+        let _gate = gate;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            tokio::select! {
+                biased;
+                _ = &mut cancelled => Err(crate::EngineError::Internal("asset-lock resume cancelled".into())),
+                result = resume => Ok(result),
+            }
+        })
+    })
+    .await?
+}
+
 #[async_trait]
 impl Resumer for SessionTracked {
     async fn wallets(&self) -> Vec<WalletId> {
@@ -2140,18 +2163,14 @@ impl Resumer for SessionTracked {
 
     async fn resume(&self, wallet: WalletId, txid: Txid) -> Resumed {
         use platform_wallet::PlatformWalletError as E;
-        // The session is not kept across the library call: only its wallet.
-        let w = {
-            let Some(session) = self.session.upgrade() else {
-                return Resumed::NotRun;
-            };
-            if session.wallet_platform_held(wallet) {
-                return Resumed::NotRun;
-            }
-            match session.wallet(&wallet).await {
-                Ok(w) => w,
-                Err(_) => return Resumed::NotRun,
-            }
+        let Some(session) = self.session.upgrade() else {
+            return Resumed::NotRun;
+        };
+        if session.wallet_platform_held(wallet) {
+            return Resumed::NotRun;
+        }
+        let Ok(w) = session.wallet(&wallet).await else {
+            return Resumed::NotRun;
         };
         let out_point = {
             let wm = w.wallet_manager().read().await;
@@ -2167,11 +2186,20 @@ impl Resumer for SessionTracked {
         let Some(out_point) = out_point else {
             return Resumed::Ran;
         };
-        match w.asset_locks().resume_asset_lock(&out_point, None).await {
-            Ok(_) => Resumed::Ran,
-            Err(E::WalletNotFound(_)) => Resumed::NotRun,
-            Err(E::AssetLockNotTracked(_)) => Resumed::Ran,
-            Err(e) => {
+        let gate = match session.asset_lock_resume_gate(wallet, txid).await {
+            Ok(Some(gate)) => gate,
+            Ok(None) => return Resumed::Suppressed,
+            Err(_) => return Resumed::NotRun,
+        };
+        drop(session);
+        match await_asset_lock_resume(gate, async move {
+            w.asset_locks().resume_asset_lock(&out_point, None).await
+        })
+        .await
+        {
+            Ok(Ok(_) | Err(E::AssetLockNotTracked(_))) => Resumed::Ran,
+            Ok(Err(E::WalletNotFound(_))) | Err(_) => Resumed::NotRun,
+            Ok(Err(e)) => {
                 // The attempt ran (pin semantics); the row stays tracked and
                 // the next pass resumes it again.
                 tracing::info!(wallet_id = %wallet, %txid, error = %e, "the catch-up's resume of a tracked asset lock did not settle it");
@@ -2182,6 +2210,39 @@ impl Resumer for SessionTracked {
 }
 
 impl NetworkSession {
+    /// A saved abandon leaves the row tracked for Repair and SPV events.
+    pub(crate) async fn asset_lock_resume_gate(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, crate::EngineError> {
+        let gate = self.asset_lock_gate(wallet, txid).read_owned().await;
+        Ok((!self.read_abandon_mark(wallet, txid).await?).then_some(gate))
+    }
+
+    pub(crate) async fn resume_asset_lock_once(
+        &self,
+        wallet: Arc<platform_wallet::PlatformWallet>,
+        outpoint: dashcore::OutPoint,
+        timeout: std::time::Duration,
+    ) -> Result<Option<Result<(), platform_wallet::PlatformWalletError>>, crate::EngineError> {
+        let Some(gate) = self
+            .asset_lock_resume_gate(WalletId(wallet.wallet_id()), outpoint.txid)
+            .await?
+        else {
+            return Ok(None);
+        };
+        await_asset_lock_resume(gate, async move {
+            wallet
+                .asset_locks()
+                .resume_asset_lock(&outpoint, Some(timeout))
+                .await
+                .map(drop)
+        })
+        .await
+        .map(Some)
+    }
+
     /// E0-04 §2a.3's `fee_bound_worst` for `wallet_id`: the fee of an asset
     /// lock spending every coin of its funding accounts
     /// ([`crate::fees::asset_lock_fee_bound`]). Computed outside J; the
