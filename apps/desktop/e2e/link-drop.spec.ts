@@ -54,7 +54,6 @@ test("a contact or invitation link dropped on the window is not routed (it could
 test("a link dropped into a text field is typed there, not opened", async ({ page }) => {
   await open(page);
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-message").fill("");
   const before = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "route_link").length);
   await dropLink(page, '[data-testid="pay-message"]', `dash:${PAYEE}`);

@@ -36,7 +36,6 @@ async function setUp(page: Page, theme: Theme, state: "idle" | "mixing", mixedCo
   );
   await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(PAYEE);
 }
 

@@ -286,10 +286,10 @@ export function usePlatformReceiveAddress(walletId: string, enabled: boolean) {
 }
 
 /** What sending `amount` to the Platform address `to` takes; `null` amount: no quote yet. */
-export function usePlatformSendQuote(walletId: string, to: string, amount: WithdrawAmount | null) {
+export function usePlatformSendQuote(walletId: string, to: string, amount: WithdrawAmount | null, recipientRevision: string) {
   const b = useBackend();
   return useQuery({
-    queryKey: keys.platformSendQuote(walletId, to, amount === null ? "" : amount.kind === "all" ? "all" : amount.credits),
+    queryKey: [...keys.platformSendQuote(walletId, to, amount === null ? "" : amount.kind === "all" ? "all" : amount.credits), recipientRevision],
     queryFn: () => b.platformSendQuote(walletId, to, amount!, null),
     enabled: amount !== null && to !== "",
     retry: false,

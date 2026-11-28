@@ -89,7 +89,6 @@ const PANES: { name: string; route: Route; open: (page: Page) => Promise<void> }
     name: "Pay to an address with Advanced open",
     route: "pay",
     open: async (page) => {
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-advanced").locator("summary").click();
       await expect(page.getByTestId("pay-advanced")).toHaveAttribute("open", "");
     },
@@ -151,7 +150,6 @@ for (const theme of THEMES) {
 
   test(`an unchecked checkbox is an empty outline, a checked one fills, ${theme}`, async ({ page }) => {
     await open(page, "pay", theme);
-    await page.getByTestId("pay-tabs-address").click();
     const box = page.getByTestId("pay-subtract-fee");
     await expect(box).not.toBeChecked();
     const look = () =>
@@ -183,7 +181,6 @@ for (const theme of THEMES) {
 
   test(`a checked radio fills and draws its dot, an unchecked one stays an outline, ${theme}`, async ({ page }) => {
     await open(page, "pay", theme);
-    await page.getByTestId("pay-tabs-address").click();
     await page.locator("summary", { hasText: "Advanced" }).first().click();
     const radios = page.locator('input[type="radio"]');
     await expect(radios.first()).toBeVisible();

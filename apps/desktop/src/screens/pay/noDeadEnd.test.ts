@@ -5,9 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { ContactList } from "../../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { defaultPayTab, foundLine, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, searchAnnouncement } from "./contact";
+import { foundLine, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, searchAnnouncement } from "./contact";
 
-const ME = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
 const BOB = "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN";
 
 const summary = (over: Partial<ContactSummaryInfo> = {}): ContactSummaryInfo => ({
@@ -30,52 +29,6 @@ const list = (contacts: ContactSummaryInfo[], requests: ContactSummaryInfo[] = [
     { section: "requests", contacts: requests },
   ],
 });
-const identity = { kind: "identity", identity: ME } as const;
-
-describe("the tab Pay opens on", () => {
-  it("is To a contact when there is a contact or a request to pay", () => {
-    expect(defaultPayTab(identity, { data: list([summary()]), failed: false })).toBe("contact");
-    expect(defaultPayTab(identity, { data: list([], [summary({ relation: "pendingIncoming" })]), failed: false })).toBe("contact");
-  });
-
-  it("is To an address without contacts", () => {
-    expect(defaultPayTab(identity, { data: list([]), failed: false })).toBe("address");
-    expect(defaultPayTab(identity, { data: { updating: false, sections: [] }, failed: false })).toBe("address");
-  });
-
-  it("is To an address without a username, or while DashPay cannot say", () => {
-    expect(defaultPayTab({ kind: "join", reason: null }, { data: undefined, failed: false })).toBe("address");
-    expect(defaultPayTab({ kind: "join", reason: "watchOnly" }, { data: undefined, failed: false })).toBe("address");
-    expect(defaultPayTab({ kind: "registering" }, { data: undefined, failed: false })).toBe("address");
-    expect(defaultPayTab({ kind: "starting" }, { data: undefined, failed: false })).toBe("address");
-    expect(defaultPayTab({ kind: "error" }, { data: undefined, failed: false })).toBe("address");
-  });
-
-  it("waits while DashPay's status is still being read", () => {
-    expect(defaultPayTab(undefined, { data: undefined, failed: false })).toBeNull();
-  });
-
-  it("waits for the contacts, and pays to an address when they cannot be read", () => {
-    expect(defaultPayTab(identity, { data: undefined, failed: false })).toBeNull();
-    expect(defaultPayTab(identity, { data: undefined, failed: true })).toBe("address");
-  });
-
-  it("pays to an address when the contacts' last read failed, even with an older list kept", () => {
-    expect(defaultPayTab(identity, { data: list([summary()]), failed: true })).toBe("address");
-  });
-
-  it("pays to an address when DashPay's status last read failed, even with an older identity kept", () => {
-    expect(defaultPayTab({ ...identity, failed: true }, { data: list([summary()]), failed: false })).toBe("address");
-    expect(defaultPayTab({ ...identity, failed: false }, { data: list([summary()]), failed: false })).toBe("contact");
-  });
-
-  it("waits for a re-read running over a cached answer: it may still fail or change", () => {
-    expect(defaultPayTab({ ...identity, fetching: true }, { data: list([summary()]), failed: false })).toBeNull();
-    expect(defaultPayTab(identity, { data: list([summary()]), failed: false, fetching: true })).toBeNull();
-    expect(defaultPayTab({ kind: "join", reason: null, fetching: true }, { data: undefined, failed: false })).toBeNull();
-  });
-});
-
 describe("the picker under a search", () => {
   const view = (over: Partial<Parameters<typeof pickerView>[0]>) =>
     pickerView({ text: "ma", groups: 0, anyContacts: true, network: true, networkState: "done", hits: 0, ...over });

@@ -30,15 +30,19 @@ async function open(page: Page, theme: Theme, tab: "address" | "contact") {
     };
     f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: wallet.summary.walletId });
   })()`);
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await page.getByTestId(`pay-tabs-${tab}`).click();
+  await page.getByTestId("sidebar-pay").click();
+  if (tab === "contact") await page.getByTestId("pay-contacts").click();
   await fontsReady(page);
   return errors;
 }
 
 async function payee(page: Page, tab: "address" | "contact") {
-  if (tab === "address") await page.getByTestId("pay-address").fill(PAYEE);
-  else await page.getByTestId("pay-frequent-chip").first().click();
+  if (tab === "address") {
+    await page.getByTestId("pay-address").fill(PAYEE);
+    await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
+  } else {
+    await page.getByTestId("pay-frequent-chip").first().click();
+  }
 }
 
 async function mixedCoins(page: Page) {

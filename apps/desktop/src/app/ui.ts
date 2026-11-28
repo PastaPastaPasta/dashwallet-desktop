@@ -18,7 +18,6 @@ export type ThemeChoice = ThemeName | null;
 export type SettingsTab = "general" | "security" | "wallets" | "coinjoin" | "backups" | "advanced" | "about";
 
 /** Pay's two ways (DASHPAY §4): to a contact, or to an address. */
-export type PayTab = "contact" | "address";
 
 /** What a payment link or Open URI put in Pay ▸ To an address. */
 export interface PayPrefill {
@@ -60,8 +59,6 @@ export interface UiState {
   route: Route;
   /** Cleared by every navigation that doesn't set it. */
   activityFilter: ActivityFilter | null;
-  /** Pay's tab; `null` until Pay picks one by whether the wallet has contacts. */
-  payTab: PayTab | null;
   payPrefill: PayPrefill | null;
   /** Counts the links that opened Pay: each one starts a fresh form, the same link again too. */
   payLinks: number;
@@ -69,10 +66,8 @@ export interface UiState {
   /** Coin Selection's "Pay with these coins" (U-05 D19): the `txid:vout` keys Pay ▸ To an
    * address starts with, under Advanced on "Selected coins". */
   payCoins: string[] | null;
-  /** Pay ▸ To a contact's payee (DP3-06 D2): the contact's identity id, picked on the tab or
-   * handed over by the contact pane, in the wallet it was picked in (another wallet's tab shows
-   * none); `null`: none picked. */
-  payContact: { walletId: string; contact: string } | null;
+  /** The selected contact and the wallet identity that pays them. */
+  payContact: { walletId: string; identity: string; contact: string } | null;
   toolsTab: ToolsTab;
   /** Pay's Create Unsigned (U-05 D18): the PSBT Tools ▸ PSBT opens with, and whether it reached
    * the clipboard. The tab takes it once. */
@@ -148,7 +143,6 @@ export const DEFAULT_PREFS: UiSettings = {
 let state: UiState = {
   route: "home",
   activityFilter: null,
-  payTab: null,
   payPrefill: null,
   payLinks: 0,
   contactPrefill: null,
@@ -213,8 +207,8 @@ export const switchWallet = (walletId: string) => ui.set({ walletId, detail: nul
 /** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
   // Coming to Pay from elsewhere chooses its tab afresh and starts an empty form with no payee,
-  // unless the caller names a tab, a contact or fills the form (openPayForm).
-  const fresh = (): Partial<UiState> => (route === "pay" && ui.get().route !== "pay" ? { payTab: null, payPrefill: null, payCoins: null, payContact: null } : {});
+  // unless the caller names a contact or fills the form (openPayForm).
+  const fresh = (): Partial<UiState> => (route === "pay" && ui.get().route !== "pay" ? { payPrefill: null, payCoins: null, payContact: null } : {});
   const go = () => ui.set({ route, detail: null, activityFilter: null, ...fresh(), ...patch });
   if (!leaveGuard?.(route, go)) go();
 }
@@ -222,7 +216,7 @@ export function navigate(route: Route, patch: Partial<UiState> = {}) {
 /** Opens a fresh Pay ▸ To an address form (each call starts a new one), with what a link or a
  * tool put in it. */
 export function openPayForm(patch: Pick<Partial<UiState>, "payPrefill" | "payCoins"> = {}) {
-  navigate("pay", { payTab: "address", payPrefill: null, payCoins: null, payContact: null, payLinks: ui.get().payLinks + 1, ...patch });
+  navigate("pay", { payPrefill: null, payCoins: null, payContact: null, payLinks: ui.get().payLinks + 1, ...patch });
 }
 
 export function useUi<T>(select: (s: UiState) => T): T {
