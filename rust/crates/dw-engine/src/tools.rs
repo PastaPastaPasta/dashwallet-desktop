@@ -345,7 +345,9 @@ impl NetworkSession {
         floor: u32,
     ) -> Result<u32, EngineError> {
         self.refuse_while_restored()?;
-        self.replay_wait(wallet_id, floor).await
+        let replay = self.replay_wait(wallet_id, floor).await;
+        self.hub.check_fork_spend(wallet_id)?;
+        replay
     }
 
     /// [`Self::replay_guard`] without the money gate: what waits for a
@@ -359,7 +361,7 @@ impl NetworkSession {
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.
         let state = crate::wallet_read::info_of(&wallet).await?;
-        self.hub.detect_truncation(wallet_id, &state.core_wallet);
+        self.hub.observe_coins(wallet_id, &state.core_wallet);
         let live = state.core_wallet.synced_height();
         let (refused, target, loading) = self.hub.update_wallet_state(wallet_id, |s| {
             let target = s.scan_target;
@@ -840,6 +842,7 @@ impl NetworkSession {
             }
             for (id, current, resume_height) in cancels {
                 if let Some(info) = wm.get_wallet_info_mut(&id.0) {
+                    this.hub.history.with_wallet(id, |h| h.fork_restores.cancel_rescan());
                     info.core_wallet.update_synced_height(resume_height);
                     // Under the lock that moved the checkpoint, so no
                     // spend reads it without the hold; the lowest of
@@ -1004,6 +1007,7 @@ impl NetworkSession {
             let wm = wm.read().await;
             for id in &wallets {
                 if let Some(info) = wm.get_wallet_info(&id.0) {
+                    self.hub.detect_truncation(*id, &info.core_wallet);
                     let resume_height = info.core_wallet.synced_height();
                     // The checkpoint is the last scanned height.
                     let checkpoint = start(id).saturating_sub(1);
@@ -1019,11 +1023,16 @@ impl NetworkSession {
                 }
             }
         }
+        let mut fork_rescans = Vec::new();
         for id in wallets {
             if self.upgrade_replay(id).await.is_some() {
                 self.set_upgrade_replay(id, None).await;
             }
             let from = start(&id);
+            let revision = self
+                .hub
+                .history
+                .read_wallet(&id, |h| h.fork_restores.rescan_revision(from));
             // Its replay is stored before a lower birth is: a quit in
             // between leaves the rescan owed, not a birth below a checkpoint
             // that is trusted.
@@ -1031,18 +1040,31 @@ impl NetworkSession {
                 .await?;
             self.lower_birth_height(&manager, id, from).await?;
             let target = (self.rewind_recorded(&manager, id, from.saturating_sub(1))).await?;
-            match (target, state.wallets.get_mut(&id)) {
-                (Some(target), Some(w)) => w.resume_height = w.resume_height.min(target),
-                (None, Some(_)) => {
-                    state.wallets.remove(&id);
+            if let Some(target) = target {
+                let target = state.wallets.get_mut(&id).map_or(target, |w| {
+                    w.resume_height = w.resume_height.min(target);
+                    w.resume_height
+                });
+                if let Some(revision) = revision {
+                    fork_rescans.push((id, revision, target));
                 }
-                _ => {}
+            } else {
+                state.wallets.remove(&id);
             }
             self.hub.pump.mark_history(id, None);
         }
-        if !state.wallets.is_empty() {
+        if !state.wallets.is_empty() || !fork_rescans.is_empty() {
             self.pause_publish().await;
-            self.hub.publish_rescan(|rescan| *rescan = Some(state));
+            self.hub.publish_rescan(|rescan| {
+                for (id, revision, target) in fork_rescans {
+                    self.hub
+                        .history
+                        .with_wallet(id, |h| h.fork_restores.start_rescan(revision, target));
+                }
+                if !state.wallets.is_empty() {
+                    *rescan = Some(state);
+                }
+            });
         }
         self.hub.pump.mark_sync();
         Ok(())

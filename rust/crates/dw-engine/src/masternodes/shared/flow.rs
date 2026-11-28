@@ -329,7 +329,7 @@ impl NetworkSession {
             let wallet = fence.wallet_id();
             let others = self.held_by_others(wallet, id).await?;
             let state = crate::wallet_read::info_of(w).await?;
-            let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
+            let excluded = self.hub.spend_exclusions(wallet, &state.core_wallet)?;
             for c in read_coins(&state.core_wallet).coins {
                 if also.contains(&c.utxo.outpoint)
                     && !others.contains(&c.utxo.outpoint)
@@ -428,7 +428,7 @@ impl NetworkSession {
         }
         let w = self.wallet(&wallet).await?;
         let state = crate::wallet_read::info_of(&w).await?;
-        let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
+        let excluded = self.hub.spend_exclusions(wallet, &state.core_wallet)?;
         if outpoints.iter().any(|o| excluded.contains_key(o)) {
             return Err(dead());
         }

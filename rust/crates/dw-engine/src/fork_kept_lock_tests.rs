@@ -143,6 +143,13 @@ impl Scenario {
     }
 
     fn truncate_silently(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        self.truncate_silently_after(|| {})
+    }
+
+    fn truncate_silently_after(
+        &self,
+        before: impl FnOnce(),
+    ) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
         use platform_wallet::key_wallet_manager::WalletInterface;
         let manager = self.session.manager().unwrap();
         let reconciles = std::mem::take(&mut *self.session.hub.reconciles.lock().unwrap());
@@ -152,6 +159,7 @@ impl Scenario {
             }
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
+            before();
             let mut events = wm.subscribe_events();
             wm.truncate_above(TIP).unwrap();
             std::iter::from_fn(|| events.try_recv().ok()).collect()
@@ -159,7 +167,14 @@ impl Scenario {
     }
 
     fn detect_fork(&self) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
-        let events = self.truncate_silently();
+        self.detect_fork_after(|| {})
+    }
+
+    fn detect_fork_after(
+        &self,
+        before: impl FnOnce(),
+    ) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
+        let events = self.truncate_silently_after(before);
         let manager = self.session.manager().unwrap();
         self.engine
             .block_on(self.session.refresh_wallet_state(&manager, self.id));
@@ -819,6 +834,7 @@ fn a_lock_after_a_silent_fork_before_the_funding_record_holds_its_input() {
 #[test]
 fn a_truncation_event_after_detection_holds_the_restored_input_after_overflow() {
     let s = unrecorded_spender(false);
+    assert_eq!(s.max().0, 11 * COIN);
     s.overflow_early_locks();
     let events = s.detect_fork();
     let seen = s.session.hub.truncations();
@@ -941,4 +957,199 @@ fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     s.hear_lock();
     let kept = hub.history.read_wallet(&s.id, |h| h.session_locks.clone());
     assert_eq!(kept, [s.p.txid()].into_iter().collect());
+}
+
+fn public_rescan(s: &Scenario, from: u32) {
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::Height(from)))
+        .unwrap();
+}
+
+fn finish_rescan(s: &Scenario, height: u32) {
+    mined(&s.engine, &s.session, s.id, height, vec![foreign()]);
+    let manager = s.session.manager().unwrap();
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    s.session.hub.settle_rereads();
+}
+
+#[test]
+fn an_overflow_fork_event_after_detection_keeps_the_input_held_after_a_deep_rescan() {
+    let s = unrecorded_spender(true);
+    s.overflow_early_locks();
+    let events = s.detect_fork();
+    for event in &events {
+        s.session.hub.apply_wallet_event(event);
+    }
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, FUNDED_AT);
+    finish_rescan(&s, TIP);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn a_reported_fork_during_an_unknown_hold_keeps_its_input_held_after_a_deep_rescan() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+
+    let s = unrecorded_spender(true);
+    s.overflow_early_locks();
+    mined(&s.engine, &s.session, s.id, TIP + 2, vec![foreign()]);
+    let manager = s.session.manager().unwrap();
+    let reconciles = std::mem::take(&mut *s.session.hub.reconciles.lock().unwrap());
+    s.engine.block_on(async {
+        for reconcile in reconciles {
+            reconcile.await.unwrap();
+        }
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        (s.session.hub.history).with_wallet(s.id, |h| h.fork_restores = Default::default());
+        wm.truncate_above(TIP + 1).unwrap();
+    });
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    s.session.hub.settle_rereads();
+    assert!(matches!(
+        s.engine.block_on(s.session.max_spendable(
+            s.id,
+            CoinSource::Any,
+            crate::send::FeeMode::PerKb(1_000)
+        )),
+        Err(EngineError::RescanFirst(_))
+    ));
+
+    s.fork();
+    assert!(s.a_held(), "the second fork restored a");
+    start_offline_spv(&s.engine, &s.session);
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    finish_rescan(&s, TIP + 1);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn an_overflow_fork_holds_the_input_of_a_payment_known_only_by_its_change() {
+    let (s, funding) = before_funding();
+    s.overflow_early_locks();
+    s.mined();
+    assert!(s.row().is_some(), "P is recorded through its change");
+    s.fork();
+    s.fund(funding);
+    assert_restored_input(&s, true);
+}
+
+#[test]
+fn an_eventless_fork_after_overflow_holds_the_unrecorded_spenders_input() {
+    let s = unrecorded_spender(true);
+    assert_eq!(s.max().0, 11 * COIN);
+    s.overflow_early_locks();
+    s.detect_fork();
+    assert_restored_input(&s, true);
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, TIP);
+    finish_rescan(&s, TIP);
+    assert_restored_input(&s, true);
+
+    public_rescan(&s, FUNDED_AT);
+    assert_eq!(balances(&s.session, s.id).confirmed, 11 * COIN);
+    finish_rescan(&s, TIP);
+    assert_restored_input(&s, false);
+}
+
+#[test]
+fn an_eventless_fork_found_after_replay_still_requires_a_rescan_below_the_spend() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+
+    let s = unrecorded_spender(true);
+    mined(&s.engine, &s.session, s.id, TIP + 2, vec![foreign()]);
+    assert_eq!(s.max().0, 11 * COIN);
+    s.overflow_early_locks();
+    s.truncate_silently();
+
+    let manager = s.session.manager().unwrap();
+    s.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let block = super::block_with(vec![foreign()]);
+        wm.process_block_for_wallets(
+            &block,
+            block.block_hash(),
+            TIP + 1,
+            &BTreeSet::from([s.id.0]),
+        )
+        .await;
+        wm.update_wallet_synced_height(&s.id.0, TIP + 1);
+    });
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    s.session.hub.settle_rereads();
+    assert_restored_input(&s, true);
+
+    start_offline_spv(&s.engine, &s.session);
+    public_rescan(&s, TIP);
+    finish_rescan(&s, TIP + 1);
+    assert_restored_input(&s, true);
+
+    public_rescan(&s, FUNDED_AT);
+    finish_rescan(&s, TIP + 1);
+    assert_restored_input(&s, false);
+}
+
+#[test]
+fn an_eventless_fork_without_a_coin_read_waits_for_a_deep_rescan() {
+    let s = unrecorded_spender(true);
+    s.overflow_early_locks();
+    s.detect_fork_after(|| {
+        s.session
+            .hub
+            .history
+            .with_wallet(s.id, |h| h.fork_restores = Default::default());
+    });
+    let birth = s.session.hub.wallet_state(&s.id).unwrap().birth_height;
+    assert!(birth < TIP);
+    let balance = balances(&s.session, s.id);
+    assert_eq!((balance.confirmed, balance.withheld), (0, 12 * COIN));
+    assert!(matches!(
+        s.engine.block_on(s.session.max_spendable(
+            s.id,
+            CoinSource::Any,
+            crate::send::FeeMode::PerKb(1_000)
+        )),
+        Err(EngineError::RescanFirst(from)) if from == birth
+    ));
+    assert!(matches!(
+        s.engine
+            .block_on(s.session.utxos(s.id, CoinFilter::default())),
+        Err(EngineError::RescanFirst(from)) if from == birth
+    ));
+    let (_, prepared) = prepare(
+        &s.engine,
+        &s.session,
+        s.id,
+        CoinSource::Outpoints(vec![s.a]),
+        COIN / 2,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert!(matches!(prepared, Err(EngineError::RescanFirst(from)) if from == birth));
+
+    start_offline_spv(&s.engine, &s.session);
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    assert!(s.engine.block_on(s.session.cancel_rescan()).unwrap());
+    let manager = s.session.manager().unwrap();
+    s.engine
+        .block_on(s.session.refresh_wallet_state(&manager, s.id));
+    assert_eq!(balances(&s.session, s.id).confirmed, 0);
+
+    s.engine
+        .block_on(s.session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    finish_rescan(&s, TIP);
+    assert_restored_input(&s, false);
 }

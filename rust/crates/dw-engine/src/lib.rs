@@ -85,6 +85,7 @@ pub mod mix_shield_test;
 #[doc(hidden)]
 pub struct TestSupportProbe;
 
+mod fork_restore;
 mod restore_gate;
 mod tools;
 mod tx_actions;

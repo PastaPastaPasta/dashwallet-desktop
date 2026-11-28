@@ -228,6 +228,13 @@ impl From<EngineError> for AppError {
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
             E::RescanInterrupted => (EngineCode::RescanInterrupted.into(), None),
             E::InvalidXpub(_) => (EngineCode::InvalidXpub.into(), None),
+            E::RescanFirst(_) => (
+                EngineCode::TxActionRefused.into(),
+                Some(ErrorData::TxAction {
+                    refusal: super::TxActionRefusalName::RescanFirst,
+                    wallet_id: None,
+                }),
+            ),
             E::TxActionRefused(refusal) => (
                 EngineCode::TxActionRefused.into(),
                 Some(ErrorData::TxAction {
@@ -639,6 +646,13 @@ mod tests {
         assert_eq!(
             rescan["data"],
             serde_json::json!({ "kind": "txAction", "refusal": "rescanFirst", "walletId": null })
+        );
+        let fork = serde_json::to_value(AppError::from(EngineError::RescanFirst(100))).unwrap();
+        assert_eq!(fork["code"], rescan["code"]);
+        assert_eq!(fork["data"], rescan["data"]);
+        assert_eq!(
+            fork["message"],
+            "Run Rescan from block 100 or earlier before spending."
         );
         let wallet = dw_engine::WalletId([7; 32]);
         assert_eq!(

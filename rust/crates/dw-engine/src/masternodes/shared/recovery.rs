@@ -379,6 +379,7 @@ impl NetworkSession {
         let (mut held, excluded) = {
             let state = crate::wallet_read::info_of(&w).await?;
             let excluded = self.hub.recovery_exclusions(wallet, &state.core_wallet);
+            self.hub.check_fork_spend(wallet)?;
             let held: Vec<_> = read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
