@@ -23,3 +23,11 @@ export function QrCode({ matrix, size, label, testId }: { matrix: QrMatrix; size
     </svg>
   );
 }
+
+export function QrPlaceholder({ size, label, testId }: { size: number; label: string; testId?: string }) {
+  return (
+    <div className="qr-placeholder" style={{ width: size, height: size }} role="status" data-testid={testId}>
+      <span className="sr-only">{label}</span>
+    </div>
+  );
+}

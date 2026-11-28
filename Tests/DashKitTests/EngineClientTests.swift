@@ -32,6 +32,17 @@ import Testing
         #expect(EngineClient.coreVersion.hasPrefix("dashwallet_core "))
     }
 
+    @Test func aMissingRecoveredFolderReturnsAnError() async throws {
+        let dir = try TempDir()
+        let client = try EngineClient(dataRoot: dir.url, workerThreads: 2)
+        let index = dir.url.appendingPathComponent("network-folders.json")
+        try Data(#"{"regtest":"regtest-recovered-1"}"#.utf8).write(to: index)
+        #expect(throws: DashKitError.self) {
+            try client.directory(for: .regtest)
+        }
+        try await client.shutdown()
+    }
+
     static let vaultPassphrase = "dashkit test passphrase"
 
     /// Opens regtest on `client` and creates an encrypted vault (no OS
@@ -79,7 +90,7 @@ import Testing
         #expect(try await client.balances(on: .regtest, wallet: walletID) == nil)
         #expect(try await client.vaultStatus(on: .regtest).walletsWithSecrets == [walletID])
         #expect(FileManager.default.fileExists(
-            atPath: client.directory(for: .regtest).appendingPathComponent("wallet.sqlite").path))
+            atPath: try client.directory(for: .regtest).appendingPathComponent("wallet.sqlite").path))
 
         // shutdown() closes the session (emitting sessionClosed) and finishes the bus.
         try await client.shutdown()

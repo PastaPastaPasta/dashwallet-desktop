@@ -285,6 +285,58 @@ fn resolve_abandons_the_recorded_lock_and_signs_nothing() {
     phase_one(&engine, &session, id, &step, lock.txid());
 }
 
+#[test]
+fn reopening_during_repair_keeps_unrelated_funding_available() {
+    use platform_wallet::changeset::{
+        AssetLockChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+
+    let (_dir, engine, session, id, step, lock, a, _paid) = recorded_stuck_lock();
+    let outpoint = OutPoint::new(lock.txid(), 0);
+    let wallet = engine.block_on(session.wallet(&id)).unwrap();
+    let tracked = engine.block_on(wallet.asset_locks().list_tracked_locks());
+    let row = tracked
+        .iter()
+        .find(|row| row.out_point == outpoint)
+        .unwrap();
+    let mut changes = AssetLockChangeSet::default();
+    changes.asset_locks.insert(outpoint, row.into());
+    let persister = session.live().unwrap().persister;
+    persister
+        .store(
+            id.0,
+            PlatformWalletChangeSet {
+                asset_locks: Some(changes),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    persister.flush(id.0).unwrap();
+    drop(persister);
+    drop(wallet);
+    phase_one(&engine, &session, id, &step, lock.txid());
+
+    let session = super::reopen(&engine, session);
+    assert!(engine.block_on(session.abandon_marked(id, lock.txid())));
+    let wallet = engine.block_on(session.wallet(&id)).unwrap();
+    assert!(
+        engine
+            .block_on(wallet.asset_locks().list_tracked_locks())
+            .iter()
+            .any(|row| row.out_point == outpoint)
+    );
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    refresh(&engine, &session, id);
+    super::own_spend_disk_tests::eventually("an unrelated funding step is available", || {
+        session
+            .leases
+            .funding_block(id, "topup/0-1/funding")
+            .is_none()
+    });
+    assert!(session.leases.funding_block(id, &step).is_some());
+    assert!(!spendable(&engine, &session, id, a));
+}
+
 /// Phase 2: once the rescan gives A back, Resolve's self-spend spends it;
 /// once that is ChainLocked the step reads not sent.
 #[test]

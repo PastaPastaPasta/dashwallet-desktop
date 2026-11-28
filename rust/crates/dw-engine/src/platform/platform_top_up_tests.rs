@@ -1092,6 +1092,58 @@ fn a_node_error_to_an_exit_leaves_it_and_its_top_up_held() {
     );
 }
 
+#[test]
+fn exactly_the_exit_that_executes_settles_a_held_top_up() {
+    for earlier_lands in [true, false] {
+        let (w, a) = shortfall();
+        w.net.fee.store(1, Ordering::SeqCst);
+        let first = w.quote(WithdrawAmount::All).unwrap();
+        let top_up = first.exit_of.as_deref().unwrap();
+        w.net.then(Act::Invalid);
+        let e1 = w.exit(&first, &w.f.grant(first.credits)).unwrap();
+        w.net.tick();
+        w.activity();
+        let rows = w.moves();
+        let held = rows.iter().find(|m| m.id == e1.id).unwrap();
+        assert_eq!(
+            (held.state, held.holds()),
+            (PlatformActivityState::Failed, true)
+        );
+
+        let retry = w.quote(WithdrawAmount::All).unwrap();
+        assert_eq!(retry.exit_of.as_deref(), Some(top_up));
+        let before = w.net.credits(a);
+        if earlier_lands {
+            w.net.then(Act::EarlierExecutesThenStaleNonce(1));
+        }
+        let e2 = w.exit(&retry, &w.f.grant(retry.credits)).unwrap();
+        let winner = if earlier_lands { &e1.id } else { &e2.id };
+        w.activity();
+        let moves = w.moves();
+        assert_eq!(moves.len(), 3);
+        for m in &moves {
+            let state = if &m.id == winner {
+                PlatformActivityState::Done
+            } else {
+                PlatformActivityState::Failed
+            };
+            assert_eq!(
+                (m.state, m.holds()),
+                (state, false),
+                "{} ({earlier_lands})",
+                m.id
+            );
+        }
+        assert_eq!(w.net.topped_up.load(Ordering::SeqCst), 0);
+        let sent = w.net.sent.lock().unwrap();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0][&a].0, sent[1][&a].0);
+        assert_eq!(sent[1], sent[2]);
+        let landed = if earlier_lands { 1 } else { 2 };
+        assert_eq!(w.net.credits(a), before - sent[landed][&a].1 - w.net.fee());
+    }
+}
+
 /// The same race with no `exit_of`: as before it, the move is planned on the
 /// read under the lock, an ordinary withdrawal of what the addresses hold.
 #[test]
