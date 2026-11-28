@@ -838,7 +838,18 @@ fn return_from_mixing_pays_distinct_unissued_bip44_addresses_per_chunk() {
 #[test]
 fn return_from_mixing_falls_back_to_distinct_available_addresses_at_gap_limit() {
     let (_dir, engine, session, id) = engine_wallet();
-    let mut issued_scripts = std::collections::HashSet::new();
+    let mut pool_scripts = std::collections::HashSet::new();
+    let current = engine
+        .block_on(session.current_receive_address(id))
+        .unwrap();
+    pool_scripts.insert(
+        current
+            .address
+            .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
+            .unwrap()
+            .assume_checked()
+            .script_pubkey(),
+    );
     loop {
         match engine.block_on(session.next_receive_address(id, None)) {
             Ok(info) => {
@@ -848,19 +859,19 @@ fn return_from_mixing_falls_back_to_distinct_available_addresses_at_gap_limit() 
                     .unwrap()
                     .assume_checked()
                     .script_pubkey();
-                issued_scripts.insert(script);
+                pool_scripts.insert(script);
             }
             Err(crate::EngineError::GapLimit) => break,
             Err(e) => panic!(
                 "unexpected error issuing address #{}: {e:?}",
-                issued_scripts.len()
+                pool_scripts.len()
             ),
         }
     }
     assert!(
-        issued_scripts.len() >= 20,
+        pool_scripts.len() >= 20,
         "expected full receive gap limit, got {}",
-        issued_scripts.len()
+        pool_scripts.len()
     );
 
     let a = denomination(&engine, &session, id);
@@ -912,7 +923,7 @@ fn return_from_mixing_falls_back_to_distinct_available_addresses_at_gap_limit() 
         "fallback multi-chunk return reused the same receive address"
     );
     assert!(
-        issued_scripts.contains(out0) && issued_scripts.contains(out1),
+        pool_scripts.contains(out0) && pool_scripts.contains(out1),
         "fallback return paid an address outside the wallet's receiving pool"
     );
 }
