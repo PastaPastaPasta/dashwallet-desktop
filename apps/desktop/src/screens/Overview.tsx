@@ -255,8 +255,8 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 
-/** DP3-07 D7: the main identity's frequent contacts (DP3-06's strip); a pick opens Pay ▸ To a
- * contact on them, as the contact pane's Pay does. Nothing without an owner. */
+/** DP3-07 D7: the main identity's frequent contacts (DP3-06's strip); a pick opens Pay with
+ * that contact selected, as the contact pane's Pay does. Nothing without an owner. */
 function HomeFrequent({ walletId }: { walletId: string }) {
   const { owner } = useContactsOwner(walletId);
   return owner.kind === "identity" && <HomeFrequentOf key={owner.identity} walletId={walletId} identity={owner.identity} />;
@@ -269,7 +269,7 @@ function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: st
       contacts={frequent.data ?? []}
       testId="home-frequent"
       className="home-frequent card-l1"
-      onPick={(p) => navigate("pay", { payTab: "contact", payContact: { walletId, contact: p.contact } })}
+      onPick={(p) => navigate("pay", { payContact: { walletId, identity, contact: p.contact } })}
     />
   );
 }

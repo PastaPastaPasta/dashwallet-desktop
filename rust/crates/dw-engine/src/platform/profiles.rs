@@ -486,6 +486,37 @@ mod gone_tests {
     use super::super::requests::tests::Fixture;
     use super::*;
 
+    #[test]
+    fn a_payment_address_only_profile_keeps_each_valid_address() {
+        let mut core = vec![7; 21];
+        core[0] = 0;
+        let platform = dpp::address_funds::PlatformAddress::P2pkh([8; 20]).to_bytes();
+        let orchard = dpp::address_funds::OrchardAddress::from_bech32m_string(
+            super::super::shielded_tests::ABANDON_MAINNET,
+        )
+        .unwrap()
+        .to_raw_bytes()
+        .to_vec();
+        let props = ProfileProperties::from_iter([
+            (
+                ProfilePaymentAddressKind::Core.property_name().into(),
+                Value::Bytes(core.clone()),
+            ),
+            (
+                ProfilePaymentAddressKind::Platform.property_name().into(),
+                Value::Bytes(platform.clone()),
+            ),
+            (
+                ProfilePaymentAddressKind::Shielded.property_name().into(),
+                Value::Bytes(orchard.clone()),
+            ),
+        ]);
+        let cached = library_profile(&props).unwrap();
+        assert_eq!(cached.core_payment_address, Some(core));
+        assert_eq!(cached.platform_payment_address, Some(platform));
+        assert_eq!(cached.shielded_address, Some(orchard));
+    }
+
     /// #263: a profile update, for a wallet gone from the manager, fails; no
     /// panic.
     #[test]

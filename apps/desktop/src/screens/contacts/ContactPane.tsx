@@ -136,7 +136,7 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
     toast(o, false);
     if (o?.ok) arm(offer.kind);
   };
-  const pay = () => navigate("pay", { payTab: "contact", payContact: { walletId: pane.walletId, contact: c.contact } });
+  const pay = () => navigate("pay", { payContact: { walletId: pane.walletId, identity: pane.identity, contact: c.contact } });
   let buttons;
   let note: string | null = null;
   let warning: string | null = null;

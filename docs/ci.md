@@ -20,10 +20,10 @@ actions call are not all pinned: `compnerd/gha-setup-swift` (pinned) is a compos
 are off by default, and the artifact upload runs only when its installer fails. Accepted, as for its
 unverified installer below; pinning them would mean vendoring the action.
 
-A new push to a branch, a pull request or `main` cancels that ref's running CI: a burst of merges runs only
-the newest commit, which covers the merges before it. The scheduled and dispatched runs have their own groups
-(the event is part of the group), so a merge never cancels them, and a re-run of an older run gets its own
-group, so it never cancels the newest commit's run. `main-result.yml` counts a cancelled `main` run that had
+A new push to a branch or a pull request cancels that ref's running CI. On `main` the running run always
+finishes: GitHub keeps one pending run per group, so a burst of merges queues a single run for the newest
+commit, which covers the merges before it. The scheduled and dispatched runs have their own groups (the event
+is part of the group), so a merge never waits on them, and a re-run of an older run gets its own group. `main-result.yml` counts a cancelled `main` run that had
 already failed a job as red. `release.yml` no longer runs on `main` pushes; its scheduled and dispatched runs on
 `main` share one group that never cancels a running run.
 A merge that changes only docs (`docs/` and `*.md`, except the docs tests read and `Vendor/`) starts no CI
@@ -244,8 +244,7 @@ every job to a key that nothing has saved yet. `actions/cache` caches SwiftPM's 
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
 depending on the job and the runner (about 45 for `Rust tests (Linux)`, which takes under 20 warm), and a warm one much less.
 Only `ci.yml` on `main` saves the regular Rust caches (`ci-Linux`, `ci-mingw-Linux`, `ci-macOS`,
-`ci-Windows`; a busy merge day can cancel every main run before macOS saves, and the 02:47 UTC run, in its own
-group, saves then); `release.yml`'s build jobs and `nightly.yml` restore them and never save (nightly's fuzz job
+`ci-Windows`; every main run now finishes and saves, as does the 02:47 UTC run in its own group); `release.yml`'s build jobs and `nightly.yml` restore them and never save (nightly's fuzz job
 keeps its own cache, since it also installs a nightly toolchain). Each restoring job installs its toolchains
 as the saving job does, since the key hashes every installed toolchain: only `rust/rust-toolchain.toml`'s on
 Linux, and that plus the image's stable on macOS and Windows. The manual
@@ -425,7 +424,7 @@ Measured over the 24 hours to 11-25 05:40Z (Actions API: 13 finished `ci.yml` ma
 So, trimming only (no new runners):
 
 - `macos-swift` runs the Swift side beside `macos` instead of after it.
-- A newer main push cancels the running main CI run; the newest commit's run covers the merges before it.
+- A main CI run always finishes; merges during it queue one run for the newest commit, which covers them.
 - A docs-only merge starts no CI run (the docs that tests read, and `Vendor/`, still do; on a very large push
   GitHub matches only part of the changed files). A merge never cancels the 02:47 UTC run or a dispatch: the event
   is part of the concurrency group.

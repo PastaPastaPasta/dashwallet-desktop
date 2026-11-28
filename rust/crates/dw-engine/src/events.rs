@@ -625,7 +625,7 @@ pub(crate) struct SessionHub {
     /// establishes the account, which hosts hear even when it found nothing.
     shielded_synced: Mutex<HashSet<WalletId>>,
     /// The wallets whose last shielded pass failed, until one succeeds.
-    shielded_failed: Mutex<HashSet<WalletId>>,
+    shielded_failed: Mutex<HashMap<WalletId, Option<&'static str>>>,
     /// The wallets a status read found ready (a ledger restored from the
     /// store), before any pass of this session scanned them.
     shielded_ready: Mutex<HashSet<WalletId>>,
@@ -953,7 +953,24 @@ impl SessionHub {
 
     /// `wallet`'s last shielded pass of this session failed.
     pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
-        lock(&self.shielded_failed).contains(&wallet)
+        lock(&self.shielded_failed).contains_key(&wallet)
+    }
+
+    pub(crate) fn shielded_pass_failure_reason(&self, wallet: WalletId) -> Option<&'static str> {
+        lock(&self.shielded_failed).get(&wallet).copied().flatten()
+    }
+
+    pub(crate) fn note_shielded_pass_hold(
+        &self,
+        wallets: impl IntoIterator<Item = WalletId>,
+        reason: &'static str,
+    ) {
+        let mut failed = lock(&self.shielded_failed);
+        for wallet in wallets {
+            if failed.insert(wallet, Some(reason)) != Some(Some(reason)) {
+                self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
+            }
+        }
     }
 
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
@@ -1053,7 +1070,7 @@ impl SessionHub {
             final_sends: Mutex::new(Vec::new()),
             shielded_scan: Mutex::new(None),
             shielded_synced: Mutex::new(HashSet::new()),
-            shielded_failed: Mutex::new(HashSet::new()),
+            shielded_failed: Mutex::default(),
             shielded_ready: Mutex::new(HashSet::new()),
             platform_addresses: Mutex::new(HashMap::new()),
             dead_children: Mutex::new(Vec::new()),
@@ -3211,14 +3228,14 @@ impl PlatformEventHandler for SessionHub {
                 WalletShieldedOutcome::Ok(pass) if pass.is_cooldown_skip => continue,
                 WalletShieldedOutcome::Ok(pass) => pass,
                 WalletShieldedOutcome::Err(_) => {
-                    if failed.insert(wallet) {
+                    if failed.insert(wallet, None) != Some(None) {
                         self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
                     }
                     continue;
                 }
                 WalletShieldedOutcome::Skipped => continue,
             };
-            let recovered = failed.remove(&wallet);
+            let recovered = failed.remove(&wallet).is_some();
             let first = synced.insert(wallet);
             let found = (pass.notes_result.new_notes_per_account.values())
                 .chain(pass.newly_spent_per_account.values())
