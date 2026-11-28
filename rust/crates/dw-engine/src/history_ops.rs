@@ -946,6 +946,7 @@ impl NetworkSession {
                     .map(|c| (c.block_height, c.block_hash));
                 candidates =
                     crate::history::settled_candidates(&h.txs, sent, stored, own.map(|c| c.0));
+                candidates.retain(|(t, _)| !h.awaiting_after_fork(t));
                 h.claim_marks = Some(sent.clone());
                 choice
             })

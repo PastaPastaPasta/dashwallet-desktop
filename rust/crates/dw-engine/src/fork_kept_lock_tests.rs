@@ -941,6 +941,26 @@ fn stale_history_after_a_fork_preserves_the_removed_spend_for_a_late_lock() {
 }
 
 #[test]
+fn stale_history_after_a_fork_keeps_a_local_payments_sent_mark() {
+    let mut s = scenario();
+    s.p = send(
+        &s.engine,
+        &s.session,
+        s.id,
+        CoinSource::Outpoints(vec![s.a]),
+        PAID_OUT,
+        false,
+    );
+    s.mined();
+    with_stored_payment_copied(&s, || {
+        s.fork();
+        assert_eq!(s.row(), None);
+    });
+    assert_eq!(s.row(), None, "the copied row belongs to the removed block");
+    assert!(sent_marks(&s.session, s.id).contains(&s.p.txid()));
+}
+
+#[test]
 fn stale_history_after_a_fork_keeps_the_input_held_after_lock_overflow() {
     let s = scenario();
     s.overflow_early_locks();
