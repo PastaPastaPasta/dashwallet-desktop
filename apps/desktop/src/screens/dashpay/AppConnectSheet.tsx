@@ -282,16 +282,6 @@ function Body({ flow, network }: { flow: ConnectFlow; network: string }) {
           <span>{t("dashpay.connect.loading")}</span>
         </div>
       );
-    case "mainnetOff":
-      return (
-        <>
-          <p className="sheet-text" role="alert" data-testid="connect-mainnet-off">
-            {t("dashpay.connect.err.mainnetOff")}
-          </p>
-          {returnFailed}
-          <EndActions flow={flow} />
-        </>
-      );
     case "refused":
       return (
         <>
@@ -361,7 +351,7 @@ export function AppConnectSheet({ walletId, linkId, returnsTo, network, onClose 
     <>
       <Sheet title={t("dashpay.connect.title")} width="medium" testId="connect-sheet" closable={flow.closable} onClose={() => flow.close()}>
         <div className="connect-body" data-testid="connect-body" data-phase={flow.phase}>
-          {flow.phase !== "mainnetOff" && <AppHeader flow={flow} />}
+          <AppHeader flow={flow} />
           <Body flow={flow} network={network} />
         </div>
       </Sheet>
