@@ -1168,22 +1168,6 @@ input[type="radio"]:disabled {
   height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line));
 }
 
-/* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
-   the fiat row and the note of what Core has pending. */
-@media (min-width: 980px) {
-  .hero-band:has(.hero[data-breakdown="none"]) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line));
-  }
-  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
-  .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line));
-  }
-  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line));
-  }
-}
-
-.hero-note,
 .hero-held {
   margin: 0;
   font-size: var(--dw-type-footnote-size);
@@ -1191,7 +1175,6 @@ input[type="radio"]:disabled {
   line-height: var(--dw-type-footnote-line);
 }
 
-.hero-note,
 .hero-held-text {
   opacity: var(--dw-opacity-hero-secondary-text);
 }
@@ -1263,9 +1246,7 @@ input[type="radio"]:disabled {
 }
 
 .hero-breakdown {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
+  display: flex;
   width: 100%;
   max-width: var(--dw-layout-hero-strip-max-width);
   margin-top: var(--dw-space-l);
@@ -1273,25 +1254,19 @@ input[type="radio"]:disabled {
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-card) * 100%), transparent);
 }
 
-.hero-breakdown:has(> :nth-child(5)) {
-  grid-template-columns: 1fr auto 1fr auto 1fr;
-}
-
-.hero-breakdown:has(> :nth-child(7)) {
-  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+.hero:has(.hero-fiat) .hero-breakdown {
+  margin-top: var(--dw-space-s);
 }
 
 .breakdown-cell {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dw-space-s);
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr;
+  align-items: start;
+  column-gap: var(--dw-space-s);
   padding: var(--dw-space-sm) var(--dw-space-l);
-}
-
-.breakdown-text {
-  display: flex;
-  flex-direction: column;
 }
 
 .breakdown-title {
@@ -1301,6 +1276,8 @@ input[type="radio"]:disabled {
 }
 
 .breakdown-subtitle {
+  grid-column: 1 / -1;
+  min-block-size: calc(2 * var(--dw-type-caption2-line));
   font-size: var(--dw-type-caption2-size);
   font-weight: var(--dw-type-caption2-weight);
   line-height: var(--dw-type-caption2-line);
@@ -1314,6 +1291,8 @@ input[type="radio"]:disabled {
 }
 
 .breakdown-divider {
+  flex: none;
+  align-self: center;
   width: 1px;
   height: var(--dw-space-xxl);
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-divider) * 100%), transparent);
@@ -1330,12 +1309,14 @@ input[type="radio"]:disabled {
     height: auto;
     padding-bottom: var(--dw-space-l);
   }
-  .hero-breakdown,
-  .hero-breakdown:has(> :nth-child(5)),
-  .hero-breakdown:has(> :nth-child(7)) {
-    grid-template-columns: 1fr;
+  .hero-breakdown {
+    flex-direction: column;
+  }
+  .breakdown-cell {
+    flex-basis: auto;
   }
   .breakdown-divider {
+    align-self: stretch;
     width: auto;
     height: 1px;
     margin: 0 var(--dw-space-l);

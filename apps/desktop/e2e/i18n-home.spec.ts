@@ -7,7 +7,7 @@ import { checkArea, PSEUDO } from "./pseudo";
 // loading, failed and hidden states, the protocol advisory banner, and the Unfinished transfers card
 // and sheet. The history rows themselves are Activity's and stay out of these roots.
 
-/** Formatted Dash amounts ("0.50 tDASH", "30.39698287", "#.##"), and the sync line's empty state. */
+/** Formatted Dash amounts ("0.50 tDASH", "30.19698287", "#.##"), and the sync line's empty state. */
 const DATA = [/^[+-]?[\p{Nd}.,٫٬\s•*#]+( (t?DASH|mDASH|μDASH|duffs))?$/u, /^[—…]$/, /^[0-9a-f]+…[0-9a-f]+$/];
 
 /** Engine text, not translated in 1.0 (`errorMessage`): the failed read's message. */
@@ -51,7 +51,7 @@ const HELD = { unconfirmed: 20_000_000, immature: 200_000_000, locked: 1_000_000
 
 export const STATES: Record<string, State> = {
   funded: { scenario: "funded", roots: [...BAND, ...HISTORY, "see-all"], go: (page) => page.getByTestId("see-all").waitFor() },
-  "core-note": { scenario: "pools-absent", roots: BAND, go: (page) => page.getByTestId("hero-core-note").waitFor() },
+  "core-only": { scenario: "pools-absent", roots: BAND, go: (page) => expect(page.getByTestId("breakdown-core").locator(".breakdown-subtitle")).toContainText("0.20") },
   "core-held": {
     scenario: "funded",
     roots: BAND,
@@ -60,12 +60,12 @@ export const STATES: Record<string, State> = {
       await expect(page.getByTestId("breakdown-core")).toContainText(/·.*·/);
     },
   },
-  "core-note-held": {
+  "core-only-held": {
     scenario: "pools-absent",
     roots: BAND,
     go: async (page) => {
       await setCore(page, HELD);
-      await expect(page.getByTestId("hero-core-note")).toContainText(/·.*·/);
+      await expect(page.getByTestId("breakdown-core")).toContainText(/·.*·/);
     },
   },
   syncing: { scenario: "catching-up-payment", roots: [...BAND, ...HISTORY], go: (page) => expect(page.getByTestId("hero-sync-line")).not.toHaveText("", { timeout: 15_000 }) },
@@ -193,7 +193,7 @@ test.describe("amounts keep their order under ar-XB", () => {
   test("the Core line keeps each amount beside its word, the first part rightmost", async ({ page }) => {
     await openHome(page, "pools-absent", "light", "ar-XB");
     await setCore(page, HELD);
-    const note = page.getByTestId("hero-core-note");
+    const note = page.getByTestId("breakdown-core").locator(".breakdown-subtitle");
     await expect(note).toContainText(/·.*·/);
     const pending = (await span(note, /0\.20/))!;
     const immature = (await span(note, /2\.00/))!;

@@ -23,7 +23,7 @@ import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
 import { heldLine, heldWayOutText } from "../format/heldUnfinished";
-import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, shieldedSubtitle, type HeroSync, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, shieldedSubtitle, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
@@ -54,10 +54,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
   const tr = useT();
   return (
     <div className="breakdown-cell" data-testid={testId}>
-      <span className="breakdown-text">
-        <span className="breakdown-title">{title}</span>
-        <span className="breakdown-subtitle">{subtitle}</span>
-      </span>
+      <span className="breakdown-title">{title}</span>
       {amount === null || amount === undefined ? (
         <span className="breakdown-amount">
           <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
@@ -69,6 +66,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
           {fiat}
         </span>
       )}
+      <span className="breakdown-subtitle">{subtitle}</span>
     </div>
   );
 }
@@ -105,7 +103,7 @@ function HeldLine({ text, walletId, awaiting }: { text: string; walletId: string
   );
 }
 
-function BalanceHero({ walletId, balances, shielded, shieldedHold, platform, network, hero }: { walletId: string; balances: Balances | null; shielded: PoolReading; shieldedHold: ShieldedHold | null; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
+function BalanceHero({ walletId, balances, shielded, shieldedPendingCredits, shieldedHold, platform, network, hero }: { walletId: string; balances: Balances | null; shielded: PoolReading; shieldedPendingCredits: string; shieldedHold: ShieldedHold | null; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
   const tr = useT();
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
@@ -114,14 +112,11 @@ function BalanceHero({ walletId, balances, shielded, shieldedHold, platform, net
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
   const home = balances && homeBalance(balances, shielded, platform);
-  const rows = home ? breakdownRows(home.pools, discreet, shieldedHold !== null) : [];
-  // Without a breakdown, what Core still has arriving or held goes under the hero (not in discreet mode).
-  const coreNote = balances && rows.length === 0 && !discreet ? coreSubtitle(balances, fmt, "") : "";
   const held = balances ? heldLine(balances, fmt) : "";
   const digits = home ? heroDigits(fmt(home.total)) : null;
   const fiat = useFiat();
   return (
-    <section className="hero" data-testid="hero" aria-label={tr("home.hero.label")} data-breakdown={home && rows.length === 0 ? "none" : undefined}>
+    <section className="hero" data-testid="hero" aria-label={tr("home.hero.label")}>
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
       <span className="hero-caption" role="status" data-testid="hero-sync-line">
         {heroSyncLine(balances, hero)}
@@ -143,17 +138,13 @@ function BalanceHero({ walletId, balances, shielded, shieldedHold, platform, net
         </div>
       )}
       {home && <HeroFiat fiat={fiat} duffs={home.total} hidden={discreet} />}
-      {coreNote && (
-        <p className="hero-note" data-testid="hero-core-note">
-          {coreNote}
-        </p>
-      )}
-      {home && balances && rows.length > 0 && (
+      {home && balances && (
         <div className="hero-breakdown" data-testid="hero-breakdown">
-          {POOL_ROWS.filter((row) => rows.includes(row.pool)).map((row, i) => {
+          {breakdownRows(home.pools).map((row, i) => {
             const reading = home.pools[row.pool];
-            // Core and Shielded name what is still arriving or held; discreet mode keeps that to itself.
-            const subtitle = discreet ? row.subtitle : row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.pool === "shielded" ? shieldedSubtitle(shieldedHold, fmt, row.subtitle) : row.subtitle;
+            let subtitle = row.subtitle;
+            if (!discreet && row.pool === "core") subtitle = coreSubtitle(balances, fmt, subtitle);
+            if (!discreet && row.pool === "shielded") subtitle = shieldedSubtitle(shieldedHold, fmt, subtitle, shieldedPendingCredits);
             return (
               <Fragment key={row.pool}>
                 {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
@@ -311,7 +302,16 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
     <main className="page page-overview" data-testid="page-home">
       <h1 className="sr-only">{tr("home.title")}</h1>
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero walletId={walletId} balances={balance.data ?? null} shielded={pools.shielded} shieldedHold={pools.shieldedHold} platform={pools.platform} network={network} hero={hero} />
+        <BalanceHero
+          walletId={walletId}
+          balances={balance.data ?? null}
+          shielded={pools.shielded}
+          shieldedPendingCredits={pools.shieldedPendingCredits}
+          shieldedHold={pools.shieldedHold}
+          platform={pools.platform}
+          network={network}
+          hero={hero}
+        />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">

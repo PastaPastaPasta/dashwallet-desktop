@@ -72,6 +72,8 @@ export const home = {
   /** The Shielded row's subtitle while a payment that may still go through holds part of it.
    * `amount` is the held total with its unit; `count` the payments holding it. */
   shielded: {
+    pending: "{amount} pending",
+    pendingCredits: { one: "{amount} credit pending", other: "{amount} credits pending" },
     held: {
       one: "{amount} held for a payment",
       other: "{amount} held for {count} payments",

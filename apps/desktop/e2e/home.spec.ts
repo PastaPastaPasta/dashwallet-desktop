@@ -16,9 +16,7 @@ for (const theme of THEMES) {
 
   test(`Home has no pool card with only Platform dust, and Transfer says why (${theme})`, async ({ page }) => {
     await page.goto(fixtureUrl("platform-dust-small", theme));
-    // Nothing movable on Platform: Home has no Platform row.
-    await expect(page.getByTestId("hero-amount")).toBeVisible();
-    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
+    await expect(page.getByTestId("breakdown-platform").locator(".amount-number")).toHaveText("0.00");
     for (const id of POOL_CARDS) await expect(page.getByTestId(id)).toHaveCount(0);
     await expect(page.getByTestId("page-home")).not.toContainText("cannot be moved");
     expect(await platformMoveWhy(page)).toBe("0.00400500 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
@@ -122,14 +120,14 @@ for (const theme of THEMES) {
 
     // The exact amount, with the decimals past the second drawn smaller.
     const number = page.getByTestId("hero-amount").locator(".amount-number");
-    await expect(number).toHaveText("32.04698287");
+    await expect(number).toHaveText("31.84698287");
     const minor = number.locator(".amount-minor");
     await expect(minor).toHaveText("698287");
     const size = (l: typeof number) => l.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
     expect(await size(minor)).toBeLessThan(await size(number));
-    await expect(page.getByTestId("hero-amount").locator(".amount")).toHaveAttribute("title", "32.04698287 tDASH");
+    await expect(page.getByTestId("hero-amount").locator(".amount")).toHaveAttribute("title", "31.84698287 tDASH");
     // The split digits are still one spoken number.
-    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
   });
 }
 
@@ -144,41 +142,65 @@ const setCore = async (page: Page, over: Record<string, number>) => {
   }, over);
 };
 
-const bandHeight = async (page: Page) => (await page.getByTestId("hero-band").boundingBox())!.height;
-
-test("Home's hero shows a round balance without a smaller tail, and no breakdown that repeats it", async ({ page }) => {
+test("Home keeps a Core-only breakdown and masks pending amounts in discreet mode", async ({ page }) => {
   await page.goto(fixtureUrl("pools-absent", "light"));
-  await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
-  // Only Core, with something pending: a line under the hero says so instead of a lone Core row.
-  await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
-  await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
-  // Discreet mode masks the hero, so the line naming what is pending goes too.
+  await expect(page.getByTestId("hero-amount")).toContainText("30.19698287");
+  const core = page.getByTestId("breakdown-core");
+  const subtitle = core.locator(".breakdown-subtitle");
+  await expect(subtitle).toHaveText("0.20 pending");
+  await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
+  await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
   await page.getByTestId("toolbar-discreet").click();
   await expect(page.getByTestId("hero-amount")).toContainText("#.##");
-  await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+  await expect(subtitle).toHaveText("Dash wallet");
   await page.getByTestId("toolbar-discreet").click();
-  await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
+  await expect(subtitle).toHaveText("0.20 pending");
   await setCore(page, { confirmed: 125_000_000, unconfirmed: 0, immature: 0, locked: 0, total: 125_000_000 });
   await expect(page.getByTestId("hero-amount").locator(".amount-number")).toHaveText("1.25");
   await expect(page.getByTestId("hero-amount").locator(".amount-minor")).toHaveCount(0);
-  await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
-  await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+  await expect(subtitle).toHaveText("Dash wallet");
 });
 
 for (const theme of THEMES) {
-  test(`Home's band is shorter with no breakdown under the balance (${theme})`, async ({ page }) => {
+  test(`pending stays on its own balance type without resizing the breakdown (${theme})`, async ({ page }) => {
     await page.goto(fixtureUrl("funded", theme));
-    await expect(page.getByTestId("hero-breakdown")).toBeVisible();
-    const tall = await bandHeight(page);
-    await page.goto(fixtureUrl("pools-absent", theme));
     await setCore(page, { unconfirmed: 0 });
-    await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
-    await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
-    await expect.poll(() => bandHeight(page)).toBeLessThan(tall - 40);
-    // The shortcut card still clears the amount.
-    const amount = (await page.getByTestId("hero-amount").boundingBox())!;
-    const shortcuts = (await page.locator(".shortcut-card").boundingBox())!;
-    expect(shortcuts.y).toBeGreaterThan(amount.y + amount.height);
+    const setShielded = async (pending: boolean, balance = "0") => page.evaluate(({ pending, balance }) => {
+      const f = window.__dwFixture!;
+      const s = f.world.pending.shielded!;
+      s.balance = balance;
+      s.activity = s.activity.map((row, i) => i === 0 ? { ...row, credits: "49609190000", status: pending ? "pending" : "confirmed" } : row);
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } });
+    }, { pending, balance });
+    const strip = page.getByTestId("hero-breakdown");
+    const core = page.getByTestId("breakdown-core");
+    const shielded = page.getByTestId("breakdown-shielded");
+    const platform = page.getByTestId("breakdown-platform");
+    await expect(shielded).toBeVisible();
+    await expect(platform.locator(".amount-number")).toHaveText("0.40");
+    await setShielded(false);
+    await expect(shielded.locator(".amount-number")).toHaveText("0.00");
+    const hero = page.getByTestId("hero-amount");
+    await expect(hero).toHaveAccessibleName("30.59698287 tDASH");
+    const initialBox = await strip.boundingBox();
+    expect(initialBox).not.toBeNull();
+
+    await setCore(page, { unconfirmed: 20_000_000, withheld: 5_000_000 });
+    await setShielded(true);
+    await expect(core.locator(".breakdown-subtitle")).toHaveText("0.25 pending");
+    await expect(shielded.locator(".breakdown-subtitle")).toHaveText("0.4960919 pending");
+    await expect(platform.locator(".breakdown-subtitle")).toHaveText("Platform addresses");
+    await expect(shielded.locator(".amount-number")).toHaveText("0.00");
+    await expect(hero).toHaveAccessibleName("30.59698287 tDASH");
+    expect(await strip.boundingBox()).toEqual(initialBox);
+
+    await setCore(page, { unconfirmed: 0, withheld: 0 });
+    await setShielded(false, "49609190000");
+    await expect(core.locator(".breakdown-subtitle")).toHaveText("Dash wallet");
+    await expect(shielded.locator(".breakdown-subtitle")).toHaveText("Private balance");
+    await expect(shielded.locator(".amount-number")).toHaveText("0.4960919");
+    await expect(hero).toHaveAccessibleName("31.09307477 tDASH");
+    expect(await strip.boundingBox()).toEqual(initialBox);
   });
 
   test(`a failed Platform read keeps its row with "—" and says so (${theme})`, async ({ page }) => {
@@ -187,8 +209,8 @@ for (const theme of THEMES) {
     await expect(row).toContainText("—");
     await expect(row).toContainText("not available");
     await expect(page.getByTestId("breakdown-platform-fiat")).toHaveCount(0);
-    // The hero counts what is known: Core 30.39698287 + Shielded 1.25.
-    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.64698287 tDASH");
+    // The hero counts what is known: Core 30.19698287 + Shielded 1.25.
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.44698287 tDASH");
     await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
   });
 
@@ -198,33 +220,32 @@ for (const theme of THEMES) {
     const row = page.getByTestId("breakdown-shielded");
     await expect(row).toContainText("…");
     await expect(row).toContainText("loading");
-    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("30.79698287 tDASH");
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("30.59698287 tDASH");
   });
 
   test(`discreet mode shows the same rows whatever the pools hold (${theme})`, async ({ page }) => {
     await page.goto(fixtureUrl("funded", theme));
     await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
-    // Shielded and Platform empty: no rows to show while the balance is visible...
+    // Shielded and Platform keep their rows when empty.
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       f.world.pending.shielded!.balance = "0";
       f.world.pending.platform!.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
     });
-    await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
-    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
-    // ...and in discreet mode the three rows, masked, as with money in both, and nothing pending named.
+    await expect(page.getByTestId("breakdown-shielded").locator(".amount-number")).toHaveText("0.00");
+    await expect(page.getByTestId("breakdown-platform").locator(".amount-number")).toHaveText("0.00");
     await page.getByTestId("toolbar-discreet").click();
     for (const pool of ["core", "shielded", "platform"]) await expect(page.getByTestId(`breakdown-${pool}`)).toContainText("#.##");
     await expect(page.getByTestId("breakdown-core")).toContainText("Dash wallet");
-    await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+    await expect(page.getByTestId("hero-breakdown")).not.toContainText("pending");
   });
 }
 
 test("a failed Platform refetch after a good read keeps the last balance", async ({ page }) => {
   await page.goto(fixtureUrl("funded", "light"));
   await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
-  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
   const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_addresses").length);
   const before = await reads();
   await page.evaluate(() => {
@@ -235,7 +256,7 @@ test("a failed Platform refetch after a good read keeps the last balance", async
   await expect.poll(reads).toBeGreaterThan(before);
   await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
   await expect(page.getByTestId("breakdown-platform")).not.toContainText("not available");
-  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
 });
 
 // DP1-09 D4 reversed: the voting card's instant username while the own contest is open.
