@@ -79,7 +79,7 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its ref's running CI on PR branches only. On main the running run always finishes, so
+# Superseded runs are cancelled on every ref except main. On main the running run always finishes, so
 # main gets a complete result even on a busy merge day; GitHub keeps one pending run per group, so a burst of
 # merges queues a single run for the newest head behind it. The event is in the group, so a merge never waits
 # on the 02:47 UTC run or a dispatch. A re-run (attempt 2+) gets its own group. main-result.yml reports a
