@@ -827,6 +827,8 @@ fn create_artifact<'a>(
 
 /// Matching keys prove which identity to adopt. Only padding or proof of
 /// the exact transition lets that identity settle a local payment as executed.
+/// A held create of two or more notes settles only once its notes read
+/// spent and its consumed proof is written; until then the row waits.
 async fn settle_registered(
     session: &NetworkSession,
     wallet: WalletId,
@@ -837,17 +839,30 @@ async fn settle_registered(
         return proved_executed(session, wallet, artifact).await;
     }
     let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
-    if artifact.status == unresolved
-        && !artifact.acked
-        && let Some(hash) = artifact.st_hash
+    let held = !artifact.acked
         && matches!(
-            net.nullifiers(&artifact.published).await,
-            Ok(NullifierRead::Spent(_))
-        )
-    {
-        return settle_proved(session, wallet, hash, unresolved, false).await;
+            artifact.status,
+            ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
+        );
+    let Some(hash) = artifact.st_hash.filter(|_| held) else {
+        return true;
+    };
+    if !matches!(
+        net.nullifiers(&artifact.published).await,
+        Ok(NullifierRead::Spent(_))
+    ) {
+        return false;
     }
-    true
+    if artifact.status == ArtifactStatus::Registered {
+        let settled = (session.leases)
+            .settle_shielded_artifact(wallet, hash, unresolved, None, false)
+            .await;
+        if !matches!(settled, Ok(ArtifactSettled::Settled)) {
+            tracing::warn!(?settled, "a spent Shielded-funded create was not settled");
+            return false;
+        }
+    }
+    settle_proved(session, wallet, hash, unresolved, false).await
 }
 
 /// Records the proof that `artifact`'s create executed ([`settle_proved`])

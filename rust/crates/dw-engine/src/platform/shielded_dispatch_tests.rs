@@ -2403,6 +2403,7 @@ struct Evidence {
     spent: std::sync::Mutex<Option<u64>>,
     partly_spent: std::sync::Mutex<bool>,
     nullifiers_fail: std::sync::Mutex<bool>,
+    fail_nullifiers_after: std::sync::Mutex<Option<usize>>,
     unspent_at: std::sync::Mutex<u64>,
     pruned: std::sync::Mutex<Option<u64>>,
     recorded_at: std::sync::Mutex<u64>,
@@ -2418,9 +2419,19 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
         &self,
         _: &[[u8; 32]],
     ) -> Result<NullifierRead, crate::platform::PlatformError> {
-        self.reads.lock().unwrap().push("spent");
+        let seen = {
+            let mut reads = self.reads.lock().unwrap();
+            reads.push("spent");
+            reads.iter().filter(|&&r| r == "spent").count()
+        };
         super::super::trust::note_lookup(!*self.unverified.lock().unwrap());
-        if *self.nullifiers_fail.lock().unwrap() {
+        if *self.nullifiers_fail.lock().unwrap()
+            || self
+                .fail_nullifiers_after
+                .lock()
+                .unwrap()
+                .is_some_and(|after| seen > after)
+        {
             return Err(crate::platform::PlatformError::Unavailable);
         }
         if *self.partly_spent.lock().unwrap() {
@@ -3310,7 +3321,168 @@ fn a_fresh_unpadded_create_uses_the_index_without_inferring_execution() {
         h.create(draft, &lib, &ev, &lease),
         Ok(ShieldedOutcome::Registered(name))
     );
-    assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Registered);
+    let artifact = h.artifact(12).unwrap();
+    assert_eq!(
+        artifact.status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    let st_hash = artifact.st_hash.unwrap();
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash)))
+            .as_deref(),
+        Some("consumed")
+    );
+    assert!(h.marked_consumed(st_hash));
+}
+
+#[test]
+fn a_fresh_two_note_create_allows_close_and_removal_after_confirmation() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(12, &[12, 13], (DENOMINATION, own_platform()), None);
+    let lib = paying(Some(hook_of(&h, h.staged_create(12, &[12, 13], bytes, id))));
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 101);
+    *ev.spent.lock().unwrap() = Some(100);
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Registered(name))
+    );
+    drop(lease);
+
+    let spent_nullifiers = nullifiers(&[12, 13]);
+    let (coordinator, subwallet) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        for nullifier in &spent_nullifiers {
+            store.clear_pending(subwallet, nullifier).unwrap();
+        }
+        store.clear_redrive(subwallet, &[12; 32]).unwrap();
+        let entry = ShieldedActivityEntry {
+            id: [12; 32],
+            kind: ShieldedActivityKind::Sent,
+            direction: ShieldedDirection::Out,
+            amount: DENOMINATION,
+            fee: None,
+            counterparty: None,
+            memo: None,
+            block_height: Some(101),
+            status: ShieldedActivityStatus::Confirmed,
+            created_at_ms: 0,
+            min_note_position: None,
+            note_cmxs: Vec::new(),
+            spent_nullifiers,
+        };
+        store.save_activity(subwallet, &entry).unwrap();
+    });
+
+    let (session, coordinator, wallet) = (
+        Arc::clone(&h.f.session),
+        Arc::clone(&h.coordinator),
+        h.f.wallet,
+    );
+    h.f.engine.block_on(async move {
+        pool::settle_outcomes(&session, &coordinator, wallet).await;
+    });
+    assert_eq!(
+        h.artifact(12).unwrap().status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+
+    let (session, manager, wallet) = (
+        Arc::clone(&h.f.session),
+        h.f.session.manager().unwrap(),
+        h.f.wallet,
+    );
+    let (unresolved, network_hold, removal_hold) = h.f.engine.block_on(async move {
+        let appdb = session.live().unwrap().appdb;
+        (
+            pool::holds_unresolved(&session.leases, &manager, &appdb, wallet).await,
+            session.holds_shielded_spends().await,
+            pool::removal_hold(&session, &manager, &appdb, wallet).await,
+        )
+    });
+    assert!(!unresolved, "holds_unresolved must be false");
+    assert!(!network_hold, "in-app network close must not be held");
+    assert_eq!(removal_hold, None, "removal_hold must be None");
+
+    h.f.engine
+        .block_on(h.f.session.unload_wallet(h.f.wallet))
+        .expect("Close Wallet must succeed");
+    h.f.engine
+        .block_on(h.f.session.load_wallet(h.f.wallet))
+        .expect("reloading the wallet before removal");
+    let grant =
+        h.f.session
+            .vault
+            .authorize(
+                dw_vault::GrantPurpose::Wipe,
+                Some(&h.f.wallet.0),
+                dw_vault::Credential::Passphrase(PASS),
+            )
+            .unwrap()
+            .id;
+    h.f.engine
+        .block_on(h.f.session.remove_wallet(h.f.wallet, grant))
+        .expect("wallet removal must succeed");
+}
+
+#[test]
+fn an_unpadded_create_waits_when_nullifier_read_errors_or_is_not_spent() {
+    // Immediate fresh two-note create must stay Unknown if nullifiers fail or are unspent.
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(12, &[12, 13], (DENOMINATION, own_platform()), None);
+    let lib = paying(Some(hook_of(&h, h.staged_create(12, &[12, 13], bytes, id))));
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 101);
+    *ev.nullifiers_fail.lock().unwrap() = true;
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unknown)
+    );
+    let st_hash = h.artifact(12).unwrap().st_hash.unwrap();
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash))),
+        None
+    );
+    assert!(!h.marked_consumed(st_hash));
+
+    // Unspent nullifiers also keep it Unknown while Registered.
+    *ev.nullifiers_fail.lock().unwrap() = false;
+    *ev.spent.lock().unwrap() = None;
+    *ev.unspent_at.lock().unwrap() = 102;
+    assert_eq!(h.evidence(draft, &name, &ev), ShieldedOutcome::Unknown);
+    assert!(!h.marked_consumed(st_hash));
+
+    // Recovery branch on Unresolved: if the second nullifier read errors, it must return Unknown.
+    h.rewrite(12, "status = 'unresolved'");
+    *ev.spent.lock().unwrap() = Some(100);
+    ev.reads.lock().unwrap().clear();
+    *ev.fail_nullifiers_after.lock().unwrap() = Some(1);
+    assert_eq!(h.evidence(draft, &name, &ev), ShieldedOutcome::Unknown);
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash))),
+        None
+    );
+    assert!(!h.marked_consumed(st_hash));
+
+    // Once nullifiers read Spent cleanly, recovery writes "consumed" and returns Registered.
+    *ev.fail_nullifiers_after.lock().unwrap() = None;
+    assert_eq!(
+        h.evidence(draft, &name, &ev),
+        ShieldedOutcome::Registered(name)
+    );
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash)))
+            .as_deref(),
+        Some("consumed")
+    );
+    assert!(h.marked_consumed(st_hash));
 }
 
 #[test]
