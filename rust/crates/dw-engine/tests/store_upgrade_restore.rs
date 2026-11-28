@@ -282,10 +282,7 @@ fn removal_succeeds_when_the_named_snapshot_is_missing_and_stays_retired_if_retu
     let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
     let archived = snapshot.dir().with_file_name("archived-before-removal");
     std::fs::rename(snapshot.dir(), &archived).unwrap();
-    assert_eq!(
-        steps_in_child(&f.root, &["remove-main"]),
-        ["removed"]
-    );
+    assert_eq!(steps_in_child(&f.root, &["remove-main"]), ["removed"]);
     assert_eq!(named_wallets(&f.net.join("app.sqlite")), ["Fixture second"]);
     std::fs::rename(&archived, snapshot.dir()).unwrap();
     assert_eq!(steps_in_child(&f.root, &["import-main"]), ["imported"]);
