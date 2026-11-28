@@ -408,6 +408,137 @@ describe("the flow over the fixture", () => {
     expect(flow.phase).toBe("done");
   });
 
+  it("a temporary Platform error on the sheet refresh after a group mismatch keeps Try again and recovers on the next read", async () => {
+    const { flow, backend } = await open("ok");
+    const realQuote = backend.appConnectQuote.bind(backend);
+    const realSheet = backend.appConnectSheet.bind(backend);
+    const quote = vi.spyOn(backend, "appConnectQuote").mockImplementation(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, flow.phase, flow.quote, flow.planChanged]).toEqual([1, "sheet", null, true]);
+
+    sheet.mockRejectedValueOnce(err("platform.unavailable")).mockRejectedValueOnce(err("platform.timeout")).mockImplementation(realSheet);
+
+    flow.retryQuote();
+    await vi.waitFor(() => expect(sheet).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(flow.phase).toBe("sheet"));
+    await settle();
+    expect([flow.phase, flow.quote, flow.quoting, flow.error]).toEqual(["sheet", null, false, null]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toContain("Make sure Dash Platform is on and connected");
+
+    flow.retryQuote();
+    await vi.waitFor(() => expect(sheet).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(flow.phase).toBe("sheet"));
+    await settle();
+    expect([flow.phase, flow.quote, flow.quoting, flow.error]).toEqual(["sheet", null, false, null]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+
+    quote.mockRestore();
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.phase, flow.quoteError, flow.quote!.groups]).toEqual([4, "sheet", null, flow.sheet!.groups]);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("a temporary Platform error on the automatic refresh after a first group mismatch keeps Try again and recovers", async () => {
+    const { flow, backend } = await open("ok");
+    const realQuote = backend.appConnectQuote.bind(backend);
+    const realSheet = backend.appConnectSheet.bind(backend);
+    vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet").mockRejectedValueOnce(err("platform.timeout")).mockImplementation(realSheet);
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, flow.phase, flow.quote, flow.planChanged]).toEqual([1, "sheet", null, true]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.phase, flow.quoteError]).toEqual([2, "sheet", null]);
+  });
+
+  it("a quote that fails for another reason after an automatic group refresh retries as a quote, not a sheet read", async () => {
+    const { flow, backend } = await open("ok");
+    const realQuote = backend.appConnectQuote.bind(backend);
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    const quote = vi
+      .spyOn(backend, "appConnectQuote")
+      .mockImplementationOnce(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }))
+      .mockRejectedValueOnce(err("platform.timeout"));
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, quote.mock.calls.length, flow.phase, flow.quote]).toEqual([1, 2, "sheet", null]);
+
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, quote.mock.calls.length, flow.quoteError]).toEqual([1, 3, null]);
+  });
+
+  it("a permanent refusal on the sheet refresh after a group mismatch still refuses the request", async () => {
+    const { flow, backend } = await open("ok");
+    const realQuote = backend.appConnectQuote.bind(backend);
+    vi.spyOn(backend, "appConnectQuote").mockImplementation(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+
+    sheet.mockRejectedValueOnce(err("connect.stale"));
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.phase).toBe("refused"));
+    expect(connectErrorText(flow.error, "testnet")).toBe("This sign-in request has expired. Ask the app for a new one.");
+  });
+
+  it("a temporary Platform error on the read an approval's group mismatch needs keeps the sheet, with Approve off until Try again reads it", async () => {
+    const { flow, backend, link } = await open("ok");
+    const realQuote = backend.appConnectQuote.bind(backend);
+    const realSheet = backend.appConnectSheet.bind(backend);
+    vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet").mockRejectedValueOnce(err("platform.timeout")).mockImplementation(realSheet);
+    const approved = vi.spyOn(backend, "appConnectApprove");
+    await flow.approve();
+    await vi.waitFor(() => expect(sheet).toHaveBeenCalledTimes(1));
+    await settle();
+    expect([flow.phase, flow.planChanged, flow.quote, flow.error, approved.mock.calls.length, link().started]).toEqual(["sheet", true, null, null, 0, false]);
+    expect(flow.quoteError).toEqual(err("platform.timeout"));
+
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.phase, flow.quoteError]).toEqual([2, "sheet", null]);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("a quote still running when a refresh fails temporarily doesn't answer on the sheet it no longer matches", async () => {
+    const { flow, backend } = await open("ok");
+    const realQuote = backend.appConnectQuote.bind(backend);
+    let sheetFails!: (e: unknown) => void;
+    let quoteLands!: () => void;
+    const quote = vi
+      .spyOn(backend, "appConnectQuote")
+      .mockImplementationOnce(async (...args) => ({ ...(await realQuote(...args)), groups: "c".repeat(64) }))
+      .mockImplementationOnce(async (...args) => {
+        const q = await realQuote(...args);
+        await new Promise<void>((r) => (quoteLands = r));
+        return q;
+      });
+    vi.spyOn(backend, "appConnectSheet").mockImplementationOnce(() => new Promise((_, reject) => (sheetFails = reject)));
+    void flow.requote();
+    await vi.waitFor(() => expect(flow.phase).toBe("loading"));
+    void flow.requote();
+    await vi.waitFor(() => expect(quote).toHaveBeenCalledTimes(2));
+    sheetFails(err("platform.unavailable"));
+    await vi.waitFor(() => expect(flow.phase).toBe("sheet"));
+    quoteLands();
+    await settle();
+    await settle();
+    expect([flow.quote, flow.quoting, flow.quoteError]).toEqual([null, false, err("platform.unavailable")]);
+  });
+
   it("an approval whose fresh quote read other group facts than the sheet shows reads the request again", async () => {
     const { flow, backend, link } = await open("ok");
     const real = backend.appConnectQuote;

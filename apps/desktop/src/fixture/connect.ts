@@ -51,6 +51,9 @@ export const CONNECT_LINKS = {
   quoteOffline: "a99c0000000000000000000000000009",
   /** Its group gains an admin between the sheet's read and the first quote's. */
   groupChanged: "a99c000000000000000000000000000a",
+  /** Its group facts change before each of the first two quotes, and the read of the request
+   * after the second fails once with `platform.unavailable`. */
+  groupRefreshOffline: "a99c000000000000000000000000000b",
 } as const;
 
 export type ConnectOutcome = keyof typeof CONNECT_LINKS;
@@ -64,7 +67,8 @@ export interface FixtureConnect {
   /** The keys an approval added, once it did. */
   keysAdded: number[] | null;
   /** The request was read again since Platform changed it (`planChanged`), or its first approval
-   * went unconfirmed (`notConfirmed`); its group gained an admin (`groupChanged`). */
+   * went unconfirmed (`notConfirmed`); its group gained an admin (`groupChanged`); its one failed
+   * read happened (`groupRefreshOffline`). */
   reread: boolean;
   /** The choice of an approval that went unconfirmed, which a sheet read again offers. */
   earlier: ConnectChoice | null;
@@ -74,6 +78,8 @@ export interface FixtureConnect {
   dismissed: boolean;
   /** Quotes refused so far (`quoteOffline`). */
   quotesFailed: number;
+  /** Times the group facts changed so far (`groupRefreshOffline`). */
+  groupChanges: number;
 }
 
 /** The host a fixture request delivered by the OS returns to. */
@@ -160,7 +166,7 @@ const connectOf = (w: World) => (w.connect ??= {});
 export function takeConnect(w: World, route: LinkRoute): LinkRoute {
   if (route.kind !== "appConnect") return route;
   const outcome = (Object.keys(CONNECT_LINKS) as ConnectOutcome[]).find((k) => CONNECT_LINKS[k] === route.linkId) ?? "ok";
-  connectOf(w)[route.linkId] = { outcome, returnsTo: route.returnsTo, answer: null, started: false, keysAdded: null, reread: false, earlier: null, returned: false, dismissed: false, quotesFailed: 0 };
+  connectOf(w)[route.linkId] = { outcome, returnsTo: route.returnsTo, answer: null, started: false, keysAdded: null, reread: false, earlier: null, returned: false, dismissed: false, quotesFailed: 0, groupChanges: 0 };
   return route;
 }
 
@@ -181,8 +187,9 @@ function refuse(l: FixtureConnect, error: AppError): AppError {
   return error;
 }
 
-/** The group facts as Platform has them now: `groupChanged`'s group gained an admin. */
-const groupGrew = (l: FixtureConnect) => l.outcome === "groupChanged" && l.reread;
+/** The group facts as Platform has them now: `groupChanged`'s and `groupRefreshOffline`'s group gained an admin,
+ * and `groupRefreshOffline`'s changed once more (its digest only). */
+const groupGrew = (l: FixtureConnect) => (l.outcome === "groupChanged" && l.reread) || l.groupChanges > 0;
 
 function bindingsOf(l: FixtureConnect): ConnectBinding[] {
   if (l.outcome === "planChanged" && l.reread) return BINDINGS.slice(0, 2);
@@ -191,7 +198,7 @@ function bindingsOf(l: FixtureConnect): ConnectBinding[] {
 }
 
 /** The digest of the group facts a read found, as 32 bytes of hex. */
-const groupsOf = (l: FixtureConnect) => (groupGrew(l) ? "6a" : "5f").repeat(32);
+const groupsOf = (l: FixtureConnect) => (l.groupChanges === 2 ? "7b" : groupGrew(l) ? "6a" : "5f").repeat(32);
 
 /** The plan a quote binds its grant to: what the choice adds, as 32 bytes of hex. */
 function planOf(choice: ConnectChoice): string {
@@ -252,12 +259,20 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
   };
 
   return {
-    app_connect_sheet: ({ walletId, linkId }, { world }) => sheetOf(world, walletId, linkId),
+    app_connect_sheet: ({ walletId, linkId }, { world }) => {
+      const l = link(world, linkId);
+      if (l.outcome === "groupRefreshOffline" && l.groupChanges === 2 && !l.reread) {
+        l.reread = true;
+        throw fail("platform.unavailable", "platform unavailable");
+      }
+      return sheetOf(world, walletId, linkId);
+    },
     app_connect_quote: ({ walletId, linkId, choice }, { world }) => {
       const { who } = checkChoice(world, walletId, linkId, choice);
       const l = link(world, linkId);
       if (l.outcome === "quoteOffline" && l.quotesFailed++ === 0) throw fail("platform.unavailable", "platform unavailable");
       if (l.outcome === "groupChanged") l.reread = true;
+      if (l.outcome === "groupRefreshOffline" && l.groupChanges < 2) l.groupChanges++;
       const fee = feeOf(choice);
       const balance = l.outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
