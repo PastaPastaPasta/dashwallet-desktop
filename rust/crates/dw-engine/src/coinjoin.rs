@@ -454,6 +454,7 @@ impl Drop for SweepClaim<'_> {
             } else {
                 m.sweeping = false;
             }
+            self.runtime.sweep_finished.notify_waiters();
         }
     }
 }
@@ -486,6 +487,7 @@ pub(crate) struct CoinJoinRuntime {
     v24_seen: AtomicBool,
     /// Chain data is being reset; set and read under the mixers lock.
     resetting: AtomicBool,
+    sweep_finished: tokio::sync::Notify,
     /// Tests: stand-ins for a sweep's broadcast and chunk size.
     #[cfg(test)]
     pub(crate) sweep_hooks: Mutex<sweep_test_hooks::Hooks>,
@@ -505,6 +507,7 @@ impl CoinJoinRuntime {
             quotes: Mutex::new(HashMap::new()),
             v24_seen: AtomicBool::new(false),
             resetting: AtomicBool::new(false),
+            sweep_finished: tokio::sync::Notify::new(),
             #[cfg(test)]
             sweep_hooks: Mutex::default(),
         }
@@ -602,6 +605,10 @@ impl CoinJoinRuntime {
         let mut mixers = self.mixers();
         let m = mixers.entry(id).or_default();
         if m.sweeping || m.resending {
+            #[cfg(test)]
+            if let Some(replay) = self.sweep_hooks.lock().unwrap().resend_contended.as_ref() {
+                replay.mark_reached();
+            }
             return Err(CoinJoinFailure::MoveRunning);
         }
         m.resending = true;
@@ -3328,8 +3335,20 @@ impl NetworkSession {
                 let replay = Arc::clone(&session);
                 tokio::spawn(async move { replay.resume_rebroadcasts().await });
                 for id in manager.list_wallet_ids_blocking() {
-                    if let Err(e) = session.resend_mixed_coins(WalletId(id), None).await {
-                        tracing::debug!(error = %e, "sweep chunks not sent again");
+                    loop {
+                        let finished = session.coinjoin.sweep_finished.notified();
+                        tokio::pin!(finished);
+                        finished.as_mut().enable();
+                        match session.resend_mixed_coins(WalletId(id), None).await {
+                            Err(EngineError::CoinJoin(CoinJoinFailure::MoveRunning)) => {
+                                finished.await
+                            }
+                            Err(e) => {
+                                tracing::debug!(error = %e, "sweep chunks not sent again");
+                                break;
+                            }
+                            Ok(_) => break,
+                        }
                     }
                 }
             });
@@ -4113,6 +4132,7 @@ pub(crate) mod sweep_test_hooks {
     #[derive(Clone, Default)]
     pub(crate) struct Hooks {
         pub(crate) broadcast: Option<Broadcast>,
+        pub(crate) resend_contended: Option<Arc<crate::coins::TestPause>>,
         pub(crate) max_inputs: Option<usize>,
         /// The shield lock's input cap a consolidation must exceed.
         pub(crate) lock_inputs: Option<usize>,

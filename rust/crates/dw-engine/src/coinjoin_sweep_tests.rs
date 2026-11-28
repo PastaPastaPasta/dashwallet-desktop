@@ -1147,13 +1147,48 @@ fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
         .on_network_event(&dash_spv::network::NetworkEvent::PeerConnected(peer));
 
     let wire = hook(&f, 1, &[Outcome::Rejected]);
+    let contended = Arc::new(crate::coins::TestPause::default());
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let gate = std::sync::Mutex::new(Some((entered, release_rx)));
+    let mut hooks = f.session.coinjoin.sweep_hooks.lock().unwrap();
+    hooks.resend_contended = Some(Arc::clone(&contended));
+    let original = hooks.broadcast.take().unwrap();
+    hooks.broadcast = Some(Arc::new(move |tx| {
+        let held = gate.lock().unwrap().take();
+        if let Some((entered, release)) = held {
+            entered.send(()).unwrap();
+            release
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .unwrap();
+        }
+        original(tx)
+    }));
+    drop(hooks);
+    let outcome = std::thread::scope(|scope| {
+        let explicit = scope.spawn(|| within(&f, f.session.resend_transaction(f.wallet, txid)));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .unwrap();
+        dash_spv::EventHandler::on_network_event(
+            &*f.session.hub,
+            &dash_spv::network::NetworkEvent::PeerDisconnected(peer),
+        );
+        dash_spv::EventHandler::on_network_event(
+            &*f.session.hub,
+            &dash_spv::network::NetworkEvent::PeerConnected(peer),
+        );
+        let waiting = contended.wait_reached(std::time::Duration::from_secs(20));
+        release.send(()).unwrap();
+        assert!(waiting, "replay did not race the Activity resend");
+        explicit.join().unwrap()
+    });
     assert!(matches!(
-        within(&f, f.session.resend_transaction(f.wallet, txid)),
+        outcome,
         Err(EngineError::Send(
             crate::send::SendFailure::BroadcastUnknown { .. }
         ))
     ));
-    assert_eq!(wire.txs(), std::slice::from_ref(&chunk));
     assert!(
         !within(&f, async {
             Ok(f.session.abandon_marked(f.wallet, txid).await)
@@ -1162,18 +1197,14 @@ fn an_explicit_sweep_retry_refused_after_clear_replays_on_reconnect() {
     );
     assert!(sweep_out_keys(&f).contains(&txid));
     assert_held(&f, &chunk);
-    dash_spv::EventHandler::on_network_event(
-        &*f.session.hub,
-        &dash_spv::network::NetworkEvent::PeerDisconnected(peer),
-    );
-    dash_spv::EventHandler::on_network_event(
-        &*f.session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected(peer),
-    );
     within(&f, async {
-        while wire.txs().len() < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while wire.txs().len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the reconnect during Activity Resend did not retry the chunk");
         Ok(())
     })
     .unwrap();

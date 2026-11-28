@@ -337,6 +337,35 @@ fn reopening_during_repair_keeps_unrelated_funding_available() {
     assert!(!spendable(&engine, &session, id, a));
 }
 
+#[test]
+fn an_unrelated_abandon_can_finish_during_an_asset_lock_proof_wait() {
+    let (_dir, engine, session, id, _step, lock, _a, paid) = recorded_stuck_lock();
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 1)]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let s = Arc::clone(&session);
+    engine
+        .block_on(session.on_runtime(async move {
+            let _proof_wait = s.asset_lock_resume_gate(id, lock.txid()).await?.unwrap();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                s.abandon_transaction(id, payment.txid()),
+            )
+            .await
+            .expect("an unrelated Abandon is blocked by the asset-lock proof wait")?;
+            assert!(s.abandon_marked(id, payment.txid()).await);
+            Ok(())
+        }))
+        .unwrap();
+}
+
 /// Phase 2: once the rescan gives A back, Resolve's self-spend spends it;
 /// once that is ChainLocked the step reads not sent.
 #[test]

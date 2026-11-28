@@ -2505,6 +2505,10 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
+        let mut funding_gates = Vec::with_capacity(own.len());
+        for txid in own {
+            funding_gates.push(self.asset_lock_gate(wallet, *txid).write_owned().await);
+        }
         let proof = self.root_proof(manager, wallet, root).await;
         let _gate = self.abandon_gate(wallet).write_owned().await;
         // Planned on a copy under the lock that applies it, so the replay
@@ -2686,7 +2690,10 @@ impl NetworkSession {
             let refuse = false;
             let abandoned = match refuse {
                 true => BTreeSet::new(),
-                false => abandon_with(&mut info.core_wallet, root, &descendants),
+                false => {
+                    self.hub.hold_rebroadcast_coins(wallet, &released);
+                    abandon_with(&mut info.core_wallet, root, &descendants)
+                }
             };
             if abandoned.is_empty() {
                 #[cfg(test)]
@@ -3974,7 +3981,13 @@ impl NetworkSession {
         let refused = false;
         let abandoned = match refused {
             true => BTreeSet::new(),
-            false => abandon_with(core, root, &rest),
+            false => {
+                self.hub.hold_rebroadcast_coins(
+                    wallet,
+                    &plan.freed.iter().copied().collect::<Vec<_>>(),
+                );
+                abandon_with(core, root, &rest)
+            }
         };
         if abandoned.is_empty() {
             // key-wallet refused (it settled the root meanwhile): the marks
@@ -4527,6 +4540,8 @@ impl NetworkSession {
         let Ok(manager) = self.manager() else {
             return;
         };
+        // A reconnect during a failing attempt must see the generation it rearms.
+        let _replay = self.rebroadcast_replay_gate.lock().await;
         let generation = manager.spv().run_session();
         if generation == 0
             || self
@@ -4550,6 +4565,11 @@ impl NetworkSession {
                     .await
                 {
                     Err(EngineError::NoPeers) => {
+                        #[cfg(test)]
+                        {
+                            let pause = self.hub.pause_rebroadcast_rearm.lock().unwrap().take();
+                            crate::coinjoin::test_pause(pause).await;
+                        }
                         // Preserve a request made by a newer rebuild.
                         let _ = self.rebroadcast_replay.compare_exchange(
                             0,
