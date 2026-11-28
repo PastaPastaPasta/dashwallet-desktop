@@ -2196,6 +2196,19 @@ mod idle_tests {
         (pass, resume)
     }
 
+    #[test]
+    fn an_older_probe_keeps_the_newer_pool_note_count() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let (pass, resume) = stalled(&engine, &session, Some(1), |_| false);
+        let newest = (300, crate::events::unix_now() + 1);
+        *session.platform.pool_notes.lock().unwrap() = Some(newest);
+        resume.send(()).unwrap();
+        assert!(!engine.block_on(pass).unwrap());
+        assert_eq!(*session.platform.pool_notes.lock().unwrap(), Some(newest));
+    }
+
     /// The loops start as `start_loops` marks them, under a new supervisor:
     /// its epoch.
     fn loops_started(session: &NetworkSession) -> u64 {

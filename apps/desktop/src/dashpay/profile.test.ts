@@ -282,6 +282,15 @@ describe("the request card (IOS-068, AND-071)", () => {
     expect(requestModel("al", 5, contest({ state: { kind: "lost", winner: "M" }, temporaryName: "al2" }), false, alice(), date, ON).lines).toEqual([]);
   });
 
+  it("hides a cached temporary name in the request after a contradictory ownership read", () => {
+    const instant = { ...ON, asked: { label: "al2", outcome: null, recorded: true } };
+    const main = alice({ mainName: "al2", names: ["al2"] });
+    const open = requestModel("al", 5, contest({ temporaryName: "al2" }), false, main, date, instant);
+    expect(open.temporary).toBeNull();
+    const won = requestModel("al", 5, contest({ state: { kind: "won" }, temporaryName: "al2" }), false, main, date, instant);
+    expect(won.lines).toEqual([PROFILE_COPY.request.won.text]);
+  });
+
   it("R6: a failed read keeps the status's card and says so; another label's read is not used", () => {
     expect(requestModel("al", 5, undefined, true, alice(), date)).toMatchObject({ state: "open", readFailed: true, tally: null });
     expect(requestModel("bob", 5, contest(), false, alice(), date)).toMatchObject({ title: "Voting – @bob", tally: null });

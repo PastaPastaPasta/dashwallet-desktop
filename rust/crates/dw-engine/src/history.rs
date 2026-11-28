@@ -3979,6 +3979,7 @@ mod tests {
             retryable: false,
             name_error: None,
             profile_error: None,
+            temporary_name_outcome: None,
             owner: 0,
             created_at: 0,
             updated_at: 0,

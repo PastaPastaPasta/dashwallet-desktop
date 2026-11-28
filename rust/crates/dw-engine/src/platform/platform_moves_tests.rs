@@ -2018,7 +2018,7 @@ fn a_registration_fallback_is_never_the_receive_address() {
     let w = World::new();
     let first = w.receive_address();
     assert_eq!(first.index, 0);
-    insert_shielded_row(&w, &first.address);
+    insert_shielded_row(&w, &first.address, "draft", false);
     let next = w.receive_address();
     assert_eq!(next.index, 1, "{next:?}");
     assert_ne!(next.address, first.address);
@@ -2026,11 +2026,12 @@ fn a_registration_fallback_is_never_the_receive_address() {
 }
 
 /// A Shielded-funded registration row of `fallback`.
-fn insert_shielded_row(w: &World, fallback: &str) {
+fn insert_shielded_row(w: &World, fallback: &str, phase: &str, named: bool) -> i64 {
+    let identity = named.then(|| super::super::registration_flow::b58(&[42; 32].into()));
     let funding = super::super::registration_rows::Funding::Shielded {
         denomination: DASH,
         fallback: fallback.to_owned(),
-        identity: None,
+        identity,
     }
     .encode();
     let row = dw_appdb::NewRegistration {
@@ -2040,16 +2041,17 @@ fn insert_shielded_row(w: &World, fallback: &str) {
         temp_label: None,
         funding,
         initial_profile: None,
-        phase: "draft".into(),
+        phase: phase.into(),
     };
     w.call(move |_, s, _, id| async move {
         let wallet = id.to_string();
-        s.appdb_op(move |db| db.insert_registration(&wallet, &row, 1))
-            .await
-            .map_err(PlatformError::from)?;
-        Ok(())
+        Ok(
+            s.appdb_op(move |db| db.insert_registration(&wallet, &row, 1))
+                .await
+                .map_err(PlatformError::from)?,
+        )
     })
-    .unwrap();
+    .unwrap()
 }
 
 /// The account's index of `address`.
@@ -2243,19 +2245,114 @@ fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
     assert_eq!(index_of(&w, next), Some(3));
 }
 
-/// C-funding F13 (bot r4702054059): after a reload that derived only index
-/// 0, the activity read still asks for every recorded fallback, so a
-/// refund there is read as the refund it is. Mutant: activity reads
-/// without deriving them first.
 #[test]
-fn the_activity_read_covers_every_recorded_fallback_after_a_reload() {
+fn activity_keeps_a_fallback_receipt_spent_while_registration_is_pending() {
     let w = World::new();
     let fallback = published_fallback(&w);
+    let address = parse(&fallback).unwrap();
+    insert_shielded_row(&w, &fallback, "keys_prepared", true);
+    assert!(w.activity().is_empty());
+
+    w.net.fund(address, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH);
+
+    w.net.state.lock().unwrap().insert(address, (1, 0));
+    w.net.tick();
+    let rows = w.activity();
+    assert_eq!(incoming_total(&rows), DASH);
+    assert!(rows.iter().any(|row| {
+        row.kind == PlatformActivityKind::Outgoing
+            && row.address.as_deref() == Some(fallback.as_str())
+            && row.credits == DASH
+    }));
+}
+
+#[test]
+fn activity_reads_a_fallback_after_the_registration_completes() {
+    let w = World::new();
+    let fallback = published_fallback(&w);
+    let address = parse(&fallback).unwrap();
+    let draft = insert_shielded_row(&w, &fallback, "keys_prepared", true);
     reload_derived_to(&w, 0);
-    assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
-    w.activity();
-    let read = w.net.read_sets.lock().unwrap().last().cloned();
-    assert!(read.unwrap().contains(&parse(&fallback).unwrap()));
+    assert_eq!(index_of(&w, fallback.clone()), None);
+    assert!(w.activity().is_empty());
+    assert!(
+        w.net
+            .read_sets
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains(&address)
+    );
+    assert!(index_of(&w, fallback.clone()).is_some());
+
+    w.call(move |_, session, _, wallet| async move {
+        let wallet = wallet.to_string();
+        let changed = session
+            .appdb_op(move |db| {
+                let change = dw_appdb::RegistrationChange {
+                    phase: Some("identity_registered".into()),
+                    identity: Some(super::super::registration_flow::b58(&[42; 32].into())),
+                    ..Default::default()
+                };
+                db.update_registration(&wallet, draft, 0, "keys_prepared", false, &change, 2)
+            })
+            .await
+            .map_err(PlatformError::from)?;
+        assert_eq!(changed, dw_appdb::RegistrationUpdate::Applied);
+        Ok(())
+    })
+    .unwrap();
+    w.net.fund(address, DASH);
+    let rows = w.activity();
+    assert_eq!(incoming_total(&rows), DASH);
+    assert_eq!(rows[0].address.as_deref(), Some(fallback.as_str()));
+}
+
+#[test]
+fn activity_reads_later_credits_after_a_registration_refund_settles() {
+    let w = World::new();
+    let fallback = published_fallback(&w);
+    let address = parse(&fallback).unwrap();
+    let draft = insert_shielded_row(&w, &fallback, "keys_prepared", true);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+
+    w.net.fund(address, 2 * DASH);
+    w.arm_refund_for(draft, 7, address, DASH, (named_at, w.height()));
+    let rows = w.activity();
+    assert_eq!(
+        incoming_total(&rows),
+        DASH,
+        "credits above the refund are incoming"
+    );
+    assert_eq!(w.refund_rows()[0].credits, DASH);
+
+    w.net.fund(address, DASH);
+    assert_eq!(incoming_total(&w.activity()), 2 * DASH);
+    assert_eq!(w.refund_rows()[0].credits, DASH);
+}
+
+#[test]
+fn reusing_a_fallback_requires_a_readable_receive_record() {
+    let w = World::new();
+    new_fallback(&w);
+    let result = w.call(|_, session, wallet, id| async move {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        session
+            .appdb_op(move |db| {
+                db.set_setting(
+                    &scope,
+                    dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
+                    Some("invalid"),
+                )
+            })
+            .await
+            .map_err(PlatformError::from)?;
+        Ok(fallback_address(&session, &wallet, session.vault.network()).await?)
+    });
+    assert!(result.is_err());
 }
 
 /// C-funding F13 (bot r4699213569): a fallback no row names and no create
@@ -2283,7 +2380,7 @@ fn a_published_or_named_fallback_is_never_given_again() {
     let named = new_fallback(&w);
     assert_ne!(named, published);
     assert_eq!(index_of(&w, named.clone()), Some(3));
-    insert_shielded_row(&w, &named);
+    insert_shielded_row(&w, &named, "draft", false);
     let third = new_fallback(&w);
     assert_eq!(index_of(&w, third.clone()), Some(5));
     assert!(third != published && third != named);
@@ -4722,6 +4819,17 @@ impl World {
     /// named at activity height `named_at` and proved executed by
     /// `executed_by`.
     fn arm_refund(&self, n: u8, to: PlatformAddress, cap: u64, heights: (u64, u64)) {
+        self.arm_refund_for(7, n, to, cap, heights);
+    }
+
+    fn arm_refund_for(
+        &self,
+        draft: i64,
+        n: u8,
+        to: PlatformAddress,
+        cap: u64,
+        heights: (u64, u64),
+    ) {
         let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
         let to = bech32m(&to, Network::Regtest);
         (self.f.engine)
@@ -4730,7 +4838,7 @@ impl World {
                     &s,
                     id,
                     ([n; 32], [n.wrapping_add(1); 32]),
-                    (7, to, cap),
+                    (draft, to, cap),
                     heights,
                 )
                 .await

@@ -428,6 +428,86 @@ fn mainnet_refuses_a_shielded_registration_before_anything_is_written() {
     assert_ne!(resumed, Err(off));
 }
 
+#[test]
+fn overlapping_shielded_starts_do_not_both_allocate_a_fallback() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().shielded = ready();
+    lib.hang_at(Call::FallbackAddress, When::After);
+    let spawn_start = || {
+        let (session, wallet, lib) = (Arc::clone(&f.session), f.wallet, Arc::clone(&lib));
+        let grant = f.grant(0, 2 * DENOMINATION, f.credential());
+        f.session.rt.spawn(async move {
+            registration::start(&session, wallet, lib, shielded(DENOMINATION), grant).await
+        })
+    };
+    let first = spawn_start();
+    eventually("first start takes its fallback", || {
+        lib.hung.load(Ordering::SeqCst)
+    });
+    let second = spawn_start();
+    f.engine.block_on(async {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            until(|| lib.w().fallbacks_taken > 1),
+        )
+        .await;
+    });
+    let allocations = lib.w().fallbacks_taken;
+    first.abort();
+    second.abort();
+    assert_eq!(allocations, 1);
+}
+
+#[test]
+fn shielded_start_refuses_a_spend_only_lease() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().shielded = ready();
+    let grant = f.grant(0, 2 * DENOMINATION, f.credential());
+    let lease = f
+        .engine
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::ShieldedSpend, &[grant]),
+        )
+        .unwrap();
+    assert!(lease.call_shielded_spend_key().is_ok());
+    assert!(lease.call_identity_signer(&[0]).is_err());
+    let result = f.engine.block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        shielded(DENOMINATION),
+        lease.id_string(),
+    ));
+    assert_eq!(
+        result,
+        Err(RegistrationError::Platform(PlatformError::GrantInvalid))
+    );
+    assert!(f.rows().is_empty());
+    assert_eq!(lib.w().fallbacks_taken, 0);
+}
+
+#[test]
+fn a_cleared_shielded_create_on_mainnet_does_not_adopt_an_identity() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().mainnet = true;
+    lib.w().identities.push((0, created()));
+    let draft = f.insert(shielded_row(Some(created())));
+    script(&lib, [(None, Ok(ShieldedOutcome::Cleared))]);
+
+    f.drive(&lib, draft, None, false);
+
+    let row = f.row(draft);
+    assert_eq!(phase(&row), Phase::KeysPrepared);
+    assert_eq!(row.error.as_deref(), Some("platform.feature_off"));
+    assert_eq!(row.identity, None);
+    assert_eq!(named(&row), None);
+    assert_eq!(lib.w().shielded_asks.len(), 1);
+}
+
 /// On mainnet a named row still settles by its evidence, with a lease or
 /// without one; an unnamed row the library refuses as `feature_off` fails
 /// retryable and stays unnamed, its funds uncommitted.
@@ -510,6 +590,61 @@ fn a_proved_create_registers_the_named_identity() {
         ),
         (draft, 0, DENOMINATION, FALLBACK, None)
     );
+}
+
+#[test]
+fn a_shielded_create_waits_when_the_keys_belong_to_another_index() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let id = created();
+    let draft = f.insert(shielded_row(Some(id.clone())));
+    lib.w().identities.push((7, id.clone()));
+    script(&lib, [(None, Ok(ShieldedOutcome::Registered(id.clone())))]);
+
+    f.drive(&lib, draft, None, false);
+
+    let row = f.row(draft);
+    assert_eq!(row.identity, None);
+    assert_eq!(row.identity_index, Some(0));
+    assert_eq!(named(&row), Some(id));
+    assert_eq!(
+        f.status(&lib, draft).waiting,
+        Some(RegistrationWait::PaymentUnknown)
+    );
+}
+
+#[test]
+fn a_shielded_create_does_not_adopt_an_unproved_cached_identity() {
+    for outcome in [
+        None,
+        Some(ShieldedOutcome::Fallback(created())),
+        Some(ShieldedOutcome::Consumed(created())),
+    ] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let named_create = outcome.is_some();
+        let draft = f.insert(shielded_row(named_create.then(created)));
+        // The library can cache keys from a different index at this slot.
+        let cached = flow::b58(&dpp::prelude::Identifier::from([0x62u8; 32]));
+        lib.w().identities.push((0, cached));
+        lib.w().shielded_identity_key_index = Some(7);
+        if let Some(outcome) = outcome {
+            script(&lib, [(None, Ok(outcome))]);
+        }
+
+        f.drive(&lib, draft, None, false);
+
+        let row = f.row(draft);
+        assert_eq!(phase(&row), Phase::KeysPrepared);
+        assert_eq!(row.identity, None);
+        assert_eq!(lib.w().shielded_asks.len(), usize::from(named_create));
+        if named_create {
+            assert_eq!(
+                f.status(&lib, draft).waiting,
+                Some(RegistrationWait::PaymentUnknown)
+            );
+        }
+    }
 }
 
 /// F12: a named create of unknown outcome waits `payment_unknown`: its

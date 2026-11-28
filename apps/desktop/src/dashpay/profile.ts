@@ -14,7 +14,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { formatLocale, messageTable, t } from "../i18n";
-import { INSTANT_COPY, instantOffer, VOTE_COPY, type InstantInputs } from "./instantOffer";
+import { INSTANT_COPY, instantOffer, temporaryForDisplay, VOTE_COPY, type InstantInputs } from "./instantOffer";
 import { REG_COPY } from "./registration";
 import { COPY, homeCard, namesState, temporaryLine, withTable, type CardModel, type NamesState, type StatusInputs } from "./status";
 
@@ -322,7 +322,7 @@ export function requestModel(
   switch (read?.state.kind) {
     case "won": {
       // The engine's proved result (a won state), never the tally; the instant name stays owned.
-      const kept = instant?.offered && read.temporaryName ? read.temporaryName : null;
+      const kept = instant?.offered ? temporaryForDisplay(read.temporaryName, instant) : null;
       return { ...closed, state: "won", title: C.won.title(label), lines: [kept ? VOTE_COPY.wonMain(label, kept) : C.won.text], tally: tallyRows(read) };
     }
     case "lost":
@@ -332,7 +332,7 @@ export function requestModel(
     default: {
       const end = read?.endsAt ?? endsAt;
       const fromMain = !main.namesUpdating && main.mainName && main.mainName !== label ? main.mainName : null;
-      const temporary = read?.temporaryName ?? fromMain;
+      const temporary = temporaryForDisplay(read?.temporaryName ?? fromMain, instant);
       const lines: string[] = [C.deciding, end === null ? C.notify : C.endsOn(date(end))];
       if (temporary) lines.push(temporaryLine(temporary, label, instant?.asked));
       const offer = instantOffer(main, temporary, instant);

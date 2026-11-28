@@ -2527,6 +2527,11 @@ pub(crate) struct PwShielded {
 }
 
 impl PwShielded {
+    pub(super) async fn activity_is_unheld(&self, activity: &[u8; 32]) -> bool {
+        let store = self.coordinator.store().read().await;
+        holds_activity(&*store, self.subwallet(), activity).is_ok_and(|held| !held)
+    }
+
     /// [`sync_drained_holds`] for this wallet, once its account is bound:
     /// every read of its notes binds first, so a held note is held before
     /// any is read. A sync that fails fails the bind, so nothing reads or
@@ -4279,8 +4284,7 @@ impl ShieldedLib for PwShielded {
             .await
             .ok()?
             .ok()??;
-        *super::runtime::guard(cache) = Some((notes, at));
-        Some(notes)
+        Some(keep_pool_count(&self.pw.session, (notes, at)).0)
     }
 
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
@@ -5539,8 +5543,8 @@ fn spent_create(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
 }
 
 /// Whether the registration proof ([`dw_appdb::dp_registration_proved`]) of
-/// every create in `st_hashes` reads consumed: its notes spent with no
-/// identity, nothing owed. No proof, or any other, is `false`; a proof that
+/// every create in `st_hashes` reads consumed: its notes are spent, and
+/// its execution is unattributed. No proof, or any other, is `false`; a proof that
 /// cannot be read is `None`.
 async fn spent_create_consumed(
     appdb: &Arc<dw_appdb::AppDb>,
@@ -6002,9 +6006,7 @@ pub(crate) async fn periodic_pass(
     let (Some(session), Some(manager)) = (weak_session.upgrade(), weak_manager.upgrade()) else {
         return false;
     };
-    if let Some(count) = count {
-        *super::runtime::guard(&session.platform.pool_notes) = Some(count);
-    }
+    let count = count.map(|count| keep_pool_count(&session, count));
     if !runs(&session) || session.enter().await.is_err() {
         return false;
     }
@@ -6245,6 +6247,17 @@ async fn pool_is_idle(
         .all(|&w| (store.pending_redrives_for_wallet(w)).is_ok_and(|r| r.is_empty()))
         && (subwallets.iter()).all(|&s| store.stale_pending_spends(s).is_ok_and(|r| r.is_empty()));
     idle.then_some(())
+}
+
+fn keep_pool_count(session: &NetworkSession, count: (u64, u64)) -> (u64, u64) {
+    let mut cache = super::runtime::guard(&session.platform.pool_notes);
+    if let Some(kept) = *cache
+        && kept.1 > count.1
+    {
+        return kept;
+    }
+    *cache = Some(count);
+    count
 }
 
 /// The proved number of notes in Platform's shielded pool, and the proof's

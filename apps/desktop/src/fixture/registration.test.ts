@@ -350,6 +350,22 @@ describe("discard and Finish transfers", () => {
     expect(f.world.pending.shielded?.balance).toBe(balance);
   });
 
+  it("keeps an unnamed Shielded payment on hold if spends turn off before it resumes", async () => {
+    const f = install("dashpay-registering-shielded-recheck");
+    const row = f.world.dashpay.registrations[0];
+    row.fundsCommitted = false;
+    row.waiting = "authorize";
+    const pool = f.world.pending.shielded!;
+    pool.spendsAvailable = false;
+    const balance = pool.balance;
+
+    await cmd.resumeRegistration(W, "reg-1", await grant(0, "5000000000"));
+    f.advanceRegistration("reg-1");
+
+    expect(await rowOf("reg-1")).toMatchObject({ phase: "keysPrepared", identity: null, fundsCommitted: false });
+    expect(pool.balance).toBe(balance);
+  });
+
   it("D10: Finish transfers resumes the rows waiting for it", async () => {
     install("dashpay-registration-needs-finish");
     expect(await cmd.finishAssetLocks(W, await grant(1))).toEqual({ resumed: 1, completed: 0, stillPending: 0, alreadyUsed: 0, byKind: [], unread: [] });
@@ -373,6 +389,15 @@ describe("names", () => {
     expect(await cmd.nameAvailability(W, "zed-77")).toEqual({ kind: "available", contested: false });
     f.world.dashpay.searchOffline = true;
     expect(await cmd.nameAvailability(W, "zed-77")).toEqual({ kind: "unknown" });
+  });
+
+  it("records a successful temporary username retry on its completed request", async () => {
+    install("dashpay-instant-failed");
+    expect((await rowOf("reg-1")).temporaryNameOutcome).toBe("name.taken");
+    const authority = await grant(0, "2000000000");
+    await expect(cmd.registerName(W, IDENTITY.alice, "alice2", authority)).resolves.toEqual({ kind: "registered" });
+    expect((await rowOf("reg-1")).temporaryNameOutcome).toBe("registered");
+    expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending" });
   });
 
   it("D6: register_name from credits, under grant_request's caps", async () => {
@@ -528,6 +553,7 @@ describe("a temporary name beside a contested label (DP1-09 D4 reversed)", () =>
     expect(await rowOf(draft)).toMatchObject({ phase: "done", temporaryLabel: "alice2" });
     expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending", label: "alice" });
     expect((await cmd.identities(W))[0]).toMatchObject({ names: ["alice2"], mainName: "alice2" });
+    expect(await cmd.nameAvailability(W, "alice2")).toEqual({ kind: "taken", owner: NEW_IDENTITY });
     expect((await cmd.contestStatus(W, NEW_IDENTITY, "alice")).temporaryName).toBe("alice2");
   });
 

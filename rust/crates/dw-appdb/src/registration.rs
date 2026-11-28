@@ -65,6 +65,7 @@ pub struct RegistrationRow {
     pub name_error: Option<String>,
     /// Why the initial profile was not published, the same way.
     pub profile_error: Option<String>,
+    pub temporary_name_outcome: Option<String>,
     /// The generation of the claim that holds the row
     /// ([`AppDb::claim_registration`]).
     pub owner: u64,
@@ -103,6 +104,7 @@ pub struct RegistrationChange {
     pub name_error: Option<String>,
     /// Records why the initial profile was not published.
     pub profile_error: Option<String>,
+    pub temporary_name_outcome: Option<String>,
     /// Replaces the funding record (an invitation's request outcome,
     /// DP5-03 D8).
     pub funding: Option<String>,
@@ -134,7 +136,7 @@ pub enum RegistrationUpdate {
 
 const COLUMNS: &str = "id, identity_index, identity, label, temp_label, funding, initial_profile,
      asset_lock_outpoint, phase, error, retryable, owner, created_at, updated_at, name_error,
-     profile_error";
+     profile_error, temporary_name_outcome";
 
 fn read_row(r: &Row<'_>) -> rusqlite::Result<RegistrationRow> {
     Ok(RegistrationRow {
@@ -154,6 +156,7 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<RegistrationRow> {
         updated_at: r.get::<_, i64>(13)? as u64,
         name_error: r.get(14)?,
         profile_error: r.get(15)?,
+        temporary_name_outcome: r.get(16)?,
     })
 }
 
@@ -307,7 +310,7 @@ impl AppDb {
 
     /// Replaces the row's `funding` with `funding` if it still reads
     /// `expected`, the row is `keys_prepared`, not failed, and still held by
-    /// `owner`, and writes the `local:` key `marker` (`value`) beside it, in one
+    /// `owner`, and writes its `local:` markers beside it, in one
     /// transaction synced to disk before it returns: a Shielded-funded row
     /// names the identity its create makes before the create's dispatch
     /// artifact is written (C-funding F11), and the marker says the name was
@@ -316,7 +319,7 @@ impl AppDb {
         &self,
         (wallet_id, id, owner): (&str, i64, u64),
         (expected, funding): (&str, &str),
-        (marker, value): (&str, &str),
+        markers: &[(&str, &str)],
         now: u64,
     ) -> Result<bool> {
         self.durably(|conn| {
@@ -330,10 +333,30 @@ impl AppDb {
             if n == 0 {
                 return Ok(false);
             }
-            Self::put_setting(&tx, &crate::local_scope(wallet_id), marker, Some(value))?;
+            let scope = crate::local_scope(wallet_id);
+            for &(marker, value) in markers {
+                Self::put_setting(&tx, &scope, marker, Some(value))?;
+            }
             tx.commit()?;
             Ok(true)
         })
+    }
+
+    pub fn record_temporary_name_registered(
+        &self,
+        wallet: &str,
+        draft: i64,
+        identity: &str,
+        label: &str,
+    ) -> Result<bool> {
+        let updated = self.conn().execute(
+            "UPDATE dp_registration SET temporary_name_outcome = 'registered'
+             WHERE wallet_id = ?1 AND id = ?2 AND identity = ?3 AND temp_label = ?4
+               AND phase IN ('contested', 'profile_created', 'done')
+               AND temporary_name_outcome IS NOT 'registered'",
+            params![wallet, draft, identity, label],
+        )?;
+        Ok(updated == 1)
     }
 
     /// Applies `change` if the row is still in `phase` with the failure
@@ -371,6 +394,7 @@ impl AppDb {
                  name_error = COALESCE(?16, name_error),
                  profile_error = COALESCE(?17, profile_error),
                  funding = COALESCE(?18, funding),
+                 temporary_name_outcome = COALESCE(?19, temporary_name_outcome),
                  updated_at = ?12
              WHERE wallet_id = ?1 AND id = ?2 AND phase = ?3 AND (error IS NOT NULL) = ?13
                  AND owner = ?15",
@@ -393,6 +417,7 @@ impl AppDb {
                 change.name_error,
                 change.profile_error,
                 change.funding,
+                change.temporary_name_outcome,
             ],
         );
         match written {
@@ -480,6 +505,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_temporary_name_retry_records_success_during_profile_creation() {
+        let db = AppDb::open_in_memory().unwrap();
+        let mut row = draft("alice");
+        row.identity = Some("a1".into());
+        row.temp_label = Some("alice2".into());
+        row.phase = "profile_created".into();
+        let draft = db.insert_registration(W, &row, 1).unwrap();
+        assert!(
+            db.record_temporary_name_registered(W, draft, "a1", "alice2")
+                .unwrap()
+        );
+        let row = db.registration_row(W, draft).unwrap().unwrap();
+        assert_eq!(row.temporary_name_outcome.as_deref(), Some("registered"));
+    }
+
     /// DEC-210: a new flow of a removed wallet is refused, not given the id
     /// of another wallet's row.
     #[test]
@@ -539,7 +580,7 @@ mod tests {
         let old = r#"{"v":1,"kind":"core_balance","lock_duffs":1}"#;
         let new = r#"{"v":1,"kind":"core_balance","lock_duffs":2}"#;
         let named = |owner, expected| {
-            db.set_registration_funding_durable((W, id, owner), (expected, new), ("m", "7"), 2)
+            db.set_registration_funding_durable((W, id, owner), (expected, new), &[("m", "7")], 2)
                 .unwrap()
         };
         assert!(!named(0, old), "a draft names nothing");

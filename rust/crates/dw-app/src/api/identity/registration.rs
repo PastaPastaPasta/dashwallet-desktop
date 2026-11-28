@@ -428,6 +428,10 @@ pub struct RegistrationStatus {
     pub name_failure: Option<String>,
     /// The same for the initial profile, which `updateProfile` publishes.
     pub profile_failure: Option<String>,
+    /// `registered` or the error code of the temporary name attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub temporary_name_outcome: Option<String>,
     /// Set on an invitation claim's row.
     pub invitation: Option<RegistrationInvitation>,
     /// A row funded from the Platform addresses: like a claim's, its resume
@@ -485,6 +489,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             failure,
             name_failure,
             profile_failure,
+            temporary_name_outcome,
             invitation,
             from_platform,
             from_shielded,
@@ -506,6 +511,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             failure: failure.map(Into::into),
             name_failure,
             profile_failure,
+            temporary_name_outcome,
             invitation: invitation.map(Into::into),
             from_platform,
             from_shielded,

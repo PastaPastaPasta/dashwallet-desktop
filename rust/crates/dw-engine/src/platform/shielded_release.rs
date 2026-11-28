@@ -156,7 +156,7 @@ pub(crate) async fn presence(
     let value = (session.appdb_op(move |db| db.setting(&scope, &key)).await).ok()?;
     match value {
         None => Some(None),
-        Some(v) => v.parse().ok().map(Some),
+        Some(v) => stored_height(&v).map(Some),
     }
 }
 

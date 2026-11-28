@@ -782,10 +782,16 @@ function withContest(w: World, state: ContestStatus["state"], temporaryName = "a
 
 /** "alice" contested by a registration that asked for the temporary "alice2" beside it (DP1-09
  * D4 reversed): registered (`owned`), or refused, so the identity holds no name. */
-function withInstant(w: World, owned: boolean): World {
+function withInstant(w: World, owned: boolean, owner: string = IDENTITY.alice): World {
   const c = contestPending(w, 1_900_000_000);
-  c.dashpay.registrations = [contestedRow("alice2")];
+  c.dashpay.registrations = [{
+    ...contestedRow("alice2"),
+    temporaryNameOutcome: owned ? "registered" : "name.taken",
+  }];
   c.dashpay.identities = c.dashpay.identities.map((i) => (owned ? { ...i, names: ["alice2"], mainName: "alice2" } : { ...i, names: [], mainName: null }));
+  if (owned) {
+    c.dashpay.directory.push({ identity: owner, username: "alice2", displayName: null, avatarUrl: null, relation: owner === IDENTITY.alice ? "isSelf" : "stranger", unverified: false });
+  }
   return c;
 }
 
@@ -2274,6 +2280,7 @@ const SCENARIOS = {
   /** DP1-09 D4 reversed: the registration's temporary "alice2" registered beside the contested
    * "alice" (iOS's success line), or refused (its failure line and Try again). */
   "dashpay-instant-ok": (t) => withInstant(base(t), true),
+  "dashpay-instant-transferred": (t) => withInstant(base(t), true, IDENTITY.mallory),
   "dashpay-instant-failed": (t) => withInstant(base(t), false),
   /** The vote on "alice" won (the main name switches, "alice2" kept) or lost ("alice2" stays main). */
   "dashpay-instant-won": (t) => withContest(withInstant(base(t), true), { kind: "won" }, "alice2"),

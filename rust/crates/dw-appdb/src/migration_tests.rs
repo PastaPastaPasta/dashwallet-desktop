@@ -28,6 +28,7 @@ const REQUEST_USERNAME: i64 = 2026111001;
 const MG_WITHDRAWALS: i64 = 2026111002;
 const SHARED_ABANDON: i64 = 2026111901;
 const CONTACT_PAYOUT: i64 = 2026111902;
+const REGISTRATION_TEMPORARY_NAME: i64 = 2026112701;
 
 const DP_TABLES: [&str; 11] = [
     "dp_avatar",
@@ -90,7 +91,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
     drop(db);
 
     let conn = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
@@ -116,7 +117,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
             SHARED_ABANDON,
-            CONTACT_PAYOUT
+            CONTACT_PAYOUT,
+            REGISTRATION_TEMPORARY_NAME,
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -158,7 +160,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -193,7 +195,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
             SHARED_ABANDON,
-            CONTACT_PAYOUT
+            CONTACT_PAYOUT,
+            REGISTRATION_TEMPORARY_NAME,
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -211,7 +214,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+        assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -250,7 +253,8 @@ fn reopening_and_rerunning_change_nothing() {
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
             SHARED_ABANDON,
-            CONTACT_PAYOUT
+            CONTACT_PAYOUT,
+            REGISTRATION_TEMPORARY_NAME,
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -283,8 +287,49 @@ fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
         conn.execute_batch("DROP TRIGGER stop").unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
     assert!(db.conn().prepare("SELECT 1 FROM tx_fiat").is_ok());
+}
+
+#[test]
+fn temporary_name_outcome_upgrade_preserves_existing_registrations() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(CONTACT_PAYOUT as i32))
+            .run(&mut conn)
+            .unwrap();
+        assert_eq!(versions(&conn).last(), Some(&CONTACT_PAYOUT));
+        conn.execute(
+            "INSERT INTO dp_registration
+                 (id, wallet_id, identity_index, identity, label, temp_label, funding, phase,
+                  created_at, updated_at)
+             VALUES (1, ?1, 7, 'a1', 'alice', 'alice2', 'wallet', 'profile_created', 1, 2),
+                    (2, ?1, NULL, NULL, 'bob', NULL, 'wallet', 'draft', 3, 3)",
+            [W],
+        )
+        .unwrap();
+    }
+
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
+    let rows = db.registration_rows(W).unwrap();
+    let [alice, bob] = rows.as_slice() else {
+        panic!("expected both registrations after upgrading: {rows:?}");
+    };
+    assert_eq!(alice.id, 1);
+    assert_eq!(alice.identity_index, Some(7));
+    assert_eq!(alice.identity.as_deref(), Some("a1"));
+    assert_eq!(alice.label, "alice");
+    assert_eq!(alice.temp_label.as_deref(), Some("alice2"));
+    assert_eq!(alice.phase, "profile_created");
+    assert_eq!(alice.temporary_name_outcome, None);
+    assert_eq!(bob.id, 2);
+    assert_eq!(bob.label, "bob");
+    assert_eq!(bob.phase, "draft");
+    assert_eq!(bob.temporary_name_outcome, None);
 }
 
 /// MG-13 P16: the upgrade from the previous schema (`V2026111001`) adds
@@ -315,7 +360,7 @@ fn upgrade_from_request_username_adds_the_withdrawal_tables() {
         );
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
     assert_eq!(db.masternode_ops(W).unwrap().len(), 1);
     assert!(db.payout_barriers().unwrap().is_empty());
     assert!(!db.payout_barriers_backfilled().unwrap());
@@ -386,7 +431,7 @@ fn upgrade_backfills_shared_abandons_and_rewrites_inherited_refusals() {
         .unwrap()
         .as_secs();
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
     let row = |n: usize| db.shared_session(W, &id(n)).unwrap().unwrap();
 
     let legacy = row(0);
@@ -552,6 +597,11 @@ fn shipped_migrations_are_unchanged() {
                 "dp_contact_payout".to_string(),
                 CHECKSUM_CONTACT_PAYOUT
             ),
+            (
+                REGISTRATION_TEMPORARY_NAME,
+                "registration_temporary_name".to_string(),
+                CHECKSUM_REGISTRATION_TEMPORARY_NAME
+            ),
         ]
     );
 }
@@ -576,6 +626,7 @@ const CHECKSUM_REQUEST_USERNAME: u64 = 9240954005103932665;
 const CHECKSUM_MG_WITHDRAWALS: u64 = 8235275556707324401;
 const CHECKSUM_SHARED_ABANDON: u64 = 6131843723659947961;
 const CHECKSUM_CONTACT_PAYOUT: u64 = 16737723588251346381;
+const CHECKSUM_REGISTRATION_TEMPORARY_NAME: u64 = 16768115524980108697;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -1046,7 +1097,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    assert_eq!(db.schema_version().unwrap(), REGISTRATION_TEMPORARY_NAME);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(

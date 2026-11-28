@@ -454,7 +454,7 @@ bodies decided where the rows leave room:
 | `register_name(identity, label, grant)` | async | An extra name, or the name of a registration that parked before it. Its cost is budgeted, not capped: an estimated fee bound plus, for a contested label, the contest fund to join, which the grant's `max_credits` and the identity's balance must cover before the grant is redeemed or anything is sent (`platform.grant_exceeded`, `platform.insufficient_credits`; a refused grant stays usable). The fee bound is an estimate until DP1-06's cost table and E0-04's per-transition accounting; Platform may charge more. A contested label returns `ContestStarted{ends_at}`; joining another identity's contest whose join deadline is unknown is `platform.unavailable`, with nothing spent. A plain name registered while the identity's own contest is open becomes its temporary name. `grant` may be a lease id (§1); a vault grant id is redeemed into a one-shot lease that ends with the call. Either way the write runs under a call permit of the lease, charged the cost in credits, so a vault lock waits for it (E0-04 §2a.3, P2b). What became of a write comes from Platform only: a label whose write may be in flight is no owned name, and a retry (or the identity's next registration) asks Platform and records the answer. | `NameError` |
 | `set_main_name(identity, label)` | async | Picks which owned name the identity shows; `None` clears the pick. A name the identity does not own by Platform's evidence (a label whose write may be in flight included) is `invalid_argument`. The pick is the user's and sync never rewrites it (#4978). A stored pick, like every name-pref write (pending, refused, temporary, contested), is signalled `Platform{Identities}` (DP6-01). | `NameError` |
 | `main_name(identity)` | async | The name the identity shows: the pick while owned, else the temporary name during an open contest, else the label it contended for once won, else the name it got first by Platform's acquisition time (the marketplace row's `$transferredAt`, else `$createdAt`, else the library's stamp; untimed names last). `None` if it owns none. | `NameError` |
-| `contest_status(identity, label)` | async | The own contest as Platform's vote state shows it now (one vote-state query): `state` `Open` (voting, or ended and waiting for the block that resolves it), `Won`, `Lost{winner}` (`winner` `None`: resolved with no winner) or `Locked`; `ends_at` (UNIX s) from the watch row, else from the end-date index while open; the contenders of the first page in Platform's order with their votes and `is_self`; the lock and abstain votes; the temporary name pref. An outcome found for a watched contest is applied as the contest watch applies it (item 45): journaled, the label out of the open contests, the row gone. A label the identity neither contends for (on a page that lists every contender) nor watches is `invalid_argument`; one it watches that DAPI does not show yet is `Open`. **Implemented (DP1-04).** | `NameError` (`identity.not_found` for an identity the wallet lacks; `invalid_argument` as above or for an id that is not Base58; `name.invalid` for a bad label) |
+| `contest_status(identity, label)` | async | The own contest as Platform's vote state shows it now (one vote-state query): `state` `Open` (voting, or ended and waiting for the block that resolves it), `Won`, `Lost{winner}` (`winner` `None`: resolved with no winner) or `Locked`; `ends_at` (UNIX s) from the watch row, else from the end-date index while open; the contenders of the first page in Platform's order with their votes and `is_self`; the lock and abstain votes; the temporary name preference when a current DPNS lookup confirms that the identity owns it. An outcome found for a watched contest is applied as the contest watch applies it (item 45): journaled, the label out of the open contests, the row gone. A label the identity neither contends for (on a page that lists every contender) nor watches is `invalid_argument`; one it watches that DAPI does not show yet is `Open`. **Implemented (DP1-04).** | `NameError` (`identity.not_found` for an identity the wallet lacks; `invalid_argument` as above or for an id that is not Base58; `name.invalid` for a bad label) |
 | `search_users(prefix, limit)` | async | DPNS prefix search. Only the prefix goes to DAPI: trimmed and normalized (homograph-safe, lower case); blank or `limit` 0 is `invalid_argument`, a prefix no label could start with (anything outside `[a-z0-9-]` after normalizing, a `.dash` suffix included) returns no hits without a query, and `limit` is capped at 100. Hits in Platform's order, each with the label as Platform spells it and the identity's profile (the hits' profiles in one query, `$ownerId In`, once per identity; a failed fetch shows no profile). `relation` is relative to the wallet's main identity (`IsSelf` for it; `Stranger` with no main identity or no contacts snapshot yet). `unverified` (§5): the label as that identity's unless the names' fetch verified, and the profile shown unless the profiles' fetch did. Search writes no trust records. **Implemented (DP2-03).** | `NameError` |
 | `resolve_user(username)` | async | Exact lookup: trimmed, one `.dash` suffix dropped (any case), normalized; `None` if no such name, and without a query for a label DPNS cannot hold. Hit as in `search_users`. **Implemented (DP2-03).** | `NameError` |
 
@@ -2638,6 +2638,7 @@ pub struct RegistrationStatus {
     pub failure: Option<RegistrationFailure>,
     pub name_failure: Option<String>,
     pub profile_failure: Option<String>,
+    pub temporary_name_outcome: Option<String>,
     pub invitation: Option<RegistrationInvitation>,
     pub from_platform: bool,
     pub from_shielded: bool,
@@ -3442,6 +3443,9 @@ The shapes are in §3. What they mean, where the name does not say:
   SPV does not verify the quorum) fails the proof as `platform.context_unavailable`, not `proof_invalid`: the proof
   was not judged.
 - **`RegistrationStatus`** mirrors a `dp_registration` row. `phase` is the §3.4 state.
+  `temporary_name_outcome` is `registered` when the temporary username was registered, an error
+  code when its attempt failed, and absent before an attempt or on a legacy row.
+  A successful `register_name` for that identity and temporary label records success.
   - `waiting` says what a parked or slow flow waits for, and so which line the UI shows: `Unlock` ("Unlock to finish";
     the flow parked keyless, and `resume_registration` needs a grant), `Authorize` ("Confirm to finish": the vault is
     unlocked but the flow's grant died with an unlock, a scope or passphrase change, or its budget ran short; the
@@ -5476,8 +5480,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `ShieldedReadiness` also gains `change`: what the notes the create selects (as the library selects them) hold
     above the denomination, which the library pays back to the wallet's own default shielded address; `None` while
     the notes cannot pay it.
-    At `KeysPrepared` the step adopts an identity of the seed at the row's index if one exists, else, under the
-    shielded wallet lock and a `Registration` lease, signs one identity create from the pool with the registration
+    At `KeysPrepared` the step adopts a known identity only after its proved registration keys match the row's
+    index. If no candidate exists, under the shielded wallet lock and a `Registration` lease it signs one identity
+    create from the pool with the registration
     keys of the row's index, the row's denomination and its fallback (`PwShielded::identity_create`, the engine's only
     call of the library's create). The dispatch hook accepts that create only: one the engine did not start, a second
     one, or one whose denomination, fallback or identity id differ from the row's is refused, and while it is armed
@@ -5485,9 +5490,15 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     activity's height at that moment) durably before the spend's dispatch artifact, and records the dispatch after
     it; a dispatch it cannot record is settled not sent. A create the library sends again from its store records the
     dispatch first, and is refused if it cannot. The step reads the notes and their rest only once no shielded pass
-    runs. A named row settles by evidence alone: the identity proved present, with the engine's proof of it written,
-    is `IdentityRegistered` (a proof not written leaves it `payment_unknown` until the next check writes it); an artifact not executed, or no artifact with the row named and no dispatch
-    recorded, clears the name and the row tries again (a refused send fails it, retryable, so it never loops; so
+    runs. A named row settles by evidence alone. The decisive Platform reads obey the SPV provenance policy.
+    The engine verifies that a present identity's proved registration keys match the row's index before recording
+    the create as executed and advancing to `IdentityRegistered`. An unproved index or mismatched keys leave the
+    payment `payment_unknown`.
+    A library `not_executed` result for an unpadded create also checks for the identity before offering a retry.
+    A retry requires a fully spent nullifier proof and an absence proof at or above its height. An unspent,
+    partially spent, or older absence proof leaves the payment pending. A proved-unsent artifact,
+    or no artifact with the row named and no dispatch recorded, clears the name (a refused send fails it,
+    retryable, so it never loops; so
     does a create the hook named and then refused); an artifact executed or unresolved (the library resolves every
     failure after the dispatch, the pool floor's refusal included, `unresolved`) whose published nullifiers, the
     bundle's padding included, are all proved spent at height h with the identity proved absent at or above h
@@ -5500,8 +5511,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     flight, unresolved, or settled `executed` and not acknowledged (a success the library resolves unattributable)
     whose identity reads present is proved `executed`. An unresolved one
     whose anchor is proved pruned from the pool's recorded anchors at height p (they are kept 1,000 blocks), p above
-    the highest proved read that found that create's anchor recorded (stored durably per transition; no such read,
-    no proof), and none of whose published nullifiers is spent by a proved read at or above p never executed and
+    the highest proved read that found that create's anchor recorded (stored durably per transition at dispatch or
+    on a later read), and none of whose published nullifiers is spent by a proved read at or above p never executed and
     never can: its artifact is settled `not_executed`, the name cleared and the row failed, retryable; its notes stay
     reserved in upstream's store until the library releases them on its own proof (the engine acknowledges no outcome
     and frees no note: upstream keeps none to acknowledge). Before either settlement the engine writes its proof durably beside
@@ -5516,12 +5527,18 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     failed read) is `waiting: payment_unknown`, and so stays a row whose anchor is never read recorded after the
     failure, or a pool so quiet that it keeps the anchor; a bundle of two or more notes has no padding, so a partly
     spent read decides nothing. The engine's reading of the library's outcomes leaves a create to this evidence: its
-    unpadded spend read executed there would read here as Platform's fallback.
+    unpadded spend read executed there would read here as Platform's fallback. An unpadded create's identity
+    at another index stays pending. A matching index permits registration to adopt the identity, while the
+    local transition stays unattributed unless proof identifies it. An unresolved local transition whose
+    nullifiers are proved spent can be recorded as consumed without being marked executed.
     While a named row has no identity, `funds_committed` is true and `discard_registration` is refused. A fallback
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);
-    it absorbs the rise of the first read after it only when no read of the addresses happened since the create was
-    named, else it claims nothing and the rise reads `Incoming`. `RegistrationStatus` gains `from_shielded`, true
+    it absorbs the rise of the first read that covers the fallback unless the baseline already recorded a funded
+    fallback after the create was named. Activity reads the fallback even while the create may still refund,
+    so an unrelated credit can get an `Incoming` row before it is spent. A proved refund claims at most its own
+    expected amount. A rise above the refund it can claim is `Incoming`.
+    A read that misses the fallback keeps its refund attribution pending. `RegistrationStatus` gains `from_shielded`, true
     for a row whose stored funding is `shielded`. After a restart a named row waiting `payment_unknown` runs again
     only on a `resume_registration` with no grant, which checks its evidence and signs nothing. On mainnet the funding is
     off (`platform.feature_off{feature: "shielded_registration"}`) until a payment that stays unknown has a way out:

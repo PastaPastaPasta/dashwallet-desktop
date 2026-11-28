@@ -408,6 +408,7 @@ enum Call {
     WaitProof,
     RegisterIdentity,
     RegisterName,
+    FallbackAddress,
     CreateProfile,
     /// DP5-02: the invitation's claim and the request to the inviter.
     Claim,
@@ -503,6 +504,7 @@ struct World {
     /// A naming pass also records the identity it named at the row's
     /// index, as the library does on an `Ok` whatever Platform proved.
     shielded_records_named: bool,
+    shielded_identity_key_index: Option<u32>,
     /// The session's network reads as mainnet.
     mainnet: bool,
     /// Name lookups fail as DAPI unreachable would.
@@ -514,6 +516,7 @@ struct World {
     profiles: BTreeMap<String, ProfileRecord>,
     /// `register_name` fails with this (MJ-1).
     name_error: Option<NameError>,
+    temporary_name_error: Option<NameError>,
     /// A replay's refusal (0.1.x-bal §1), `funding_permit`'s as
     /// `PwLib::fence`'s.
     replay: Option<PlatformError>,
@@ -1037,7 +1040,14 @@ impl RegistrationLib for Fake {
             .available(super::flows::BudgetPurpose::Credits)
             .map_err(PlatformError::from)?;
         self.maybe_hang(Call::RegisterName, When::Before).await;
-        let failure = self.w().name_error.clone();
+        let failure = {
+            let w = self.w();
+            w.name_error.clone().or_else(|| {
+                (label == PLAIN)
+                    .then(|| w.temporary_name_error.clone())
+                    .flatten()
+            })
+        };
         if let Some(e) = failure {
             return Err(e);
         }
@@ -1311,14 +1321,35 @@ impl RegistrationLib for Fake {
 
     async fn fallback_address(&self) -> Result<String, PlatformError> {
         self.w().fallbacks_taken += 1;
+        self.maybe_hang(Call::FallbackAddress, When::After).await;
         Ok(FALLBACK.to_owned())
+    }
+
+    async fn shielded_identity_matches_index(
+        &self,
+        (_, identity): (i64, &str),
+        expected_index: u32,
+        _lease: Option<&Lease>,
+    ) -> Result<bool, PlatformError> {
+        let world = self.w();
+        Ok(world
+            .shielded_identity_key_index
+            .or_else(|| {
+                world
+                    .identities
+                    .iter()
+                    .find_map(|(index, id)| (id == identity).then_some(*index))
+            })
+            .is_none_or(|index| index == expected_index))
     }
 
     async fn shielded_fund(
         &self,
         ask: super::registration_shielded::ShieldedAsk,
-        _lease: Option<&Lease>,
+        lease: Option<&Lease>,
     ) -> Result<super::registration_shielded::ShieldedOutcome, PlatformError> {
+        use super::registration_shielded::ShieldedOutcome;
+
         let (names, end) = {
             let mut w = self.w();
             w.shielded_asks.push(ask.clone());
@@ -1346,7 +1377,7 @@ impl RegistrationLib for Fake {
                 .set_registration_funding_durable(
                     (&self.wallet.to_string(), ask.draft, ask.owner),
                     (&expected, &funding),
-                    (&marker, "0"),
+                    &[(&marker, "0")],
                     0,
                 )
                 .unwrap();
@@ -1355,6 +1386,13 @@ impl RegistrationLib for Fake {
             if w.shielded_records_named {
                 w.identities.push((ask.index, identity_of(&funding)));
             }
+        }
+        if let Ok(ShieldedOutcome::Registered(identity)) = &end
+            && !self
+                .shielded_identity_matches_index((ask.draft, identity), ask.index, lease)
+                .await?
+        {
+            return Ok(ShieldedOutcome::Unknown);
         }
         end
     }
@@ -2348,6 +2386,41 @@ fn rows_this_build_cannot_run_fail_and_free_the_slot() {
     }
     f.discard(&lib, faucet).unwrap();
     assert_eq!(lib.counts(), (1, 1), "only the new registration funded");
+}
+
+#[test]
+fn a_contested_registration_reports_its_temporary_name_failure() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().temporary_name_error = Some(NameError::Taken);
+    lib.w().profile_error = Some(PlatformError::Unavailable);
+    let mut row = core_row(CONTESTED);
+    row.temp_label = Some(PLAIN.into());
+    let draft = f.insert(row);
+
+    f.drive(&lib, draft, Some(f.lease()), false);
+
+    assert_eq!(phase(&f.row(draft)), Phase::Contested);
+    let status = serde_json::to_value(f.status(&lib, draft)).unwrap();
+    assert_eq!(status["temporary_name_outcome"], "name.taken");
+
+    let identity = f.row(draft).identity.unwrap();
+    lib.w().temporary_name_error = None;
+    let lease = f.lease();
+    assert_eq!(
+        f.engine
+            .block_on(lib.register_name(&identity, PLAIN, &lease)),
+        Ok(NameOutcome::Registered)
+    );
+    f.engine
+        .block_on(super::names::record_temporary_name_registered(
+            &f.session, f.wallet, &identity, PLAIN,
+        ))
+        .unwrap();
+    assert_eq!(
+        f.status(&lib, draft).temporary_name_outcome.as_deref(),
+        Some("registered")
+    );
 }
 
 #[test]

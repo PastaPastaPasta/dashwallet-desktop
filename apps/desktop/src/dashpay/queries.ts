@@ -19,7 +19,7 @@ import { isSyncing, syncPercent } from "../format/sync";
 import type { PaySource, PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { AvailabilityChecker, needsAvailability, suggest } from "./instantName";
-import { contestRow, lacksTemporary, registrationOffered, rereadAfterSecond, rowSecond, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
+import { canShowName, contestRow, needsTemporaryLookup, registrationOffered, rereadAfterSecond, rowSecond, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
 import { QUOTE_REQUEST, READINESS_FAILED, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest, shieldedRequest } from "./wizard";
 
@@ -200,7 +200,7 @@ export function useUsernameQuote(walletId: string, enabled: boolean) {
 }
 
 /** The names read for `row`'s temporary name: the identities with when the read started, and
- * DPNS's answer for the label once they lack it (`temporaryOutcome`). Keyed by the row's second,
+ * DPNS's current answer before showing a temporary name or offering a retry. Keyed by the row's second,
  * so the row reaching its contest reads afresh: a read from before says nothing. */
 export function namesReadQuery(b: Backend, walletId: string, row: RegistrationStatus | undefined) {
   const temporaryLabel = row?.temporaryLabel ?? null;
@@ -208,12 +208,13 @@ export function namesReadQuery(b: Backend, walletId: string, row: RegistrationSt
     queryKey: dashpayKeys.namesRead(walletId, temporaryLabel, rowSecond(row)),
     queryFn: async (): Promise<NamesRead> => {
       const read: NamesRead = { startedAt: Date.now(), identities: await b.identities(walletId) };
-      if (temporaryLabel === null || !lacksTemporary(row, read)) return read;
+      if (temporaryLabel === null || !needsTemporaryLookup(row, read)) return read;
       const unknown: NameAvailability = { kind: "unknown" };
       return { ...read, temporary: await b.nameAvailability(walletId, temporaryLabel).catch(() => unknown) };
     },
     enabled: temporaryLabel !== null,
     retry: false,
+    refetchOnMount: row?.phase === "contested" || row?.phase === "done" ? ("always" as const) : undefined,
   };
 }
 
@@ -228,7 +229,7 @@ export function useNamesRead(walletId: string, row: RegistrationStatus | undefin
   const startedAt = read.data?.startedAt;
   const { refetch } = read;
   useEffect(() => rereadAfterSecond(second, startedAt, () => void refetch()), [second, startedAt, refetch]);
-  return answeredRead(read);
+  return read.isFetching ? undefined : answeredRead(read);
 }
 
 /** What the voting card and the request's details offer while the wallet's own contest is open
@@ -251,7 +252,11 @@ export function useInstantInputs(walletId: string, status: DashPayStatus | undef
   return {
     offered: registrationOffered(wallet),
     nameCredits: credits.data?.maxCredits ?? null,
-    asked: rows.data === undefined ? undefined : row?.temporaryLabel ? { label: row.temporaryLabel, outcome } : null,
+    asked: rows.data === undefined ? undefined : row?.temporaryLabel ? {
+      label: row.temporaryLabel,
+      outcome,
+      recorded: row.temporaryNameOutcome !== undefined,
+    } : null,
   };
 }
 
@@ -268,12 +273,18 @@ export function useStatusInputs(walletId: string, network: NetworkInfo): { input
   const sync = useSyncStatus().data;
   const display = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
+  const summary = mainSummaryOf(identities, main);
+  const shown = summary && instant ? {
+    ...summary,
+    mainName: summary.mainName && canShowName(summary.mainName, instant) ? summary.mainName : null,
+    names: summary.names.filter((name) => canShowName(name, instant)),
+  } : summary;
   return {
     inputs: {
       status: status.data,
       // A refetch that failed is an error too: the answer cached before it may be wrong now (D24).
       statusError: status.isError,
-      main: mainSummaryOf(identities, main),
+      main: shown,
       registration,
       lock,
       syncPercent: sync && isSyncing(sync) ? syncPercent(sync) : null,

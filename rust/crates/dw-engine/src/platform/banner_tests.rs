@@ -66,6 +66,7 @@ fn row(id: i64, phase: &str, identity: Option<&str>) -> RegistrationRow {
         retryable: false,
         name_error: None,
         profile_error: None,
+        temporary_name_outcome: None,
         owner: 0,
         created_at: 1,
         updated_at: 1,

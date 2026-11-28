@@ -874,6 +874,8 @@ impl DashPay {
             lib.keep_history().await;
             let mut rows = pool::history(&lib, offset, limit).await?;
             lib.show_refusals(&mut rows).await?;
+            super::registration_shielded::show_released_creates(&session, wallet, &lib, &mut rows)
+                .await;
             session.name_shielded_payouts(wallet, &mut rows).await;
             Ok(rows)
         })
