@@ -768,8 +768,8 @@ win_key = wk / "win.key"; win_cert = wk / "win.crt"; win_cnf = wk / "win.cnf"
 # Use a config file instead of -addext so macOS system LibreSSL 3.3.6 and OpenSSL 1.1/3/4 all work.
 win_cnf.write_text(
     "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n"
-    "[dn]\nCN = Dash Core Test Signer\n"
-    "[ext]\nextendedKeyUsage = codeSigning\n"
+    "[dn]\nO = Dash Core Test Org, Inc.\nCN = Dash Core Test Signer\n"
+    "[ext]\nextendedKeyUsage = codeSigning, 1.3.6.1.4.1.311.97.1.0, 1.3.6.1.4.1.311.97.11.22.33.44\n"
 )
 subprocess.run([
     "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -1061,6 +1061,64 @@ subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "win.crt"), "-key", s
 subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(other_signed),
                 "-out", str(wk / "other.exe.pem")], check=True, capture_output=True)
 
+# windows_signer: another signer's signature that carries the pinned publisher's certificate as a bystander
+evil_cnf = wk / "evil.cnf"
+evil_cnf.write_text(
+    "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n"
+    "[dn]\nCN = Another Signer\n"
+    "[ext]\nextendedKeyUsage = codeSigning\n"
+)
+subprocess.run([
+    "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", str(wk / "evil.key"), "-out", str(wk / "evil.crt"), "-days", "2",
+    "-config", str(evil_cnf), "-extensions", "ext",
+], check=True, capture_output=True)
+planted_signed = wk / "planted-signed.exe"
+subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "evil.crt"), "-key", str(wk / "evil.key"),
+                "-ac", str(wk / "win.crt"), "-h", "sha256", "-in", str(unsigned / win_name),
+                "-out", str(planted_signed)], check=True, capture_output=True)
+subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(planted_signed),
+                "-out", str(wk / "planted.exe.pem")], check=True, capture_output=True)
+(wk / "win-and-evil.pem").write_text((wk / "win.crt").read_text() + (wk / "evil.crt").read_text())
+
+# windows_signer: an impostor, a certificate of another key with the pinned organization and EKU that no pinned root issued
+impostor_cnf = wk / "impostor.cnf"
+impostor_cnf.write_text(win_cnf.read_text())
+subprocess.run([
+    "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", str(wk / "impostor.key"), "-out", str(wk / "impostor.crt"), "-days", "2",
+    "-config", str(impostor_cnf), "-extensions", "ext",
+], check=True, capture_output=True)
+impostor_signed = wk / "impostor-signed.exe"
+subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "impostor.crt"), "-key", str(wk / "impostor.key"),
+                "-h", "sha256", "-in", str(unsigned / win_name), "-out", str(impostor_signed)], check=True, capture_output=True)
+subprocess.run(["osslsigncode", "extract-signature", "-pem", "-in", str(impostor_signed),
+                "-out", str(wk / "impostor.exe.pem")], check=True, capture_output=True)
+
+# Timestamps without a network: osslsigncode's built-in authority, one under a root the tests pin and one not
+for name in ("tsa", "tsa-other"):
+    cnf = wk / f"{name}.cnf"
+    cnf.write_text(
+        "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n"
+        f"[dn]\nCN = Test {name}\n"
+        "[ext]\nkeyUsage = critical, digitalSignature\nextendedKeyUsage = critical, timeStamping\n"
+    )
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(wk / f"{name}.key"), "-out", str(wk / f"{name}.crt"), "-days", "2",
+        "-config", str(cnf), "-extensions", "ext",
+    ], check=True, capture_output=True)
+    subprocess.run(["osslsigncode", "sign", "-certs", str(wk / "win.crt"), "-key", str(wk / "win.key"), "-h", "sha256",
+                    "-TSA-certs", str(wk / f"{name}.crt"), "-TSA-key", str(wk / f"{name}.key"),
+                    "-in", str(unsigned / win_name), "-out", str(wk / f"{name}-signed.exe")], check=True, capture_output=True)
+(wk / "win-and-tsa.pem").write_text((wk / "win.crt").read_text() + (wk / "tsa.crt").read_text())
+
+# Two signatures on one installer: another signer's primary over the pinned signer's, and the reverse
+subprocess.run(["osslsigncode", "sign", "-nest", "-certs", str(wk / "win.crt"), "-key", str(wk / "win.key"), "-h", "sha256",
+                "-in", str(planted_signed), "-out", str(wk / "nested-under-other.exe")], check=True, capture_output=True)
+subprocess.run(["osslsigncode", "sign", "-nest", "-certs", str(wk / "evil.crt"), "-key", str(wk / "evil.key"), "-h", "sha256",
+                "-in", str(win_signed), "-out", str(wk / "other-nested-under-pinned.exe")], check=True, capture_output=True)
+
 # Wrong-version and wrong-key minisign latest.json fixtures
 latest_badver = json.loads(latest_path.read_text())
 latest_badver["platforms"]["linux-x86_64-appimage"]["signature"] = minisign_file(unsigned / f"dash-wallet-{ver}-linux-x86_64.AppImage", "0.0.9")
@@ -1109,6 +1167,13 @@ try:
         "pgp_fingerprint": primary_fpr,
         "apple_team_id": "TESTTEAM01",
         "windows_leaf_sha256": win_leaf_sha,
+    }, indent=2) + "\n")
+    (wk / "identities-signer.json").write_text(json.dumps({
+        "schema": 1,
+        "pgp_fingerprint": primary_fpr,
+        "apple_team_id": "TESTTEAM01",
+        "windows_leaf_sha256": "sha256:REPLACE_WITH_64_HEX_WINDOWS_LEAF_CERT_SHA256",
+        "windows_signer": {"organization": "Dash Core Test Org, Inc.", "eku": "1.3.6.1.4.1.311.97.11.22.33.44"},
     }, indent=2) + "\n")
 
     # Create a tampered SHA256SUMS (still validly PGP-signed) to verify SHA256SUMS mismatch detection
@@ -1175,6 +1240,23 @@ try:
     subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
                     "--output", str(rc_sigs / "SHA256SUMS.asc"), str(rc_sigs / "SHA256SUMS")], check=True, env=env, capture_output=True)
     subprocess.run(["gpgconf", "--kill", "all"], env=env, capture_output=True)
+
+    # release-sign.yml: CI's own PGP key, pinned apart from the release key, signs a candidate's SHA256SUMS
+    ci_home = gpg_root / "c"
+    ci_home.mkdir(mode=0o700)
+    ci_env = {**os.environ, "GNUPGHOME": str(ci_home)}
+    subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-generate-key", "CI candidates <ci@example.com>", "ed25519", "sign", "never"], check=True, env=ci_env, capture_output=True)
+    ci_out = subprocess.check_output(["gpg", "--batch", "--with-colons", "--list-secret-keys"], env=ci_env, text=True)
+    ci_fpr = [line.split(":")[9] for line in ci_out.splitlines() if line.startswith("fpr:")][0]
+    (wk / "ci.fpr").write_text(ci_fpr)
+    subprocess.run(["gpg", "--batch", "--armor", "--output", str(wk / "ci-release-key.asc"), "--export", ci_fpr], check=True, env=ci_env, capture_output=True)
+    for sums, out in ((rc_sigs / "SHA256SUMS", wk / "SHA256SUMS.rc.ci.asc"), (sigs / "SHA256SUMS", wk / "SHA256SUMS.stable.ci.asc")):
+        subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", ci_fpr,
+                        "--output", str(out), str(sums)], check=True, env=ci_env, capture_output=True)
+    subprocess.run(["gpgconf", "--kill", "all"], env=ci_env, capture_output=True)
+    ids = json.loads((wk / "identities.json").read_text())
+    (wk / "identities-ci.json").write_text(json.dumps({**ids, "ci_pgp_fingerprint": ci_fpr}, indent=2) + "\n")
+    (wk / "identities-ci-same.json").write_text(json.dumps({**ids, "ci_pgp_fingerprint": primary_fpr.lower()}, indent=2) + "\n")
 finally:
     shutil.rmtree(gpg_root, ignore_errors=True)
 PY
@@ -1390,8 +1472,11 @@ PY
     --identities-file "$e2e/work/identities-placeholder.json" \
     --out-dir "$e2e/attached-nofpr" --signed-dmg "$e2e/work/dash-wallet-0.1.0-macos-universal.dmg" \
     --allow-non-darwin
+  ids_ok='.schema == 1 and ((.pgp_fingerprint | startswith("REPLACE_")) or (.pgp_fingerprint | test("^[0-9a-fA-F]{40}$"))) and ((.apple_team_id | startswith("REPLACE_")) or (.apple_team_id | test("^[A-Z0-9]{10}$"))) and (if has("windows_signer") then ((.windows_leaf_sha256 // "REPLACE_") | contains("REPLACE_")) and (.windows_signer | (.organization | type == "string" and length > 0) and (.eku | test("^1[.]3[.]6[.]1[.]4[.]1[.]311[.]97[.][0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$"))) else ((.windows_leaf_sha256 | contains("REPLACE_")) or (.windows_leaf_sha256 | test("^sha256:[0-9a-fA-F]{64}$"))) end) and ((.ci_pgp_fingerprint // "REPLACE_") | (startswith("REPLACE_") or test("^[0-9a-fA-F]{40}$"))) and (((.ci_pgp_fingerprint // "") | ascii_upcase) != (.pgp_fingerprint | ascii_upcase))'
   check "signing-identities.json: production repo file is valid schema 1 (placeholder or properly formatted real identities)" \
-    'jq -e ".schema == 1 and ((.pgp_fingerprint | startswith(\"REPLACE_\")) or (.pgp_fingerprint | test(\"^[0-9a-fA-F]{40}$\"))) and ((.apple_team_id | startswith(\"REPLACE_\")) or (.apple_team_id | test(\"^[A-Z0-9]{10}$\"))) and ((.windows_leaf_sha256 | contains(\"REPLACE_\")) or (.windows_leaf_sha256 | test(\"^sha256:[0-9a-fA-F]{64}$\")))" "$here/../../docs/release/signing-identities.json" >/dev/null'
+    'jq -e "$ids_ok" "$here/../../docs/release/signing-identities.json" >/dev/null'
+  check "signing-identities.json: the shape check takes a windows_signer pin without a leaf hash, and refuses both together" \
+    'jq -e "$ids_ok" "$e2e/work/identities-signer.json" >/dev/null && jq "del(.windows_leaf_sha256)" "$e2e/work/identities-signer.json" | jq -e "$ids_ok" >/dev/null && ! jq --arg leaf "$e2e_leaf" ".windows_leaf_sha256 = \$leaf" "$e2e/work/identities-signer.json" | jq -e "$ids_ok" >/dev/null 2>&1'
 
   # H2: missing SHA256SUMS.asc at attach time
   cp -R "$e2e/sigs" "$e2e/sigs-noasc"
@@ -1567,6 +1652,202 @@ PY
     "Failed|mismatch|digest|invalid" "$e2e/attach-otherwin.out" \
     "${attach_base[@]}" --sigs-dir "$e2e/sigs-otherwin" --out-dir "$e2e/attached-otherwin"
 
+  # windows_signer: a signer whose leaf certificate changes daily (Azure Artifact Signing) is pinned by its
+  # organization and its own EKU, under a pinned root
+  signer_ids=(--identities-file "$e2e/work/identities-signer.json")
+  signer_rc=0
+  PATH="$attach_path" "$here/release-attach.sh" "${attach_base[@]}" "${signer_ids[@]}" --out-dir "$e2e/attached-signer" > "$e2e/attach-signer.out" 2>&1 || signer_rc=$?
+  check "windows_signer: release-attach accepts the signer with the pinned organization and EKU, and records it with the leaf it used" \
+    '[[ $signer_rc -eq 0 ]] && jq -e --arg leaf "$e2e_leaf" ".windows_leaf_sha256 == \$leaf and .windows_signer == {organization: \"Dash Core Test Org, Inc.\", eku: \"1.3.6.1.4.1.311.97.11.22.33.44\"}" "$e2e/attached-signer/signed-manifest.json" >/dev/null && cmp -s "$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe" "$e2e/attached-signer/dist/dash-wallet-0.1.0-windows-x64-setup.exe"'
+  if [[ $signer_rc -ne 0 ]]; then cat "$e2e/attach-signer.out" >&2 || true; fi
+  check "windows_signer: a manifest of the leaf-hash pin carries no windows_signer" \
+    'jq -e "has(\"windows_signer\") | not" "$e2e/attached/signed-manifest.json" >/dev/null'
+  expect_attach_fail \
+    "windows_signer: release-attach refuses a signer without the pinned EKU" \
+    "no certificate in .* matches the pinned windows_signer" "$e2e/attach-signer-eku.out" \
+    "${attach_base[@]}" "${signer_ids[@]}" --win-signer-eku 1.3.6.1.4.1.311.97.11.22.33.45 --out-dir "$e2e/attached-signer-eku"
+  expect_attach_fail \
+    "windows_signer: release-attach refuses a signer of another organization" \
+    "no certificate in .* matches the pinned windows_signer" "$e2e/attach-signer-org.out" \
+    "${attach_base[@]}" "${signer_ids[@]}" --win-signer-org "Dash Core Test Org" --out-dir "$e2e/attached-signer-org"
+  expect_attach_fail \
+    "windows_signer: release-attach refuses a leaf hash and a signer pinned together" \
+    "not both" "$e2e/attach-signer-both.out" \
+    "${attach_base[@]}" --win-signer-org "Dash Core Test Org, Inc." --win-signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --out-dir "$e2e/attached-signer-both"
+  expect_attach_fail \
+    "windows_signer: release-attach refuses a windows_signer whose EKU is a placeholder" \
+    "windows_signer.eku must be the identity's own EKU" "$e2e/attach-signer-placeholder.out" \
+    "${attach_base[@]}" "${signer_ids[@]}" --win-signer-eku REPLACE_WITH_EKU --out-dir "$e2e/attached-signer-placeholder"
+  # the fixture certificate carries both of these, so only the pin's own check refuses them
+  for shared_eku in 1.3.6.1.4.1.311.97.1.0 1.3.6.1.5.5.7.3.3; do
+    expect_attach_fail \
+      "windows_signer: release-attach refuses the EKU $shared_eku, which other signers carry too" \
+      "windows_signer.eku must be the identity's own EKU" "$e2e/attach-signer-shared.out" \
+      "${attach_base[@]}" "${signer_ids[@]}" --win-signer-eku "$shared_eku" --out-dir "$e2e/attached-signer-shared"
+  done
+  cp -R "$e2e/sigs" "$e2e/sigs-impostor"
+  cp "$e2e/work/impostor.exe.pem" "$e2e/sigs-impostor/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem"
+  impostor_leaf=$(python3 "$here/windows-signer-leaf.py" "$e2e/work/impostor.exe.pem" "Dash Core Test Org, Inc." 1.3.6.1.4.1.311.97.11.22.33.44 2>/dev/null || true)
+  check "windows_signer: an impostor's certificate carries the pinned organization and EKU (the case the next check refuses)" \
+    '[[ "$impostor_leaf" =~ ^sha256:[0-9a-f]{64}$ && "$impostor_leaf" != "$e2e_leaf" ]]'
+  expect_attach_fail \
+    "windows_signer: release-attach refuses a signer with the pinned organization and EKU that no pinned root issued" \
+    "self[- ]signed|unable to get local issuer" "$e2e/attach-signer-impostor.out" \
+    "${attach_base[@]}" "${signer_ids[@]}" --sigs-dir "$e2e/sigs-impostor" --out-dir "$e2e/attached-signer-impostor"
+  # The fixture signature has no timestamp and its certificate is current: osslsigncode accepts that, and a
+  # leaf that lives three days would then take the installer's signature with it.
+  signer_prod=()
+  for a in "${attach_base[@]}"; do
+    [[ "$a" == --skip-win-chain-verify ]] || signer_prod+=("$a")
+  done
+  expect_attach_fail \
+    "windows_signer: without the test-only skip flag, release-attach refuses a matching, currently valid signature that carries no timestamp" \
+    "no verified timestamp" "$e2e/attach-signer-nots.out" \
+    "${signer_prod[@]}" "${signer_ids[@]}" --out-dir "$e2e/attached-signer-nots"
+  check "windows_signer: osslsigncode itself accepted that signature, so the timestamp check is what refused it" \
+    'grep -qx "Timestamp is not available" "$e2e/attach-signer-nots.out" && grep -qx "Signature verification: ok" "$e2e/attach-signer-nots.out" && [[ ! -e "$e2e/attached-signer-nots/signed-manifest.json" ]]'
+  wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
+  wv() { # wv <args>: windows-verify-pinned.sh on the attached installer; sets $wv_rc, output in $e2e/wv.out
+    wv_rc=0
+    "$here/windows-verify-pinned.sh" --exe "$wv_exe" "$@" > "$e2e/wv.out" 2>&1 || wv_rc=$?
+  }
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: accepts the installer under its leaf-hash pin" \
+    '[[ $wv_rc -eq 0 ]] && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: accepts the installer under its organization and EKU pin, reading the leaf from the installer" \
+    '[[ $wv_rc -eq 0 ]] && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt"
+  check "windows-verify-pinned: refuses that installer for want of a timestamp once the skip flag is gone" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "no verified timestamp" "$e2e/wv.out"'
+  wv_org=(--signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44)
+  wv_exe="$e2e/work/tsa-signed.exe"
+  wv "${wv_org[@]}" --ca-file "$e2e/work/win-and-tsa.pem"
+  check "windows-verify-pinned: accepts a signature whose timestamp verifies under the pinned roots, with no skip flag" \
+    '[[ $wv_rc -eq 0 ]] && grep -qx "Timestamp Server Signature verification: ok" "$e2e/wv.out" && grep -q "is signed by the pinned signer (leaf $e2e_leaf)" "$e2e/wv.out"'
+  if [[ $wv_rc -ne 0 ]]; then cat "$e2e/wv.out" >&2 || true; fi
+  wv_exe="$e2e/work/tsa-other-signed.exe"
+  wv "${wv_org[@]}" --ca-file "$e2e/work/win-and-tsa.pem"
+  check "windows-verify-pinned: refuses a signature whose timestamp is from an authority outside the pinned roots" \
+    '[[ $wv_rc -ne 0 ]] && grep -qE "no verified timestamp|osslsigncode verify failed" "$e2e/wv.out" && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+  for nested in nested-under-other other-nested-under-pinned; do
+    wv_exe="$e2e/work/$nested.exe"
+    wv "${wv_org[@]}" --ca-file "$e2e/work/win-and-evil.pem" --skip-chain-verify
+    check "windows-verify-pinned: refuses two signatures on one installer under the organization and EKU pin ($nested), both roots trusted" \
+      '[[ $wv_rc -ne 0 ]] && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+    wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win-and-evil.pem" --skip-chain-verify
+    check "windows-verify-pinned: refuses two signatures on one installer under the leaf-hash pin ($nested), both roots trusted" \
+      '[[ $wv_rc -ne 0 ]] && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+  done
+  check "windows-verify-pinned: the pinned signer's own second place is named as the reason" \
+    'grep -q "carries more than one signature" "$e2e/wv.out"'
+  wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.5.5.7.3.3 --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: refuses Code Signing itself as the identity EKU" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "must be the identity.s own EKU" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --skip-chain-verify
+  check "windows-verify-pinned: refuses an organization and EKU pin without pinned roots" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "needs --ca-file" "$e2e/wv.out"'
+  wv --leaf-hash "$e2e_leaf" --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt"
+  check "windows-verify-pinned: refuses both pins at once" '[[ $wv_rc -ne 0 ]] && grep -q "not both" "$e2e/wv.out"'
+  wv --signer-org "Dash Core Test Org, Inc." --signer-eku 1.3.6.1.4.1.311.97.11.22.33.44 --ca-file "$e2e/work/win.crt" --skip-chain-verify \
+    --expect-leaf "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  check "windows-verify-pinned: refuses an installer whose signing leaf is not the detached signature's" \
+    '[[ $wv_rc -ne 0 ]] && grep -q "is not the detached signature" "$e2e/wv.out"'
+  wv --leaf-hash "sha256:0000000000000000000000000000000000000000000000000000000000000000" --ca-file "$e2e/work/win.crt" --skip-chain-verify
+  check "windows-verify-pinned: refuses another leaf" '[[ $wv_rc -ne 0 ]] && grep -q "Leaf hash match: failed" "$e2e/wv.out"'
+  # The YubiKey path (leaf-hash pin) needs a verified timestamp as well: it is not covered by the signature and
+  # can be cut out of a detached one
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt"
+  check "windows-verify-pinned: under the leaf-hash pin too, a currently valid signature with no timestamp is refused, and told to be signed again" \
+    '[[ $wv_rc -ne 0 ]] && grep -qx "Signature verification: ok" "$e2e/wv.out" && grep -q "no verified timestamp.*it carries no timestamp: sign it again" "$e2e/wv.out"'
+  wv_exe="$e2e/work/tsa-signed.exe"
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --tsa-ca-file "$e2e/work/tsa.crt"
+  check "windows-verify-pinned: under the leaf-hash pin, a signature with a verified timestamp is accepted with no skip flag" \
+    '[[ $wv_rc -eq 0 ]] && grep -qx "Timestamp Server Signature verification: ok" "$e2e/wv.out"'
+  if [[ $wv_rc -ne 0 ]]; then cat "$e2e/wv.out" >&2 || true; fi
+  wv_exe="$e2e/work/tsa-other-signed.exe"
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --tsa-ca-file "$e2e/work/tsa.crt"
+  check "windows-verify-pinned: under the leaf-hash pin, a timestamp from an authority outside the trusted roots is refused" \
+    '[[ $wv_rc -ne 0 ]] && grep -qE "its timestamp does not verify under $e2e/work/tsa.crt|osslsigncode verify failed" "$e2e/wv.out" && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
+  wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
+  yk_prod=()
+  for a in "${attach_base[@]}"; do
+    [[ "$a" == --skip-win-chain-verify ]] || yk_prod+=("$a")
+  done
+  expect_attach_fail \
+    "leaf-hash pin: without the test-only skip flag, release-attach refuses a matching, currently valid signature that carries no timestamp" \
+    "no verified timestamp" "$e2e/attach-leaf-nots.out" \
+    "${yk_prod[@]}" --out-dir "$e2e/attached-leaf-nots"
+
+  printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$e2e/work/garbage.pem"
+  leaf_rc=0
+  python3 "$here/windows-signer-leaf.py" "$e2e/work/garbage.pem" "Dash Core Test Org, Inc." 1.3.6.1.4.1.311.97.11.22.33.44 > "$e2e/leaf-garbage.out" 2>&1 || leaf_rc=$?
+  check "windows-signer-leaf: refuses a signature that is not DER" '[[ $leaf_rc -ne 0 ]] && grep -q "refusing" "$e2e/leaf-garbage.out"'
+  signer_noca=()
+  drop=0
+  for a in "${attach_base[@]}"; do
+    if ((drop)); then drop=0; continue; fi
+    if [[ "$a" == --win-ca-file ]]; then drop=1; continue; fi
+    signer_noca+=("$a")
+  done
+  expect_attach_fail \
+    "windows_signer: release-attach refuses an organization and EKU pin without a pinned root" \
+    "windows_signer needs --win-ca-file" "$e2e/attach-signer-noca.out" \
+    "${signer_noca[@]}" "${signer_ids[@]}" --out-dir "$e2e/attached-signer-noca"
+  cp -R "$e2e/sigs" "$e2e/sigs-planted"
+  cp "$e2e/work/planted.exe.pem" "$e2e/sigs-planted/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem"
+  planted_leaf=$(python3 "$here/windows-signer-leaf.py" "$e2e/work/planted.exe.pem" "Dash Core Test Org, Inc." 1.3.6.1.4.1.311.97.11.22.33.44 2>/dev/null || true)
+  check "windows_signer: the pinned publisher's certificate is found in another signer's signature (the case the next check refuses)" \
+    '[[ "$planted_leaf" == "$e2e_leaf" ]]'
+  expect_attach_fail \
+    "windows_signer: release-attach refuses another signer's signature that carries the pinned publisher's certificate, even with both roots trusted" \
+    "Failed|failed|mismatch" "$e2e/attach-signer-planted.out" \
+    "${attach_base[@]}" "${signer_ids[@]}" --sigs-dir "$e2e/sigs-planted" --win-ca-file "$e2e/work/win-and-evil.pem" --out-dir "$e2e/attached-signer-planted"
+  check "windows_signer: nothing is left attached from the refused signature" \
+    '[[ ! -e "$e2e/attached-signer-planted/signed-manifest.json" ]]'
+
+  # unpack-signatures.py: what release-sign.yml's signing job hands to the publish job
+  up=$e2e/unpack
+  mkdir -p "$up/src/sigs/osx/Dash Wallet.app" "$up/src/sigs/win" "$up/out-ok" "$up/out-link" "$up/out-outside" "$up/out-dotdot" "$up/src-outside/other"
+  echo sums > "$up/src/sigs/unsigned.SHA256SUMS"
+  echo m > "$up/src/sigs/osx/Dash Wallet.app/manifest.json"
+  echo p > "$up/src/sigs/win/setup.exe.pem"
+  tar -cf "$up/ok.tar" -C "$up/src" sigs
+  up_rc=0
+  python3 "$here/unpack-signatures.py" "$up/ok.tar" "$up/out-ok" > "$up/ok.out" 2>&1 || up_rc=$?
+  check "unpack-signatures: unpacks the signature tree as packed" \
+    '[[ $up_rc -eq 0 ]] && diff -r "$up/src/sigs" "$up/out-ok/sigs" >/dev/null'
+  ln -s /etc/hosts "$up/src/sigs/win/link"
+  tar -cf "$up/link.tar" -C "$up/src" sigs
+  rm "$up/src/sigs/win/link"
+  echo x > "$up/src-outside/other/file"
+  tar -cf "$up/outside.tar" -C "$up/src-outside" other
+  python3 - "$up/dotdot.tar" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w") as tar:
+    info = tarfile.TarInfo("sigs/../../escaped")
+    info.size = 1
+    tar.addfile(info, io.BytesIO(b"x"))
+PY
+  python3 - "$up/absolute.tar" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], "w") as tar:
+    info = tarfile.TarInfo("/sigs/absolute")
+    info.size = 1
+    tar.addfile(info, io.BytesIO(b"x"))
+PY
+  mkdir -p "$up/out-absolute"
+  for bad in link outside dotdot absolute; do
+    up_rc=0
+    python3 "$here/unpack-signatures.py" "$up/$bad.tar" "$up/out-$bad" > "$up/$bad.out" 2>&1 || up_rc=$?
+    check "unpack-signatures: refuses an archive with a member that is $bad, writing nothing" \
+      '[[ $up_rc -ne 0 && -z "$(ls -A "$up/out-$bad")" && ! -e "$up/escaped" ]] && grep -q "refusing" "$up/$bad.out"'
+  done
+  up_rc=0
+  python3 "$here/unpack-signatures.py" "$up/ok.tar" "$up/out-ok" > "$up/again.out" 2>&1 || up_rc=$?
+  check "unpack-signatures: refuses a directory that is not empty" '[[ $up_rc -ne 0 ]]'
+
   # Minisign negative tests (wrong key, wrong version in trusted comment, L6 wrong platform URL)
   for case_spec in \
     "badkey:latest-badkey.json:verification failed|key ID" \
@@ -1615,6 +1896,152 @@ PY
     "signed RC: release-attach refuses a validly signed SHA256SUMS that lists other files" \
     "SHA256SUMS must list 7 files" "$e2e/rc-attach-stablesums.out" \
     "${rc_attach_base[@]}" --sigs-dir "$e2e/rc-sigs-stablesums" --out-dir "$e2e/rc-attached-stablesums"
+
+  # A candidate signed by release-sign.yml (--ci-signed): SHA256SUMS.asc is CI's own key's, pinned apart from the
+  # release key, and that key verifies a candidate signed in CI and nothing else
+  e2e_ci_fpr=$(cat "$e2e/work/ci.fpr")
+  ci_pin=(--identities-file "$e2e/work/identities-ci.json" --ci-pgp-pubkey "$e2e/work/ci-release-key.asc")
+  cp -R "$e2e/rc-sigs" "$e2e/rc-sigs-ci"
+  cp "$e2e/work/SHA256SUMS.rc.ci.asc" "$e2e/rc-sigs-ci/SHA256SUMS.asc"
+  cp -R "$e2e/sigs" "$e2e/sigs-ci"
+  cp "$e2e/work/SHA256SUMS.stable.ci.asc" "$e2e/sigs-ci/SHA256SUMS.asc"
+  ci_rc=0
+  PATH="$attach_path" "$here/release-attach.sh" "${rc_attach_base[@]}" "${ci_pin[@]}" --ci-signed --sigs-dir "$e2e/rc-sigs-ci" \
+    --out-dir "$e2e/rc-attached-ci" > "$e2e/rc-attach-ci.out" 2>&1 || ci_rc=$?
+  check "CI-signed candidate: release-attach verifies SHA256SUMS.asc against CI's own pinned key and records it" \
+    '[[ $ci_rc -eq 0 ]] && jq -e --arg f "$e2e_ci_fpr" ".pgp_fpr == \$f and (.files | length) == 9" "$e2e/rc-attached-ci/signed-manifest.json" >/dev/null'
+  if [[ $ci_rc -ne 0 ]]; then cat "$e2e/rc-attach-ci.out" >&2 || true; fi
+  expect_attach_fail \
+    "CI-signed candidate: release-attach refuses a SHA256SUMS.asc made by the release key" \
+    "gpg --verify failed|expected" "$e2e/rc-attach-ci-relkey.out" \
+    "${rc_attach_base[@]}" "${ci_pin[@]}" --ci-signed --out-dir "$e2e/rc-attached-ci-relkey"
+  expect_attach_fail \
+    "CI key: a candidate published without --ci-signed is refused when CI's key made its SHA256SUMS.asc" \
+    "gpg --verify failed|expected" "$e2e/rc-attach-ci-local.out" \
+    "${rc_attach_base[@]}" "${ci_pin[@]}" --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-local"
+  expect_attach_fail \
+    "CI key: a stable release is refused when CI's key made its SHA256SUMS.asc, a valid signature by a pinned key" \
+    "gpg --verify failed|expected" "$e2e/attach-ci-stable.out" \
+    "${attach_base[@]}" "${ci_pin[@]}" --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable"
+  ci_valid=$(GNUPGHOME=$(umask 077 && mktemp -d /tmp/dwcv.XXXXXX) bash -c '[[ -n "$GNUPGHOME" ]] || exit 1; gpg --batch --quiet --import "$1" && gpg --batch --status-fd 1 --verify "$2" "$3" 2>/dev/null | grep -c "^\[GNUPG:\] GOODSIG"; gpgconf --kill all >/dev/null 2>&1; rm -rf "$GNUPGHOME"' _ "$e2e/work/ci-release-key.asc" "$e2e/sigs-ci/SHA256SUMS.asc" "$e2e/sigs-ci/SHA256SUMS")
+  check "CI key: that stable SHA256SUMS.asc is a good signature under CI's key" '[[ "$ci_valid" == 1 ]]'
+  # Both public keys in the one file that gets imported: only the fingerprint pin is left to tell them apart
+  cat "$e2e/work/release-key.asc" "$e2e/work/ci-release-key.asc" > "$e2e/work/both-keys.asc"
+  expect_attach_fail \
+    "CI key: a stable release signed by CI's key is refused by the fingerprint pin even when the release key file carries CI's key too" \
+    "signed by primary key $e2e_ci_fpr, expected $e2e_fpr" "$e2e/attach-ci-stable-both.out" \
+    "${attach_base[@]}" "${ci_pin[@]}" --pgp-pubkey "$e2e/work/both-keys.asc" --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable-both"
+  expect_attach_fail \
+    "CI-signed candidate: a release-key signature is refused by the fingerprint pin even when CI's key file carries the release key too" \
+    "signed by primary key $e2e_fpr, expected $e2e_ci_fpr" "$e2e/rc-attach-ci-both.out" \
+    "${rc_attach_base[@]}" --identities-file "$e2e/work/identities-ci.json" --ci-pgp-pubkey "$e2e/work/both-keys.asc" --ci-signed --out-dir "$e2e/rc-attached-ci-both"
+  cp "$e2e/work/ci-release-key.asc" "$e2e/rc-sigs-ci/ci-release-key.asc"
+  expect_attach_fail \
+    "CI-signed candidate: release-attach refuses CI's public key loaded from inside --sigs-dir" \
+    "refusing PGP public key loaded from inside --sigs-dir" "$e2e/rc-attach-ci-path.out" \
+    "${rc_attach_base[@]}" --identities-file "$e2e/work/identities-ci.json" --ci-pgp-pubkey "$e2e/rc-sigs-ci/ci-release-key.asc" --ci-signed \
+    --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-path"
+  rm -f "$e2e/rc-sigs-ci/ci-release-key.asc"
+  expect_attach_fail \
+    "CI key: --ci-signed is refused for a stable release, even with CI's signature and pin in place" \
+    "CI signs release candidates only" "$e2e/attach-ci-stable-flag.out" \
+    "${attach_base[@]}" "${ci_pin[@]}" --ci-signed --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable-flag"
+  check "CI key: nothing was attached for the stable release in either case" \
+    '[[ ! -e "$e2e/attached-ci-stable/signed-manifest.json" && ! -e "$e2e/attached-ci-stable-flag/signed-manifest.json" ]]'
+  expect_attach_fail \
+    "CI key: release-attach refuses identities whose CI key is the release key" \
+    "ci_pgp_fingerprint is the release key" "$e2e/attach-ci-same.out" \
+    "${attach_base[@]}" --identities-file "$e2e/work/identities-ci-same.json" --out-dir "$e2e/attached-ci-same"
+  expect_attach_fail \
+    "CI-signed candidate: release-attach refuses --ci-signed while ci_pgp_fingerprint is not pinned" \
+    "pinned CI PGP fingerprint must be 40 hex" "$e2e/rc-attach-ci-nopin.out" \
+    "${rc_attach_base[@]}" --ci-signed --ci-pgp-pubkey "$e2e/work/ci-release-key.asc" --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-nopin"
+  check "release-publish-signed.yml passes --ci-signed only for signatures from the signing job, and refuses those for a stable tag" \
+    '[[ $(grep -c -- "--ci-signed" "$here/../../.github/workflows/release-publish-signed.yml") -eq 1 ]] && grep -qF -- "[[ -z \"\$SIGNED_ARTIFACT\" ]] || args+=(--ci-signed)" "$here/../../.github/workflows/release-publish-signed.yml" && grep -qF "signed_artifact is for a release candidate" "$here/../../.github/workflows/release-publish-signed.yml"'
+
+  # fetch-windows-signature.sh: release-sign.yml takes the YubiKey's signature from one commit of another
+  # repository, as blobs, into a job that later holds keys
+  fw=$e2e/fetch-win
+  fw_exe=dash-wallet-0.1.0-rc.1-windows-x64-setup.exe
+  mkdir -p "$fw/repo"
+  fw_git() { git -C "$fw/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false -c init.defaultBranch=main "$@"; }
+  fw_commit() { # fw_commit <branch>: commit the work tree on a fresh branch; prints its hash
+    fw_git checkout --quiet --orphan "$1" && fw_git add -A && fw_git commit --quiet -m "$1" && fw_git rev-parse HEAD
+  }
+  fw_git init --quiet
+  mkdir -p "$fw/repo/v0.1.0-rc.1/win"
+  cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/v0.1.0-rc.1/"
+  cp "$e2e/rc-sigs/win/$fw_exe.pem" "$fw/repo/v0.1.0-rc.1/win/"
+  fw_good=$(fw_commit good)
+  echo tampered >> "$fw/repo/v0.1.0-rc.1/unsigned.SHA256SUMS"
+  fw_other=$(fw_commit other-build)
+  cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/v0.1.0-rc.1/"
+  mv "$fw/repo/v0.1.0-rc.1/win/$fw_exe.pem" "$fw/repo/v0.1.0-rc.1/real.pem"
+  ln -s ../real.pem "$fw/repo/v0.1.0-rc.1/win/$fw_exe.pem"
+  fw_link=$(fw_commit linked)
+  rm -rf "$fw/repo/v0.1.0-rc.1"
+  mkdir -p "$fw/repo/win"
+  cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/"
+  cp "$e2e/rc-sigs/win/$fw_exe.pem" "$fw/repo/win/"
+  fw_root=$(fw_commit root-layout)
+  printf 'not a directory\n' > "$fw/repo/v0.1.0-rc.1"
+  fw_tagfile=$(fw_commit tag-is-a-file)
+  rm -f "$fw/repo/v0.1.0-rc.1"
+  head -c 1048577 /dev/zero > "$fw/repo/win/$fw_exe.pem"
+  fw_big=$(fw_commit oversized)
+  : > "$fw/repo/win/$fw_exe.pem"
+  fw_empty=$(fw_commit empty)
+  printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$fw/repo/win/$fw_exe.pem"
+  fw_garbage=$(fw_commit garbage)
+  fw_run() { # fw_run <name> <commit> [<tip of the tag's branch>|-]: as release-sign.yml runs it; sets $fw_rc; output in $fw/<name>.out
+    fw_rc=0
+    fw_git branch --quiet -D v0.1.0-rc.1 2>/dev/null || true
+    [[ "${3:-$2}" == - ]] || fw_git branch --quiet -f v0.1.0-rc.1 "${3:-$2}"
+    rm -rf "${fw:?}/$1" && mkdir -p "$fw/$1/sigs" "$fw/$1/out"
+    cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/$1/sigs/"
+    "$here/../release/fetch-windows-signature.sh" --repo-url "$fw/repo" --commit "$2" --tag v0.1.0-rc.1 \
+      --unsigned-dir "$e2e/rc-unsigned" --sigs-dir "$fw/$1/sigs" --out-dir "$fw/$1/out" --ca-file "$e2e/work/win.crt" \
+      > "$fw/$1.out" 2>&1 || fw_rc=$?
+  }
+  fw_run good "$fw_good"
+  check "fetch-windows-signature: attaches the signature of the named commit, giving the installer release-attach gives" \
+    '[[ $fw_rc -eq 0 ]] && cmp -s "$fw/good/out/dist/$fw_exe" "$e2e/rc-attached/dist/$fw_exe" && cmp -s "$fw/good/sigs/win/$fw_exe.pem" "$e2e/rc-sigs/win/$fw_exe.pem"'
+  if [[ $fw_rc -ne 0 ]]; then cat "$fw/good.out" >&2 || true; fi
+  fw_run root "$fw_root"
+  check "fetch-windows-signature: reads the files from the commit's root when it has no directory for the tag" \
+    '[[ $fw_rc -eq 0 ]] && cmp -s "$fw/root/out/dist/$fw_exe" "$e2e/rc-attached/dist/$fw_exe"'
+  fw_run branch good
+  check "fetch-windows-signature: refuses a branch name, which a later push could move" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/branch/out/dist" && ! -e "$fw/branch/sigs/win" ]] && grep -q "full 40-hex commit" "$fw/branch.out"'
+  fw_run other "$fw_other"
+  check "fetch-windows-signature: refuses a signature made over another build" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/other/out/dist" && ! -e "$fw/other/sigs/win" ]] && grep -q "signed over another build" "$fw/other.out"'
+  fw_run link "$fw_link"
+  check "fetch-windows-signature: refuses a signature file that is a link in the commit, writing no installer" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/link/out/dist" && ! -e "$fw/link/sigs/win" ]] && grep -q "is not a regular file" "$fw/link.out"'
+  fw_run not-tip "$fw_root" "$fw_good"
+  check "fetch-windows-signature: refuses a commit that is not the tip of the branch named after the tag, though the repository serves it" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/not-tip/out/dist" && ! -e "$fw/not-tip/sigs/win" ]] && grep -q "is not the tip of branch v0.1.0-rc.1" "$fw/not-tip.out" && grep -q "which is at $fw_good" "$fw/not-tip.out"'
+  fw_run no-branch "$fw_good" -
+  check "fetch-windows-signature: refuses a commit when the repository has no branch named after the tag" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/no-branch/out/dist" && ! -e "$fw/no-branch/sigs/win" ]] && grep -q "which is at no such branch" "$fw/no-branch.out"'
+  fw_git branch --quiet -f x/refs/heads/v0.1.0-rc.1 "$fw_good"
+  fw_run suffix "$fw_good" -
+  check "fetch-windows-signature: a branch whose name only ends in refs/heads/<tag> is not the tag's branch" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/suffix/out/dist" && ! -e "$fw/suffix/sigs/win" ]] && grep -q "which is at no such branch" "$fw/suffix.out"'
+  fw_git branch --quiet -D x/refs/heads/v0.1.0-rc.1
+  fw_run tagfile "$fw_tagfile"
+  check "fetch-windows-signature: refuses a commit whose entry for the tag is not a directory, and does not fall back to its root" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/tagfile/out/dist" && ! -e "$fw/tagfile/sigs/win" ]] && grep -q "is not a directory" "$fw/tagfile.out"'
+  fw_run big "$fw_big"
+  check "fetch-windows-signature: refuses a signature file larger than one mebibyte" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/big/out/dist" && ! -e "$fw/big/sigs/win" ]] && grep -q "is empty or larger than 1048576 bytes" "$fw/big.out"'
+  fw_run empty "$fw_empty"
+  check "fetch-windows-signature: refuses an empty signature file" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/empty/out/dist" && ! -e "$fw/empty/sigs/win" ]] && grep -q "is empty or larger than 1048576 bytes" "$fw/empty.out"'
+  fw_run garbage "$fw_garbage"
+  check "fetch-windows-signature: a signature that does not attach leaves nothing where the next steps read" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/garbage/out/dist" && ! -e "$fw/garbage/sigs/win" ]] && grep -q "does not attach" "$fw/garbage.out"'
 
   # Blocker #7: ci/release/fetch-unsigned.sh pins locally verified --tag-sha, verifies run + attestations + checksums before exposing files
   fu=$e2e/fetch-unsigned-test
@@ -1759,6 +2186,65 @@ FGH
   check "signed RC: sign-checksums.sh signs SHA256SUMS over the 7 bundles and SBOMs, with no --feed-dir" \
     '[[ $sc_rc -eq 0 && $(wc -l < "$sc/sigs/SHA256SUMS") -eq 7 && -s "$sc/sigs/SHA256SUMS.asc" && -f "$sc/dist/SHA256SUMS.asc" ]] && ! grep -qE "latest.json|app.tar.gz" "$sc/sigs/SHA256SUMS" && (cd "$sc/dist" && sha256sum -c --quiet SHA256SUMS)'
   if [[ $sc_rc -ne 0 ]]; then cat "$sc/out" >&2 || true; fi
+  # release-sign.yml: sign-checksums.sh signs with a passphrase-protected key and no terminal (--passphrase-fd);
+  # ci-signing-keys.sh imports that key only when it is the pinned one, and its cleanup leaves nothing
+  ck=$e2e/ci-keys
+  mkdir -p "$ck/runner" "$ck/sigs"
+  cp "$sc/sigs/unsigned.SHA256SUMS" "$ck/sigs/"
+  ck_gen=$(umask 077 && mktemp -d /tmp/dwck.XXXXXX)
+  GNUPGHOME=$ck_gen gpg --batch --pinentry-mode loopback --passphrase 'ci pass' --quick-generate-key "CI signing test <ci@example.com>" ed25519 sign never > /dev/null 2>&1
+  ck_fpr=$(GNUPGHOME=$ck_gen gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+  ck_key=$(GNUPGHOME=$ck_gen gpg --batch --pinentry-mode loopback --passphrase 'ci pass' --armor --export-secret-keys "$ck_fpr" 2>/dev/null)
+  GNUPGHOME=$ck_gen gpgconf --kill all > /dev/null 2>&1 || true
+  rm -rf "$ck_gen"
+  jq -n --arg f "$ck_fpr" --arg r "$e2e_fpr" '{schema: 1, pgp_fingerprint: $r, ci_pgp_fingerprint: $f}' > "$ck/ids.json"
+  jq -n --arg f "$e2e_fpr" '{schema: 1, ci_pgp_fingerprint: $f}' > "$ck/ids-other.json"
+  jq -n --arg f "$ck_fpr" '{schema: 1, pgp_fingerprint: $f}' > "$ck/ids-release-only.json"
+  jq -n --arg f "$ck_fpr" '{schema: 1, pgp_fingerprint: ($f | ascii_downcase), ci_pgp_fingerprint: $f}' > "$ck/ids-same.json"
+  echo '{"schema": 1, "ci_pgp_fingerprint": "REPLACE_WITH_40_HEX"}' > "$ck/ids-placeholder.json"
+  ck_keys() { # ck_keys <cmd> [ids]: runs ci-signing-keys.sh as the workflow does; sets $ck_rc
+    ck_rc=0
+    RUNNER_TEMP="$ck/runner" GITHUB_ENV="$ck/env" RELEASE_PGP_PRIVATE_KEY="$ck_key" RELEASE_PGP_PASSPHRASE='ci pass' \
+      "$here/../release/ci-signing-keys.sh" "$@" > "$ck/keys.out" 2>&1 || ck_rc=$?
+  }
+  : > "$ck/env"
+  ck_keys pgp "$ck/ids-other.json"
+  check "ci-signing-keys: refuses a PGP key that is not the pinned one" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" ]] && grep -q "must hold exactly the pinned key" "$ck/keys.out"'
+  ck_keys cleanup
+  ck_keys pgp "$ck/ids-placeholder.json"
+  check "ci-signing-keys: refuses while the fingerprint is a placeholder, before importing anything" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "is not pinned" "$ck/keys.out"'
+  ck_keys pgp "$ck/ids-release-only.json"
+  check "ci-signing-keys: refuses a key pinned only as the release key, which CI must never hold" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "ci_pgp_fingerprint is not pinned" "$ck/keys.out"'
+  ck_keys pgp "$ck/ids-same.json"
+  check "ci-signing-keys: refuses a CI key that is also pinned as the release key" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "CI holds a key of its own" "$ck/keys.out"'
+  ck_keys cleanup
+  ck_keys pgp "$ck/ids.json"
+  ck_home=$(sed -n 's/^GNUPGHOME=//p' "$ck/env")
+  check "ci-signing-keys: imports the pinned PGP key into a throwaway GNUPGHOME and exports it" \
+    '[[ $ck_rc -eq 0 && "$ck_home" == /tmp/dwsign.* && -d "$ck_home" ]] && ! grep -qF "ci pass" "$ck/keys.out"'
+  if [[ $ck_rc -ne 0 ]]; then cat "$ck/keys.out" >&2 || true; fi
+  ck_sign() { # ck_sign <passphrase>: sign-checksums.sh as release-sign.yml runs it, with no agent cache; sets $ck_rc
+    ck_rc=0
+    GNUPGHOME=$ck_home gpgconf --kill gpg-agent > /dev/null 2>&1 || true
+    rm -f "$ck/sigs/SHA256SUMS" "$ck/sigs/SHA256SUMS.asc"
+    GNUPGHOME=$ck_home "$here/../release/sign-checksums.sh" --version 0.1.0-rc.1 --dist-dir "$sc/dist" \
+      --sigs-dir "$ck/sigs" --gpg-key "$ck_fpr" --passphrase-fd 3 3<<<"$1" > "$ck/sign.out" 2>&1 < /dev/null || ck_rc=$?
+  }
+  ck_sign 'wrong pass'
+  check "sign-checksums --passphrase-fd: a wrong passphrase fails without asking anyone" \
+    '[[ $ck_rc -ne 0 && ! -s "$ck/sigs/SHA256SUMS.asc" ]]'
+  ck_sign 'ci pass'
+  check "sign-checksums --passphrase-fd: signs SHA256SUMS with the passphrase-protected key, no terminal" \
+    '[[ $ck_rc -eq 0 && -s "$ck/sigs/SHA256SUMS.asc" ]] && grep -q "Good signature" "$ck/sign.out"'
+  if [[ $ck_rc -ne 0 ]]; then cat "$ck/sign.out" >&2 || true; fi
+  ck_keys cleanup
+  check "ci-signing-keys: cleanup removes the GNUPGHOME and the working directory" \
+    '[[ $ck_rc -eq 0 && ! -e "$ck_home" && ! -e "$ck/runner/dw-signing" ]]'
+
   su_rc=0
   "$here/../release/sign-updater.sh" --version 0.1.0-rc.1 --dist-dir "$sc/dist" --feed-dir "$sc" --sigs-dir "$sc/sigs" \
     --key-file "$sc/out" > "$sc/updater.out" 2>&1 || su_rc=$?
@@ -1780,6 +2266,51 @@ FGH
     --pkcs11-module "$l3/dummy-mod" --pkcs11-cert "pkcs11:id=%01" --pkcs11-key "pkcs11:id=%01" > "$l3/sw.out" 2>&1 || sw_rc=$?
   check "L3: sign-windows.sh refuses unsigned .exe modified since fetch before invoking osslsigncode" \
     '[[ $sw_rc -ne 0 ]] && grep -q "changed since fetch" "$l3/sw.out"'
+  # sign-windows.sh with a cloud-held key: a stand-in `java` signs as jsign would, with the test certificate
+  js=$e2e/jsign
+  mkdir -p "$js/bin" "$js/unsigned" "$js/sigs" "$js/out"
+  cp "$e2e/unsigned/dash-wallet-0.1.0-windows-x64-setup.exe" "$e2e/unsigned/unsigned.SHA256SUMS" "$js/unsigned/"
+  : > "$js/jsign.jar"
+  cat > "$js/bin/java" <<JV
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$js/java.args"
+[[ "\${JS_TOKEN:-}" == test-token ]] || { echo "stand-in jsign: no token in the environment" >&2; exit 1; }
+f="\${@: -1}"
+ts=(-TSA-certs "$e2e/work/tsa.crt" -TSA-key "$e2e/work/tsa.key")
+[[ -z "\${JS_NO_TIMESTAMP:-}" ]] || ts=()
+osslsigncode sign -certs "$e2e/work/win.crt" -key "$e2e/work/win.key" -h sha256 "\${ts[@]}" -in "\$f" -out "\$f.signed" >/dev/null && mv "\$f.signed" "\$f"
+JV
+  chmod +x "$js/bin/java"
+  js_args=(--version 0.1.0 --unsigned-dir "$js/unsigned" --sigs-dir "$js/sigs" --out-dir "$js/out"
+    --jsign-jar "$js/jsign.jar" --jsign-storetype TRUSTEDSIGNING --jsign-keystore eus.codesigning.azure.net
+    --jsign-alias account/profile --jsign-storepass-env JS_TOKEN --tsa http://timestamp.acs.microsoft.com)
+  js_rc=0
+  PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/win-and-tsa.pem" > "$js/out.log" 2>&1 || js_rc=$?
+  check "sign-windows --jsign-jar: signs through jsign, detaches the signature and re-attaches it to the same bytes" \
+    '[[ $js_rc -eq 0 && -s "$js/sigs/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem" && -s "$js/out/dist/dash-wallet-0.1.0-windows-x64-setup.exe" ]] && grep -q "sign-windows: done" "$js/out.log"'
+  if [[ $js_rc -ne 0 ]]; then cat "$js/out.log" >&2 || true; fi
+  js_rc=0
+  rm -rf "$js/sigs/win" "$js/out"
+  PATH="$js/bin:$PATH" JS_TOKEN=test-token JS_NO_TIMESTAMP=1 "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/win-and-tsa.pem" > "$js/nots.log" 2>&1 || js_rc=$?
+  check "sign-windows: stops when the signature it made carries no verified timestamp, and leaves no signature to push" \
+    '[[ $js_rc -ne 0 ]] && grep -q "no verified timestamp" "$js/nots.log" && ! grep -q "sign-windows: done" "$js/nots.log" && [[ -z "$(find "$js/sigs/win" "$js/out" -type f)" ]]'
+  if [[ $js_rc -eq 0 ]] || ! grep -q "no verified timestamp" "$js/nots.log"; then cat "$js/nots.log" >&2 || true; fi
+  check "sign-windows --jsign-jar: jsign gets the store, the alias and the timestamp server, and the token only by the name of its variable" \
+    'grep -qx -- "env:JS_TOKEN" "$js/java.args" && ! grep -q "test-token" "$js/java.args" "$js/out.log" && grep -qx -- "TRUSTEDSIGNING" "$js/java.args" && grep -qx -- "account/profile" "$js/java.args" && grep -qx -- "http://timestamp.acs.microsoft.com" "$js/java.args"'
+  js_rc=0
+  rm -rf "$js/sigs/win" "$js/out"
+  PATH="$js/bin:$PATH" "$here/../release/sign-windows.sh" "${js_args[@]}" > "$js/notoken.log" 2>&1 || js_rc=$?
+  check "sign-windows --jsign-jar: refuses before signing when the token variable is unset" \
+    '[[ $js_rc -ne 0 && ! -e "$js/sigs/win" ]] && grep -q "JS_TOKEN is empty or unset" "$js/notoken.log"'
+  js_rc=0
+  PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --pkcs11-module "$l3/dummy-mod" > "$js/mixed.log" 2>&1 || js_rc=$?
+  check "sign-windows: refuses the jsign and the PKCS#11 options together" \
+    '[[ $js_rc -ne 0 && ! -e "$js/sigs/win" ]] && grep -q "two different key holders" "$js/mixed.log"'
+  js_rc=0
+  PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/evil.crt" > "$js/badca.log" 2>&1 || js_rc=$?
+  check "sign-windows --jsign-jar: fails when the signer does not chain to --ca-file" \
+    '[[ $js_rc -ne 0 ]] && grep -qE "self[- ]signed|unable to get local issuer" "$js/badca.log"'
+
   su_rc=0
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" "$here/../release/sign-updater.sh" --version 0.1.0 --dist-dir "$l3/dist" \
     --feed-dir "$l3/feed" --sigs-dir "$l3/sigs" --key-file "$l3/dummy-key" > "$l3/su.out" 2>&1 || su_rc=$?
@@ -1852,6 +2383,48 @@ PY
 check "r4688012522: release.yml maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, DW_ALLOW_UNSIGNED_STABLE and DW_SIGN_RC on prepare and publish, passes DW_SIGN_RC to decide, gates signing inputs on detached and the updater on signed_stable" \
   '[[ $wiring_rc -eq 0 ]]'
 if [[ $wiring_rc -ne 0 ]]; then cat "$work/wiring.out" >&2; fi
+
+# --- release-sign.yml: the installer's publisher is checked before any other key is used
+order_rc=0
+python3 - "$here/../../.github/workflows/release-sign.yml" > "$work/sign-order.out" 2>&1 <<'PY' || order_rc=$?
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+sign = text[text.index("\n  sign:\n"):text.index("\n  publish:\n")]
+steps = sign.split("\n      - ")[1:]
+
+def step(needle):
+    hits = [i for i, s in enumerate(steps) if needle in s]
+    assert len(hits) == 1, f"{needle!r} is in {len(hits)} steps of the sign job, expected 1"
+    return hits[0]
+
+pinned = step("ci/github/windows-verify-pinned.sh")
+attach = step("ci/release/fetch-windows-signature.sh")
+assert attach < pinned, "the publisher check must come after the signature is attached"
+for after in ("ci-signing-keys.sh apple", "ci/release/sign-macos.sh", "ci-signing-keys.sh pgp", "ci/release/sign-checksums.sh"):
+    assert pinned < step(after), f"the publisher check must come before {after}"
+assert "if:" not in steps[attach] and "if:" not in steps[pinned], "the Windows steps must be unconditional"
+assert "--leaf-hash" in steps[pinned] and "--signer-org" not in steps[pinned], "the YubiKey certificate is pinned by its leaf hash"
+assert "--skip-chain-verify" not in text, "no workflow may pass the test-only skip flag"
+# The Windows key stays on the YubiKey: the signing job holds no cloud signing identity and fetches no signer.
+assert "id-token" not in sign, "the sign job must not be able to mint an OIDC token"
+for word in ("azure", "jsign", "sign-windows.sh"):
+    assert word not in sign.lower(), f"the sign job must not use {word}"
+assert "secrets." not in sign.split("\n      - ")[0], "no secret may be set for the whole sign job"
+for i, text_of_step in enumerate(steps):
+    assert "secrets." not in text_of_step or i > pinned, "no secret may reach a step before the publisher check"
+assert "continue-on-error" not in sign, "no step of the sign job may be allowed to fail"
+assert "|| true" not in steps[pinned] and "|| :" not in steps[pinned], "the publisher check must be able to fail the job"
+assert '[[ "$INPUT_WIN_REF" =~ ^[0-9a-f]{40}$ ]]' in sign, "windows_sig_ref must be a full commit hash"
+assert "windows_sig_ref:" in text and text.split("windows_sig_ref:")[1].split("type:")[0].count("required: true") == 1, \
+    "windows_sig_ref must be a required input"
+PY
+check "release-sign.yml: the YubiKey's Windows signature is required, attached and verified against its pin before the Apple and PGP keys are used, with no cloud signer" \
+  '[[ $order_rc -eq 0 ]]'
+if [[ $order_rc -ne 0 ]]; then cat "$work/sign-order.out" >&2; fi
+check "release-publish-signed.yml passes no test-only Windows flag to release-attach.sh" \
+  '! grep -qE -- "--skip-win-chain-verify|--allow-non-darwin" "$here/../../.github/workflows/release-publish-signed.yml"'
 
 # --- release-version.sh
 cd "$here/../.."

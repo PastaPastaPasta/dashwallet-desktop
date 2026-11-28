@@ -15,6 +15,9 @@ with GitHub Sigstore build provenance attestations only (no `.asc`, no `latest.j
 merges stopped starting Release on 11-25) are unsigned the same way. A candidate opts in to this signed path
 with the repository variable `DW_SIGN_RC=1` set before its tag is pushed; it then publishes 9 assets (signed
 `.dmg` and `.exe`, `SHA256SUMS.asc`, no updater feed). The runbook for that is [`RC-SIGNING.md`](RC-SIGNING.md).
+A candidate's macOS and PGP signatures can also be made in CI, with those keys in a protected `release-signing`
+environment, the Windows signature still made on the YubiKey, and this same verification before publishing:
+[`CI-SIGNING.md`](CI-SIGNING.md). Stable releases are not signed in CI.
 
 > **Nightly track:** automated nightly signing (separate macOS Developer ID cert + revocable API key in CI,
 > unsigned Windows, separate CI updater key, separate bundle ID and app name `"Dash Wallet Nightly"` for
