@@ -2329,14 +2329,7 @@ impl HistoryStore {
         }
     }
 
-    pub fn remove_wallet(&self, wallet: &WalletId) {
-        self.wallets
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(wallet);
-    }
-
-    /// [`Self::remove_wallet`], handing `retire` the history under the
+    /// Removes `wallet`'s history, handing `retire` the history under the
     /// same lock first.
     pub(crate) fn remove_wallet_with(
         &self,

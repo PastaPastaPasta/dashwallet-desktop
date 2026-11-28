@@ -1873,6 +1873,9 @@ fn an_interrupted_abandon_keeps_the_coin_if_another_wallet_stored_the_payment_mi
     assert!(!spendable(&engine, &session, id, a));
 }
 
+/// Blocks by height.
+type Blocks = Vec<(u32, Vec<Transaction>)>;
+
 /// Once the open's rescan is back over `rescan`'s blocks, `a` stays
 /// spent: the balance counts it in no bucket (it stays at most
 /// `total`, with the payment's change pending or counted), and neither
@@ -1883,7 +1886,7 @@ fn assert_spent_coin_out(
     id: WalletId,
     a: OutPoint,
     total: u64,
-    rescan: &[(WalletId, Vec<(u32, Vec<Transaction>)>)],
+    rescan: &[(WalletId, Blocks)],
     when: &str,
 ) {
     use super::own_spend_disk_tests::{Accept, prepare};
