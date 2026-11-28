@@ -2640,7 +2640,8 @@ fn a_bad_abandoned_row_does_not_fail_the_start() {
 /// The way out when a half-done Abandon's own mark has a damaged key: the
 /// start skips it, so the payment is pending again with Abandon offered;
 /// abandoning it again finishes it as a normal Abandon (A comes back once
-/// its funding is scanned, the change goes), also after a restart.
+/// the old SPV client has stopped and its funding is scanned, the change
+/// goes), also after a restart.
 #[test]
 fn a_half_done_abandon_whose_own_mark_key_is_damaged_can_be_abandoned_again() {
     let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
@@ -2674,6 +2675,7 @@ fn a_half_done_abandon_whose_own_mark_key_is_damaged_can_be_abandoned_again() {
     let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
     assert!(extras.can_abandon, "Abandon is not offered: {extras:?}");
     start_offline_spv(&engine, &session);
+    let run = session.manager().unwrap().spv().run_session();
     engine
         .block_on(session.abandon_transaction(id, txid))
         .unwrap();
@@ -2691,6 +2693,9 @@ fn a_half_done_abandon_whose_own_mark_key_is_damaged_can_be_abandoned_again() {
         None,
         "the change stays stored"
     );
+    eventually("the old SPV client stopped", || {
+        session.manager().unwrap().spv().run_session() > run
+    });
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     assert_holds(
         &engine,
