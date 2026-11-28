@@ -359,6 +359,10 @@ Names are the same in `DashUIMac` and `DashUICross`. "Port" = vendored DashUIKit
   default action; Escape = cancel/close sheet; ⌘C copies the selected row's primary value; arrow keys
   move list selection; Space toggles.
 - **Copy feedback**: every copy shows `Toast(.copied, "Copied")` (iOS string) — never silent.
+- **Layout stability**: keep surrounding controls in place when data loads or an action finishes.
+  Use the shared toast for transient outcomes, reserve space for persistent status and action
+  changes, and match loading skeletons to the size of the content they replace. Test the bounding
+  boxes of nearby controls before and after the transition.
 - **Destructive actions**: `filledRed` button only inside a confirmation; the trigger is `plainRed`.
 - **Disabled**: explain why with a tooltip (`.help`) — e.g. "Coin Control Features…" disabled → tooltip
   "Enable coin control in Options ▸ Wallet".
