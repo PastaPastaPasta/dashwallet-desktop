@@ -854,6 +854,10 @@ const ANCHOR: [u8; 32] = [0xa1; 32];
 /// A pass's Platform answers: no new notes, the recorded anchor set `set`
 /// and a pool of `pool_leaves` notes, each proved at [`SET_HEIGHT`].
 fn pass_sdk(pool_leaves: u64, set: &[[u8; 32]]) -> dash_sdk::Sdk {
+    pass_sdk_at(pool_leaves, set, SET_HEIGHT)
+}
+
+fn pass_sdk_at(pool_leaves: u64, set: &[[u8; 32]], height: u64) -> dash_sdk::Sdk {
     use dash_sdk::query_types::{
         NoParamQuery, ShieldedAnchors, ShieldedEncryptedNotes, ShieldedEncryptedNotesQuery,
         ShieldedNotesCount,
@@ -897,9 +901,9 @@ fn pass_sdk(pool_leaves: u64, set: &[[u8; 32]]) -> dash_sdk::Sdk {
             .await
             .unwrap();
         sdk.mock()
-            .set_response_height_of::<ShieldedAnchors>(SET_HEIGHT)
-            .set_response_height_of::<ShieldedNotesCount>(SET_HEIGHT)
-            .set_response_height_of::<ShieldedEncryptedNotes>(SET_HEIGHT);
+            .set_response_height_of::<ShieldedAnchors>(height)
+            .set_response_height_of::<ShieldedNotesCount>(height)
+            .set_response_height_of::<ShieldedEncryptedNotes>(height);
         sdk
     })
 }
@@ -963,6 +967,308 @@ fn a_pass_releases_a_drained_spend_only_once_the_pool_proves_its_anchor_pruned()
             o.close();
         }
     }
+}
+
+fn answer_dispatch_anchor(opened: &Opened, anchor: [u8; 32], verified: bool) {
+    use super::super::shielded_release::{Proved, ReleaseNet};
+    use super::super::trust::{BoxFuture, note_lookup};
+
+    struct AnchorAnswer([u8; 32], bool);
+    impl ReleaseNet for AnchorAnswer {
+        fn anchors(&self) -> BoxFuture<Option<Proved<Vec<[u8; 32]>>>> {
+            let Self(anchor, verified) = *self;
+            Box::pin(async move {
+                note_lookup(verified);
+                Some(Proved {
+                    value: vec![anchor],
+                    height: SET_HEIGHT,
+                    time_ms: 0,
+                    verified: false,
+                })
+            })
+        }
+    }
+    *opened.session.platform.release_net.lock().unwrap() =
+        Some(Arc::new(AnchorAnswer(anchor, verified)));
+}
+
+#[test]
+fn a_trusted_fallback_orphan_waits_for_a_covering_tree_proof_after_restart() {
+    use super::super::shielded_release::presence;
+    use platform_wallet::wallet::shielded::store::PendingRedrive;
+
+    let root = Root::new(&[]).with_tree(TREE - 1);
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    let activity = [7; 32];
+    let note = note(1, NOTE);
+    let (anchor, signed, hash) = o.engine.block_on(async {
+        let mut store = c.store().write().await;
+        store
+            .append_commitment(&[TREE as u8 + 1; 32], true)
+            .unwrap();
+        let anchor = store.tree_anchor().unwrap();
+        let signed = super::signed_spend(
+            7,
+            &ShieldedDispatchKind::Transfer,
+            anchor,
+            &[note.nullifier, [0xee; 32]],
+        );
+        let hash = sha2::Sha256::digest(&signed).into();
+        store
+            .arm_redrive(
+                subwallet(),
+                PendingRedrive {
+                    activity_id: activity,
+                    anchor,
+                    nullifiers: vec![note.nullifier],
+                    st_bytes: signed.clone(),
+                    attempts: 0,
+                    anchor_height: Some(SET_HEIGHT),
+                    identity_nonce_finalized: false,
+                    identity_user_abandoned: false,
+                },
+            )
+            .unwrap();
+        (anchor, signed, hash)
+    });
+    answer_dispatch_anchor(&o, anchor, false);
+    let hook = EngineDispatch::new(&o.session, &c);
+    o.engine
+        .block_on(hook.dispatch(ShieldedDispatchPayload {
+            kind: ShieldedDispatchKind::Transfer,
+            wallet_id: main_wallet().0,
+            account_index: SHIELDED_ACCOUNT,
+            activity_id: activity,
+            st_hash: hash,
+            st_bytes: signed,
+            anchor,
+            selected_notes: vec![DispatchedNote {
+                nullifier: note.nullifier,
+                cmx: note.cmx,
+                value: note.value,
+                position: note.position,
+            }],
+            published_nullifiers: vec![note.nullifier, [0xee; 32]],
+        }))
+        .unwrap();
+    assert_eq!(
+        o.engine.block_on(presence(&o.session, main_wallet(), hash)),
+        Some(None)
+    );
+    o.engine.block_on(async {
+        let mut store = c.store().write().await;
+        store.clear_pending(subwallet(), &note.nullifier).unwrap();
+        store.clear_redrive(subwallet(), &activity).unwrap();
+    });
+    drop(c);
+    o.close();
+
+    let o = root.open_answering(pass_sdk_at(TREE, &[[0xee; 32]], SET_HEIGHT - 1));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(
+        o.engine.block_on(presence(&o.session, main_wallet(), hash)),
+        Some(None)
+    );
+    assert_eq!(
+        o.selectable(&c).0,
+        vec![nf(2)],
+        "the tree count cannot replace verified presence"
+    );
+    drop(c);
+    o.close();
+
+    let o = root.open_answering(pass_sdk(TREE, &[anchor]));
+    answer_dispatch_anchor(&o, anchor, true);
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(
+        o.engine.block_on(presence(&o.session, main_wallet(), hash)),
+        Some(Some(SET_HEIGHT))
+    );
+    assert_eq!(
+        o.selectable(&c).0,
+        vec![nf(2)],
+        "the verified anchor is still live"
+    );
+    drop(c);
+    o.close();
+
+    let o = root.open_answering(pass_sdk_at(TREE, &[[0xee; 32]], SET_HEIGHT + 1));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    let artifact = o
+        .engine
+        .block_on(o.session.leases.shielded_artifact(main_wallet(), activity))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        artifact.status,
+        dw_appdb::dispatch::ArtifactStatus::NotExecuted
+    );
+    assert_eq!(o.selectable(&c).0, sorted(vec![nf(1), nf(2)]));
+    drop(c);
+    o.close();
+}
+
+#[test]
+fn a_retired_dispatch_is_released_only_after_a_covering_prune_proof() {
+    let root = Root::new(&[]).with_tree(TREE);
+    let o = root.open();
+    o.artifact(1, ANCHOR, "registered");
+    o.journal()
+        .execute(
+            "INSERT INTO shielded_artifact_note (wallet, activity, nullifier) VALUES (?1, ?2, ?3)",
+            rusqlite::params![&main_wallet().0[..], &[1u8; 32][..], &nf(1)[..]],
+        )
+        .unwrap();
+    o.engine
+        .block_on(super::super::shielded_release::record_presence(
+            &o.session,
+            main_wallet(),
+            [1; 32],
+            SET_HEIGHT,
+        ))
+        .unwrap();
+    o.close();
+
+    let o = root.open_answering(pass_sdk(TREE, &[ANCHOR]));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(o.selectable(&c).0, vec![nf(2)]);
+    assert_eq!(o.artifact_status(1).0, "registered");
+    drop(c);
+    o.close();
+
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(
+        o.artifact_status(1),
+        ("not_executed".into(), Some("pruned".into()))
+    );
+    assert_eq!(o.selectable(&c).0, sorted(vec![nf(1), nf(2)]));
+    drop(c);
+    o.close();
+
+    let o = root.open();
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert_eq!(o.selectable(&c).0, sorted(vec![nf(1), nf(2)]));
+    o.close();
+}
+
+#[test]
+fn an_orphan_with_one_input_spent_releases_its_other_inputs() {
+    let root = Root::new(&[]).with_tree(TREE);
+    let o = root.open();
+    o.artifact(1, ANCHOR, "registered");
+    for nullifier in [nf(1), nf(2)] {
+        o.journal()
+            .execute(
+                "INSERT INTO shielded_artifact_note (wallet, activity, nullifier) VALUES (?1, ?2, ?3)",
+                rusqlite::params![&main_wallet().0[..], &[1u8; 32][..], &nullifier[..]],
+            )
+            .unwrap();
+    }
+    o.engine
+        .block_on(super::super::shielded_release::record_presence(
+            &o.session,
+            main_wallet(),
+            [1; 32],
+            SET_HEIGHT,
+        ))
+        .unwrap();
+    o.journal()
+        .execute(
+            "UPDATE shielded_artifact_note SET spent = 1 WHERE wallet = ?1 AND activity = ?2 AND nullifier = ?3",
+            rusqlite::params![&main_wallet().0[..], &[1u8; 32][..], &nf(1)[..]],
+        )
+        .unwrap();
+    o.close();
+
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(
+        o.artifact_status(1),
+        ("not_executed".into(), Some("pruned".into()))
+    );
+    assert_eq!(o.selectable(&c).0, vec![nf(2)]);
+    drop(c);
+    o.close();
+
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(o.selectable(&c).0, vec![nf(2)]);
+    o.close();
+}
+
+#[test]
+fn a_migrated_cancelled_disposition_shows_held_then_released() {
+    use crate::platform::shielded::{ShieldedActivityStatus, ShieldedRefusal};
+
+    let root = Root::new(&[ForkRow::Disposition {
+        st: 1,
+        kind: "unresolved",
+        reason: Some("cancelled"),
+        nullifiers: vec![nf(1)],
+    }])
+    .with_tree(TREE);
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    o.artifact(1, ANCHOR, "unresolved");
+    o.journal().execute(
+        "UPDATE shielded_artifact SET disposition_kind = 'unresolved', disposition_reason = 'cancelled'
+         WHERE wallet = ?1 AND st_hash = ?2",
+        rusqlite::params![&main_wallet().0[..], &[1u8; 32][..]],
+    ).unwrap();
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    let activity = |o: &Opened| {
+        let row = o
+            .engine
+            .block_on(o.session.dashpay(main_wallet()).shielded_history(0, 10))
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == hex::encode([1; 32]))
+            .unwrap();
+        (row.status, row.refusal)
+    };
+    assert_eq!(
+        activity(&o),
+        (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held))
+    );
+    assert!(o.pass());
+    assert_eq!(
+        activity(&o),
+        (
+            ShieldedActivityStatus::Failed,
+            Some(ShieldedRefusal::Released)
+        )
+    );
+    drop(c);
+    o.close();
+
+    let o = root.open();
+    let _c = o.bound();
+    assert_eq!(
+        activity(&o),
+        (
+            ShieldedActivityStatus::Failed,
+            Some(ShieldedRefusal::Released)
+        )
+    );
+    o.close();
 }
 
 /// Q110 110-3 (E1): while the pass's set still records a drained spend's

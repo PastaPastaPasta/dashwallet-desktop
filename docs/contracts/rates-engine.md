@@ -1,15 +1,13 @@
 # Rates engine contract (`dw_engine::rates`, MP-01)
 
-Contract-Version: 2
-
 Status: **contract**, 2026-11-05. Code: `rust/crates/dw-engine/src/rates/`; bound for the Tauri host in
 `rust/crates/dw-app/src/api/rates.rs`; dw-ffi withholds the event and binds no call. Designed in the 0.2
 FIAT lane, with the owner's rulings on consent, freshness and rounding.
 
-**A change to the facade's public surface (§3) updates this file and raises `Contract-Version` in the same
-change.** `rust/crates/dw-engine/tests/rates_contract.rs` enforces it: §3 is generated from the facade's source
-with its SHA-256, and §4 must list every `RatesError` code. To approve a change: raise `Contract-Version`
-above, run the test with `DW_BLESS=1` (refused under `CI`), review the diff, and run again without it.
+**A change to the facade's public surface (§3) updates this file and regenerates §3 with `DW_BLESS=1` in the same
+change.** `rust/crates/dw-engine/tests/rates_contract.rs` enforces it: §3 is generated from the facade's source,
+and §4 must list every `RatesError` code. To approve a change: run the test with `DW_BLESS=1` (refused under `CI`),
+review the diff, and run again without it.
 
 ## 0. Scope
 
@@ -95,7 +93,6 @@ half, up or down, from the price before it, when that one was fetched at most 7 
 ## 3. The surface
 
 <!-- BEGIN GENERATED: rates-surface -->
-<!-- surface-sha256: 15762d96a0f9caf85d8cacd35e6459cfe74d2c04175090451fdbabeec3da7ef2 version: 2 -->
 
 ```rust
 // src/rates/errors.rs

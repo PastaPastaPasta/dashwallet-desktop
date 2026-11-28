@@ -553,7 +553,7 @@ fn h1_writes_the_artifact_before_returning_ok() {
 
     // The first record stands: the same activity is not accepted twice.
     let refused = h.dispatch(h.payload(1, &[1, 2])).unwrap_err();
-    assert!(refused.contains("already has an artifact"), "{refused}");
+    assert!(refused.contains("held by an earlier dispatch"), "{refused}");
 
     // No journal, no send.
     let unwritten = h.staged(2, &[3]);
@@ -1831,10 +1831,10 @@ fn unshield_hook_arms_its_record_after_the_artifact() {
     );
     assert_eq!(h.intended_record(), Some(r.id()));
 
-    // The same unshield handed to the hook again: refused at its artifact,
-    // its record as it was, still one.
+    // The same unshield handed to the hook again: refused before accepting
+    // its notes a second time. The payout record is unchanged.
     let refused = h.dispatch(again).unwrap_err();
-    assert!(refused.contains("already has an artifact"), "{refused}");
+    assert!(refused.contains("held by an earlier dispatch"), "{refused}");
     assert_eq!(h.records(), records);
 }
 

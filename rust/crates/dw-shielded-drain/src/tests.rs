@@ -896,6 +896,89 @@ fn the_drain_runs_on_this_upgrades_copy_and_refuses_without_one() {
     assert_eq!(d.sha256s(), before, "neither copy: nothing changed");
 }
 
+#[test]
+fn shielded_drain_retries_after_wallet_removal_retires_the_snapshot() {
+    let mut d = between(BeforeSnapshot::Present, false);
+    let snapshot = dw_store_upgrade::latest_snapshot(&d.net).unwrap().unwrap();
+    d.open_persister();
+    assert!(d.drain(Some(FailAfter::Read)).is_err());
+    drop(d.persister.take());
+    let adopters = Adopters::for_build(&d.root);
+    let config = SqlitePersisterConfig::new(d.net.join("wallet.sqlite"))
+        .with_load_policy(LoadPolicy::Strict)
+        .with_auto_backup_dir(Some(d.net.join("backups").join("auto")));
+    let prepared = dw_store_upgrade::prepare_with(&d.net, adopters, SystemTime::now()).unwrap();
+    assert!(matches!(
+        dw_store_upgrade::reconcile_fork_store(&config, &prepared.snapshot.unwrap(), adopters),
+        Ok(dw_store_upgrade::Outcome::Retired { .. })
+    ));
+
+    let wallet = Connection::open(d.net.join("wallet.sqlite")).unwrap();
+    let id: Vec<u8> = wallet
+        .query_row("SELECT wallet_id FROM wallets LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    assert!(wallet.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'dw_fork_schema_history_retired')", [], |r| r.get::<_, bool>(0)).unwrap());
+    let id = id.try_into().unwrap();
+    dw_store_upgrade::retire_snapshot_for_wallet_removal(&d.net, &id).unwrap();
+    let marker = snapshot.dir().join(dw_store_upgrade::NOT_THIS_WALLET);
+    let removal_marker = std::fs::read(&marker).unwrap();
+    std::fs::write(&marker, b"dw-store-upgrade not this wallet\nformat 1\n").unwrap();
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    std::fs::write(&marker, &removal_marker).unwrap();
+
+    // Changing a parseable metadata field alters the manifest digest while
+    // keeping store files intact and must fail the UPGRADED-FROM check.
+    let complete = snapshot.dir().join("SNAPSHOT-COMPLETE");
+    let original_complete = std::fs::read_to_string(&complete).unwrap();
+    let changed_complete = original_complete.replacen("build ", "build tampered-", 1);
+    assert_ne!(changed_complete, original_complete);
+    std::fs::write(&complete, &changed_complete).unwrap();
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    std::fs::write(&complete, &original_complete).unwrap();
+
+    let shielded_copy = snapshot.dir().join(SHIELDED_STORE_FILE);
+    let original = std::fs::read(&shielded_copy).unwrap();
+    let mut damaged = original.clone();
+    damaged[100] ^= 1;
+    std::fs::write(&shielded_copy, damaged).unwrap();
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    std::fs::write(&shielded_copy, original).unwrap();
+
+    // A same-phrase import recreates the original wallet ID.
+    wallet
+        .execute_batch(
+            "CREATE TEMP TABLE reimported AS SELECT * FROM wallets; DELETE FROM wallets;",
+        )
+        .unwrap();
+    assert!(upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    wallet
+        .execute_batch("INSERT INTO wallets SELECT * FROM reimported;")
+        .unwrap();
+    drop(wallet);
+    assert!(dw_store_upgrade::request_restore(&d.net, &snapshot).is_err());
+    d.open_persister();
+    assert!(matches!(d.drain(None), Ok(DrainOutcome::Drained(_))));
+    assert_eq!(
+        d.journal().shielded_drained_holds(&W).unwrap(),
+        vec![(0, n(1))]
+    );
+}
+
+#[test]
+fn shielded_drain_propagates_upgrade_copy_io_error() {
+    let mut d = between(BeforeSnapshot::Present, false);
+    d.open_persister();
+    drop(d.journal());
+    let backups = d.net.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);
+    std::fs::remove_dir_all(&backups).unwrap();
+    std::fs::write(&backups, b"not a directory").unwrap();
+    let err = d.drain(None).unwrap_err();
+    assert!(
+        matches!(err, ShieldedDrainError::Io(_)),
+        "expected Io error when upgrade-backups check fails, got {err:?}"
+    );
+}
+
 /// Step 0: while a store holds the owner lock the drain refuses.
 #[test]
 fn the_drain_refuses_while_a_store_holds_the_file() {

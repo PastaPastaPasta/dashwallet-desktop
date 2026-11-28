@@ -54,6 +54,7 @@ const PHRASES: [&str; 3] = [
 #[derive(Default)]
 struct Net {
     sent: Mutex<Vec<Transaction>>,
+    pause_before_entry: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// The next hand-off is refused, never sent (a first attempt then
     /// releases its inputs).
     reject: std::sync::atomic::AtomicBool,
@@ -91,7 +92,13 @@ impl Net {
 
 impl TestBroadcaster for Net {
     fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async {})
+        let pause = self.pause_before_entry.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(pause) = pause {
+                pause.mark_reached();
+                pause.release.notified().await;
+            }
+        })
     }
 
     fn broadcast(

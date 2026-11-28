@@ -73,7 +73,7 @@ describe("pay-contact on a fixture already paid (DP3-06)", () => {
     const { wd, did } = app({ name: "QA B", sub: `@${USERNAME}` });
     const r = await rerun(wd);
     expect(r.ledger).toBe(PAID);
-    expect(did).toContain(`press [data-testid="pay-tabs-contact"]`);
+    expect(did).toContain(`press [data-testid="pay-contacts"]`);
     expect(did.indexOf("screenshot 2-payee")).toBeGreaterThan(did.indexOf(`press [data-testid="pay-frequent-chip"][data-contact="idB"]`));
     expect(did.filter((d) => d.startsWith("fill")).map((d) => d.split(" ")[1])).toEqual([`[data-testid="lock-field"]`]);
     expect(did.some((d) => /pay-continue|pay-confirm-send|pay-amount/.test(d))).toBe(false);

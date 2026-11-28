@@ -269,7 +269,7 @@ test.describe("Address Book", () => {
     await page.getByTestId("address-book-search").fill("");
 
     await page.getByTestId("address-book-export").click();
-    await expect(page.getByTestId("address-book-exported")).toContainText("Sending addresses.csv");
+    await expect(page.locator(".toast-host")).toContainText("Sending addresses.csv");
     const saved = await world(page, (w) => w.tools.files.saved.at(-1)!);
     expect(saved.purpose).toBe("csv");
     const csv = Buffer.from(saved.data, "base64").toString("utf8");
@@ -291,13 +291,30 @@ test.describe("Address Book", () => {
   test("QT097: Pay's address field chooses from the sending book, with its label", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address-book").click();
     const picker = page.getByTestId("address-book-picker");
     await picker.locator("tr", { hasText: "Bob's shop" }).getByRole("button", { name: /Choose/ }).click();
     await expect(picker).toHaveCount(0);
     await expect(page.getByTestId("pay-address")).toHaveValue(/^y/);
     await expect(page.getByTestId("pay-label")).toHaveValue("Bob's shop");
+  });
+
+  test("a failed address book QR keeps its slot and copyable payment link", async ({ page }) => {
+    await open(page);
+    await tools(page, "addressBook");
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("qr_matrix"));
+    await page.evaluate(() => window.__dwFixture!.fail("qr_matrix", "none"));
+    await page.getByTestId("address-book-receive").click();
+    await page.getByTestId("address-book-table").locator("tr", { hasText: "Payroll" }).getByRole("button", { name: /QR code/ }).click();
+    const loading = page.getByTestId("address-book-qr-loading");
+    const copy = page.getByRole("button", { name: "Copy payment link" });
+    await expect(loading).toBeVisible();
+    await expect(copy).toBeVisible();
+    await fontsReady(page);
+    const before = await copy.boundingBox();
+    await release.evaluate((resume) => resume());
+    await expect(page.getByTestId("address-book-qr-error")).toContainText("Could not draw the QR code");
+    expect(await copy.boundingBox()).toEqual(before);
   });
 });
 
@@ -441,7 +458,6 @@ test.describe("PSBT", () => {
     await fakeClipboard(page);
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await expect(page.getByTestId("pay-continue")).toBeEnabled();
@@ -459,7 +475,6 @@ test.describe("PSBT", () => {
     await fakeClipboard(page);
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await expect(page.getByTestId("pay-continue")).toBeEnabled();
@@ -481,7 +496,6 @@ test.describe("PSBT", () => {
     await fakeClipboard(page);
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await page.getByTestId("pay-continue").click();
@@ -497,7 +511,6 @@ test.describe("PSBT", () => {
   test("QT076_D18: a watch-only wallet's confirm sheet offers Create Unsigned instead of Send", async ({ page }) => {
     await open(page, "watch-only");
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.5");
     await expect(page.getByTestId("pay-continue")).toBeEnabled();

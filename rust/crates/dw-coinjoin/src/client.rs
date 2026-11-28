@@ -109,6 +109,12 @@ pub trait MixingWallet: Send + Sync {
     /// a stop with our signatures out).
     fn hold_until_spent(&self, outpoints: &[OutPoint]);
 
+    /// Records the possible collateral spend before the coordinator receives its bytes.
+    fn handoff_collateral(
+        &self,
+        collateral: &Transaction,
+    ) -> impl Future<Output = Result<(), WalletError>> + Send;
+
     /// Every unspent coin of the wallet, on any account: a final
     /// transaction may spend only those of them our entry offered.
     fn unspent_outpoints(
@@ -594,7 +600,8 @@ fn unsigned_input(outpoint: OutPoint) -> TxIn {
 /// that speaks the rebalance protocol (`ProcessPendingDsaRequest`): an older
 /// one would read it as 1:1 mixing and charge the collateral for the
 /// rebalance entry.
-async fn open_session(
+async fn open_session<W: MixingWallet>(
+    wallet: &W,
     params: &SessionParams,
     flags: u8,
     stop: &mut watch::Receiver<bool>,
@@ -633,6 +640,10 @@ async fn open_session(
         collateral: params.collateral.clone(),
         flags,
     };
+    if let Err(error) = wallet.handoff_collateral(&params.collateral).await {
+        session.close();
+        return Err(SessionFailure::Wallet(error.0));
+    }
     if session
         .send(
             dw_p2p::commands::DSACCEPT,
@@ -681,7 +692,7 @@ pub async fn run_session<W: MixingWallet>(
     }
     let opened = match rebalance_output {
         Err(why) => Err(SessionFailure::BadRebalance(why)),
-        Ok(_) => open_session(&params, flags, &mut stop).await,
+        Ok(_) => open_session(wallet, &params, flags, &mut stop).await,
     };
     let rebalance_output = rebalance_output.unwrap_or(0);
     let (session, mut rx) = match opened {

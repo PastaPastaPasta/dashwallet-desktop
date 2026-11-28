@@ -169,6 +169,10 @@ impl MixingWallet for TestWallet {
         self.held.lock().unwrap().extend_from_slice(outpoints);
     }
 
+    async fn handoff_collateral(&self, _collateral: &Transaction) -> Result<(), WalletError> {
+        Ok(())
+    }
+
     async fn unspent_outpoints(&self) -> Result<HashSet<OutPoint>, WalletError> {
         Ok(self
             .coins

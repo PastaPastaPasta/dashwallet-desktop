@@ -175,6 +175,16 @@ pub(crate) fn open_immutable_with_flags(
     path: &Path,
     flags: OpenFlags,
 ) -> rusqlite::Result<Connection> {
+    #[cfg(windows)]
+    let absolute;
+    #[cfg(windows)]
+    let path = if path.is_absolute() {
+        path
+    } else {
+        absolute = std::path::absolute(path)
+            .map_err(|_| rusqlite::Error::InvalidPath(path.to_path_buf()))?;
+        &absolute
+    };
     Connection::open_with_flags(
         file_uri(path, "immutable=1"),
         flags
@@ -264,11 +274,15 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+pub(crate) fn sha256_reader(reader: &mut impl std::io::Read) -> std::io::Result<String> {
+    let mut h = Sha256::new();
+    std::io::copy(reader, &mut h)?;
+    Ok(hex(&h.finalize()))
+}
+
 pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    std::io::copy(&mut f, &mut h)?;
-    Ok(hex(&h.finalize()))
+    sha256_reader(&mut f)
 }
 
 pub(crate) fn integrity_ok(conn: &Connection) -> rusqlite::Result<bool> {
@@ -320,6 +334,19 @@ mod tests {
     fn file_uri_escapes_uri_syntax() {
         let uri = file_uri(Path::new(r"C:\a b\c#d.sqlite"), "immutable=1");
         assert_eq!(uri, "file:///C:/a%20b/c%23d.sqlite?immutable=1");
+    }
+
+    #[test]
+    fn opens_existing_database_through_relative_directory() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = Path::new(dir.path().file_name().unwrap()).join("wallet #1.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute("CREATE TABLE reopened (value INTEGER)", [])
+            .unwrap();
+        drop(db);
+
+        let db = open_immutable(&path).unwrap();
+        assert!(has_table(&db, "reopened").unwrap());
     }
 
     #[test]

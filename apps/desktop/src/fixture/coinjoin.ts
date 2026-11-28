@@ -73,6 +73,8 @@ export interface CoinJoinWorld {
   sweepUnknown?: Record<string, string[]>;
   /** Restored BIP44 denominations (`txid:vout`): counted as denominated, not on the CoinJoin account. */
   restoredOutpoints?: string[];
+  /** CoinJoin-account outpoints (`txid:vout`) held by a coordinator hand-off (`Legacy` / `FinalInputs` / `Collateral`). */
+  heldOutpoints?: string[];
 }
 
 /** The step of the fixture's drain left possibly sent. */
@@ -127,6 +129,7 @@ export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus
       fullyMixed,
       mixableUnfinished: Math.max(0, dip9Denom - dip9Mixed),
       coinjoinAccount: w.coins.filter((u) => isCoinJoinCoin(world, u) && u.confirmations > 0 && !u.reserved && !u.userLocked).reduce((n, u) => n + u.amount, 0),
+      heldFromMixing: w.coins.filter((u) => isHeldCoinJoinCoin(world, u) && u.confirmations > 0).reduce((n, u) => n + u.amount, 0),
     },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },
@@ -177,7 +180,12 @@ function sweepTxid(w: World): string {
 
 export const isRestoredBip44 = (world: World, u: Utxo) => !!world.coinjoin.restoredOutpoints?.includes(`${u.outpoint.txid}:${u.outpoint.vout}`);
 
+export const isHeldHandoff = (world: World, u: Utxo) => !!world.coinjoin.heldOutpoints?.includes(`${u.outpoint.txid}:${u.outpoint.vout}`);
+
 const isCoinJoinCoin = (world: World, u: Utxo) => u.coinjoinRounds !== null && !isRestoredBip44(world, u) && u.amount > SWEEP_MIN_COIN && !u.reserved;
+
+const isHeldCoinJoinCoin = (world: World, u: Utxo) =>
+  !isRestoredBip44(world, u) && isHeldHandoff(world, u) && !u.userLocked && u.amount > SWEEP_MIN_COIN;
 
 /** The CoinJoin account's coins (its addresses' coins): the fixture's coins with mixing rounds. */
 export const coinJoinAccount = (w: FixtureWallet, world?: World) =>
@@ -189,18 +197,25 @@ export const mixerBusy = (world: World, walletId: string) => (world.coinjoin.mix
 /** The most coins one shield lock spends (`MAX_LOCK_INPUTS`): a consolidation pays for itself only above it. */
 export const SHIELD_LOCK_INPUTS = 50;
 
-/** Where a sweep's chunks go: a fresh wallet address ("Move mixed coins"), or the CoinJoin account itself
- * (the consolidation round before a move to Shielded). */
-type SweepTarget = "wallet" | "coinjoin";
+/** Where a sweep's chunks go: a fresh wallet address ("Move mixed coins"), the CoinJoin account itself
+ * (the consolidation round before a move to Shielded), or Return to Core for held coins. */
+type SweepTarget = "wallet" | "coinjoin" | "return";
 
-function sweepChunks(coins: Utxo[]): { coins: Utxo[]; chunk: MixedCoinsChunk }[] {
+function sweepChunks(coins: Utxo[], target: SweepTarget): { coins: Utxo[]; chunk: MixedCoinsChunk }[] {
   const order = [...coins].sort((a, b) => b.amount - a.amount);
   const out: { coins: Utxo[]; chunk: MixedCoinsChunk }[] = [];
   for (let i = 0; i < order.length; i += SWEEP_MAX_INPUTS) {
     const part = order.slice(i, i + SWEEP_MAX_INPUTS);
     const total = part.reduce((n, u) => n + u.amount, 0);
-    const fee = sweepSize(part.length);
-    if (total > fee) out.push({ coins: part, chunk: { inputs: part.length, amount: total - fee, fee } });
+    let fee = sweepSize(part.length);
+    if (total > fee) {
+      let amount = total - fee;
+      if (target === "return" && COINJOIN_LIMITS.denominations.includes(amount)) {
+        amount -= 1;
+        fee += 1;
+      }
+      out.push({ coins: part, chunk: { inputs: part.length, amount, fee } });
+    }
   }
   return out;
 }
@@ -216,10 +231,10 @@ function sweepPlanOf(world: World, w: FixtureWallet, target: SweepTarget) {
   if (w.summary.watchOnly) throw fail("coinjoin.watch_only", "fixture: this wallet is watch-only");
   if (mixerBusy(world, w.summary.walletId)) throw fail("coinjoin.mixing_active", "stop mixing first");
   // Confirmed coins only (`sweep_coins`); the rest wait for a confirmation.
-  const account = w.coins.filter((u) => isCoinJoinCoin(world, u));
+  const account = w.coins.filter((u) => (target === "return" ? isHeldCoinJoinCoin(world, u) : isCoinJoinCoin(world, u)));
   const coins = account.filter((u) => u.confirmations > 0);
   const unconfirmed = account.length - coins.length;
-  let chunks = sweepChunks(coins);
+  let chunks = sweepChunks(coins, target);
   // A consolidation pays for itself only when the drain needs it: more coins than one shield lock
   // takes, and fewer coins after it.
   const taken = chunks.reduce((n, c) => n + c.coins.length, 0);
@@ -279,6 +294,10 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
       }
       const spent = new Set(c.coins);
       w.coins = w.coins.filter((u) => !spent.has(u));
+      if (target === "return" && world.coinjoin.heldOutpoints) {
+        const spentKeys = new Set(c.coins.map((u) => `${u.outpoint.txid}:${u.outpoint.vout}`));
+        world.coinjoin.heldOutpoints = world.coinjoin.heldOutpoints.filter((k) => !spentKeys.has(k));
+      }
       // A consolidated output stays in the CoinJoin account (rounds 0: not a denomination).
       const inAccount = target === "coinjoin";
       w.coins.push({ ...c.coins[0], outpoint: { txid, vout: 0 }, amount: c.chunk.amount, confirmations: 0, coinjoinDenominated: false, coinjoinRounds: inAccount ? 0 : null, label: null, reserved: false });
@@ -315,6 +334,12 @@ export function coinjoinHandlers({ wallet, grant, useGrant }: CoinJoinDeps): Han
       if (destination !== "wallet") throw notShielded();
       return sweep(ctx, walletId, "wallet", quoteId, grantId);
     },
+    return_from_mixing_plan: ({ walletId }, { world }) => {
+      const { chunks, total, fullyMixed, unconfirmed } = sweepPlanOf(world, wallet(world, walletId), "return");
+      const quoteId = issueQuote(world, walletId, "return", chunks);
+      return { destination: "wallet", total, chunks: chunks.map((c) => c.chunk), fullyMixed, notFullyMixed: total - fullyMixed, unconfirmed, quoteId };
+    },
+    return_from_mixing: ({ walletId, quoteId, grantId }, ctx): MixedCoinsSweepResult => sweep(ctx, walletId, "return", quoteId, grantId),
     // The engine sends a recorded chunk's bytes again; the fixture's network never answers.
     resend_mixed_coins: ({ walletId, txid }, { world }): MixedCoinsResend[] => {
       wallet(world, walletId);
@@ -404,6 +429,47 @@ function withMixedCoins(w: World, n: number, split = false): World {
   main.coins = [...(split ? [{ ...main.coins[0], amount: main.coins[0].amount - sum }, ...main.coins.slice(1)] : main.coins), ...coins];
   const b = main.summary.balances!;
   main.summary = { ...main.summary, balances: { ...b, confirmed: b.confirmed + added, total: b.total + added, coinjoin: b.coinjoin + sum } };
+  return w;
+}
+
+/** Mixing stopped with held CoinJoin coins (legacy or hand-off) and zero free CoinJoin coins. */
+function withHeldCoins(w: World): World {
+  const main = w.wallets[0];
+  const rounds = w.coinjoin.settings.rounds;
+  const held: Utxo[] = [
+    {
+      ...main.coins[0],
+      outpoint: { txid: "d1".repeat(32), vout: 0 },
+      amount: 10_000_100,
+      label: null,
+      reserved: true,
+      coinjoinDenominated: true,
+      coinjoinRounds: rounds,
+    },
+    {
+      ...main.coins[0],
+      outpoint: { txid: "d2".repeat(32), vout: 0 },
+      amount: 10_000_100,
+      label: null,
+      reserved: true,
+      coinjoinDenominated: true,
+      coinjoinRounds: rounds - 1,
+    },
+    {
+      ...main.coins[0],
+      outpoint: { txid: "d3".repeat(32), vout: 0 },
+      amount: 40_000,
+      label: null,
+      reserved: true,
+      coinjoinDenominated: false,
+      coinjoinRounds: null,
+    },
+  ];
+  const sum = held.reduce((s, u) => s + u.amount, 0);
+  main.coins = [...main.coins, ...held];
+  w.coinjoin.heldOutpoints = held.map((u) => `${u.outpoint.txid}:${u.outpoint.vout}`);
+  const b = main.summary.balances!;
+  main.summary = { ...main.summary, balances: { ...b, confirmed: b.confirmed + sum, total: b.total + sum } };
   return w;
 }
 
@@ -503,6 +569,16 @@ export function coinjoinScenarios(base: Base) {
     /** The only chunk's broadcast outcome is unknown. */
     "coinjoin-move-unknown": (t: ThemeName | null) => {
       const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.coinjoin.sweepFailure = { kind: "unknown", at: 0 };
+      return w;
+    },
+    /** "Return to Core": mixing stopped, ONLY held CoinJoin coins (coinjoinAccount === 0, heldFromMixing > 0). */
+    "coinjoin-held": (t: ThemeName | null) => withHeldCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 })),
+    /** "Return to Core" while mixing runs: the sheet offers Stop Mixing first. */
+    "coinjoin-held-mixing": (t: ThemeName | null) => withHeldCoins(mixing(base(t), { status: { kind: "waitingInQueue" }, progress: PROGRESS_42 })),
+    /** "Return to Core" whose broadcast outcome is unknown: offers Try again (resend). */
+    "coinjoin-held-unknown": (t: ThemeName | null) => {
+      const w = withHeldCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }));
       w.coinjoin.sweepFailure = { kind: "unknown", at: 0 };
       return w;
     },

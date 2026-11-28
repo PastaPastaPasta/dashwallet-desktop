@@ -731,6 +731,7 @@ pub struct TxDraft {
     /// drained the CoinJoin account: coin control takes those alone, never
     /// pooled with other coins, signed as a CoinJoin payment is.
     coinjoin_exempt: bool,
+    check_dispatch_exclusions: bool,
     /// Stands in for the library's broadcast, so the leased hand-off runs
     /// end to end without SPV (E0-04 L5, review P2a r1 F3).
     #[cfg(test)]
@@ -851,6 +852,23 @@ impl NetworkSession {
         exempt: HashSet<OutPoint>,
         coinjoin_exempt: bool,
     ) -> Result<Arc<TxDraft>, EngineError> {
+        self.draft_with_dispatch_policy(wallet_id, exempt, coinjoin_exempt, false)
+    }
+
+    pub(crate) fn new_shared_abandon_draft(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+    ) -> Result<Arc<TxDraft>, EngineError> {
+        self.draft_with_dispatch_policy(wallet_id, HashSet::new(), false, true)
+    }
+
+    fn draft_with_dispatch_policy(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        exempt: HashSet<OutPoint>,
+        coinjoin_exempt: bool,
+        check_dispatch_exclusions: bool,
+    ) -> Result<Arc<TxDraft>, EngineError> {
         let _op = self.try_enter()?;
         let manager = self.manager()?;
         if manager.get_wallet_blocking(&wallet_id.0).is_none() {
@@ -870,6 +888,7 @@ impl NetworkSession {
             }),
             exempt,
             coinjoin_exempt,
+            check_dispatch_exclusions,
             #[cfg(test)]
             broadcaster: Mutex::new(None),
         }))
@@ -1815,6 +1834,20 @@ impl TxDraft {
             }
             Verdict::Deferred => return unknown("the hand-off was deferred".into()),
         };
+        if !first
+            && matches!(
+                &result,
+                Err(EngineError::Send(SendFailure::OutpointUnavailable(_)))
+            )
+        {
+            // Preserve uncertainty from the earlier attempt when refusing its replay.
+            let phase = if settlement == Settlement::Sent {
+                Phase::Sent
+            } else {
+                Phase::Unknown
+            };
+            return (result, phase);
+        }
         match settlement {
             Settlement::Sent => (
                 result.or_else(|_| {
@@ -1858,17 +1891,23 @@ impl TxDraft {
         first: bool,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<BroadcastOutcome, EngineError> {
+        let signed = prepared.signed().clone();
+        let signed = signed.as_ref();
+        let tx = prepared
+            .mixed
+            .as_ref()
+            .or_else(|| signed.map(|s| s.transaction()));
         let ready = async {
             let wallet = self.session.wallet(&self.wallet_id).await?;
             #[cfg(test)]
             let seam = self.broadcaster.lock().unwrap().clone();
+            #[cfg(not(test))]
+            let seam = None::<()>;
             #[cfg(test)]
-            if let Some(seam) = seam {
+            if let Some(seam) = &seam {
                 seam.before_entry().await;
-                return Ok((wallet, Some(seam)));
             }
-            let manager = self.session.manager()?;
-            if !manager.spv().is_started() {
+            if seam.is_none() && !self.session.manager()?.spv().is_started() {
                 // Nothing to send to; handled like dash-spv's never-sent
                 // rejection.
                 return Err(if first {
@@ -1880,27 +1919,38 @@ impl TxDraft {
                 }
                 .into());
             }
-            Ok::<_, EngineError>((wallet, None))
+            if self.check_dispatch_exclusions
+                && let Some(tx) = tx
+            {
+                let state = crate::wallet_read::info_of(&wallet).await?;
+                let excluded = self
+                    .session
+                    .hub
+                    .recovery_exclusions(self.wallet_id, &state.core_wallet);
+                if let Some(input) = tx
+                    .input
+                    .iter()
+                    .find(|i| excluded.contains_key(&i.previous_output))
+                {
+                    return Err(SendFailure::OutpointUnavailable(input.previous_output).into());
+                }
+            }
+            Ok::<_, EngineError>((wallet, seam))
         };
         // `Phase::Broadcasting` keeps abandon and drop away while the
         // broadcast awaits the network (up to about a minute).
-        let signed = prepared.signed().clone();
         let handed = self
             .session
             .leases
             .hand_off(deadline, ready, |(wallet, seam)| async move {
-                let tx = match (&prepared.mixed, &signed) {
-                    (Some(tx), _) => tx,
-                    (None, Some(signed)) => signed.transaction(),
-                    (None, None) => return None,
-                };
+                let tx = tx?;
                 #[cfg(test)]
                 if let Some(seam) = seam {
                     return Some(seam.broadcast(tx, first).await);
                 }
                 #[cfg(not(test))]
                 let _: Option<()> = seam;
-                Some(match (&prepared.mixed, &signed) {
+                Some(match (&prepared.mixed, signed) {
                     (None, Some(signed)) if first => {
                         wallet.core().broadcast_finalized_transaction(signed).await
                     }
@@ -2014,6 +2064,7 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
         Err(EngineError::Send(
             SendFailure::NoPeers
             | SendFailure::BroadcastRejected { .. }
+            | SendFailure::OutpointUnavailable(_)
             | SendFailure::PreparedTxSpent
             | SendFailure::Cancelled
             | SendFailure::HeldUntilRestart,
@@ -2034,7 +2085,8 @@ pub(crate) enum HandoffOutcome {
 }
 
 /// Refusal codes newer than the migration that rewrote the inherited ones.
-pub(crate) const REFUSED_SINCE_INHERITED: &[&str] = &["send.held_until_restart"];
+pub(crate) const REFUSED_SINCE_INHERITED: &[&str] =
+    &["send.held_until_restart", "send.outpoint_unavailable"];
 
 pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
     if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) || REFUSED_SINCE_INHERITED.contains(&code)

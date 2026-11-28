@@ -76,7 +76,13 @@ test("IOS-073 finds a user by username and sends a contact request under a passp
   await expect(page.getByTestId("add-contact-hit").locator(".contact-row-name")).toHaveText(["Mallory", "Marta", "mateo", "Maxine", "Mayumi"]);
   await field(page).fill("a");
   await expect(page.getByTestId("add-contact-search-hint")).toBeVisible();
+  const tabs = page.getByTestId("add-contact-tabs");
+  const controls = [tabs, field(page)];
+  const boxes = () => Promise.all(controls.map((control) => control.boundingBox()));
+  await fontsReady(page);
+  const searchLayout = await boxes();
   await pick(page, "mal", "Mallory");
+  expect(await boxes()).toEqual(searchLayout);
   await expect(page.getByTestId("add-contact-name")).toBeFocused();
   await expect(page.getByTestId("add-contact-username")).toHaveText("@mallory");
   await expect(page.getByTestId("add-contact-verified")).toContainText("Verified on the Dash network");
@@ -84,8 +90,6 @@ test("IOS-073 finds a user by username and sends a contact request under a passp
   await fontsReady(page);
   const send = page.getByTestId("add-contact-send");
   const show = page.getByTestId("add-contact-show");
-  const controls = [page.getByTestId("add-contact-tabs"), field(page)];
-  const boxes = () => Promise.all(controls.map((control) => control.boundingBox()));
   const before = await boxes();
   const actionBox = await send.boundingBox();
   await send.click();
@@ -134,13 +138,58 @@ test("IOS-073 the eligibility pre-check says why no request can go, with the one
   await expect(add(page)).toHaveCount(0);
 });
 
+test("a changed search drops the picked hit: Send is gone during and after the new lookup", async ({ page }) => {
+  await openAdd(page);
+  await field(page).fill("ma");
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(5);
+  await hit(page, "Mallory").click();
+  const send = page.getByTestId("add-contact-send");
+  await expect(send).toBeVisible();
+  const tabs = page.getByTestId("add-contact-tabs");
+  await fontsReady(page);
+  const before = await Promise.all([tabs.boundingBox(), field(page).boundingBox()]);
+
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("search_users"));
+  await field(page).fill("mar");
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(0);
+  await expect(card(page)).toHaveCount(0);
+  await expect(send).toHaveCount(0);
+  await release.evaluate((resume) => resume());
+  await expect(hit(page, "Marta")).toBeVisible();
+  await expect(hit(page, "Mallory")).toHaveCount(0);
+  await expect(card(page)).toHaveCount(0);
+  await expect(send).toHaveCount(0);
+  expect(await Promise.all([tabs.boundingBox(), field(page).boundingBox()])).toEqual(before);
+
+  // The same text again does not bring the dropped hit back; a new pick does.
+  await field(page).fill("ma");
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(5);
+  await expect(card(page)).toHaveCount(0);
+  await hit(page, "Mallory").click();
+  await expect(send).toBeVisible();
+});
+
+test("a picked hit stays across a tab switch while the search text is unchanged", async ({ page }) => {
+  await openAdd(page);
+  await pick(page, "mal", "Mallory");
+  await tab(page, "scan").click();
+  await tab(page, "search").click();
+  await expect(field(page)).toHaveValue("mal");
+  await expect(page.getByTestId("add-contact-send")).toBeVisible();
+});
+
 test("IOS-073 without DashPay keys the card offers Enable, not Send", async ({ page }) => {
   await openAdd(page, "dashpay-no-keys");
   await pick(page, "mal", "Mallory");
   await expect(page.getByTestId("add-contact-line")).toHaveText("Enable DashPay to send contact requests.");
-  await page.getByTestId("add-contact-enable").click();
+  const enable = page.getByTestId("add-contact-enable");
+  const send = page.getByTestId("add-contact-send");
+  await fontsReady(page);
+  const box = await enable.boundingBox();
+  await enable.click();
   await authorize(page);
-  await expect(page.getByTestId("add-contact-send")).toBeVisible();
+  await expect(send).toBeFocused();
+  expect(await send.boundingBox()).toEqual(box);
 });
 
 test("D3 a network failure says so with Try again; Close returns focus to Add contact", async ({ page }) => {
@@ -313,8 +362,16 @@ test("IOS-043 D10 on macOS the Scan tab points to the system's shortcut", async 
 
 test("IOS-073 My QR shows the plain link as a QR code with Copy Link; no username says so", async ({ page }) => {
   await openAdd(page);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("dashpay_my_user_link"));
   await tab(page, "myQr").click();
-  await expect(page.getByTestId("add-contact-qr")).toBeVisible();
+  const loading = page.getByTestId("add-contact-qr-loading");
+  const qr = page.getByTestId("add-contact-qr");
+  await expect(loading).toBeVisible();
+  await fontsReady(page);
+  const loadingBox = await loading.boundingBox();
+  await release.evaluate((resume) => resume());
+  await expect(qr).toBeVisible();
+  expect(await qr.boundingBox()).toEqual(loadingBox);
   await expect(page.getByTestId("add-contact-qr-link")).toHaveText(LINK(IDENTITY.alice, "alice"));
   await expect(page.getByTestId("add-contact-copy-link")).toBeVisible();
   // The tabs as WAI-ARIA tabs: arrow keys move.
@@ -325,6 +382,16 @@ test("IOS-073 My QR shows the plain link as a QR code with Copy Link; no usernam
   await openAdd(page, "dashpay-no-username");
   await tab(page, "myQr").click();
   await expect(page.getByTestId("add-contact-qr-no-username")).toHaveText("Your username is not registered yet, so there is no link to share.");
+});
+
+test("My QR keeps the full Copy Link button visible at minimum width", async ({ page }) => {
+  await page.setViewportSize({ width: 920, height: 620 });
+  await openAdd(page);
+  await tab(page, "myQr").click();
+  const copy = page.getByTestId("add-contact-copy-link");
+  await copy.scrollIntoViewIfNeeded();
+  await expect(copy).toBeInViewport({ ratio: 1 });
+  expect(await copy.locator("..").evaluate((footer) => footer.scrollHeight)).toBe(await copy.locator("..").evaluate((footer) => footer.clientHeight));
 });
 
 test("D11 a file dropped outside the drop area does not navigate the page", async ({ page }) => {

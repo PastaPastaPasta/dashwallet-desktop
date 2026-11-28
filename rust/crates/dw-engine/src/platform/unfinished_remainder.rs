@@ -160,8 +160,22 @@ pub(crate) async fn recover(
         } => (lock, credits, floor),
     };
     let script = (lib.credit_script(outpoint).await).ok_or(PlatformError::Unavailable)?;
-    let to = lib.receive_address().await?;
-    let address = platform_moves::bech32m(&to, lib.network());
+    let txid = outpoint.txid.to_string();
+    let (to, address) = match platform_moves::fund_record(session, wallet, &txid).await? {
+        Some(record) => {
+            let to = platform_moves::parse(&record.address)
+                .filter(|to| platform_moves::bech32m(to, lib.network()) == record.address)
+                .filter(|_| record.recovered && record.vout == outpoint.vout)
+                .ok_or_else(|| PlatformError::Storage {
+                    detail: "invalid destination in the shielded recovery record".into(),
+                })?;
+            (to, record.address)
+        }
+        None => {
+            let to = lib.receive_address().await?;
+            (to, platform_moves::bech32m(&to, lib.network()))
+        }
+    };
     let lease = authority(session, wallet, grant, credits).await?;
     let funding = lease.uncounted_funding_signer()?;
     let estimate = credits.saturating_sub(floor);
@@ -173,8 +187,8 @@ pub(crate) async fn recover(
         .scope(async {
             let permit = lease.call_permit(LABEL, None)?;
             let signer = LockKeySigner::new(&funding, script, permit.signatures());
-            let arming =
-                ArmingSigner::new(&signer, session, wallet, row, (&address, estimate)).recovering();
+            let arming = ArmingSigner::new(&signer, session, wallet, row, (&address, estimate))
+                .recovering(credits);
             let applied = lib.apply_remainder(outpoint, to, &arming).await;
             let signed = signer.signed();
             permit.finish(applied.is_ok());
@@ -190,7 +204,6 @@ pub(crate) async fn recover(
             });
         }
     };
-    let txid = outpoint.txid.to_string();
     if !signed
         && let Some(arming) = arming
         && let Err(e) = platform_moves::disarm_fund(session, wallet, &txid, arming).await
@@ -252,7 +265,10 @@ async fn standing(
         txids: (session.leases.top_ups_settled(wallet).await).unwrap_or_default(),
     };
     let used = locks::marks_of(session, wallet, kind, Mark::Used).await;
-    let remaining = locks::remaining_of(session, wallet, kind).await;
+    let remaining = locks::remaining_of(session, wallet, kind).await?;
+    if remaining.get(&outpoint) == Some(&0) {
+        return Ok(Standing::Finished(used_up(session, wallet, &lock).await?));
+    }
     let ev = Evidence {
         own: &own,
         settled: &settled,
@@ -291,7 +307,7 @@ async fn standing(
                 },
             }
         }
-        SpentRead::Consumed => Standing::Finished(used_up(session, wallet, &lock).await),
+        SpentRead::Consumed => Standing::Finished(used_up(session, wallet, &lock).await?),
         SpentRead::Unspent => Standing::Refused(NOT_RECOVERABLE.into()),
         SpentRead::Unread => Standing::Refused(PlatformError::Unavailable.code().into()),
     })
@@ -300,19 +316,24 @@ async fn standing(
 /// Platform proved the partly used `lock` used up. A recover of this
 /// wallet's armed for it executed: settled, its record done with its
 /// estimate. Otherwise it was used elsewhere ([`Mark::Used`]).
-async fn used_up(session: &NetworkSession, wallet: WalletId, lock: &KindLock) -> LockFinish {
+async fn used_up(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lock: &KindLock,
+) -> Result<LockFinish, PlatformError> {
     let at = lock.info.outpoint;
-    let record = platform_moves::fund_record(session, wallet, &at.txid.to_string()).await;
-    match record {
-        Ok(Some(r)) if r.recovered && r.armed => {
-            let credited = (r.credits, true);
-            settle(session, wallet, lock, r.duffs, r.address, credited).await;
-            LockFinish::Applied
-        }
-        _ => {
-            locks::record(session, wallet, LockKindId::Shielded, Mark::Used, at).await;
-            LockFinish::ReportedUsed
-        }
+    let record = platform_moves::fund_record(session, wallet, &at.txid.to_string()).await?;
+    if let Some(r) = record
+        && r.recovered
+        && r.armed
+        && r.vout == at.vout
+    {
+        let credited = (r.credits, true);
+        settle(session, wallet, lock, r.duffs, r.address, credited).await;
+        Ok(LockFinish::Applied)
+    } else {
+        locks::record(session, wallet, LockKindId::Shielded, Mark::Used, at).await;
+        Ok(LockFinish::ReportedUsed)
     }
 }
 

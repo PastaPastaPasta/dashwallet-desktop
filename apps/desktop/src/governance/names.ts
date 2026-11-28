@@ -99,6 +99,8 @@ export function votesLeftText(used: number, allowed: number): string {
 /** Voting on `c` is over by its end time, before Platform resolves it (MG-07 D8). */
 export const isClosed = (c: Pick<ContestedName, "endsAt">, now: number) => now >= c.endsAt;
 
+export const isOwnActiveContest = (c: ContestedName, now: number): boolean => c.own && !isClosed(c, now);
+
 /** "Ends Jan 15 at 9:00 AM · in about 101 days", or "Voting ended Jan 15 at 9:00 AM". */
 export function endsText(c: Pick<ContestedName, "endsAt">, now: number, locale?: string): string {
   if (isClosed(c, now)) return t(`${P}.endedAt`, { when: dateTime(c.endsAt, locale) });
@@ -233,13 +235,16 @@ export const NAME_SORTS: { id: NameSort; readonly title: string }[] = (["ending"
 }));
 
 /** iOS's sorts over the search (D4); "ending" keeps the engine's order, soonest first. */
-export function listContests(contests: ContestedName[], search: string, sort: NameSort): ContestedName[] {
+export function listContests(contests: ContestedName[], search: string, sort: NameSort, now: number): ContestedName[] {
   const q = normalizeLabel(search.trim());
   const out = contests.filter((c) => q === "" || c.label.includes(q));
   if (sort === "name") out.sort((a, b) => a.label.localeCompare(b.label));
   else if (sort === "votes") out.sort((a, b) => tallyView(b).total - tallyView(a).total);
   else if (sort === "lock") out.sort((a, b) => votesOf(b.lockVotes) - votesOf(a.lockVotes));
-  return out;
+  const own: ContestedName[] = [];
+  const rest: ContestedName[] = [];
+  for (const contest of out) (isOwnActiveContest(contest, now) ? own : rest).push(contest);
+  return own.concat(rest);
 }
 
 /** Why Vote is off on a contest's pane, or `null` (D10). */

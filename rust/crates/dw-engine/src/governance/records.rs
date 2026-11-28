@@ -385,6 +385,8 @@ pub struct ContestedName {
     /// When voting ends (Unix s): the poll is resolved in the first block
     /// after it.
     pub ends_at: u64,
+    /// An identity of the queried wallet requested this username.
+    pub own: bool,
     /// The poll's first page of contenders, in identity order (D9).
     pub contenders: Vec<NameContender>,
     pub lock_votes: Option<u32>,
