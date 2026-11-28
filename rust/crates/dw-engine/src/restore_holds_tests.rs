@@ -697,6 +697,11 @@ fn the_final_pass_retries_a_late_descendants_failed_drop_before_clearing() {
     assert!(mark_present(&session), "the failed drop must keep RESTORED");
     assert!(!dropped(&engine, &session, id, child_id));
     let child_change = OutPoint::new(child_id, 0);
+    let row = utxo_row(&engine, &session, id, child_change).expect("change stays listed");
+    assert!(
+        !row.spendable,
+        "the failed drop must keep change unavailable"
+    );
     assert!(!spendable_for(&engine, &session, id, child_change, 10_000));
 
     gate.wake_for_retry();

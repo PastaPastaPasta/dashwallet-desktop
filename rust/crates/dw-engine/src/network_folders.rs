@@ -112,12 +112,15 @@ fn checked_folder(root: &Path, folder: &str) -> Result<PathBuf, EngineError> {
 pub(crate) fn redirects(root: &Path) -> Result<Folders, EngineError> {
     let _guard = REDIRECTS.lock().unwrap_or_else(|e| e.into_inner());
     crate::fsutil::refuse_insecure_dir(root)?;
-    if pending(root)?.is_some() {
+    let folders = read(&record_path(root))?.unwrap_or_default();
+    if let Some((name, folder)) = pending(root)?
+        && folders.get(&name) != Some(&folder)
+    {
         return Err(EngineError::RetryableIo(format!(
             "{PENDING_RECOVERY_FILE} awaits recovery before opening a network"
         )));
     }
-    Ok(read(&record_path(root))?.unwrap_or_default())
+    Ok(folders)
 }
 
 /// Creates `<dir name>-recovered-<n>` beside the network's folders, the
@@ -194,7 +197,7 @@ fn finish_pending(
     };
     let path = checked_folder(root, &folder)?;
     let retry = |e| EngineError::RetryableIo(format!("finish recovering {name}: {e}"));
-    if folders.get(&name) != Some(&folder) {
+    if cfg!(windows) || folders.get(&name) != Some(&folder) {
         // The pending record must survive independently of the redirect.
         sync_dir(root).map_err(retry)?;
         folders.insert(name.clone(), folder);
@@ -205,8 +208,20 @@ fn finish_pending(
         return Err(retry(io::Error::other("injected at the final sync").into()));
     }
     sync_dir(root).map_err(retry)?;
-    std::fs::remove_file(root.join(PENDING_RECOVERY_FILE)).map_err(|e| retry(e.into()))?;
+    if let Err(e) = remove_pending(root) {
+        tracing::warn!(error = %e, "recovery redirect is durable; pending record cleanup will retry");
+    }
     Ok(Some((name, path)))
+}
+
+fn remove_pending(root: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if FAIL_PENDING_CLEANUP.get() {
+        return Err(io::Error::other(
+            "injected while removing the pending record",
+        ));
+    }
+    std::fs::remove_file(root.join(PENDING_RECOVERY_FILE))
 }
 
 fn sync_dir(dir: &Path) -> Result<(), EngineError> {
@@ -222,7 +237,6 @@ fn sync_dir(dir: &Path) -> Result<(), EngineError> {
 /// pending payment: the folder holds no store whose payments could be held.
 /// `left` names the folder the network left.
 fn write_restored_mark(dir: &Path, left: &str) -> Result<(), EngineError> {
-    use std::io::Write;
     let backups = dir.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);
     create_owner_only_dir(&backups)?;
     let now = std::time::SystemTime::now()
@@ -230,16 +244,7 @@ fn write_restored_mark(dir: &Path, left: &str) -> Result<(), EngineError> {
         .map_or(0, |d| d.as_secs());
     let stamp = crate::csv_export::iso_local(now, 0).replace(['-', ':'], "");
     let text = format!("dw-store-upgrade restored\nformat 1\nrestored {stamp}Z from {left}\n");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(backups.join(RESTORED_MARK))?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
+    write_file(&backups, RESTORED_MARK, text.as_bytes())?;
     #[cfg(unix)]
     {
         std::fs::File::open(&backups)?.sync_all()?;
@@ -248,6 +253,21 @@ fn write_restored_mark(dir: &Path, left: &str) -> Result<(), EngineError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn create_owner_only_dir(path: &Path) -> io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "no recovery directory parent")
+    })?;
+    let staging = temporary(parent, "recovery-dir");
+    std::fs::create_dir(&staging)?;
+    let result = dw_fs::rename_write_through(&staging, path, false);
+    if result.is_err() {
+        let _ = std::fs::remove_dir(&staging);
+    }
+    result
+}
+
+#[cfg(not(windows))]
 fn create_owner_only_dir(path: &Path) -> io::Result<()> {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
@@ -263,49 +283,98 @@ fn create_owner_only_dir(path: &Path) -> io::Result<()> {
 thread_local! {
     static FAIL_BEFORE_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_FINAL_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_PENDING_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_BEFORE_MARK_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Replaces the record: a temporary file of this write's own in `root`,
 /// synced and renamed over the record; the caller syncs `root`. A failed
 /// write leaves the record as it was and no temporary file.
 fn write(root: &Path, record: &str, folders: &Folders) -> Result<(), EngineError> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static WRITES: AtomicU64 = AtomicU64::new(0);
-
     let json =
         serde_json::to_vec_pretty(folders).map_err(|e| EngineError::Internal(e.to_string()))?;
-    let tmp = root.join(format!(
-        "{record}.{}.{}.tmp",
+    Ok(write_file(root, record, &json)?)
+}
+
+fn temporary(parent: &Path, name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    parent.join(format!(
+        "{name}.{}.{}.tmp",
         std::process::id(),
-        WRITES.fetch_add(1, Ordering::Relaxed)
-    ));
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn write_file(parent: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let tmp = temporary(parent, name);
+    let mut file = dw_fs::create_new_owner_only(&tmp)?;
     let written = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        file.write_all(&json)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
+        Ok::<(), io::Error>(())
+    })();
+    drop(file);
+    let written = written.and_then(|()| {
         #[cfg(test)]
-        if FAIL_BEFORE_RENAME.get() {
+        if (name == RESTORED_MARK && FAIL_BEFORE_MARK_RENAME.get())
+            || (name != RESTORED_MARK && FAIL_BEFORE_RENAME.get())
+        {
             return Err(io::Error::other("injected before the rename"));
         }
-        std::fs::rename(&tmp, root.join(record))
-    })();
+        let destination = parent.join(name);
+        #[cfg(windows)]
+        return dw_fs::rename_write_through(&tmp, &destination, true);
+        #[cfg(not(windows))]
+        std::fs::rename(&tmp, destination)
+    });
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    written.map_err(Into::into)
+    written
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_durable_redirect_opens_even_if_pending_cleanup_fails() {
+        let root = dw_testutil::private_tempdir();
+        let network = DashNetwork::Testnet;
+        FAIL_PENDING_CLEANUP.set(true);
+        let recovered = recover(root.path(), &network);
+        let reopened = resolve(root.path(), &network);
+        let other = resolve(root.path(), &DashNetwork::Mainnet);
+        FAIL_PENDING_CLEANUP.set(false);
+
+        let path = root.path().join("testnet-recovered-1");
+        assert_eq!(reopened.unwrap(), path);
+        assert_eq!(recovered.unwrap(), path);
+        assert_eq!(other.unwrap(), root.path().join("mainnet"));
+        assert!(!root.path().join(PENDING_RECOVERY_FILE).exists());
+        assert_eq!(resolve(root.path(), &network).unwrap(), path);
+    }
+
+    #[test]
+    fn marker_publication_precedes_the_recovery_intent() {
+        let root = dw_testutil::private_tempdir();
+        let network = DashNetwork::Testnet;
+        FAIL_BEFORE_MARK_RENAME.set(true);
+        let recovered = recover(root.path(), &network);
+        FAIL_BEFORE_MARK_RENAME.set(false);
+        assert!(recovered.is_err());
+        assert_eq!(
+            resolve(root.path(), &network).unwrap(),
+            root.path().join("testnet")
+        );
+        assert!(names(root.path()).is_empty());
+        assert_eq!(
+            recover(root.path(), &network).unwrap(),
+            root.path().join("testnet-recovered-1")
+        );
+    }
 
     #[cfg(unix)]
     #[test]

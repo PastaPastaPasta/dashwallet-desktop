@@ -1222,8 +1222,9 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let can_spend =
+                this.refuse_while_restored().is_ok() && this.vault.has_wallet_secret(&wallet_id.0);
             let view = this.read_mix_view(wallet_id).await?;
-            let has_keys = this.vault.has_wallet_secret(&wallet_id.0);
             let id = wallet_id.to_string();
             let labels: HashMap<String, String> = this
                 .appdb_op(move |db| Ok(db.labels(&id, LabelKind::Address)?.into_iter().collect()))
@@ -1257,7 +1258,7 @@ impl NetworkSession {
                         coinjoin_denominated: m.denominated(),
                         coinjoin_rounds: (m.denominated() && m.rounds >= 0)
                             .then_some(m.rounds as u32),
-                        spendable: has_keys && c.chosen_selectable(height),
+                        spendable: can_spend && c.chosen_selectable(height),
                         excluded: c.excluded,
                         pending_unproven: restore_outputs.contains(&u.outpoint.txid)
                             || restore_inputs.contains(&u.outpoint),
