@@ -16,6 +16,28 @@ pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::DirBuilder::new().create(path)
 }
 
+pub(crate) fn check_private_dir(path: &Path) -> io::Result<()> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let safe = meta.is_dir();
+    #[cfg(unix)]
+    let safe = {
+        use std::os::unix::fs::MetadataExt;
+        safe && meta.uid() == rustix::process::geteuid().as_raw() && meta.mode() & 0o022 == 0
+    };
+    if safe {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not an owner-controlled directory", path.display()),
+        ))
+    }
+}
+
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     match create_private_dir(path) {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),

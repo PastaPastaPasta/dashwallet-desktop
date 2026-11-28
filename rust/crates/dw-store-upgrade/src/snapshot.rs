@@ -236,6 +236,15 @@ pub(crate) fn read_snapshot(
     })
 }
 
+/// Read a retired snapshot for migration-only consumers. Retirement blocks
+/// restore eligibility while its verified files remain usable for migration.
+pub(crate) fn read_snapshot_for_migration(dir: &Path) -> std::result::Result<SnapshotInfo, String> {
+    check_snapshot_with_retirement(dir, true, true).map_err(|f| match f {
+        SnapshotFault::Io(e) => e.to_string(),
+        SnapshotFault::Defect(detail) => detail,
+    })
+}
+
 /// Why a snapshot directory doesn't check out.
 pub(crate) enum SnapshotFault {
     /// Reading it failed for a reason that may pass (`EIO`, `EMFILE`,
@@ -263,6 +272,14 @@ pub(crate) fn check_snapshot(
     dir: &Path,
     verify_hashes: bool,
 ) -> std::result::Result<SnapshotInfo, SnapshotFault> {
+    check_snapshot_with_retirement(dir, verify_hashes, false)
+}
+
+fn check_snapshot_with_retirement(
+    dir: &Path,
+    verify_hashes: bool,
+    allow_retired: bool,
+) -> std::result::Result<SnapshotInfo, SnapshotFault> {
     #[cfg(test)]
     if let Some(kind) = SNAPSHOT_READ_FOR_TEST.with(|k| {
         k.borrow()
@@ -273,9 +290,11 @@ pub(crate) fn check_snapshot(
     }
     match fs::symlink_metadata(dir.join(NOT_THIS_WALLET)) {
         Ok(_) => {
-            return Err(SnapshotFault::Defect(
-                "retired: not of this wallet before the upgrade".into(),
-            ));
+            if !allow_retired {
+                return Err(SnapshotFault::Defect(
+                    "retired: not of this wallet before the upgrade".into(),
+                ));
+            }
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(snapshot_fault(NOT_THIS_WALLET)(e)),
@@ -336,6 +355,7 @@ pub fn retire_snapshot_for_wallet_removal(network_dir: &Path, wallet: &[u8; 32])
     crate::restore::refuse_if_restore_pending(network_dir)?;
     let failure =
         StoreUpgradeError::io("retire the upgrade backup before removing the wallet", true);
+    fsx::check_private_dir(&backups_dir(network_dir)).map_err(&failure)?;
     let Some(Lineage::Snapshot { name, wallets, .. }) =
         read_lineage(network_dir).map_err(&failure)?
     else {
@@ -345,13 +365,21 @@ pub fn retire_snapshot_for_wallet_removal(network_dir: &Path, wallet: &[u8; 32])
         return Ok(());
     }
     let dir = backups_dir(network_dir).join(name);
-    let meta = fs::symlink_metadata(&dir).map_err(&failure)?;
+    let meta = match fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            write_lineage(network_dir, None)?;
+            return Ok(());
+        }
+        Err(e) => return Err(failure(e)),
+    };
     if !meta.is_dir() {
         return Err(failure(io::Error::new(
             io::ErrorKind::InvalidData,
             "the named backup is not a directory",
         )));
     }
+    fsx::check_private_dir(&dir).map_err(&failure)?;
     let path = dir.join(NOT_THIS_WALLET);
     match fs::symlink_metadata(&path) {
         Ok(_) => return fsx::fsync_dir(&dir).map_err(failure),
@@ -769,6 +797,15 @@ pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool>
         && lists(&info)
     {
         return Ok(true);
+    }
+    if let Ok(Some(Lineage::Snapshot { name, manifest, .. })) = read_lineage(network_dir) {
+        let dir = backups_dir(network_dir).join(name);
+        if dir.join(MARKER).exists()
+            && read_snapshot_for_migration(&dir)
+                .is_ok_and(|i| i.manifest_sha256 == manifest && lists(&i))
+        {
+            return Ok(true);
+        }
     }
     let Some((name, manifest)) = recorded_part(network_dir)? else {
         return Ok(false);
