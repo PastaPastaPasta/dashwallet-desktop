@@ -70,6 +70,11 @@ before.
 
 The examples use `v1.0.0-rc.1`. Substitute the real tag everywhere.
 
+**Signing in CI instead.** [`CI-SIGNING.md`](CI-SIGNING.md) leaves only the Windows signature to this Mac and its
+YubiKey (sections 4.1, 4.3 and 5). `release-sign.yml` takes that signature, signs the macOS app and `SHA256SUMS`
+on a hosted runner with keys in a protected `release-signing` environment, and publishes after the same
+verification.
+
 ## What a signed candidate publishes
 
 A signed candidate is a prerelease, never Latest, with 9 assets, all attested by `release-publish-signed.yml`:

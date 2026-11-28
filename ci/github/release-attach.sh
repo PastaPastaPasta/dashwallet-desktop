@@ -15,8 +15,10 @@
 #     [--identities-file docs/release/signing-identities.json] \
 #     [--pgp-pubkey docs/release/release-key.asc] \
 #     [--pgp-fingerprint <40-hex>] \
+#     [--ci-signed [--ci-pgp-pubkey docs/release/ci-release-key.asc] [--ci-pgp-fingerprint <40-hex>]] \
 #     [--apple-team-id <10-alnum>] \
 #     [--win-leaf-hash <sha256:64-hex>] \
+#     [--win-signer-org <organization> --win-signer-eku <OID>] \
 #     [--win-ca-file <path>] \
 #     [--skip-win-chain-verify] \
 #     [--allow-non-darwin]
@@ -25,6 +27,20 @@
 # cert SHA-256) are loaded from the main repository at the tag (docs/release/signing-identities.json
 # and docs/release/release-key.asc) and NEVER from --sigs-dir. All three identities fail closed
 # until populated.
+#
+# --ci-signed: the signatures were made by release-sign.yml. SHA256SUMS.asc is then checked against CI's own
+# key (ci_pgp_fingerprint, docs/release/ci-release-key.asc) and only for a release candidate. Without the flag
+# the release key is the only one accepted, so a signature by the key CI holds never verifies a stable release
+# or a locally signed candidate. The two pins must be two different keys.
+#
+# The Windows signer is pinned one of two ways, never both:
+#   windows_leaf_sha256   the SHA-256 of one long-lived leaf certificate (a hardware token, a CA-issued
+#                         certificate in a cloud HSM);
+#   windows_signer        {"organization": <name>, "eku": <OID>} for a service that issues a new
+#                         short-lived leaf every day (Azure Artifact Signing): the signing leaf must name
+#                         exactly that organization (O), carry the Code Signing usage and that identity's own
+#                         EKU, and chain to a root in --win-ca-file, which is then required and is also the
+#                         only trust for the timestamp (docs/release/CI-SIGNING.md).
 #
 # Must run on macOS (Darwin) for codesign, spctl, stapler, and .dmg layout verification; non-Darwin
 # hosts fail closed unless --allow-non-darwin is explicitly passed (for Linux test suites only).
@@ -55,9 +71,14 @@ tauri_conf="$repo_root/rust/crates/dw-app/tauri.conf.json"
 identities_file="$repo_root/docs/release/signing-identities.json"
 pgp_pubkey="$repo_root/docs/release/release-key.asc"
 pgp_fingerprint=
+ci_signed=0
+ci_pgp_pubkey="$repo_root/docs/release/ci-release-key.asc"
+ci_pgp_fingerprint=
 apple_team_id=
 win_ca_file=
 win_leaf_hash=
+win_signer_org=
+win_signer_eku=
 skip_win_chain_verify=0
 allow_non_darwin=0
 
@@ -73,9 +94,14 @@ while (($#)); do
     --identities-file) identities_file=${2:?}; shift 2 ;;
     --pgp-pubkey) pgp_pubkey=${2:?}; shift 2 ;;
     --pgp-fingerprint) pgp_fingerprint=${2:?}; shift 2 ;;
+    --ci-signed) ci_signed=1; shift ;;
+    --ci-pgp-pubkey) ci_pgp_pubkey=${2:?}; shift 2 ;;
+    --ci-pgp-fingerprint) ci_pgp_fingerprint=${2:?}; shift 2 ;;
     --apple-team-id) apple_team_id=${2:?}; shift 2 ;;
     --win-ca-file) win_ca_file=${2:?}; shift 2 ;;
     --win-leaf-hash) win_leaf_hash=${2:?}; shift 2 ;;
+    --win-signer-org) win_signer_org=${2:?}; shift 2 ;;
+    --win-signer-eku) win_signer_eku=${2:?}; shift 2 ;;
     --skip-win-chain-verify) skip_win_chain_verify=1; shift ;;
     --allow-non-darwin) allow_non_darwin=1; shift ;;
     *) echo "release-attach: unknown option: $1" >&2; exit 1 ;;
@@ -109,11 +135,27 @@ fi
 if [[ -f "$identities_file" ]]; then
   [[ ! -L "$identities_file" ]] || die "refusing symlink identities file $identities_file"
   [[ -n "$pgp_fingerprint" ]] || pgp_fingerprint=$(jq -r '.pgp_fingerprint // empty' "$identities_file")
+  [[ -n "$ci_pgp_fingerprint" ]] || ci_pgp_fingerprint=$(jq -r '.ci_pgp_fingerprint // empty' "$identities_file")
   [[ -n "$apple_team_id" ]] || apple_team_id=$(jq -r '.apple_team_id // empty' "$identities_file")
   [[ -n "$win_leaf_hash" ]] || win_leaf_hash=$(jq -r '.windows_leaf_sha256 // empty' "$identities_file")
+  [[ -n "$win_signer_org" ]] || win_signer_org=$(jq -r '.windows_signer.organization? // empty' "$identities_file")
+  [[ -n "$win_signer_eku" ]] || win_signer_eku=$(jq -r '.windows_signer.eku? // empty' "$identities_file")
 fi
 
-want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+norm_fpr() { printf '%s' "$1" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]'; }
+ci_fpr=$(norm_fpr "$ci_pgp_fingerprint")
+if [[ "$ci_fpr" =~ ^[0-9A-F]{40}$ && "$ci_fpr" == "$(norm_fpr "$pgp_fingerprint")" ]]; then
+  die "ci_pgp_fingerprint is the release key's fingerprint: CI holds a key of its own, never the release key or a subkey of it (docs/release/signing-identities.json)"
+fi
+if ((ci_signed)); then
+  ((rc)) || die "--ci-signed on stable version $version: CI signs release candidates only, and its key never verifies a stable release"
+  [[ "$ci_fpr" =~ ^[0-9A-F]{40}$ ]] ||
+    die "pinned CI PGP fingerprint must be 40 hex chars (got '${ci_pgp_fingerprint:-<empty>}'; populate ci_pgp_fingerprint in docs/release/signing-identities.json)"
+  pgp_fingerprint=$ci_fpr
+  pgp_pubkey=$ci_pgp_pubkey
+fi
+
+want_fpr=$(norm_fpr "$pgp_fingerprint")
 [[ "$want_fpr" =~ ^[0-9A-F]{40}$ ]] ||
   die "pinned PGP primary fingerprint must be 40 hex chars (got '${pgp_fingerprint:-<empty>}'; populate docs/release/signing-identities.json)"
 
@@ -121,11 +163,27 @@ want_fpr=$(printf '%s' "$pgp_fingerprint" | tr -d '[:space:]' | tr '[:lower:]' '
   die "pinned Apple Team ID must be 10 uppercase alphanumerics (got '${apple_team_id:-<empty>}'; populate docs/release/signing-identities.json)"
 
 win_leaf_hash=$(printf '%s' "$win_leaf_hash" | tr '[:upper:]' '[:lower:]')
-[[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-  die "pinned Windows leaf cert hash must be sha256:<64-hex> (got '${win_leaf_hash:-<empty>}'; populate docs/release/signing-identities.json)"
+win_pin=leaf
+if [[ -n "$win_signer_org$win_signer_eku" ]]; then
+  win_pin=signer
+  [[ ! "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "pin the Windows signer by windows_leaf_sha256 or by windows_signer, not both (docs/release/signing-identities.json)"
+  [[ -n "$win_signer_org" && "$win_signer_org" != *REPLACE_* && "$win_signer_org" != *$'\n'* ]] ||
+    die "pinned windows_signer.organization must be the signer's organization name (got '${win_signer_org:-<empty>}'; populate docs/release/signing-identities.json)"
+  # The EKU of one validated identity (four arcs under 1.3.6.1.4.1.311.97), never one every customer's
+  # certificate carries (1.3.6.1.4.1.311.97.1.0) and never Code Signing itself.
+  [[ "$win_signer_eku" =~ ^1\.3\.6\.1\.4\.1\.311\.97\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    die "pinned windows_signer.eku must be the identity's own EKU, 1.3.6.1.4.1.311.97.<a>.<b>.<c>.<d> (got '${win_signer_eku:-<empty>}'; populate docs/release/signing-identities.json)"
+  [[ -n "$win_ca_file" ]] ||
+    die "windows_signer needs --win-ca-file: an organization and an EKU identify the signer only under a pinned root (populate docs/release/windows-ca.pem)"
+  win_leaf_hash=
+else
+  [[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "pinned Windows leaf cert hash must be sha256:<64-hex> (got '${win_leaf_hash:-<empty>}'; populate docs/release/signing-identities.json)"
+fi
 
 [[ -n "$pgp_pubkey" && -f "$pgp_pubkey" && ! -L "$pgp_pubkey" ]] ||
-  die "pinned PGP public key file not found: ${pgp_pubkey:-<empty>} (populate docs/release/release-key.asc)"
+  die "pinned PGP public key file not found: ${pgp_pubkey:-<empty>} (populate it at the tag)"
 
 # Never allow the PGP public key to come from inside --sigs-dir.
 python3 - "$pgp_pubkey" "$sigs_dir" <<'PY' || die "refusing PGP public key loaded from inside --sigs-dir ($pgp_pubkey)"
@@ -203,10 +261,23 @@ win_signed="$dist_out/$win_name"
 command -v osslsigncode >/dev/null 2>&1 || die "osslsigncode is required to attach/verify Windows signatures"
 
 attach_help=$(osslsigncode attach-signature --help 2>&1 || true)
-verify_help=$(osslsigncode verify --help 2>&1 || true)
+
+# windows_signer: the one certificate in the signature that names the pinned organization and carries the
+# Code Signing usage and the pinned EKU becomes the required leaf, so osslsigncode proves below that it is
+# the signer.
+if [[ "$win_pin" == signer ]]; then
+  win_leaf_hash=$(python3 "$here/windows-signer-leaf.py" "$win_sig" "$win_signer_org" "$win_signer_eku") ||
+    die "no certificate in $win_sig matches the pinned windows_signer ($win_signer_org, EKU $win_signer_eku)"
+  [[ "$win_leaf_hash" =~ ^sha256:[0-9a-f]{64}$ ]] || die "windows-signer-leaf.py returned no leaf hash"
+fi
 
 attach_args=(attach-signature -in "$win_unsigned" -sigin "$win_sig" -out "$win_signed")
-verify_args=(verify -in "$win_signed" -require-leaf-hash "$win_leaf_hash")
+pin_args=(--exe "$win_signed")
+if [[ "$win_pin" == signer ]]; then
+  pin_args+=(--signer-org "$win_signer_org" --signer-eku "$win_signer_eku" --expect-leaf "$win_leaf_hash")
+else
+  pin_args+=(--leaf-hash "$win_leaf_hash")
+fi
 if [[ -n "$win_ca_file" ]]; then
   [[ -f "$win_ca_file" && ! -L "$win_ca_file" ]] || die "--win-ca-file not found or is a symlink: $win_ca_file"
   if ! { grep -qx -- '-----BEGIN CERTIFICATE-----' "$win_ca_file" &&
@@ -228,19 +299,22 @@ PY
   # osslsigncode <= 2.13 verifies the cert chain inside attach-signature and requires -CAfile there;
   # >= 2.14 does digest-only attach and accepts -CAfile/-require-leaf-hash on verify only.
   [[ "$attach_help" == *"-CAfile"* ]] && attach_args+=(-CAfile "$win_ca_file")
-  verify_args+=(-CAfile "$win_ca_file")
+  pin_args+=(--ca-file "$win_ca_file")
+  if [[ "$win_pin" == signer ]]; then
+    [[ "$attach_help" == *"-TSA-CAfile"* ]] && attach_args+=(-TSA-CAfile "$win_ca_file")
+  fi
 fi
 [[ "$attach_help" == *"-require-leaf-hash"* ]] && attach_args+=(-require-leaf-hash "$win_leaf_hash")
-if ((skip_win_chain_verify)); then
-  verify_args+=(-ignore-timestamp)
-  # -ignore-crl was added in osslsigncode 2.9 (Ubuntu 24.04 ships 2.8-2).
-  [[ "$verify_help" == *"-ignore-crl"* ]] && verify_args+=(-ignore-crl)
-fi
+((!skip_win_chain_verify)) || pin_args+=(--skip-chain-verify)
 
 echo "release-attach: attaching detached Authenticode signature to $win_name"
 osslsigncode "${attach_args[@]}"
-echo "release-attach: verifying signed $win_name (pinned leaf $win_leaf_hash)"
-osslsigncode "${verify_args[@]}"
+if [[ "$win_pin" == signer ]]; then
+  echo "release-attach: verifying signed $win_name (pinned signer $win_signer_org, EKU $win_signer_eku; today's leaf $win_leaf_hash)"
+else
+  echo "release-attach: verifying signed $win_name (pinned leaf $win_leaf_hash)"
+fi
+"$here/windows-verify-pinned.sh" "${pin_args[@]}"
 
 # 4. macOS .app: extract unsigned .app, attach detached signatures, verify, pack deterministic .app.tar.gz.
 mac_unsigned_tar="$unsigned_dir/dash-wallet-$version-macos-unsigned.tar.gz"
@@ -385,12 +459,12 @@ sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); ex
 echo "release-attach: verified PGP signature SHA256SUMS.asc (GOODSIG + pinned primary key $sig_primary)"
 
 # L4 / H2: Record pinned identities and SHA-256 of ALL published files (11; 9 on a candidate) in signed-manifest.json.
-python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" "${expected_names[@]}" <<'PY'
+python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" "$win_signer_org" "$win_signer_eku" "${expected_names[@]}" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 
-version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path = sys.argv[1:8]
-expected = sys.argv[8:] + ["SHA256SUMS", "SHA256SUMS.asc"]
+version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path, win_org, win_eku = sys.argv[1:10]
+expected = sys.argv[10:] + ["SHA256SUMS", "SHA256SUMS.asc"]
 files = {}
 for name in sorted(expected):
     p = Path(dist_dir) / name
@@ -412,6 +486,8 @@ manifest = {
     "windows_leaf_sha256": win_leaf,
     "files": files,
 }
+if win_org:
+    manifest["windows_signer"] = {"organization": win_org, "eku": win_eku}
 Path(out_path).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 PY
 

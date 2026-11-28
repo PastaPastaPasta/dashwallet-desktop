@@ -1,0 +1,264 @@
+# Sign a release candidate in CI and publish it (docs/release/CI-SIGNING.md).
+#
+# release.yml built the tag's unsigned files and attested them (repository variable DW_SIGN_RC=1). This
+# workflow takes the place of the release signer's Mac in docs/release/RC-SIGNING.md:
+#
+#   sign      runs sign-macos.sh and sign-checksums.sh on a hosted macOS runner. It is the only job that
+#             sees signing credentials, and it reaches them only through the `release-signing` environment
+#             (required reviewer, v* tags only). It builds nothing and installs no project dependency: it
+#             downloads the attested files, attaches the Windows signature, signs the macOS app and
+#             SHA256SUMS, and uploads the detached signatures and the .dmg as a run artifact. It cannot write
+#             to the repository.
+#   publish   calls release-publish-signed.yml, which holds no secret: it re-attaches the signatures to
+#             CI's own unsigned bytes, verifies every one against the identities pinned in this
+#             repository at the tag, attests the result and publishes the prerelease.
+#
+# Credentials, all in the `release-signing` environment:
+#   macOS     secrets APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD, APPLE_API_KEY_P8;
+#             variables APPLE_API_KEY_ID, APPLE_API_ISSUER_ID
+#   PGP       secrets RELEASE_PGP_PRIVATE_KEY, RELEASE_PGP_PASSPHRASE: a key of CI's own (ci_pgp_fingerprint),
+#             never the release key or a subkey of it, and accepted for candidates only
+#   Windows   none. The Authenticode key is on the release signer's YubiKey and cannot leave it: the signer
+#             signs the installer with ci/release/sign-windows.sh and pushes the detached signature to the
+#             detached-signatures repository, on the branch named after the tag. `windows_sig_ref` names that
+#             commit, which must be that branch's tip. This job attaches it and checks it against the pinned
+#             certificate (windows_leaf_sha256) before it signs anything else.
+#
+# A stable tag vX.Y.Z is refused: its updater feed needs the stable updater key, which is not in CI.
+name: Sign release in CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Candidate tag to sign and publish (v1.0.0-rc.2; dispatch with --ref <tag>)"
+        required: true
+        type: string
+      release_run_id:
+        description: "Actions run ID of the Release workflow run that built the tag's unsigned files"
+        required: true
+        type: string
+      windows_sig_ref:
+        description: "Full 40-hex commit, the tip of sigs_repo's branch named after the tag, holding win/<setup.exe>.pem signed on the YubiKey"
+        required: true
+        type: string
+      sigs_repo:
+        description: "Detached-signatures repository (owner/name)"
+        required: false
+        default: PastaPastaPasta/dashwallet-detached-sigs
+        type: string
+      dry_run:
+        description: "Sign and verify everything, then stop before attesting and publishing"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sign:
+    name: Attach the Windows signature, sign macOS and SHA256SUMS
+    environment: release-signing
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    concurrency:
+      group: release-sign-refs/tags/${{ inputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate inputs and ref guard
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_RUN_ID: ${{ inputs.release_run_id }}
+          INPUT_WIN_REF: ${{ inputs.windows_sig_ref }}
+          INPUT_SIGS_REPO: ${{ inputs.sigs_repo }}
+        run: |
+          [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || {
+            echo "::error::tag must be a candidate vX.Y.Z-rc.N (got '$INPUT_TAG'); a stable tag is signed by docs/release/SIGNING.md" >&2
+            exit 1
+          }
+          [[ "$GITHUB_REF" == "refs/tags/$INPUT_TAG" ]] || {
+            echo "::error::workflow must be dispatched with --ref $INPUT_TAG (got GITHUB_REF='$GITHUB_REF')" >&2
+            exit 1
+          }
+          [[ "$INPUT_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "::error::release_run_id must be numeric (got '$INPUT_RUN_ID')" >&2
+            exit 1
+          }
+          # A commit, not a branch: the run fetches that commit or fails, whatever is pushed meanwhile.
+          [[ "$INPUT_WIN_REF" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::windows_sig_ref must be the full 40-hex commit in sigs_repo that holds the YubiKey's Windows signature (got '$INPUT_WIN_REF')" >&2
+            exit 1
+          }
+          [[ "$INPUT_SIGS_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+            echo "::error::invalid sigs_repo '$INPUT_SIGS_REPO'" >&2
+            exit 1
+          }
+          {
+            echo "TAG=$INPUT_TAG"
+            echo "VERSION=${INPUT_TAG#v}"
+            echo "UNSIGNED=$RUNNER_TEMP/unsigned"
+            echo "SIGS=$RUNNER_TEMP/sigs"
+            echo "OUT=$RUNNER_TEMP/out"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag commit matches github.sha and is on origin/main
+        run: |
+          git fetch --quiet origin "+refs/tags/$TAG:refs/tags/$TAG" '+refs/heads/main:refs/remotes/origin/main'
+          sha=$(git rev-parse HEAD)
+          tag_commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          [[ "$sha" == "$GITHUB_SHA" && "$tag_commit" == "$sha" ]] || {
+            echo "::error::refs/tags/$TAG points to $tag_commit, but checked-out HEAD is $sha (GITHUB_SHA=$GITHUB_SHA)" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main || {
+            echo "::error::$TAG ($sha) is not an ancestor of origin/main; refusing to sign" >&2
+            exit 1
+          }
+          echo "TAG_SHA=$sha" >> "$GITHUB_ENV"
+      # Before any credential is used: a tag whose pins are placeholders could only fail at publish.
+      - name: The signing identities are pinned at this tag
+        run: |
+          ids=docs/release/signing-identities.json
+          jq -e '((.ci_pgp_fingerprint // "") | test("^[0-9A-Fa-f]{40}$")) and (.apple_team_id | test("^[A-Z0-9]{10}$"))' "$ids" >/dev/null || {
+            echo "::error::$ids does not pin ci_pgp_fingerprint and apple_team_id at $TAG (docs/release/CI-SIGNING.md)" >&2
+            exit 1
+          }
+          jq -e '((.ci_pgp_fingerprint | ascii_upcase) != ((.pgp_fingerprint // "") | ascii_upcase))' "$ids" >/dev/null || {
+            echo "::error::ci_pgp_fingerprint is the release key's fingerprint in $ids: CI holds a key of its own" >&2
+            exit 1
+          }
+          jq -e '(has("windows_signer") | not) and ((.windows_leaf_sha256 // "") | test("^sha256:[0-9a-fA-F]{64}$"))' "$ids" >/dev/null || {
+            echo "::error::$ids must pin the YubiKey's Windows certificate as windows_leaf_sha256 (and no windows_signer) at $TAG" >&2
+            exit 1
+          }
+          grep -qx -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' docs/release/ci-release-key.asc || {
+            echo "::error::docs/release/ci-release-key.asc is not CI's public key at $TAG" >&2
+            exit 1
+          }
+          if grep -qx -- '-----BEGIN CERTIFICATE-----' docs/release/windows-ca.pem; then
+            echo "WIN_CA=docs/release/windows-ca.pem" >> "$GITHUB_ENV"
+          fi
+      - name: Install osslsigncode and gnupg
+        run: |
+          brew install osslsigncode gnupg
+          osslsigncode --version
+          gpg --version | head -n 2
+          # Before any key is used: the committed public key is the pinned one, or publishing would fail later.
+          want=$(jq -r '.ci_pgp_fingerprint | ascii_upcase' docs/release/signing-identities.json)
+          gpg --show-keys --with-colons docs/release/ci-release-key.asc |
+            awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print toupper($10); p = 0 }' | grep -qx "$want" || {
+            echo "::error::docs/release/ci-release-key.asc does not hold the key pinned as ci_pgp_fingerprint at $TAG" >&2
+            exit 1
+          }
+      - name: Download and attestation-verify the unsigned build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.release_run_id }}
+        run: |
+          ci/release/fetch-unsigned.sh --tag "$TAG" --tag-sha "$TAG_SHA" --run-id "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS"
+          mkdir -p "$OUT/dist"
+
+      # Read as two blobs of one named commit; nothing of that repository is checked out here.
+      - name: Windows, attach the YubiKey signature from the detached-signatures repository
+        env:
+          SIGS_REPO: ${{ inputs.sigs_repo }}
+          WIN_REF: ${{ inputs.windows_sig_ref }}
+        run: |
+          args=(--repo-url "https://github.com/$SIGS_REPO.git" --commit "$WIN_REF" --tag "$TAG"
+            --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS" --out-dir "$OUT")
+          [[ -z "${WIN_CA:-}" ]] || args+=(--ca-file "$WIN_CA")
+          ci/release/fetch-windows-signature.sh "${args[@]}"
+
+      # Before anything else is signed: SHA256SUMS.asc must never cover an installer another publisher signed.
+      # The publish job asks the same question again, with the same script.
+      - name: Windows, the signed installer is the pinned publisher's
+        run: |
+          ids=docs/release/signing-identities.json
+          args=(--exe "$OUT/dist/dash-wallet-$VERSION-windows-x64-setup.exe"
+            --leaf-hash "$(jq -r .windows_leaf_sha256 "$ids" | tr '[:upper:]' '[:lower:]')")
+          [[ -z "${WIN_CA:-}" ]] || args+=(--ca-file "$WIN_CA")
+          ci/github/windows-verify-pinned.sh "${args[@]}"
+
+      - name: macOS, import the Developer ID certificate and the notarization key
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: ci/release/ci-signing-keys.sh apple docs/release/signing-identities.json
+      - name: macOS, codesign, notarize and staple the app and the .dmg
+        env:
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: |
+          [[ -n "$APPLE_API_KEY_ID" && -n "$APPLE_API_ISSUER_ID" ]] || {
+            echo "::error::APPLE_API_KEY_ID and APPLE_API_ISSUER_ID are not set in the release-signing environment" >&2
+            exit 1
+          }
+          ci/release/sign-macos.sh --version "$VERSION" --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS" --out-dir "$OUT" \
+            --identity "$APPLE_SIGNING_IDENTITY" \
+            --api-key-path "$APPLE_API_KEY_PATH" --api-key-id "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID"
+
+      - name: PGP, import CI's candidate signing key
+        env:
+          RELEASE_PGP_PRIVATE_KEY: ${{ secrets.RELEASE_PGP_PRIVATE_KEY }}
+          RELEASE_PGP_PASSPHRASE: ${{ secrets.RELEASE_PGP_PASSPHRASE }}
+        run: ci/release/ci-signing-keys.sh pgp docs/release/signing-identities.json
+      - name: PGP, write and sign SHA256SUMS
+        env:
+          RELEASE_PGP_PASSPHRASE: ${{ secrets.RELEASE_PGP_PASSPHRASE }}
+        run: |
+          for suffix in linux-x86_64.AppImage linux-amd64.deb linux-x86_64.flatpak sbom-rust.cdx.json sbom-npm.cdx.json; do
+            cp "$UNSIGNED/dash-wallet-$VERSION-$suffix" "$OUT/dist/"
+          done
+          fpr=$(jq -r .ci_pgp_fingerprint docs/release/signing-identities.json)
+          ci/release/sign-checksums.sh --version "$VERSION" --dist-dir "$OUT/dist" --sigs-dir "$SIGS" \
+            --gpg-key "$fpr" --passphrase-fd 3 3<<<"$RELEASE_PGP_PASSPHRASE"
+
+      - name: Remove the keychain, the API key and the GnuPG home
+        if: ${{ always() }}
+        run: ci/release/ci-signing-keys.sh cleanup
+      # One tar: the signature tree keeps its layout and file names ("osx/DashPay Desktop.app/...") as written.
+      # COPYFILE_DISABLE: no AppleDouble "._" entries for files that carry extended attributes.
+      - name: Pack the detached signatures and the signed .dmg
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-signed"
+          COPYFILE_DISABLE=1 tar -cf "$RUNNER_TEMP/ci-signed/signatures.tar" -C "$RUNNER_TEMP" sigs
+          cp "$OUT/dist/dash-wallet-$VERSION-macos-universal.dmg" "$RUNNER_TEMP/ci-signed/"
+          tar -tf "$RUNNER_TEMP/ci-signed/signatures.tar"
+      # Three days: the publish job reads it once its own approval, if any, is given; a signed .dmg should
+      # not linger on the run longer.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-signed-${{ inputs.tag }}
+          path: ${{ runner.temp }}/ci-signed/
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Verify, attest and publish
+    needs: sign
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-publish-signed.yml
+    with:
+      tag: ${{ inputs.tag }}
+      release_run_id: ${{ inputs.release_run_id }}
+      signed_artifact: ci-signed-${{ inputs.tag }}
+      dry_run: ${{ inputs.dry_run }}
