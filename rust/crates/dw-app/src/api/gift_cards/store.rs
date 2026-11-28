@@ -122,7 +122,7 @@ impl WalletStore {
                     book.orders.push(this.open(ORDER_PURPOSE, &value)?);
                 }
             }
-            book.orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            book.orders.sort_by_key(|o| std::cmp::Reverse(o.created_at));
             Ok(book)
         })
         .await

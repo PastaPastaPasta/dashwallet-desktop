@@ -46,14 +46,19 @@ pub(crate) struct GiftCards {
 struct Token {
     access: Zeroizing<String>,
     expires: tokio::time::Instant,
+    /// From the user's own sign-in: only such a token shows the account as
+    /// signed in. One a call made to reach an order of another account (or
+    /// after a sign-out) is used for that call's account alone.
+    explicit: bool,
 }
 
 impl Token {
-    fn new(access: Zeroizing<String>, expires_in: u64) -> Self {
-        let lifetime = Duration::from_secs(expires_in.saturating_sub(15));
+    fn new(access: Zeroizing<String>, expires_in: u64, explicit: bool) -> Self {
+        let lifetime = Duration::from_secs(expires_in.clamp(60, 86_400) - 15);
         Self {
             access,
             expires: tokio::time::Instant::now() + lifetime,
+            explicit,
         }
     }
 }
@@ -93,14 +98,24 @@ impl GiftCards {
         self.tokens.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn token(&self, wallet: WalletId, account: &str) -> Option<Zeroizing<String>> {
+    /// Whether the user signed in to the account since the process started
+    /// and has not signed out (its token may have expired since).
+    fn signed_in(&self, wallet: WalletId, account: &str) -> bool {
+        (self.tokens().get(&(wallet, account.to_owned()))).is_some_and(|t| t.explicit)
+    }
+
+    fn live_token(&self, wallet: WalletId, account: &str) -> Option<Zeroizing<String>> {
         let tokens = self.tokens();
         let token = tokens.get(&(wallet, account.to_owned()))?;
         (tokio::time::Instant::now() < token.expires).then(|| token.access.clone())
     }
 
-    fn keep_token(&self, wallet: WalletId, account: String, token: Token) {
-        self.tokens().insert((wallet, account), token);
+    /// Keeps `token`; a renewal keeps the account signed in.
+    fn keep_token(&self, wallet: WalletId, account: String, mut token: Token) {
+        let mut tokens = self.tokens();
+        let key = (wallet, account);
+        token.explicit |= tokens.get(&key).is_some_and(|t| t.explicit);
+        tokens.insert(key, token);
     }
 
     fn forget_tokens(&self, wallet: WalletId) {
@@ -379,10 +394,12 @@ impl<'a> Context<'a> {
             .get_or_init(Piggy::new)
             .as_ref()
             .map_err(Clone::clone)?;
-        if !cards.migrated.load(Ordering::Acquire)
-            && legacy::migrate(&state.data_root, &cards.os, &session).await?
-        {
-            cards.migrated.store(true, Ordering::Release);
+        if !cards.migrated.load(Ordering::Acquire) {
+            match legacy::migrate(&state.data_root, &cards.os, &session).await {
+                Ok(done) => cards.migrated.store(done, Ordering::Release),
+                // The old copies stay; the next open tries again.
+                Err(_) => tracing::warn!("moving earlier gift card data into the wallets failed"),
+            }
         }
         Ok(Self {
             _guard: guard,

@@ -176,6 +176,7 @@ fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
             r#"{"code":200,"message":"OK","data":{"orderId":"fixture-order","status":"Complete","cards":[{"name":"Fixture Groceries","claimCode":"FIXTURE-CODE","claimPin":"0000"},{"name":"Fixture link-only card","claimLink":"https://redeem.fixture.invalid/claim"}]}}"#,
         ),
         login(),
+        login(),
     ]);
 
     let (_demo, session, wallet) = wallet_session();
@@ -224,6 +225,13 @@ fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
             ctx.sign_out().await.unwrap(),
             GiftAccount::CanSignIn { .. }
         ));
+        // Reaching an order's account after a sign-out does not sign back in.
+        ctx.access(&account).await.unwrap();
+        assert!(matches!(
+            ctx.account_status().await.unwrap(),
+            GiftAccount::CanSignIn { .. }
+        ));
+        assert!(ctx.active_session().await.is_err());
         drop(ctx);
         // A restart keeps no token, only the sealed account and its password.
         let restarted = GiftCards::default();
@@ -465,6 +473,59 @@ fn refreshed_order_must_still_authorize_the_confirmed_payment() {
     confirmed.duffs -= 1;
     confirmed.address = "previous-address".into();
     assert!(!check("Payment pending", Some(INVOICE), &confirmed));
+}
+
+/// The orders of a closed wallet, and the account they need, stay in the
+/// earlier build's copies until the wallet is open again.
+#[cfg(unix)]
+#[test]
+fn a_closed_wallets_earlier_orders_wait_for_it_to_open() {
+    let (demo, session, wallet) = wallet_session();
+    let root = tempfile::tempdir().unwrap();
+    let os: Arc<dyn OsSecretStore> = Arc::new(MemoryOsStore::default());
+    let account = Account {
+        signup: profile("legacy@example.invalid"),
+        user_id: "legacy-user".into(),
+        password: Some(Zeroizing::new("legacy-password".into())),
+    };
+    let key = account.key();
+    let journal = json!([
+        { "view": fixture_order("closed-order", &key, 0).view, "account": key, "wallet": wallet.to_string() },
+    ]);
+    let path = session.data_dir().join("gift-card-orders.json");
+    std::fs::write(&path, serde_json::to_vec(&journal).unwrap()).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    demo.ok("unload_wallet", json!({ "walletId": wallet.to_string() }));
+    let legacy = super::super::legacy::Secrets::new(root.path(), Arc::clone(&os)).unwrap();
+    tauri::async_runtime::block_on(async {
+        legacy.save_for_test("piggy-account", &account).await;
+        assert!(
+            !super::super::legacy::migrate(root.path(), &os, &session)
+                .await
+                .unwrap()
+        );
+        assert!(path.exists());
+        assert!(!legacy.is_empty_for_test().await);
+    });
+    demo.ok("load_wallet", json!({ "walletId": wallet.to_string() }));
+    let piggy = Piggy::at(Url::parse("http://127.0.0.1:1/dash/v1/").unwrap()).unwrap();
+    tauri::async_runtime::block_on(async {
+        assert!(
+            super::super::legacy::migrate(root.path(), &os, &session)
+                .await
+                .unwrap()
+        );
+        let cards = GiftCards::default();
+        let ctx = context(&cards, &piggy, &session, wallet);
+        let book = ctx.store.read().await.unwrap();
+        assert_eq!(book.orders.len(), 1);
+        assert_eq!(book.accounts.len(), 1);
+        assert!(legacy.is_empty_for_test().await);
+        assert!(!path.exists());
+    });
 }
 
 #[tokio::test]

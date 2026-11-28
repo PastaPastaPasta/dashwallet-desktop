@@ -6,7 +6,7 @@ use crate::error::AppError;
 
 impl Context<'_> {
     fn signed_in(&self, account: &str) -> bool {
-        self.cards.token(self.store.wallet(), account).is_some()
+        self.cards.signed_in(self.store.wallet(), account)
     }
 
     pub async fn account_status(&self) -> Result<GiftAccount, AppError> {
@@ -91,20 +91,20 @@ impl Context<'_> {
                 Change::Active(Some(account.key())),
             ])
             .await?;
-        self.login(&account).await?;
+        self.login(&account, true).await?;
         Ok(GiftAccount::SignedIn {
             email: account.signup.email,
         })
     }
 
-    async fn login(&self, account: &Account) -> Result<Zeroizing<String>, AppError> {
+    async fn login(&self, account: &Account, explicit: bool) -> Result<Zeroizing<String>, AppError> {
         let password = account
             .password
             .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| fail("Verify your PiggyCards email before signing in."))?;
         let (access, expires_in) = self.piggy.login(&account.user_id, password).await?;
-        let token = Token::new(access, expires_in);
+        let token = Token::new(access, expires_in, explicit);
         let access = token.access.clone();
         self.cards.keep_token(self.store.wallet(), account.key(), token);
         Ok(access)
@@ -120,10 +120,10 @@ impl Context<'_> {
         let account = book
             .account(&key)
             .ok_or_else(|| fail("Set up a PiggyCards account first."))?;
+        self.login(account, true).await?;
         self.store
             .write(&[Change::Pending(None), Change::Active(Some(key))])
             .await?;
-        self.login(account).await?;
         Ok(GiftAccount::SignedIn {
             email: account.signup.email.clone(),
         })
@@ -149,11 +149,12 @@ impl Context<'_> {
 
     /// An access token for `account`, signing in again with its stored
     /// password when the last one expired or this process has none: an
-    /// order of an account that is not the active one stays reachable.
+    /// order of an account that is not the active one stays reachable. The
+    /// account's sign-in state does not change.
     pub async fn access(&self, account: &Account) -> Result<Zeroizing<String>, AppError> {
-        match self.cards.token(self.store.wallet(), &account.key()) {
+        match self.cards.live_token(self.store.wallet(), &account.key()) {
             Some(access) => Ok(access),
-            None => self.login(account).await,
+            None => self.login(account, false).await,
         }
     }
 }

@@ -3,14 +3,14 @@
 //! orders in the network's `gift-card-orders.json`. [`migrate`] moves both
 //! into the wallets' sealed rows once and deletes them.
 
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dashcore::hashes::sha256;
 use dw_engine::{NetworkSession, WalletId};
 use dw_vault::OsSecretStore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 
 use super::GiftOrder;
@@ -76,7 +76,7 @@ impl Secrets {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct LegacyOrder {
     view: GiftOrder,
     account: String,
@@ -100,6 +100,21 @@ fn read_orders(path: &Path) -> Result<Vec<LegacyOrder>, AppError> {
     }
 }
 
+/// Replaces the journal with `orders`, as earlier builds wrote it.
+fn write_orders(path: &Path, orders: &[LegacyOrder]) -> Result<(), AppError> {
+    let dir = path.parent().ok_or_else(storage_error)?;
+    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|_| storage_error())?;
+    let encoded = serde_json::to_vec(orders).map_err(|_| storage_error())?;
+    temp.write_all(&encoded).map_err(|_| storage_error())?;
+    temp.as_file().sync_all().map_err(|_| storage_error())?;
+    temp.persist(path).map_err(|_| storage_error())?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| storage_error())?;
+    Ok(())
+}
+
 fn remove_orders(path: &PathBuf) -> Result<(), AppError> {
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -116,15 +131,17 @@ fn remove_orders(path: &PathBuf) -> Result<(), AppError> {
 }
 
 /// Moves the earlier builds' account and orders into the wallets' sealed
-/// rows: each order to the wallet it was made from (a wallet removed since,
-/// or without its seed, drops it) and the account to every wallet holding
+/// rows: each order to the wallet it was made from (dropped once the vault
+/// holds no seed for that wallet) and the account to every wallet holding
 /// one of its orders. An account with no such wallet, and a signup still
 /// waiting for its email code, are dropped: the store was shared by every
 /// wallet of the data folder, so nothing shows whose they were, and a
-/// wallet made after a wipe must not inherit them. The old copies are
-/// deleted only after the rows are written; a run cut short repeats.
-/// `false` when the OS secure store could not be read: nothing moved, and
-/// the next open tries again.
+/// wallet made after a wipe must not inherit them. The orders of a wallet
+/// that is not loaded (closed, its seed still stored) stay in the journal,
+/// with the account they need, until a later open finds it loaded. The old
+/// copies are deleted only after the rows are written; a run cut short
+/// repeats. `false` while something is left (or the OS secure store could
+/// not be read): the next open tries again.
 pub(super) async fn migrate(
     data_root: &Path,
     os: &Arc<dyn OsSecretStore>,
@@ -146,17 +163,23 @@ pub(super) async fn migrate(
         remove_orders(&path)?;
         return Ok(true);
     }
-    let usable =
-        |id: &WalletId| session.wallet_info(id).is_ok() && session.vault().has_wallet_secret(&id.0);
     let mut moved: Vec<(WalletId, Vec<store::Order>)> = Vec::new();
-    for order in orders {
-        let Some(id) = order.wallet.parse::<WalletId>().ok().filter(usable) else {
+    let mut kept: Vec<LegacyOrder> = Vec::new();
+    for (index, order) in orders.into_iter().enumerate() {
+        let Some(id) = order.wallet.parse::<WalletId>().ok() else {
             continue;
         };
+        if !session.vault().has_wallet_secret(&id.0) {
+            continue;
+        }
+        if session.wallet_info(&id).is_err() {
+            kept.push(order);
+            continue;
+        }
         let row = store::Order {
             view: order.view,
             account: order.account,
-            created_at: 0,
+            created_at: index as u64 + 1,
         };
         match moved.iter_mut().find(|(w, _)| *w == id) {
             Some((_, list)) => list.push(row),
@@ -185,9 +208,19 @@ pub(super) async fn migrate(
             store.write(&changes).await?;
         }
     }
-    for label in [ACCESS, PENDING, ACCOUNT] {
-        secrets.delete(label).await?;
+    secrets.delete(ACCESS).await?;
+    secrets.delete(PENDING).await?;
+    if !kept.is_empty() {
+        write_orders(&path, &kept)?;
+        let needed = account
+            .as_ref()
+            .is_some_and(|a| kept.iter().any(|o| o.account == a.key()));
+        if !needed {
+            secrets.delete(ACCOUNT).await?;
+        }
+        return Ok(false);
     }
+    secrets.delete(ACCOUNT).await?;
     remove_orders(&path)?;
     Ok(true)
 }
