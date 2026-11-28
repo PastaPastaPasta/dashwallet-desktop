@@ -153,9 +153,9 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CoreMax, CoreMaxShort, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
-    TopUpFromPlatformOutcome, TopUpFromPlatformQuote, TopUpOutcome, TopUpQuote, TopUpState,
-    WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
+    CoreMax, CoreMaxArrivalBlock, CoreMaxShort, CostTable, CreditLevel, FundAmount, PendingTopUp,
+    StuckTopUpFunding, TopUpFromPlatformOutcome, TopUpFromPlatformQuote, TopUpOutcome, TopUpQuote,
+    TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
     WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};

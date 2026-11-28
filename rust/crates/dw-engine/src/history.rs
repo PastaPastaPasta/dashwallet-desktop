@@ -1289,6 +1289,28 @@ pub(crate) fn dead_for_good(
         || deaths.inputs_of(parent).any(spent_finally)
 }
 
+/// Whether `t` is a parent a drop's chain walks through: a dropped
+/// transaction (a key of `drops`) or a swept one (a `swept_by:` note).
+pub(crate) fn chain_parent(t: &Txid, drops: &HeldDrops, deaths: &Deaths) -> bool {
+    drops.contains_key(t) || deaths.swept_by.contains_key(t)
+}
+
+/// Every transaction the drops' chains hold: each drop key of `drops`, and
+/// each parent it builds on through [`Deaths::inputs_of`] that is a
+/// [`chain_parent`], to a fixpoint. What [`chain_dead_for_good`] can walk.
+pub(crate) fn drop_chains(drops: &HeldDrops, deaths: &Deaths) -> BTreeSet<Txid> {
+    let mut seen = BTreeSet::new();
+    let mut next: Vec<Txid> = drops.keys().copied().collect();
+    while let Some(u) = next.pop() {
+        if seen.insert(u) {
+            next.extend(
+                (deaths.inputs_of(&u).map(|o| o.txid)).filter(|p| chain_parent(p, drops, deaths)),
+            );
+        }
+    }
+    seen
+}
+
 /// Whether the dropped transaction `t` can never confirm: it, or a
 /// transaction it builds on through a chain of parents `ancestor` names
 /// (dropped or swept, [`Deaths::inputs_of`]), is dead for good (`dead`,
@@ -4843,7 +4865,7 @@ mod tests {
                     .collect();
             let no_notes = BTreeMap::new();
             let dead = |u: &Txid| dead_for_good(u, deaths, &txs, &no_notes, proven);
-            let ancestor = |u: &Txid| drops.contains_key(u) || deaths.swept_by.contains_key(u);
+            let ancestor = |u: &Txid| chain_parent(u, &drops, deaths);
             let drop_dead = |u: &Txid| chain_dead_for_good(u, deaths, ancestor, dead);
             let evidence = HeldEvidence {
                 chain_final: &chain_final,
