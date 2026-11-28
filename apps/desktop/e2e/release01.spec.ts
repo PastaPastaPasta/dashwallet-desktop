@@ -684,15 +684,17 @@ test.describe("Export CSV", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     const alert = page.getByTestId("toast-alert-text");
-    await page.evaluate(() => (window.__dwFixture!.world.tools.files.dialogFails = true));
+    const failSave = (on: boolean) => page.evaluate((o) => window.__dwFixture!.fail("save_file_as", o ? "call" : null), on);
+    await failSave(true);
     await page.getByTestId("tx-export-csv").click();
     await expect(alert).toContainText("The history could not be exported.");
     // The retry clears it, and its result is the toast.
+    await failSave(false);
     await page.getByTestId("tx-export-csv").click();
     await expect(page.locator(".toast-host")).toContainText("Exported to ");
     await expect(alert).toHaveCount(0);
 
-    await page.evaluate(() => (window.__dwFixture!.world.tools.files.dialogFails = true));
+    await failSave(true);
     await page.getByTestId("tx-export-csv").click();
     await expect(alert).toContainText("The history could not be exported.");
     await page.getByTestId("toolbar-wallet-picker").selectOption({ index: 1 });
