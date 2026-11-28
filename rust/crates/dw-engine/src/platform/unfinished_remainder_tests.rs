@@ -528,6 +528,42 @@ fn a_recover_that_failed_after_signing_settles_on_the_next_proved_read() {
 }
 
 #[test]
+fn a_used_up_recovery_with_an_unreadable_record_keeps_its_attribution_pending() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let at = shield_lock(&fx, &lib, 0x61).out_point;
+    let left = 600_000_000;
+    mark_remaining(&fx, at, left);
+    lib.proves(at, SpentRead::Remaining { credits: left });
+    lib.answer(Answer::Failed);
+    assert_eq!(
+        recover(&fx, &lib, at, &grant(&fx, 1, left)).unwrap(),
+        LockFinish::Checking
+    );
+
+    let db = fx.s.live().unwrap().appdb;
+    let scope = dw_appdb::local_scope(&fx.wallet.to_string());
+    let key = format!("platform_address/fund/{}", at.txid);
+    let original = db.setting(&scope, &key).unwrap().unwrap();
+    db.set_setting_durable(&scope, &key, Some("{")).unwrap();
+    mark_remaining(&fx, at, 0);
+    let again = grant(&fx, 1, left);
+    assert!(matches!(
+        recover(&fx, &lib, at, &again),
+        Err(PlatformError::Storage { .. })
+    ));
+    assert!(!marks(&fx, Mark::Used).contains(&at));
+    assert!(!marks(&fx, Mark::Settled).contains(&at));
+    assert!(kept(&fx, &again));
+
+    db.set_setting_durable(&scope, &key, Some(&original))
+        .unwrap();
+    assert_eq!(quote(&fx, &lib, at), RecoverQuote::Finished);
+    assert_eq!(record(&fx, at).unwrap().state, PlatformActivityState::Done);
+    assert_eq!(*lib.signed.lock().unwrap(), [true]);
+}
+
+#[test]
 fn a_retried_recover_uses_the_fresh_remainder_through_settlement() {
     let fx = Fixture::new(0);
     let mut lib = Arc::new(FakeFund::new(&fx));

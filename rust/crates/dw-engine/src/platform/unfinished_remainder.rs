@@ -267,7 +267,7 @@ async fn standing(
     let used = locks::marks_of(session, wallet, kind, Mark::Used).await;
     let remaining = locks::remaining_of(session, wallet, kind).await?;
     if remaining.get(&outpoint) == Some(&0) {
-        return Ok(Standing::Finished(used_up(session, wallet, &lock).await));
+        return Ok(Standing::Finished(used_up(session, wallet, &lock).await?));
     }
     let ev = Evidence {
         own: &own,
@@ -307,7 +307,7 @@ async fn standing(
                 },
             }
         }
-        SpentRead::Consumed => Standing::Finished(used_up(session, wallet, &lock).await),
+        SpentRead::Consumed => Standing::Finished(used_up(session, wallet, &lock).await?),
         SpentRead::Unspent => Standing::Refused(NOT_RECOVERABLE.into()),
         SpentRead::Unread => Standing::Refused(PlatformError::Unavailable.code().into()),
     })
@@ -316,19 +316,24 @@ async fn standing(
 /// Platform proved the partly used `lock` used up. A recover of this
 /// wallet's armed for it executed: settled, its record done with its
 /// estimate. Otherwise it was used elsewhere ([`Mark::Used`]).
-async fn used_up(session: &NetworkSession, wallet: WalletId, lock: &KindLock) -> LockFinish {
+async fn used_up(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lock: &KindLock,
+) -> Result<LockFinish, PlatformError> {
     let at = lock.info.outpoint;
-    let record = platform_moves::fund_record(session, wallet, &at.txid.to_string()).await;
-    match record {
-        Ok(Some(r)) if r.recovered && r.armed && r.vout == at.vout => {
-            let credited = (r.credits, true);
-            settle(session, wallet, lock, r.duffs, r.address, credited).await;
-            LockFinish::Applied
-        }
-        _ => {
-            locks::record(session, wallet, LockKindId::Shielded, Mark::Used, at).await;
-            LockFinish::ReportedUsed
-        }
+    let record = platform_moves::fund_record(session, wallet, &at.txid.to_string()).await?;
+    if let Some(r) = record
+        && r.recovered
+        && r.armed
+        && r.vout == at.vout
+    {
+        let credited = (r.credits, true);
+        settle(session, wallet, lock, r.duffs, r.address, credited).await;
+        Ok(LockFinish::Applied)
+    } else {
+        locks::record(session, wallet, LockKindId::Shielded, Mark::Used, at).await;
+        Ok(LockFinish::ReportedUsed)
     }
 }
 
