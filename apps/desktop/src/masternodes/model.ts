@@ -368,6 +368,7 @@ export function mnErrorText(e: unknown, ops?: readonly ProTxOperation[]): string
   if (pendingWasSent(e, ops)) return t(`${P}.errors.update_pending_sent`);
   if (e.code === "masternodes.no_owner_key") return t(`${P}.errors.no_owner_key`);
   if (e.code === "vault.locked") return t(`${P}.errors.vault_locked`);
+  if (e.code === "app.shared_send_off") return t("masternodes.shared.error.mainnet_send_off");
   const key = e.code.startsWith("masternodes.") ? e.code.slice("masternodes.".length) : null;
   return key !== null && Object.hasOwn(ERRORS, key) ? ERRORS[key as (typeof ERROR_KEYS)[number]] : e.message;
 }

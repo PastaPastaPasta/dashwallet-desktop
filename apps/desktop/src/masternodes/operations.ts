@@ -8,6 +8,7 @@ import { sendErrorText } from "../screens/pay/model";
 import { t } from "../i18n";
 import { registrarUpdateSends } from "./changeKeys";
 import { registrationSends } from "./registration";
+import { sharedSendsOn } from "./shared";
 
 const P = "masternodes.inProgress";
 
@@ -37,12 +38,14 @@ export const togetherOperation = (s: Pick<SharedSession, "kind" | "stage" | "txi
   (s.kind === "dissolve_together" && s.stage.kind === "sent" && s.txid !== null ? ops?.find((o) => o.kind === "dissolve" && o.txid === s.txid) : undefined) ?? null;
 
 /** Which held kinds may be acted on. Unknown network (still loading) stays off. */
-export const proTxSends = (network: { kind: string } | null | undefined): Partial<Record<ProTxOperationKindName, boolean>> => ({
+export const proTxSends = (network: { kind: string } | null | undefined): Record<ProTxOperationKindName, boolean> => ({
   registration: registrationSends(network),
   update_registrar: registrarUpdateSends(network),
+  update_share: sharedSendsOn(network),
+  dissolve: sharedSendsOn(network),
 });
 
-/** A registration or registrar update row is acted on only while its kind sends (D14); Discard always stays.
+/** A ProTx operation row is acted on only while its kind sends (D14, issue 990); Discard always stays.
  * Callers pass `proTxSends(network)`. */
 export const actsOn = (o: ProTxOperation, sends: Partial<Record<ProTxOperationKindName, boolean>> = proTxSends(null)) =>
   sends[o.kind] ?? true;

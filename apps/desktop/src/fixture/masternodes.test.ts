@@ -707,6 +707,17 @@ describe("fixture masternodes: operations", () => {
     expect(seen).toHaveLength(6);
   });
 
+  it("refuses dissolve resends on mainnet before consuming the grant", async () => {
+    installFixture({ scenario: "mn-ops", network: "mainnet" });
+    const seen = await events();
+    const g = await mnGrant(DISSOLVE_PENALTY + REG_FEE.regular);
+    await expect(cmd.mnResendOperation(W, OP_DISSOLVE, g)).rejects.toMatchObject({
+      code: "app.shared_send_off",
+      data: { kind: "sharedSendNetwork", network: "mainnet" },
+    });
+    expect(seen).toEqual([]);
+  });
+
   it("discards only what can't be out, unlocking its keys", async () => {
     install("mn-ops");
     const seen = await events();

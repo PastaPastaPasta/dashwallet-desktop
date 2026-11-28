@@ -10,6 +10,7 @@ import {
   OP_CONFIRMED,
   OP_CONFLICTED,
   OP_DISSOLVE,
+  OP_DISSOLVE_FOREIGN,
   OP_INPUTS_SPENT,
   OP_NEEDS_SIGNATURE,
   OP_NOT_SENT,
@@ -844,12 +845,11 @@ test("mainnet: an external review sends nothing and saves nothing", async ({ pag
   expect(errors).toEqual([]);
 });
 
-test("mainnet: registration and registrar-update rows offer no send", async ({ page }) => {
+test("mainnet: registration, registrar-update and dissolve rows offer no send", async ({ page }) => {
   const errors = await open(page, "mn-ops", "light", "mainnet");
-  const held = [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT, OP_SENT, OP_SENT_OVERDUE, OP_UPDATE];
+  const held = [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT, OP_SENT, OP_SENT_OVERDUE, OP_UPDATE, OP_DISSOLVE, OP_DISSOLVE_FOREIGN];
   for (const id of held) for (const a of ["continue", "refresh", "resend"]) await expect(page.getByTestId(`mn-op-${a}-${id}`)).toHaveCount(0);
   for (const id of [OP_NEEDS_SIGNATURE, OP_INPUTS_SPENT, OP_SIGNED, OP_NOT_SENT]) await expect(page.getByTestId(`mn-op-more-${id}`)).toBeVisible();
-  await expect(page.getByTestId(`mn-op-resend-${OP_DISSOLVE}`)).toBeVisible();
   expect(errors).toEqual([]);
 });
 

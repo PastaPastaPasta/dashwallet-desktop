@@ -53,8 +53,9 @@ export const S5_SLICE: SharedSlice = { sign: true, send: true };
 export const NO_SENDS: SharedSlice = { sign: false, send: false };
 
 /** MG's ruling: this version sends shared-masternode transactions everywhere but mainnet. Reads,
- * approvals, standby create and export, and the maintenance starts stay on. */
-export const sharedSendsOn = (network: Pick<NetworkInfo, "kind">) => network.kind !== "mainnet";
+ * approvals, standby create and export, and the maintenance starts stay on. Unknown network stays off. */
+export const sharedSendsOn = (network: { kind: string } | null | undefined): boolean =>
+  network != null && network.kind !== "mainnet";
 
 /** Why `network` turns off setting up and joining (Start, Join, Lock, Approve, Change fee, Unlock),
  * or null where they're on. Reads, Discard and Abandon stay either way. */
