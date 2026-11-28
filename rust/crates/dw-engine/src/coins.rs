@@ -1152,7 +1152,7 @@ impl NetworkSession {
             .filter(|coin| !coin.utxo.is_confirmed)
             .map(|coin| coin.utxo.outpoint.txid)
             .collect();
-        let (locked, sweep_outs, mut handoffs, returning) = self
+        let (locked, sweep_outs, handoffs, returning) = self
             .appdb_op(move |db| {
                 if let Some(threshold) =
                     parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?)?
