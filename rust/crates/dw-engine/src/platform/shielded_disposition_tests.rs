@@ -480,7 +480,7 @@ fn history_marks_a_proved_unsent_shielded_create_released() {
     let held = history.iter().find(|row| row.id == hex::encode([2; 32]));
     assert_eq!(
         held.unwrap().refusal,
-        None,
+        Some(crate::platform::ShieldedRefusal::Held),
         "a stored reservation still holds the notes"
     );
 }
