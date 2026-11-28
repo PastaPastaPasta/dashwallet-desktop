@@ -87,4 +87,8 @@ scan: ShieldedScanProgress | null,
 /**
  * The last sync pass failed; cleared by the next one that succeeds.
  */
-lastPassFailed: boolean, };
+lastPassFailed: boolean,
+/**
+ * Reason a local safety hold stopped the last pass.
+ */
+lastPassFailureReason?: string, };
