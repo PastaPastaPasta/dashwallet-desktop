@@ -30,7 +30,6 @@ test.describe("A withheld coin", () => {
       await shot(page, "home", theme);
 
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-address").fill(PAYEE);
       await page.getByTestId("pay-amount").fill("0.1");
       await page.getByTestId("pay-advanced").locator("summary").click();

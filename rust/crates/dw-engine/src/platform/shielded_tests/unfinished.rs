@@ -2,6 +2,7 @@
 //! and finished through the shield flow's own apply, on the same outpoint,
 //! with nothing funded.
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use key_wallet::bip32::DerivationPath;
@@ -108,6 +109,143 @@ fn a_restored_shield_lock_is_listed_and_finished_on_its_outpoint() {
     assert_eq!(again.unwrap(), LockFinish::Applied);
     assert!(!begun, "a finished lock asks for no lease");
     assert_eq!(lib.applied.lock().unwrap().len(), 1, "applied once");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn an_unreadable_remainder_refuses_the_grant_and_both_lists() {
+    let fx = Fixture::new(0);
+    let own = lock(1, LockStatus::ChainLocked);
+    let at = own.outpoint;
+    let wallet = fx.wallet;
+    let lib = Arc::new(FakeShielded {
+        locks: vec![own],
+        own: Some(HashSet::from([at.txid])),
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), wallet));
+    run(&fx, &lib, move |s, _| async move {
+        locks::record_remaining(&s, wallet, LockKindId::Shielded, at, 600_000_000).await;
+    });
+    let path = fx.s.data_dir().join(dw_appdb::APP_DB_FILE);
+    let inject = || {
+        dw_appdb::fault::arm(
+            &path,
+            "settings.read_recovery.shield.remaining.",
+            dw_appdb::fault::Stage::Before,
+        );
+    };
+    let grant = shield_grant(&fx, 1);
+    let begun = Arc::new(AtomicBool::new(false));
+    let (used, asked) = (grant.clone(), Arc::clone(&begun));
+    inject();
+    let result = run(&fx, &lib, move |s, lib| async move {
+        let kind = ShieldLocks::new(&s, wallet, &*lib);
+        locks::finish(&kind, at, lease_of(&s, wallet, used, asked)).await
+    });
+    assert!(matches!(result, Err(PlatformError::Storage { .. })));
+    assert!(!begun.load(Ordering::SeqCst));
+    assert!(lib.applied.lock().unwrap().is_empty());
+    assert!(run(&fx, &lib, move |s, _| async move {
+        s.begin_lease(wallet, FlowKind::Shield, &[grant])
+            .await
+            .is_ok()
+    }));
+    inject();
+    assert!(matches!(
+        listed(&fx, &lib),
+        Err(PlatformError::Storage { .. })
+    ));
+    inject();
+    assert!(run(&fx, &lib, |_, lib| async move {
+        pool::open_shields(&*lib).await.is_err()
+    }));
+    let write_malformed = |value| {
+        fx.engine
+            .block_on(fx.s.appdb_op(move |db| {
+                db.set_setting_durable(
+                    &dw_appdb::local_scope(&wallet.to_string()),
+                    "recovery.shield.remaining.invalid-outpoint",
+                    value,
+                )
+            }))
+            .unwrap();
+    };
+    write_malformed(Some("123"));
+    assert!(matches!(
+        listed(&fx, &lib),
+        Err(PlatformError::Storage { .. })
+    ));
+    write_malformed(None);
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(LockOrigin::ThisDevice, UnfinishedState::Recoverable)]
+    );
+}
+
+#[test]
+fn a_restored_partial_shield_is_proved_before_taking_a_lease() {
+    let fx = Fixture::new(0);
+    let restored = lock(1, LockStatus::RecoveredFromChain);
+    let at = restored.outpoint;
+    let lib = Arc::new(FakeShielded {
+        locks: vec![restored],
+        ..FakeShielded::default()
+    });
+    lib.spent_reads
+        .lock()
+        .unwrap()
+        .insert(at, SpentRead::Unread);
+    let (result, begun) = finish(&fx, &lib, at);
+    assert_eq!(result.unwrap(), LockFinish::Checking);
+    assert!(!begun);
+    assert!(lib.applied.lock().unwrap().is_empty());
+
+    lib.spent_reads.lock().unwrap().insert(
+        at,
+        SpentRead::Remaining {
+            credits: 600_000_000,
+        },
+    );
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(LockOrigin::Restored, UnfinishedState::Checking)]
+    );
+    let (result, begun) = finish(&fx, &lib, at);
+    assert_eq!(
+        result.unwrap(),
+        LockFinish::NotApplied {
+            error: locks::PARTLY_USED.into()
+        }
+    );
+    assert!(!begun);
+    assert!(lib.applied.lock().unwrap().is_empty());
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(LockOrigin::Restored, UnfinishedState::Recoverable)]
+    );
+}
+
+#[test]
+fn an_old_zero_remainder_leaves_the_lists() {
+    let fx = Fixture::new(0);
+    let own = lock(1, LockStatus::ChainLocked);
+    let at = own.outpoint;
+    let wallet = fx.wallet;
+    let lib = Arc::new(FakeShielded {
+        locks: vec![own],
+        own: Some(HashSet::from([at.txid])),
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), wallet));
+    run(&fx, &lib, move |s, _| async move {
+        locks::record_remaining(&s, wallet, LockKindId::Shielded, at, 0).await;
+    });
+    assert!(listed(&fx, &lib).unwrap().is_empty());
+    let (result, begun) = finish(&fx, &lib, at);
+    assert_eq!(result.unwrap(), LockFinish::ReportedUsed);
+    assert!(!begun);
+    assert!(lib.applied.lock().unwrap().is_empty());
 }
 
 /// Tools ▸ Repair ▸ Finish transfers still finishes a stuck move into
@@ -461,6 +599,7 @@ struct ShieldRig {
     lib: Arc<FakeShielded>,
     script: dashcore::ScriptBuf,
     outcomes: Mutex<Vec<FlowOutcome>>,
+    spent_after_apply: Mutex<HashMap<OutPoint, SpentRead>>,
 }
 
 impl ShieldRig {
@@ -473,6 +612,7 @@ impl ShieldRig {
             lib,
             script,
             outcomes: Mutex::default(),
+            spent_after_apply: Mutex::default(),
         }
     }
 }
@@ -535,11 +675,16 @@ impl Rig for ShieldRig {
         let (wallet, grant) = (self.fx.wallet, shield_grant(&self.fx, 1));
         let (kept, begun) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
         let (keep, asked) = (Arc::clone(&kept), Arc::clone(&begun));
+        let read = self.spent_after_apply.lock().unwrap().remove(&outpoint);
         let finished = run(&self.fx, &self.lib, move |s, lib| async move {
-            let kind = ShieldLocks::new(&s, wallet, &*lib);
+            let lib = &*lib;
+            let kind = ShieldLocks::new(&s, wallet, lib);
             let leases = Arc::clone(&s);
             let lease_of = || async move {
                 asked.store(true, Ordering::SeqCst);
+                if let Some(read) = read {
+                    lib.spent_reads.lock().unwrap().insert(outpoint, read);
+                }
                 let lease = leases
                     .begin_lease(wallet, FlowKind::Shield, &[grant])
                     .await?;
@@ -579,7 +724,10 @@ impl Rig for ShieldRig {
     }
 
     fn prove_spent(&self, outpoint: OutPoint, read: SpentRead) {
-        self.lib.spent_reads.lock().unwrap().insert(outpoint, read);
+        self.spent_after_apply
+            .lock()
+            .unwrap()
+            .insert(outpoint, read);
     }
 }
 
@@ -1030,9 +1178,8 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
         locks: vec![unproved.clone(), applied.clone(), used.clone()],
         ..FakeShielded::default()
     });
-    // In txid order: the first apply hears "already consumed", which
-    // Platform's proof confirms, the second is proved.
-    lib.consumed.store(true, Ordering::SeqCst);
+    // The first lock already has a proved consumption. Only the second
+    // lock reaches the apply.
     lib.spent_reads
         .lock()
         .unwrap()
@@ -1065,10 +1212,7 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
             unread: Vec::new(),
         }
     );
-    assert_eq!(
-        *lib.applied.lock().unwrap(),
-        [used.outpoint, applied.outpoint]
-    );
+    assert_eq!(*lib.applied.lock().unwrap(), [applied.outpoint]);
     assert_eq!(*lib.settles.lock().unwrap(), [applied.outpoint.txid]);
     assert_no_funding(&lib, before);
     assert_eq!(
@@ -1274,7 +1418,7 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
     (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed());
     (lib.spent_reads.lock().unwrap()).insert(restored.outpoint, SpentRead::Consumed);
     let (finished, begun) = finish(&fx, &lib, restored.outpoint);
-    assert!(begun);
+    assert!(!begun);
     assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
     assert!(listed(&fx, &lib).unwrap().is_empty(), "off the card");
     assert!(lib.settles.lock().unwrap().is_empty(), "settled nowhere");
@@ -1284,7 +1428,7 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
     let (again, begun) = finish(&fx, &lib, restored.outpoint);
     assert_eq!(again.unwrap(), LockFinish::ReportedUsed);
     assert!(!begun, "no lease, so no passphrase");
-    assert_eq!(*lib.applied.lock().unwrap(), [restored.outpoint]);
+    assert!(lib.applied.lock().unwrap().is_empty());
 }
 
 /// F2's "Finish all": both restored locks answered "already consumed",

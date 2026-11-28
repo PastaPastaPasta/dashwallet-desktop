@@ -126,6 +126,14 @@ describe("the status bar", () => {
     expect(bar(platform(), shielded({ established: false, lastPassFailed: true })).text).toBe("Syncing Shielded…");
   });
 
+  it("shows why a Shielded pass was held, even before the account is established", () => {
+    const reason = "Shielded sync is paused because imported spend history could not be read or saved.";
+    const held = shielded({ established: false, lastPassFailed: true, lastPassFailureReason: reason });
+    expect(bar(platform(), held)).toEqual({ text: "Shielded sync didn't finish", percent: null, button: "incomplete" });
+    expect(row(shieldedItem(held))).toBe(reason);
+    expect(bar(platform(), { ...held, syncing: true }).button).toBe("syncing");
+  });
+
   it("puts a syncing item before one that did not finish", () => {
     expect(bar(platform({ startup: "discoveryFailed" }), shielded({ established: false })).text).toBe("Syncing Shielded…");
   });

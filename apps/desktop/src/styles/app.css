@@ -2185,7 +2185,8 @@ input[type="radio"]:disabled {
 }
 
 .field-error,
-.field-hint {
+.field-hint,
+.pay-scan-hint {
   font-size: var(--dw-type-footnote-size);
   font-weight: var(--dw-type-footnote-weight);
   line-height: var(--dw-type-footnote-line);
@@ -2196,6 +2197,7 @@ input[type="radio"]:disabled {
 }
 
 .field-hint,
+.pay-scan-hint,
 .text-secondary {
   color: var(--dw-role-text-secondary);
 }
@@ -2335,6 +2337,103 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-card);
 }
 
+.pay-recipient-entry {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+}
+
+.pay-recipient-control {
+  display: flex;
+  align-items: center;
+  flex: 1 0 100%;
+  min-width: 0;
+  gap: var(--dw-space-xs);
+}
+
+.pay-recipient-control > input {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+}
+
+.pay-recipient-control.is-picked {
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-text-field);
+  background: var(--dw-role-accent-tint);
+  padding-inline-end: var(--dw-space-xs);
+}
+
+.pay-recipient-control.is-picked > input {
+  border: 0;
+  background: transparent;
+}
+
+.pay-recipient-person,
+.pay-recipient-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-xs);
+}
+
+.pay-recipient-person {
+  flex: 1;
+  min-width: 0;
+  padding: var(--dw-space-xxs) var(--dw-space-xs);
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.pay-recipient-person .pay-payee-name {
+  font-size: var(--dw-type-body-size);
+}
+
+.pay-recipient-actions {
+  flex-wrap: wrap;
+}
+
+.pay-recipient-feedback {
+  height: calc(2 * var(--dw-type-footnote-line));
+  overflow: auto;
+}
+
+.pay-recipient-popover {
+  position: absolute;
+  inset-block-start: calc(100% + var(--dw-space-xxs));
+  inset-inline: 0;
+  z-index: 4;
+  max-height: min(18rem, 45vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--dw-space-xs);
+  border: 1px solid var(--dw-role-field-stroke);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-card);
+  box-shadow: var(--dw-shadow-card);
+}
+
+.pay-recipient-popover [role="option"] {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-xs) var(--dw-space-s);
+  border-radius: var(--dw-radius-text-field);
+  cursor: pointer;
+}
+
+.pay-recipient-popover [role="option"]:is(:hover, [aria-selected="true"]) {
+  background: var(--dw-role-field-fill);
+}
+
+.pay-recipient-popover p,
+.pay-option-heading {
+  margin: 0;
+  padding: var(--dw-space-xs) var(--dw-space-s);
+}
+
+
 /* Pay ▸ added recipients (QT-052). */
 .pay-more-head {
   display: flex;
@@ -2353,15 +2452,6 @@ input[type="radio"]:disabled {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--dw-space-s);
-}
-
-.pay-scan-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dw-space-xs) var(--dw-space-m);
-  margin-top: calc(-1 * var(--dw-space-xs));
 }
 
 .amount-entry {

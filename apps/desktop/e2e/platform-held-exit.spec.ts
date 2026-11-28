@@ -130,7 +130,6 @@ test.describe("A held payment from Platform: Move to Dash wallet", () => {
     await details(page, "platform-send-failed-may-land", "platform:send:ps-held:mayland");
     await page.keyboard.press("Escape");
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await expect(page.getByTestId("platform-send-earlier")).toContainText("may still go through");
     await expect(page.getByTestId("platform-send-retry-held")).toBeVisible();

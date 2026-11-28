@@ -2,7 +2,7 @@
 // Platform balance, the fee estimate and its band, then a confirm sheet that runs the send and
 // shows how it ended.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { hasCode } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { PlatformActivity } from "../../api/generated/PlatformActivity";
@@ -215,7 +215,7 @@ export function HeldPlatformSend({ walletId, network }: { walletId: string; netw
 
 /** The Platform half of the address form: shown below "Pay to" once it holds a Platform address.
  * `amount` is the form's own field, so what was typed before the address was recognised stays. */
-export function PayFromPlatform({ walletId, network, to, amount, onSent }: { walletId: string; network: NetworkInfo; to: string; amount: ReturnType<typeof useAmountField>; onSent: () => void }) {
+export function PayFromPlatform({ walletId, network, to, amount, onSent, recipientBusy, recipientRevision, inputRef }: { walletId: string; network: NetworkInfo; to: string; amount: ReturnType<typeof useAmountField>; onSent: () => void; recipientBusy: boolean; recipientRevision: string; inputRef?: Ref<HTMLInputElement> }) {
   const t = useT();
   const b = useBackend();
   const flow = useModel(sendFor(b, walletId));
@@ -232,14 +232,14 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const showing = flow.step === "done";
   // On mainnet this version sends nothing new from Platform: only a held payment's retry is offered.
   const off = addressSendsOff(network, balance.data);
-  const quote = usePlatformSendQuote(walletId, to, off || waiting || showing ? null : asked);
+  const quote = usePlatformSendQuote(walletId, to, off || waiting || showing ? null : asked, recipientRevision);
   const empty = balance.data === null || (balance.data !== undefined && BigInt(balance.data.credits) === 0n);
   const sheetOpen = confirmed !== null || flow.running || flow.step !== "confirm";
 
   const q = quote.data;
   const problem = waiting ? C.waiting : quote.isError ? (platformHoldText(quote.error, false) ?? sendErrorText(quote.error, credits, activity.data)) : (amount.error ?? null);
   // An operation is single use: after an attempt, Confirm waits for a quote taken since.
-  const ready = !waiting && !!q && !quote.isFetching && !quote.isError && asked !== null && !flow.isSpent(q.operation);
+  const ready = !recipientBusy && !waiting && !!q && !quote.isFetching && !quote.isError && asked !== null && !flow.isSpent(q.operation);
   const requote = quote.refetch;
   const handledAttempts = useRef(flow.attempts);
   useEffect(() => {
@@ -337,6 +337,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
           <span className="amount-entry">
             <input
               {...p}
+              ref={inputRef}
               data-testid="pay-amount"
               value={max ? "" : amount.text}
               inputMode="decimal"
