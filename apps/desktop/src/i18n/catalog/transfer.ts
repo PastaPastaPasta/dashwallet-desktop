@@ -372,7 +372,7 @@ export const transfer = {
       unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
       poolTooSmall: {
         title: "Shielded pool too small",
-        text: "Shielded withdrawals open once the network's shielded pool has enough activity. This amount stays held until Dash Wallet proves the move can no longer go through, then returns to your Shielded balance. Do not send it again; try again later once the pool has enough activity.",
+        text: "Shielded withdrawals open once the network's shielded pool has enough activity. This amount stays held until Dash Wallet proves the move can no longer go through, then returns to your Shielded balance. Don't send it again until it's back in your Shielded balance.",
       },
       out: { title: "Moved", text: "About {amount} is on its way to your Dash wallet. It arrives when Dash Platform's withdrawal is mined." },
       toPlatform: { text: "Moved to your Platform address {addr}." },

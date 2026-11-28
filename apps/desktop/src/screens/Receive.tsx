@@ -110,7 +110,7 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
         </p>
       ) : !shown ? (
         <div className="receive-qr">
-          <QrPlaceholder size={QR_SIDE} testId="receive-loading" label={t("receive.dash.loading")} />
+          <QrPlaceholder size={QR_SIDE} testId="receive-loading" label={t("receive.dash.loading")} showLabel />
         </div>
       ) : (
         <>
@@ -189,7 +189,7 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean, off: bool
         </p>
       ) : !address.data ? (
         <div className="receive-qr">
-          <QrPlaceholder size={QR_SIDE} testId="platform-receive-loading" label={t("receive.platform.loading")} />
+          <QrPlaceholder size={QR_SIDE} testId="platform-receive-loading" label={t("receive.platform.loading")} showLabel />
         </div>
       ) : (
         <>

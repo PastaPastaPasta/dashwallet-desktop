@@ -120,6 +120,8 @@ test.describe("Shielded funds held for a payment that may still go through", () 
       await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Shielded pool too small");
       await expect(page.getByTestId("shielded-outcome-text")).toContainText("Shielded withdrawals open once the network's shielded pool has enough activity.");
       await expect(page.getByTestId("shielded-outcome-text")).toContainText("stays held until Dash Wallet proves the move can no longer go through");
+      await expect(page.getByTestId("shielded-outcome-text")).toContainText("Don't send it again until it's back in your Shielded balance.");
+      await expect(page.getByTestId("shielded-outcome-text")).not.toContainText("try again later");
       await expect(page.getByTestId("shielded-outcome-title")).not.toHaveText("Not confirmed yet");
       expect(await seriousAxeViolations(page)).toEqual([]);
       await shot(page, `${theme}-shielded-pool-floor-held`);

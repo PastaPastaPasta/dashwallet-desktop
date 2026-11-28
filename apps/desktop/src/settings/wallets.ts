@@ -244,56 +244,26 @@ export class RemoveWalletModel extends Model {
 
   #checking = false;
   #authorizing = false;
-  #pendingPassphrase = "";
+  #pendingGrant: string | null = null;
   // Not a flag: StrictMode cancels and mounts the same model again (D37).
   #epoch = 0;
 
-  /** The sheet is gone: an authorization still running removes nothing. */
+  /** The sheet is gone: an authorization still running removes nothing, and any held grant is revoked. */
   cancel() {
-    this.#pendingPassphrase = "";
+    const grant = this.#pendingGrant;
+    this.#pendingGrant = null;
+    if (grant) void this.api.revokeGrant(grant).catch(() => {});
     this.#epoch++;
   }
 
   async remove(passphrase: string) {
     if (this.step !== "confirm" || this.busy) return;
-    this.error = null;
-    const epoch = this.#epoch;
-    if (this.loaded) {
-      this.#checking = true;
-      this.changed();
-      let awaiting = false;
-      try {
-        awaiting = (await this.api.balance(this.walletId))?.heldAwaiting ?? false;
-      } catch (e) {
-        this.#checking = false;
-        if (epoch !== this.#epoch) return;
-        this.error = failureText(e);
-        return this.changed();
-      }
-      this.#checking = false;
-      if (epoch !== this.#epoch) return;
-      if (awaiting) {
-        this.#pendingPassphrase = passphrase;
-        this.step = "awaiting";
-        return this.changed();
-      }
-    }
-    await this.#finishRemove(passphrase, epoch);
-  }
-
-  async removeAnyway() {
-    if (this.step !== "awaiting" || this.busy) return;
-    const passphrase = this.#pendingPassphrase;
-    this.#pendingPassphrase = "";
-    await this.#finishRemove(passphrase, this.#epoch);
-  }
-
-  async #finishRemove(passphrase: string, epoch: number) {
     let grant: string | null = null;
     const authorize = async (p: string) => {
       grant = (await this.api.authorize({ kind: "wipe" }, this.walletId, vaultCredential(this.encrypted, p))).id;
     };
     this.error = null;
+    const epoch = this.#epoch;
     this.#authorizing = true;
     this.changed();
     let ok: boolean;
@@ -310,12 +280,41 @@ export class RemoveWalletModel extends Model {
     } finally {
       this.#authorizing = false;
     }
-    if (!ok || !grant) {
-      this.step = "confirm";
-      return this.changed();
-    }
+    if (!ok || !grant) return this.changed();
     // The sheet went away while the passphrase was checked: the wallet stays (D31).
     if (epoch !== this.#epoch) return void this.api.revokeGrant(grant).catch(() => {});
+    if (this.loaded) {
+      this.#checking = true;
+      this.changed();
+      let awaiting = false;
+      try {
+        awaiting = (await this.api.balance(this.walletId))?.heldAwaiting ?? false;
+      } catch (e) {
+        this.#checking = false;
+        void this.api.revokeGrant(grant).catch(() => {});
+        if (epoch !== this.#epoch) return;
+        this.error = failureText(e);
+        return this.changed();
+      }
+      this.#checking = false;
+      if (epoch !== this.#epoch) return void this.api.revokeGrant(grant).catch(() => {});
+      if (awaiting) {
+        this.#pendingGrant = grant;
+        this.step = "awaiting";
+        return this.changed();
+      }
+    }
+    await this.#executeRemove(grant);
+  }
+
+  async removeAnyway() {
+    if (this.step !== "awaiting" || this.busy || !this.#pendingGrant) return;
+    const grant = this.#pendingGrant;
+    this.#pendingGrant = null;
+    await this.#executeRemove(grant);
+  }
+
+  async #executeRemove(grant: string) {
     this.step = "working";
     this.changed();
     try {

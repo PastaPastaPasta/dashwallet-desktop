@@ -174,12 +174,23 @@ describe("remove wallet", () => {
     };
     await model.remove(PASS);
     expect(model.step).toBe("awaiting");
-    expect(fixture.calls).toContain("balance");
+    expect(fixture.calls.indexOf("authorize")).toBeGreaterThan(-1);
+    expect(fixture.calls.indexOf("balance")).toBeGreaterThan(fixture.calls.indexOf("authorize"));
     expect(fixture.calls).not.toContain("remove_wallet");
     expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
-    // Explicit "remove anyway" completes the removal.
-    await model.removeAnyway();
-    expect(model.step).toBe("done");
+    // Canceling from awaiting revokes the held wipe grant and leaves the wallet in place.
+    model.cancel();
+    await Promise.resolve();
+    expect(fixture.calls).toContain("revoke_grant");
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
+
+    // Opening again and confirming "remove anyway" completes the removal using the authorized grant.
+    const second = new RemoveWalletModel(b, B);
+    await second.load();
+    await second.remove(PASS);
+    expect(second.step).toBe("awaiting");
+    await second.removeAnyway();
+    expect(second.step).toBe("done");
     expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A]);
   });
 

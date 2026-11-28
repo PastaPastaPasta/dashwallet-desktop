@@ -2850,6 +2850,20 @@ input[type="radio"]:disabled {
   background: var(--dw-role-field-fill);
 }
 
+.qr-placeholder-labeled {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-s);
+  padding: var(--dw-space-m);
+  box-sizing: border-box;
+  text-align: center;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
 .qr-problem {
   max-width: 280px;
   margin: 0;

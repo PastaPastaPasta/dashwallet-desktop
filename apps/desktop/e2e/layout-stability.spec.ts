@@ -173,6 +173,8 @@ test.describe("Layout stability across results and loading states", () => {
       await page.getByTestId("sidebar-receive").click();
       const loading = page.getByTestId("receive-loading");
       await expect(loading).toBeVisible();
+      await expect(loading.locator(".qr-placeholder-label")).toBeVisible();
+      await expect(loading).toContainText("Loading address");
       const loadingBox = await loading.boundingBox();
       expect(loadingBox?.width).toBe(200);
       expect(loadingBox?.height).toBe(200);
