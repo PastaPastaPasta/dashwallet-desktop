@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useSyncExternalStore, type KeyboardEvent } from "react";
 import { useUi } from "../app/ui";
-import { lastSheetOpened, newestOpenSheet, watchSheets } from "./sheet";
+import { lastSheetOpened, newestOpenSheet, watchSheets } from "./sheetOrder";
 import { t, useT } from "../i18n";
 import { motion } from "../styles/tokens.generated";
 
