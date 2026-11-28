@@ -1756,6 +1756,29 @@ PY
     '[[ $wv_rc -ne 0 ]] && grep -q "is not the detached signature" "$e2e/wv.out"'
   wv --leaf-hash "sha256:0000000000000000000000000000000000000000000000000000000000000000" --ca-file "$e2e/work/win.crt" --skip-chain-verify
   check "windows-verify-pinned: refuses another leaf" '[[ $wv_rc -ne 0 ]] && grep -q "Leaf hash match: failed" "$e2e/wv.out"'
+  # The YubiKey path (leaf-hash pin) needs a verified timestamp as well: it is not covered by the signature and
+  # can be cut out of a detached one
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt"
+  check "windows-verify-pinned: under the leaf-hash pin too, a currently valid signature with no timestamp is refused" \
+    '[[ $wv_rc -ne 0 ]] && grep -qx "Signature verification: ok" "$e2e/wv.out" && grep -q "no verified timestamp" "$e2e/wv.out"'
+  wv_exe="$e2e/work/tsa-signed.exe"
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --tsa-ca-file "$e2e/work/tsa.crt"
+  check "windows-verify-pinned: under the leaf-hash pin, a signature with a verified timestamp is accepted with no skip flag" \
+    '[[ $wv_rc -eq 0 ]] && grep -qx "Timestamp Server Signature verification: ok" "$e2e/wv.out"'
+  if [[ $wv_rc -ne 0 ]]; then cat "$e2e/wv.out" >&2 || true; fi
+  wv_exe="$e2e/work/tsa-other-signed.exe"
+  wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --tsa-ca-file "$e2e/work/tsa.crt"
+  check "windows-verify-pinned: under the leaf-hash pin, a timestamp from an authority outside the trusted roots is refused" \
+    '[[ $wv_rc -ne 0 ]] && grep -qE "no verified timestamp|osslsigncode verify failed" "$e2e/wv.out"'
+  wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
+  yk_prod=()
+  for a in "${attach_base[@]}"; do
+    [[ "$a" == --skip-win-chain-verify ]] || yk_prod+=("$a")
+  done
+  expect_attach_fail \
+    "leaf-hash pin: without the test-only skip flag, release-attach refuses a matching, currently valid signature that carries no timestamp" \
+    "no verified timestamp" "$e2e/attach-leaf-nots.out" \
+    "${yk_prod[@]}" --out-dir "$e2e/attached-leaf-nots"
 
   printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$e2e/work/garbage.pem"
   leaf_rc=0
@@ -1935,6 +1958,56 @@ PY
     "${rc_attach_base[@]}" --ci-signed --ci-pgp-pubkey "$e2e/work/ci-release-key.asc" --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-nopin"
   check "release-publish-signed.yml passes --ci-signed only for signatures from the signing job, and refuses those for a stable tag" \
     '[[ $(grep -c -- "--ci-signed" "$here/../../.github/workflows/release-publish-signed.yml") -eq 1 ]] && grep -qF -- "[[ -z \"\$SIGNED_ARTIFACT\" ]] || args+=(--ci-signed)" "$here/../../.github/workflows/release-publish-signed.yml" && grep -qF "signed_artifact is for a release candidate" "$here/../../.github/workflows/release-publish-signed.yml"'
+
+  # fetch-windows-signature.sh: release-sign.yml takes the YubiKey's signature from one commit of another
+  # repository, as blobs, into a job that later holds keys
+  fw=$e2e/fetch-win
+  fw_exe=dash-wallet-0.1.0-rc.1-windows-x64-setup.exe
+  mkdir -p "$fw/repo"
+  fw_git() { git -C "$fw/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false -c init.defaultBranch=main "$@"; }
+  fw_commit() { # fw_commit <branch>: commit the work tree on a fresh branch; prints its hash
+    fw_git checkout --quiet --orphan "$1" && fw_git add -A && fw_git commit --quiet -m "$1" && fw_git rev-parse HEAD
+  }
+  fw_git init --quiet
+  mkdir -p "$fw/repo/v0.1.0-rc.1/win"
+  cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/v0.1.0-rc.1/"
+  cp "$e2e/rc-sigs/win/$fw_exe.pem" "$fw/repo/v0.1.0-rc.1/win/"
+  fw_good=$(fw_commit good)
+  echo tampered >> "$fw/repo/v0.1.0-rc.1/unsigned.SHA256SUMS"
+  fw_other=$(fw_commit other-build)
+  cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/v0.1.0-rc.1/"
+  mv "$fw/repo/v0.1.0-rc.1/win/$fw_exe.pem" "$fw/repo/v0.1.0-rc.1/real.pem"
+  ln -s ../real.pem "$fw/repo/v0.1.0-rc.1/win/$fw_exe.pem"
+  fw_link=$(fw_commit linked)
+  rm -rf "$fw/repo/v0.1.0-rc.1"
+  mkdir -p "$fw/repo/win"
+  cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/"
+  cp "$e2e/rc-sigs/win/$fw_exe.pem" "$fw/repo/win/"
+  fw_root=$(fw_commit root-layout)
+  fw_run() { # fw_run <name> <commit>: as release-sign.yml runs it; sets $fw_rc; output in $fw/<name>.out
+    fw_rc=0
+    rm -rf "${fw:?}/$1" && mkdir -p "$fw/$1/sigs" "$fw/$1/out"
+    cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/$1/sigs/"
+    "$here/../release/fetch-windows-signature.sh" --repo-url "$fw/repo" --commit "$2" --tag v0.1.0-rc.1 \
+      --unsigned-dir "$e2e/rc-unsigned" --sigs-dir "$fw/$1/sigs" --out-dir "$fw/$1/out" --ca-file "$e2e/work/win.crt" \
+      > "$fw/$1.out" 2>&1 || fw_rc=$?
+  }
+  fw_run good "$fw_good"
+  check "fetch-windows-signature: attaches the signature of the named commit, giving the installer release-attach gives" \
+    '[[ $fw_rc -eq 0 ]] && cmp -s "$fw/good/out/dist/$fw_exe" "$e2e/rc-attached/dist/$fw_exe" && cmp -s "$fw/good/sigs/win/$fw_exe.pem" "$e2e/rc-sigs/win/$fw_exe.pem"'
+  if [[ $fw_rc -ne 0 ]]; then cat "$fw/good.out" >&2 || true; fi
+  fw_run root "$fw_root"
+  check "fetch-windows-signature: reads the files from the commit's root when it has no directory for the tag" \
+    '[[ $fw_rc -eq 0 ]] && cmp -s "$fw/root/out/dist/$fw_exe" "$e2e/rc-attached/dist/$fw_exe"'
+  fw_run branch good
+  check "fetch-windows-signature: refuses a branch name, which a later push could move" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/branch/out/dist" && ! -e "$fw/branch/sigs/win" ]] && grep -q "full 40-hex commit" "$fw/branch.out"'
+  fw_run other "$fw_other"
+  check "fetch-windows-signature: refuses a signature made over another build" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/other/out/dist" && ! -e "$fw/other/sigs/win" ]] && grep -q "signed over another build" "$fw/other.out"'
+  fw_run link "$fw_link"
+  check "fetch-windows-signature: refuses a signature file that is a link in the commit, writing no installer" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/link/out/dist/$fw_exe" && ! -s "$fw/link/sigs/win/$fw_exe.pem" ]] && grep -q "is not a regular file" "$fw/link.out"'
 
   # Blocker #7: ci/release/fetch-unsigned.sh pins locally verified --tag-sha, verifies run + attestations + checksums before exposing files
   fu=$e2e/fetch-unsigned-test
@@ -2285,7 +2358,7 @@ def step(needle):
     return hits[0]
 
 pinned = step("ci/github/windows-verify-pinned.sh")
-attach = step("osslsigncode attach-signature")
+attach = step("ci/release/fetch-windows-signature.sh")
 assert attach < pinned, "the publisher check must come after the signature is attached"
 for after in ("ci-signing-keys.sh apple", "ci/release/sign-macos.sh", "ci-signing-keys.sh pgp", "ci/release/sign-checksums.sh"):
     assert pinned < step(after), f"the publisher check must come before {after}"
@@ -2294,8 +2367,13 @@ assert "--leaf-hash" in steps[pinned] and "--signer-org" not in steps[pinned], "
 assert "--skip-chain-verify" not in text, "no workflow may pass the test-only skip flag"
 # The Windows key stays on the YubiKey: the signing job holds no cloud signing identity and fetches no signer.
 assert "id-token" not in sign, "the sign job must not be able to mint an OIDC token"
-for word in ("azure", "jsign", "sign-windows.sh "):
-    assert word not in sign.lower().replace("ci/release/sign-windows.sh and pushes", ""), f"the sign job must not use {word}"
+for word in ("azure", "jsign", "sign-windows.sh"):
+    assert word not in sign.lower(), f"the sign job must not use {word}"
+for i, text_of_step in enumerate(steps):
+    assert "secrets." not in text_of_step or i > pinned, "no secret may reach a step before the publisher check"
+assert "continue-on-error" not in sign, "no step of the sign job may be allowed to fail"
+assert "|| true" not in steps[pinned] and "|| :" not in steps[pinned], "the publisher check must be able to fail the job"
+assert '[[ "$INPUT_WIN_REF" =~ ^[0-9a-f]{40}$ ]]' in sign, "windows_sig_ref must be a full commit hash"
 assert "windows_sig_ref:" in text and text.split("windows_sig_ref:")[1].split("type:")[0].count("required: true") == 1, \
     "windows_sig_ref must be a required input"
 PY

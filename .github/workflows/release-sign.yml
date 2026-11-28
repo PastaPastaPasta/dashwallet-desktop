@@ -3,7 +3,7 @@
 # release.yml built the tag's unsigned files and attested them (repository variable DW_SIGN_RC=1). This
 # workflow takes the place of the release signer's Mac in docs/release/RC-SIGNING.md:
 #
-#   sign      runs the same ci/release/sign-*.sh scripts on a hosted macOS runner. It is the only job that
+#   sign      runs sign-macos.sh and sign-checksums.sh on a hosted macOS runner. It is the only job that
 #             sees signing credentials, and it reaches them only through the `release-signing` environment
 #             (required reviewer, v* tags only). It builds nothing and installs no project dependency: it
 #             downloads the attested files, attaches the Windows signature, signs the macOS app and
@@ -38,7 +38,7 @@ on:
         required: true
         type: string
       windows_sig_ref:
-        description: "Branch, tag or commit in sigs_repo holding win/<setup.exe>.pem, the Windows signature made on the YubiKey"
+        description: "Full 40-hex commit in sigs_repo holding win/<setup.exe>.pem, the Windows signature made on the YubiKey"
         required: true
         type: string
       sigs_repo:
@@ -61,7 +61,7 @@ defaults:
 
 jobs:
   sign:
-    name: Sign macOS, Windows and SHA256SUMS
+    name: Attach the Windows signature, sign macOS and SHA256SUMS
     environment: release-signing
     runs-on: macos-15
     timeout-minutes: 150
@@ -92,8 +92,9 @@ jobs:
             echo "::error::release_run_id must be numeric (got '$INPUT_RUN_ID')" >&2
             exit 1
           }
-          [[ "$INPUT_WIN_REF" =~ ^[A-Za-z0-9._/-]+$ && "$INPUT_WIN_REF" != *..* && "$INPUT_WIN_REF" != -* ]] || {
-            echo "::error::windows_sig_ref must name the commit in sigs_repo that holds the YubiKey's Windows signature (got '$INPUT_WIN_REF')" >&2
+          # A commit, not a branch: what is approved is then what is fetched, whatever is pushed meanwhile.
+          [[ "$INPUT_WIN_REF" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::windows_sig_ref must be the full 40-hex commit in sigs_repo that holds the YubiKey's Windows signature (got '$INPUT_WIN_REF')" >&2
             exit 1
           }
           [[ "$INPUT_SIGS_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
@@ -170,26 +171,16 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS"
           mkdir -p "$OUT/dist"
 
+      # Read as two blobs of one named commit; nothing of that repository is checked out here.
       - name: Windows, attach the YubiKey signature from the detached-signatures repository
         env:
           SIGS_REPO: ${{ inputs.sigs_repo }}
           WIN_REF: ${{ inputs.windows_sig_ref }}
         run: |
-          exe="dash-wallet-$VERSION-windows-x64-setup.exe"
-          git init --quiet "$RUNNER_TEMP/sigs-repo"
-          git -C "$RUNNER_TEMP/sigs-repo" fetch --quiet --depth 1 "https://github.com/$SIGS_REPO.git" "$WIN_REF"
-          git -C "$RUNNER_TEMP/sigs-repo" checkout --quiet --detach FETCH_HEAD
-          root="$RUNNER_TEMP/sigs-repo"
-          [[ ! -d "$root/$TAG" ]] || root="$root/$TAG"
-          pem="$root/win/$exe.pem"
-          [[ -f "$pem" && ! -L "$pem" ]] || { echo "::error::$SIGS_REPO@$WIN_REF has no win/$exe.pem" >&2; exit 1; }
-          cmp -s "$root/unsigned.SHA256SUMS" "$SIGS/unsigned.SHA256SUMS" || {
-            echo "::error::$SIGS_REPO@$WIN_REF was signed over another build: its unsigned.SHA256SUMS differs from this run's" >&2
-            exit 1
-          }
-          mkdir -p "$SIGS/win"
-          cp "$pem" "$SIGS/win/$exe.pem"
-          osslsigncode attach-signature -in "$UNSIGNED/$exe" -sigin "$SIGS/win/$exe.pem" -out "$OUT/dist/$exe"
+          args=(--repo-url "https://github.com/$SIGS_REPO.git" --commit "$WIN_REF" --tag "$TAG"
+            --unsigned-dir "$UNSIGNED" --sigs-dir "$SIGS" --out-dir "$OUT")
+          [[ -z "${WIN_CA:-}" ]] || args+=(--ca-file "$WIN_CA")
+          ci/release/fetch-windows-signature.sh "${args[@]}"
 
       # Before anything else is signed: SHA256SUMS.asc must never cover an installer another publisher signed.
       # The publish job asks the same question again, with the same script.

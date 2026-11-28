@@ -2,8 +2,9 @@
 
 [`RC-SIGNING.md`](RC-SIGNING.md) has the release signer sign a candidate on their own Mac. This file is the other
 way to do the same job: `.github/workflows/release-sign.yml` signs the macOS app and `SHA256SUMS` on a hosted
-runner, so after the one-time setup below the signer's own part of a candidate is one command with the YubiKey.
-The Windows installer is still signed on that YubiKey: its key cannot leave it. Both ways publish the same 9
+runner, so after the one-time setup below the signer's own part of a candidate is the Windows signature (step 2
+of "Each candidate") and two approvals. The Windows installer is still signed on the YubiKey: its key cannot
+leave it. Both ways publish the same 9
 assets through `release-publish-signed.yml`, with the same checks. A stable `vX.Y.Z` is still signed locally
 ([`SIGNING.md`](SIGNING.md)): its updater feed needs the stable updater key, and that key is not in CI.
 
@@ -174,11 +175,13 @@ detached-signatures repository. Three things from that file, each done once:
 1. The version bump, the notes and the pins of step 5 are on `main`, and `DW_SIGN_RC` is `1`
    ([`RC-SIGNING.md`](RC-SIGNING.md) section 1). Push the tag and wait for its Release run
    ([`RC-SIGNING.md`](RC-SIGNING.md) section 3). It ends with the notice that the tag holds unsigned binaries.
-2. Sign the Windows installer on the Mac with the YubiKey and push the signature. `$YKCS11` and the slot's ID are
-   from [`RC-SIGNING.md`](RC-SIGNING.md) section 2; osslsigncode asks for the PIV PIN:
+2. Sign the Windows installer on the Mac with the YubiKey and push the signature. The PKCS#11 module and the
+   slot's ID (`%02` is slot 9c) are from [`RC-SIGNING.md`](RC-SIGNING.md) section 2; osslsigncode asks for the
+   PIV PIN:
 
    ```sh
    export REPO=PastaPastaPasta/dashwallet-desktop TAG=v1.0.0-rc.2 VERSION=1.0.0-rc.2
+   export YKCS11="$(brew --prefix yubico-piv-tool)/lib/libykcs11.dylib"
    cd ~/src/dashwallet-desktop && git fetch origin --tags && git checkout --detach "$TAG"
    export TAG_SHA=$(git rev-parse "$TAG^{commit}")
    export RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --branch "$TAG" --event push --limit 1 --json databaseId --jq '.[0].databaseId')
@@ -189,14 +192,18 @@ detached-signatures repository. Three things from that file, each done once:
      --pkcs11-module "$YKCS11" --pkcs11-cert "pkcs11:id=%02;type=cert" --pkcs11-key "pkcs11:id=%02;type=private" \
      --chain "$HOME/certs/dashcore-win-chain.pem" --tsa "http://timestamp.digicert.com"
 
-   cd ~/src/dashwallet-detached-sigs && git fetch origin && git checkout -B "$TAG" origin/main
+   git clone https://github.com/PastaPastaPasta/dashwallet-detached-sigs ~/src/dashwallet-detached-sigs 2>/dev/null || true
+   cd ~/src/dashwallet-detached-sigs && git fetch origin
+   git checkout -B "$TAG" "origin/$TAG" 2>/dev/null || git checkout -B "$TAG" origin/main
    rm -rf "./$TAG" && mkdir "$TAG" && cp -R "$WORK/sigs/." "$TAG/"
    git add "$TAG" && git commit -S -m "Add the Windows signature for $TAG" && git push origin "$TAG"
    export SIGS_COMMIT=$(git rev-parse HEAD) && echo "$SIGS_COMMIT"
    ```
 
-   `sign-windows.sh` ends with `Signature verification: ok` and `Succeeded`. What is pushed is two small files,
-   `unsigned.SHA256SUMS` and `win/dash-wallet-1.0.0-rc.2-windows-x64-setup.exe.pem`; no binary and no key.
+   `sign-windows.sh` prints `Signature verification: ok` and `Succeeded`, then `sign-windows: done`. What is
+   pushed is two small files, `unsigned.SHA256SUMS` and `win/dash-wallet-1.0.0-rc.2-windows-x64-setup.exe.pem`;
+   no binary and no key. `SIGS_COMMIT` is the full commit hash the workflow asks for: it takes a commit, never a
+   branch, so what you approve is what it fetches. Signing again for the same tag adds a commit on that branch.
 3. Rehearse. This signs for real and verifies everything, then stops before attesting and publishing:
 
    ```sh
@@ -205,8 +212,8 @@ detached-signatures repository. Three things from that file, each done once:
    ```
 
    Open the run, check it is on your tag and commit, and choose **Review deployments ▸ release-signing ▸ Approve
-   and deploy**. The job attaches the Windows signature and checks it against `windows_leaf_sha256` before it uses
-   any key of its own. Most of its time is Apple's notary service, usually a few minutes for each of its two
+   and deploy**. The job attaches the Windows signature and checks it against `windows_leaf_sha256`, timestamp
+   included, before it uses any key of its own. Most of its time is Apple's notary service, usually a few minutes for each of its two
    submissions. If the `release` environment has a required reviewer too, the `publish` job asks once more; give
    that approval within three days, while the signing job's artifact still exists. A green rehearsal ends with the
    notice `dry_run=true on v1.0.0-rc.2 …`.
