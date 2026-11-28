@@ -227,6 +227,7 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::RescanInProgress
             | E::RescanInterrupted
             | E::TxActionRefused(_)
+            | E::RescanFirst(_)
             | E::NoPeers
             | E::TxNotFound(_)
             | E::GapLimit

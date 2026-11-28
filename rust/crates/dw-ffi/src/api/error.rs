@@ -91,7 +91,7 @@ impl From<dw_engine::EngineError> for EngineError {
             | E::RescanInterrupted
             | E::NoPeers => Self::Spv { detail },
             E::InvalidXpub(_) => Self::InvalidArgument { detail },
-            E::TxActionRefused(_) => Self::Wallet { detail },
+            E::TxActionRefused(_) | E::RescanFirst(_) => Self::Wallet { detail },
             E::HeightOutOfRange(_) | E::InvalidQuery(_) | E::StaleCursor => {
                 Self::InvalidArgument { detail }
             }
