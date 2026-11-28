@@ -199,6 +199,10 @@ export const settings = {
     removeHeldKeysRemoved:
       "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
     removeHeldOk: "OK",
+    removeAwaitingTitle: "Wait before removing this wallet",
+    removeAwaiting:
+      "A payment using a held coin in {name} isn't final on the network yet. If you remove and restore {name} now, the restored wallet can show the wrong spendable balance until that payment is mined. Wait until it is final, or remove {name} anyway.",
+    removeAnyway: "Remove anyway",
     xpubTitle: "Extended public key",
     xpubHint: "Anyone with this key can see every address and payment of this account, but cannot spend.",
     xpubQr: "QR code of the extended public key of {name}",

@@ -218,7 +218,7 @@ function RenameSheet({ row, model, onClose }: { row: WalletRow; model: WalletsMo
 function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: string) => void }) {
   const t = useT();
   const backend = useBackend();
-  const [model] = useState(() => new RemoveWalletModel(backend, row.walletId));
+  const [model] = useState(() => new RemoveWalletModel(backend, row.walletId, row.loaded));
   useModel(model);
   useLockTimer(model.lock);
   useEffect(() => {
@@ -231,6 +231,22 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
       onClose(WalletsText.removed(row.name));
     }
   }, [model.step, onClose, row]);
+  if (model.step === "awaiting")
+    return (
+      <Sheet title={WalletsText.removeAwaitingTitle} width="medium" testId="settings-remove-sheet" focusKey="awaiting" closable={!model.busy} onClose={() => onClose()}>
+        <p className="sheet-warning" role="alert" data-testid="settings-remove-awaiting">
+          {WalletsText.removeAwaiting(row.name)}
+        </p>
+        <div className="sheet-actions">
+          <DashButton variant="tintedGray" size="large" data-testid="settings-remove-awaiting-cancel" disabled={model.busy} onClick={() => onClose()}>
+            {t("common.cancel")}
+          </DashButton>
+          <DashButton variant="plainRed" size="large" data-testid="settings-remove-anyway" disabled={model.busy} onClick={() => void model.removeAnyway()}>
+            {WalletsText.removeAnyway}
+          </DashButton>
+        </div>
+      </Sheet>
+    );
   if (model.step === "held")
     return (
       <Sheet title={WalletsText.removeHeldTitle} width="medium" testId="settings-remove-sheet" focusKey="held" onClose={() => onClose()}>

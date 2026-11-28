@@ -15,8 +15,7 @@ import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
-import { LoadingState } from "../components/history";
-import { QrCode } from "../components/qr";
+import { QrCode, QrPlaceholder } from "../components/qr";
 import { Sheet } from "../components/sheet";
 import { CopyDashButton } from "../components/copy";
 import { useUi } from "../app/ui";
@@ -110,7 +109,9 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
           {t("receive.dash.loadFailed", { error: errorMessage(current.error) })}
         </p>
       ) : !shown ? (
-        <LoadingState testId="receive-loading" text={t("receive.dash.loading")} />
+        <div className="receive-qr">
+          <QrPlaceholder size={QR_SIDE} testId="receive-loading" label={t("receive.dash.loading")} showLabel />
+        </div>
       ) : (
         <>
           {paid.length > 0 && (
@@ -187,7 +188,9 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean, off: bool
           {t("receive.platform.loadFailed", { error: errorMessage(address.error) })}
         </p>
       ) : !address.data ? (
-        <LoadingState testId="platform-receive-loading" text={t("receive.platform.loading")} />
+        <div className="receive-qr">
+          <QrPlaceholder size={QR_SIDE} testId="platform-receive-loading" label={t("receive.platform.loading")} showLabel />
+        </div>
       ) : (
         <>
           <div className="receive-qr">

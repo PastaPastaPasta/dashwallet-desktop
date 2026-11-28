@@ -365,6 +365,40 @@ fn unshield_to_platform_failures_after_signing() {
     }
 }
 
+/// A held pool-floor refusal of `unshield_to_platform` stays pending with the
+/// hold in place and carries the pool-floor reason (`pool_too_small`).
+#[test]
+fn a_held_pool_floor_refusal_of_unshield_to_platform_carries_the_pool_floor_reason() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let pool_text = "state transition broadcast failed: Shielded pool has insufficient notes \
+                     for outgoing transition: pool has 3 notes but minimum 250 required";
+
+    *lib.after_failure.lock().unwrap() = AfterFailure::Held;
+    lib.fail_with(PlatformWalletError::ShieldedBroadcastFailed(
+        pool_text.into(),
+    ));
+    let out = unshield(&fx, &lib, NOTE / 4, None, &lease(&fx), false).unwrap();
+    assert_eq!(out.state, ShieldedSpendState::Pending);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_reason"],
+        serde_json::json!({ "kind": "pool_too_small", "notes": 3, "required": 250 })
+    );
+    assert!(!lib.held.lock().unwrap().is_empty());
+
+    lib.fail_with(PlatformWalletError::ShieldedSpendUnconfirmed {
+        operation: "unshield",
+        reason: pool_text.into(),
+    });
+    let out = unshield(&fx, &lib, NOTE / 4, None, &lease(&fx), false).unwrap();
+    assert_eq!(out.state, ShieldedSpendState::Pending);
+    assert!(out.unresolved.is_some());
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_reason"],
+        serde_json::json!({ "kind": "pool_too_small", "notes": 3, "required": 250 })
+    );
+}
+
 /// A double submit: two unshields under one grant. The wallet's lock runs
 /// them one at a time and the second finds the grant already redeemed,
 /// `platform.grant_invalid` with no key out, so the library sends one.

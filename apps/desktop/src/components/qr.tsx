@@ -24,10 +24,17 @@ export function QrCode({ matrix, size, label, testId }: { matrix: QrMatrix; size
   );
 }
 
-export function QrPlaceholder({ size, label, testId }: { size: number; label: string; testId?: string }) {
+export function QrPlaceholder({ size, label, testId, showLabel = false }: { size: number; label: string; testId?: string; showLabel?: boolean }) {
   return (
-    <div className="qr-placeholder" style={{ width: size, height: size }} role="status" data-testid={testId}>
-      <span className="sr-only">{label}</span>
+    <div className={showLabel ? "qr-placeholder qr-placeholder-labeled" : "qr-placeholder"} style={{ width: size, height: size }} role="status" data-testid={testId}>
+      {showLabel ? (
+        <>
+          <span className="spinner" aria-hidden="true" />
+          <span className="qr-placeholder-label">{label}</span>
+        </>
+      ) : (
+        <span className="sr-only">{label}</span>
+      )}
     </div>
   );
 }

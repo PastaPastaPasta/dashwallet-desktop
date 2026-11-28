@@ -11,6 +11,7 @@ import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
 import type { ShieldedAccount } from "../api/generated/ShieldedAccount";
 import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
 import type { ShieldedScanProgress } from "../api/generated/ShieldedScanProgress";
+import type { ShieldedPendingReason } from "../api/generated/ShieldedPendingReason";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldedSpendState } from "../api/generated/ShieldedSpendState";
@@ -91,6 +92,8 @@ export interface ShieldedWorld {
   shield: "applied" | "proofWaiting" | "checking" | "notApplied";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** A hooked unshield refused for the pool's note floor whose signed spend and notes stay held. */
+  poolTooSmallHeld?: boolean;
   /** The pool's proved note count a registration's readiness reads (C-funding F16); unset: 120
    * while `poolTooSmall`, else unknown, which passes. */
   poolNotes?: number;
@@ -355,19 +358,29 @@ function reserve(s: ShieldedWorld, total: bigint) {
 
 /** A spend's end: refused, `pending` (it went out and its result is not confirmed: the notes stay
  * reserved, the row stays `pending` and the wallet re-sends it itself), or done with the balance debited. */
-function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">): { state: ShieldedSpendState; unresolved: UnresolvedSpend | null } {
+function endSpend(
+  s: ShieldedWorld,
+  total: bigint,
+  row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">,
+  pendingReason: ShieldedPendingReason | null = null,
+): { state: ShieldedSpendState; unresolved: UnresolvedSpend | null; pendingReason: ShieldedPendingReason | null } {
   if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the spend");
-  if (s.next === "unknown") {
+  if (s.next === "unknown" || pendingReason !== null) {
     reserve(s, total);
     addRow(s, { ...row, status: "pending" });
     const unresolved = { activityId: s.activity[0].id, transition: `ab${String(s.activity.length).padStart(62, "0")}`, attempts: 1 };
     s.unresolved = [...s.unresolved, unresolved];
-    return { state: "pending", unresolved };
+    if (pendingReason !== null) {
+      const heldEntry = { activityId: unresolved.activityId, transition: unresolved.transition, credits: String(total) };
+      s.held = [...(s.held ?? []), heldEntry];
+      s.heldCredits = String(BigInt(s.heldCredits ?? "0") + total);
+    }
+    return { state: "pending", unresolved, pendingReason };
   }
   s.balance = String(BigInt(s.balance) - total);
   if (s.notes) s.notes = s.balance === "0" ? [] : [s.balance];
   addRow(s, { ...row, status: "confirmed" });
-  return { state: "done", unresolved: null };
+  return { state: "done", unresolved: null, pendingReason: null };
 }
 
 /** The engine's flag for Shielded → Platform: off on mainnet. */
@@ -539,10 +552,11 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
     const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
-    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
+    if (s.poolTooSmall && !s.poolTooSmallHeld) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
-    const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
+    const reason: ShieldedPendingReason | null = s.poolTooSmallHeld ? { kind: "poolTooSmall", notes: 120, required: 250 } : null;
+    const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null }, reason);
     return { credits, balance: s.balance, to, ...end };
   },
   unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => {
@@ -558,8 +572,9 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const s = ctx.world.pending.shielded!;
     // As the engine: the grant is redeemed before Platform's pool floor refuses, so a floor refusal uses it up.
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
-    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
-    const end = endSpend(s, BigInt(q.totalCredits), { kind: "unshield", direction: "out", credits, feeCredits: q.feeCredits, counterparty: address, memo: null });
+    if (s.poolTooSmall && !s.poolTooSmallHeld) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
+    const reason: ShieldedPendingReason | null = s.poolTooSmallHeld ? { kind: "poolTooSmall", notes: 120, required: 250 } : null;
+    const end = endSpend(s, BigInt(q.totalCredits), { kind: "unshield", direction: "out", credits, feeCredits: q.feeCredits, counterparty: address, memo: null }, reason);
     // Until the From Shielded attribution lands, the address's rise reads as an incoming row.
     if (end.state === "done") creditPlatform(p, address, BigInt(credits));
     return { credits, balance: s.balance, to: address, ...end };

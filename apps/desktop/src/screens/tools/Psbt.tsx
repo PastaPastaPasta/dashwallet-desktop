@@ -89,7 +89,7 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
           </div>
         </form>
       </ToolCard>
-      <Outcome ok={false} text={model.error} testId="psbt-error" />
+      <Outcome ok={false} text={model.error} testId="psbt-error" reserved />
       {step === "loading" && <LoadingState testId="psbt-loading" text={t("tools.psbt.loading")} />}
       {model.psbt && (
         <ToolCard
@@ -111,7 +111,6 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
               {model.status}
             </p>
           )}
-          <Outcome ok text={model.message} testId="psbt-message" />
           {model.notice && (
             <p className="placeholder-note" role="status" data-testid="psbt-notice">
               {model.notice}
@@ -138,6 +137,7 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
               {t("tools.psbt.save")}
             </DashButton>
           </div>
+          <Outcome ok text={model.message} testId="psbt-message" reserved />
         </ToolCard>
       )}
       <NotYet title={t("tools.psbt.externalSignerTitle")} testId="psbt-external-signer-not-yet">

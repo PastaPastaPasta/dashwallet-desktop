@@ -373,6 +373,36 @@ test.describe("Wallets", () => {
     });
   }
 
+  test("settings_removal_of_a_wallet_whose_held_coin_now_awaits_shows_the_waiting_text_before_confirming", async ({ page }) => {
+    await settings(page, "wallets", "two-wallets");
+    await page.getByTestId(`${B}-remove`).click();
+    await expect(page.getByTestId("settings-remove-sheet")).toBeVisible();
+    // heldAwaiting becomes true while the user is already in Settings.
+    await page.evaluate(() => {
+      const w = window.__dwFixture!.world.wallets[1].summary;
+      w.balances = { ...w.balances!, heldUnfinished: 50_000_000, heldAwaiting: true };
+    });
+    await page.getByTestId("settings-remove-passphrase-field").fill(PASS);
+    await page.getByTestId("settings-remove-passphrase-submit").click();
+    await expect(page.getByTestId("settings-remove-sheet")).toContainText("Wait before removing this wallet");
+    await expect(page.getByTestId("settings-remove-awaiting")).toContainText("isn't final on the network yet");
+    await expect(page.getByTestId("settings-remove-anyway")).toHaveText("Remove anyway");
+    // Cancel leaves the wallet in place.
+    await page.getByTestId("settings-remove-awaiting-cancel").click();
+    await expect(page.getByTestId("settings-remove-sheet")).toHaveCount(0);
+    await expect(page.getByTestId(B)).toBeVisible();
+    expect(await world(page, (w) => w.wallets.length)).toBe(2);
+
+    // Confirming "Remove anyway" removes the wallet.
+    await page.getByTestId(`${B}-remove`).click();
+    await page.getByTestId("settings-remove-passphrase-field").fill(PASS);
+    await page.getByTestId("settings-remove-passphrase-submit").click();
+    await expect(page.getByTestId("settings-remove-awaiting")).toBeVisible();
+    await page.getByTestId("settings-remove-anyway").click();
+    await expect(page.getByTestId("settings-wallets-notice")).toContainText("Savings");
+    await expect(page.getByTestId(B)).toHaveCount(0);
+  });
+
   test("IOS111_xpubWithQRCode_and_QT114_watchOnlyFromIt", async ({ page }) => {
     await settings(page, "wallets");
     await page.getByTestId(`${A}-xpub`).click();

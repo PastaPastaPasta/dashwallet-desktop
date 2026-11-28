@@ -27,6 +27,8 @@ export const WalletsText = withTable(
     "unnamed",
     "removeHeldTitle",
     "removeHeldOk",
+    "removeAwaitingTitle",
+    "removeAnyway",
   ]),
   {
     get oneOpensAtStart() {
@@ -38,6 +40,7 @@ export const WalletsText = withTable(
       return t("settings.wallets.removeBackupQuestion", { name });
     },
     removed: (name: string) => t("settings.wallets.removed", { name }),
+    removeAwaiting: (name: string) => t("settings.wallets.removeAwaiting", { name }),
     /** Why `remove_wallet` refused (`shielded_spend_unresolved`, its `shieldedHold` reason). One
      * without a reason is the removal's last check, after the wallet's keys were deleted. */
     removeHeld: (reason: ShieldedHoldReason | null) =>
@@ -197,13 +200,14 @@ export class WalletsModel extends Model {
   }
 }
 
-type RemoveApi = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "authorize" | "removeWallet" | "revokeGrant">;
+type RemoveApi = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "authorize" | "removeWallet" | "revokeGrant" | "balance">;
 
-/** Remove wallet (IOS-110, D18): the confirmation, the passphrase for a `wipe` grant, then
- * `removeWallet`. */
+/** Remove wallet (IOS-110, D18): the confirmation, a fresh `heldAwaiting` check, the passphrase for
+ * a `wipe` grant, then `removeWallet`. */
 export class RemoveWalletModel extends Model {
-  /** `held`: the engine refused, a shielded payment of the wallet unresolved; nothing was removed. */
-  step: "confirm" | "working" | "done" | "held" = "confirm";
+  /** `awaiting`: a held coin is still awaiting finality and needs an explicit Remove anyway.
+   * `held`: the engine refused, a shielded payment of the wallet unresolved; nothing was removed. */
+  step: "confirm" | "awaiting" | "working" | "done" | "held" = "confirm";
   encrypted = true;
   error: string | null = null;
   /** Why it was refused, once `held`. */
@@ -213,6 +217,7 @@ export class RemoveWalletModel extends Model {
   constructor(
     private readonly api: RemoveApi,
     readonly walletId: string,
+    private readonly loaded = true,
   ) {
     super();
     this.lock = new LockModel(api);
@@ -232,17 +237,22 @@ export class RemoveWalletModel extends Model {
     return this.error ?? this.lock.message;
   }
 
-  /** The passphrase is being checked or the wallet removed: the sheet stays open (D31). */
+  /** The awaiting check, passphrase check or wallet removal is running: the sheet stays open (D31). */
   get busy(): boolean {
-    return this.#authorizing || this.lock.working || this.step === "working";
+    return this.#checking || this.#authorizing || this.lock.working || this.step === "working";
   }
 
+  #checking = false;
   #authorizing = false;
+  #pendingGrant: string | null = null;
   // Not a flag: StrictMode cancels and mounts the same model again (D37).
   #epoch = 0;
 
-  /** The sheet is gone: an authorization still running removes nothing. */
+  /** The sheet is gone: an authorization still running removes nothing, and any held grant is revoked. */
   cancel() {
+    const grant = this.#pendingGrant;
+    this.#pendingGrant = null;
+    if (grant) void this.api.revokeGrant(grant).catch(() => {});
     this.#epoch++;
   }
 
@@ -273,6 +283,38 @@ export class RemoveWalletModel extends Model {
     if (!ok || !grant) return this.changed();
     // The sheet went away while the passphrase was checked: the wallet stays (D31).
     if (epoch !== this.#epoch) return void this.api.revokeGrant(grant).catch(() => {});
+    if (this.loaded) {
+      this.#checking = true;
+      this.changed();
+      let awaiting = false;
+      try {
+        awaiting = (await this.api.balance(this.walletId))?.heldAwaiting ?? false;
+      } catch (e) {
+        this.#checking = false;
+        void this.api.revokeGrant(grant).catch(() => {});
+        if (epoch !== this.#epoch) return;
+        this.error = failureText(e);
+        return this.changed();
+      }
+      this.#checking = false;
+      if (epoch !== this.#epoch) return void this.api.revokeGrant(grant).catch(() => {});
+      if (awaiting) {
+        this.#pendingGrant = grant;
+        this.step = "awaiting";
+        return this.changed();
+      }
+    }
+    await this.#executeRemove(grant);
+  }
+
+  async removeAnyway() {
+    if (this.step !== "awaiting" || this.busy || !this.#pendingGrant) return;
+    const grant = this.#pendingGrant;
+    this.#pendingGrant = null;
+    await this.#executeRemove(grant);
+  }
+
+  async #executeRemove(grant: string) {
     this.step = "working";
     this.changed();
     try {

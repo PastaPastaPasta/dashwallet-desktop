@@ -163,6 +163,37 @@ describe("wallets list", () => {
 });
 
 describe("remove wallet", () => {
+  it("settings_removal_of_a_wallet_whose_held_coin_now_awaits_shows_the_waiting_text_before_confirming", async () => {
+    const model = new RemoveWalletModel(b, B);
+    await model.load();
+    // heldAwaiting turns true after the sheet opened, right before the user confirms removal.
+    fixture.world.wallets[1].summary.balances = {
+      ...fixture.world.wallets[1].summary.balances!,
+      heldUnfinished: 50_000_000,
+      heldAwaiting: true,
+    };
+    await model.remove(PASS);
+    expect(model.step).toBe("awaiting");
+    expect(fixture.calls.indexOf("authorize")).toBeGreaterThan(-1);
+    expect(fixture.calls.indexOf("balance")).toBeGreaterThan(fixture.calls.indexOf("authorize"));
+    expect(fixture.calls).not.toContain("remove_wallet");
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
+    // Canceling from awaiting revokes the held wipe grant and leaves the wallet in place.
+    model.cancel();
+    await Promise.resolve();
+    expect(fixture.calls).toContain("revoke_grant");
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
+
+    // Opening again and confirming "remove anyway" completes the removal using the authorized grant.
+    const second = new RemoveWalletModel(b, B);
+    await second.load();
+    await second.remove(PASS);
+    expect(second.step).toBe("awaiting");
+    await second.removeAnyway();
+    expect(second.step).toBe("done");
+    expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A]);
+  });
+
   it("IOS110_removeNeedsAWipeGrant", async () => {
     const model = new RemoveWalletModel(b, B);
     await model.load();

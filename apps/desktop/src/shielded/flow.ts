@@ -234,6 +234,15 @@ export const SHIELDED_COPY = {
         return t("transfer.shielded.done.unconfirmed.text");
       },
     },
+    /** A hooked unshield refused for the pool's outgoing note floor while its notes stay held until proof settles it. */
+    poolTooSmall: {
+      get title() {
+        return t("transfer.shielded.done.poolTooSmall.title");
+      },
+      get text() {
+        return t("transfer.shielded.done.poolTooSmall.text");
+      },
+    },
     out: {
       get title() {
         return t("transfer.shielded.done.out.title");

@@ -95,19 +95,6 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               />
             )}
           </Field>
-          {model.signature && (
-            <Field label={t("tools.signVerify.signature")}>
-              {(id) => (
-                <span className="tool-inline-form">
-                  <input id={id} className="tool-field mono" data-testid="sign-signature" value={model.signature} readOnly />
-                  <CopyDashButton variant="tintedGray" size="small" data-testid="sign-copy" text={model.signature}>
-                    {t("tools.signVerify.copy")}
-                  </CopyDashButton>
-                </span>
-              )}
-            </Field>
-          )}
-          <Outcome ok={model.signResult?.ok ?? true} text={model.signResult?.text ?? null} testId="sign-result" polite />
           <div className="tool-actions">
             <DashButton type="submit" variant="filledBlue" size="small" data-testid="sign-sign" disabled={model.signing || signAddress.trim() === ""}>
               {model.signing ? t("tools.signVerify.signing") : t("tools.signVerify.signButton")}
@@ -125,6 +112,19 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               {t("tools.signVerify.clearAll")}
             </DashButton>
           </div>
+          <Outcome ok={model.signResult?.ok ?? true} text={model.signResult?.text ?? null} testId="sign-result" polite reserved />
+          {model.signature && (
+            <Field label={t("tools.signVerify.signature")}>
+              {(id) => (
+                <span className="tool-inline-form">
+                  <input id={id} className="tool-field mono" data-testid="sign-signature" value={model.signature} readOnly />
+                  <CopyDashButton variant="tintedGray" size="small" data-testid="sign-copy" text={model.signature}>
+                    {t("tools.signVerify.copy")}
+                  </CopyDashButton>
+                </span>
+              )}
+            </Field>
+          )}
         </form>
       </ToolCard>
       <ToolCard title={t("tools.signVerify.verifyTitle")} testId="verify-card">
@@ -184,7 +184,6 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               />
             )}
           </Field>
-          <Outcome ok={!verified || model.verified} text={verified?.text ?? null} testId="verify-result" polite />
           <div className="tool-actions">
             <DashButton type="submit" variant="filledBlue" size="small" data-testid="verify-verify" disabled={verifyAddress.trim() === "" || signature.trim() === ""}>
               {t("tools.signVerify.verifyButton")}
@@ -203,6 +202,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               {t("tools.signVerify.clearAll")}
             </DashButton>
           </div>
+          <Outcome ok={!verified || model.verified} text={verified?.text ?? null} testId="verify-result" polite reserved />
         </form>
       </ToolCard>
       {picking && <AddressBookPicker walletId={walletId} network={network} purpose="receive" onChoose={chosen} onClose={() => setPicking(false)} />}
