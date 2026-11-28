@@ -128,8 +128,8 @@ gh secret set RELEASE_PGP_PASSPHRASE --env release-signing --repo "$R"         #
 gpgconf --kill all && rm -rf "$GNUPGHOME" && unset GNUPGHOME
 ```
 
-To give people who trust your own key a path to this one, certify it before committing it:
-`gpg --import ci-release-key.asc && gpg --sign-key "$CI_FPR" && gpg --armor --export "$CI_FPR" > ci-release-key.asc`.
+Do not certify this key with your own. A certification would make gpg show CI's key as valid to everyone who
+trusts yours, and only the fingerprint would then tell a candidate's signature from a release's.
 
 ### 4. Windows: Azure Artifact Signing (30 minutes of work, then 1 to 30 business days of waiting)
 
@@ -163,8 +163,13 @@ Microsoft's steps are in <https://learn.microsoft.com/azure/artifact-signing/qui
        \"subject\": \"$SUBJECT\",
        \"audiences\": [\"api://AzureADTokenExchange\"]}"
    else
-     echo "STOP: GitHub returned no OIDC subject for $R, so no credential was created. Do not run the lines below."
+     echo "STOP: GitHub returned no OIDC subject for $R, so no credential was created."
    fi
+   ```
+
+   Only when that printed the subject and created the credential:
+
+   ```sh
    SUB=$(az account show --query id --output tsv)
    az role assignment create --assignee "$APP_ID" --role "Artifact Signing Certificate Profile Signer" \
      --scope "/subscriptions/$SUB/resourceGroups/<group>/providers/Microsoft.CodeSigning/codeSigningAccounts/<account>/certificateProfiles/<profile>"
@@ -290,10 +295,12 @@ removed here (issue #1156).
   if its key leaked: Gatekeeper then refuses every app signed with it.
 - **Windows:** delete the federated credential or the role assignment and CI can no longer sign. Nothing in GitHub
   needs changing.
-- **PGP:** import the revocation certificate from your backup into a keyring that holds `ci-release-key.asc`
-  (the saved file has a colon in front of its `-----BEGIN` line; remove it first), export the now revoked public key
-  over `docs/release/ci-release-key.asc` on `main`, then make a new key as in step 3 and pin its fingerprint.
-  `release-attach.sh` refuses a signature by a revoked key.
+- **PGP:** make a new key as in step 3 and pin its fingerprint; from then on the old key verifies nothing. To
+  tell people who kept the old key, import its revocation certificate from your backup into a keyring that
+  holds it (the saved file has a colon in front of its `-----BEGIN` line; remove it first) and commit both keys,
+  the revoked one and the new one, to `main`: `gpg --armor --export "$OLD_FPR" "$CI_FPR" > ci-release-key.asc`.
+  The publish job still accepts only the pinned one. The key expires two years after it was made; replace it the
+  same way before then.
 - **Shutting CI signing down:** first cut Azure off and confirm it; only then delete the `release-signing`
   environment, which removes every secret at once. Deleting the federated credential stops the sign-in itself:
   confirm with `az ad app federated-credential list --id "$APP_ID"` that none is left. Removing the role

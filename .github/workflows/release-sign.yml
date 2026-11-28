@@ -180,6 +180,13 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/jsign.jar" \
             "https://github.com/ebourg/jsign/releases/download/$JSIGN_VERSION/jsign-$JSIGN_VERSION.jar"
           echo "$JSIGN_SHA256  $RUNNER_TEMP/jsign.jar" | shasum -a 256 -c -
+          # Before any key is used: the committed public key is the pinned one, or publishing would fail later.
+          want=$(jq -r '.ci_pgp_fingerprint | ascii_upcase' docs/release/signing-identities.json)
+          gpg --show-keys --with-colons docs/release/ci-release-key.asc |
+            awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print toupper($10); p = 0 }' | grep -qx "$want" || {
+            echo "::error::docs/release/ci-release-key.asc does not hold the key pinned as ci_pgp_fingerprint at $TAG" >&2
+            exit 1
+          }
       - name: Download and attestation-verify the unsigned build
         env:
           GH_TOKEN: ${{ github.token }}
@@ -280,7 +287,7 @@ jobs:
             --identity "$APPLE_SIGNING_IDENTITY" \
             --api-key-path "$APPLE_API_KEY_PATH" --api-key-id "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID"
 
-      - name: PGP, import the release signing key
+      - name: PGP, import CI's candidate signing key
         env:
           RELEASE_PGP_PRIVATE_KEY: ${{ secrets.RELEASE_PGP_PRIVATE_KEY }}
           RELEASE_PGP_PASSPHRASE: ${{ secrets.RELEASE_PGP_PASSPHRASE }}

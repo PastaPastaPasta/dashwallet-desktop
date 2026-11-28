@@ -183,7 +183,7 @@ else
 fi
 
 [[ -n "$pgp_pubkey" && -f "$pgp_pubkey" && ! -L "$pgp_pubkey" ]] ||
-  die "pinned PGP public key file not found: ${pgp_pubkey:-<empty>} (populate docs/release/release-key.asc)"
+  die "pinned PGP public key file not found: ${pgp_pubkey:-<empty>} (populate it at the tag)"
 
 # Never allow the PGP public key to come from inside --sigs-dir.
 python3 - "$pgp_pubkey" "$sigs_dir" <<'PY' || die "refusing PGP public key loaded from inside --sigs-dir ($pgp_pubkey)"

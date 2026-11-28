@@ -1900,8 +1900,25 @@ PY
     "CI key: a stable release is refused when CI's key made its SHA256SUMS.asc, a valid signature by a pinned key" \
     "gpg --verify failed|expected" "$e2e/attach-ci-stable.out" \
     "${attach_base[@]}" "${ci_pin[@]}" --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable"
-  ci_valid=$(GNUPGHOME=$(umask 077 && mktemp -d /tmp/dwcv.XXXXXX) bash -c 'gpg --batch --quiet --import "$1" && gpg --batch --status-fd 1 --verify "$2" "$3" 2>/dev/null | grep -c "^\[GNUPG:\] GOODSIG"; gpgconf --kill all >/dev/null 2>&1; rm -rf "$GNUPGHOME"' _ "$e2e/work/ci-release-key.asc" "$e2e/sigs-ci/SHA256SUMS.asc" "$e2e/sigs-ci/SHA256SUMS")
-  check "CI key: that stable SHA256SUMS.asc is a good signature under CI's key, so the pin is what refused it" '[[ "$ci_valid" == 1 ]]'
+  ci_valid=$(GNUPGHOME=$(umask 077 && mktemp -d /tmp/dwcv.XXXXXX) bash -c '[[ -n "$GNUPGHOME" ]] || exit 1; gpg --batch --quiet --import "$1" && gpg --batch --status-fd 1 --verify "$2" "$3" 2>/dev/null | grep -c "^\[GNUPG:\] GOODSIG"; gpgconf --kill all >/dev/null 2>&1; rm -rf "$GNUPGHOME"' _ "$e2e/work/ci-release-key.asc" "$e2e/sigs-ci/SHA256SUMS.asc" "$e2e/sigs-ci/SHA256SUMS")
+  check "CI key: that stable SHA256SUMS.asc is a good signature under CI's key" '[[ "$ci_valid" == 1 ]]'
+  # Both public keys in the one file that gets imported: only the fingerprint pin is left to tell them apart
+  cat "$e2e/work/release-key.asc" "$e2e/work/ci-release-key.asc" > "$e2e/work/both-keys.asc"
+  expect_attach_fail \
+    "CI key: a stable release signed by CI's key is refused by the fingerprint pin even when the release key file carries CI's key too" \
+    "signed by primary key $e2e_ci_fpr, expected $e2e_fpr" "$e2e/attach-ci-stable-both.out" \
+    "${attach_base[@]}" "${ci_pin[@]}" --pgp-pubkey "$e2e/work/both-keys.asc" --sigs-dir "$e2e/sigs-ci" --out-dir "$e2e/attached-ci-stable-both"
+  expect_attach_fail \
+    "CI-signed candidate: a release-key signature is refused by the fingerprint pin even when CI's key file carries the release key too" \
+    "signed by primary key $e2e_fpr, expected $e2e_ci_fpr" "$e2e/rc-attach-ci-both.out" \
+    "${rc_attach_base[@]}" --identities-file "$e2e/work/identities-ci.json" --ci-pgp-pubkey "$e2e/work/both-keys.asc" --ci-signed --out-dir "$e2e/rc-attached-ci-both"
+  cp "$e2e/work/ci-release-key.asc" "$e2e/rc-sigs-ci/ci-release-key.asc"
+  expect_attach_fail \
+    "CI-signed candidate: release-attach refuses CI's public key loaded from inside --sigs-dir" \
+    "refusing PGP public key loaded from inside --sigs-dir" "$e2e/rc-attach-ci-path.out" \
+    "${rc_attach_base[@]}" --identities-file "$e2e/work/identities-ci.json" --ci-pgp-pubkey "$e2e/rc-sigs-ci/ci-release-key.asc" --ci-signed \
+    --sigs-dir "$e2e/rc-sigs-ci" --out-dir "$e2e/rc-attached-ci-path"
+  rm -f "$e2e/rc-sigs-ci/ci-release-key.asc"
   expect_attach_fail \
     "CI key: --ci-signed is refused for a stable release, even with CI's signature and pin in place" \
     "CI signs release candidates only" "$e2e/attach-ci-stable-flag.out" \
@@ -2096,7 +2113,7 @@ FGH
     '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "ci_pgp_fingerprint is not pinned" "$ck/keys.out"'
   ck_keys pgp "$ck/ids-same.json"
   check "ci-signing-keys: refuses a CI key that is also pinned as the release key" \
-    '[[ $ck_rc -ne 0 && ! -s "$ck/env" ]] && grep -q "CI holds a key of its own" "$ck/keys.out"'
+    '[[ $ck_rc -ne 0 && ! -s "$ck/env" && ! -e "$ck/runner/dw-signing" ]] && grep -q "CI holds a key of its own" "$ck/keys.out"'
   ck_keys cleanup
   ck_keys pgp "$ck/ids.json"
   ck_home=$(sed -n 's/^GNUPGHOME=//p' "$ck/env")
