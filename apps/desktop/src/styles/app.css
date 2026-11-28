@@ -3071,8 +3071,8 @@ input[type="radio"]:disabled {
   min-block-size: calc(var(--dw-type-subhead-line) + 2 * var(--dw-space-sm));
 }
 
-/* A sheet's own controls stay clear: the alert waits under it until the sheet closes. */
-body:has([aria-modal="true"]) .toast-alert {
+/* A sheet opened after the alert keeps its controls clear: the alert waits until it closes. */
+.toast-alert.is-under-sheet {
   visibility: hidden;
 }
 

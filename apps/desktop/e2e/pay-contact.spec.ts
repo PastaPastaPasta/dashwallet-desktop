@@ -255,6 +255,9 @@ test("IOS-050 an accept refused pays nothing and says why", async ({ page }) => 
   await send(page);
   await expect(page.getByTestId("pay-result-failed")).toBeVisible();
   await expect(page.getByTestId("pay-result-text")).toHaveText("Not enough credits. Top up your credits and try again. Nothing was paid.");
+  // Refused inside the open sheet, it is said there, in view.
+  await expect(page.getByTestId("pay-result-text")).toBeVisible();
+  await expect(page.getByRole("dialog").getByTestId("pay-result-text")).toBeVisible();
   expect(await world(page, (w) => w.wallets[0].rows.length)).toBe(rows);
   expect(await world(page, (w) => w.dashpay.contacts.find((c) => c.summary.username === "grace")?.summary.relation)).toBe("pendingIncoming");
   expect(await world(page, (w) => w.leases.filter((l) => l.flow === "acceptAndPay").map((l) => l.state.kind))).toEqual(["ended"]);

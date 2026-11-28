@@ -738,6 +738,32 @@ test.describe("Export CSV", () => {
     await expect(alert).toBeVisible();
   });
 
+  test("an alert raised while a sheet is open shows over it; a sheet opened after it hides it", async ({ page }) => {
+    await open(page, "funded");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-list").waitFor();
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("save_file_as"));
+    await page.evaluate(() => window.__dwFixture!.fail("save_file_as", "call"));
+    await page.getByTestId("tx-export-csv").click();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    const about = page.getByTestId("about");
+    await expect(about).toBeVisible();
+    await release.evaluate((resume) => resume());
+    const alert = page.getByTestId("toast-alert");
+    await expect(alert).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("The history could not be exported.");
+
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
+    await expect(alert).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    await expect(about).toBeVisible();
+    await expect(alert).toBeHidden();
+    await page.keyboard.press("Escape");
+    await expect(about).toHaveCount(0);
+    await expect(alert).toBeVisible();
+  });
+
   test("a cancelled dialog says nothing", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
