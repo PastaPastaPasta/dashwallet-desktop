@@ -1759,8 +1759,8 @@ PY
   # The YubiKey path (leaf-hash pin) needs a verified timestamp as well: it is not covered by the signature and
   # can be cut out of a detached one
   wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt"
-  check "windows-verify-pinned: under the leaf-hash pin too, a currently valid signature with no timestamp is refused" \
-    '[[ $wv_rc -ne 0 ]] && grep -qx "Signature verification: ok" "$e2e/wv.out" && grep -q "no verified timestamp" "$e2e/wv.out"'
+  check "windows-verify-pinned: under the leaf-hash pin too, a currently valid signature with no timestamp is refused, and told to be signed again" \
+    '[[ $wv_rc -ne 0 ]] && grep -qx "Signature verification: ok" "$e2e/wv.out" && grep -q "no verified timestamp.*it carries no timestamp: sign it again" "$e2e/wv.out"'
   wv_exe="$e2e/work/tsa-signed.exe"
   wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --tsa-ca-file "$e2e/work/tsa.crt"
   check "windows-verify-pinned: under the leaf-hash pin, a signature with a verified timestamp is accepted with no skip flag" \
@@ -1769,7 +1769,7 @@ PY
   wv_exe="$e2e/work/tsa-other-signed.exe"
   wv --leaf-hash "$e2e_leaf" --ca-file "$e2e/work/win.crt" --tsa-ca-file "$e2e/work/tsa.crt"
   check "windows-verify-pinned: under the leaf-hash pin, a timestamp from an authority outside the trusted roots is refused" \
-    '[[ $wv_rc -ne 0 ]] && grep -qE "no verified timestamp|osslsigncode verify failed" "$e2e/wv.out"'
+    '[[ $wv_rc -ne 0 ]] && grep -qE "its timestamp does not verify under $e2e/work/tsa.crt|osslsigncode verify failed" "$e2e/wv.out" && ! grep -q "is signed by the pinned signer" "$e2e/wv.out"'
   wv_exe="$e2e/attached/dist/dash-wallet-0.1.0-windows-x64-setup.exe"
   yk_prod=()
   for a in "${attach_base[@]}"; do
@@ -1984,8 +1984,19 @@ PY
   cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/repo/"
   cp "$e2e/rc-sigs/win/$fw_exe.pem" "$fw/repo/win/"
   fw_root=$(fw_commit root-layout)
-  fw_run() { # fw_run <name> <commit>: as release-sign.yml runs it; sets $fw_rc; output in $fw/<name>.out
+  printf 'not a directory\n' > "$fw/repo/v0.1.0-rc.1"
+  fw_tagfile=$(fw_commit tag-is-a-file)
+  rm -f "$fw/repo/v0.1.0-rc.1"
+  head -c 1048577 /dev/zero > "$fw/repo/win/$fw_exe.pem"
+  fw_big=$(fw_commit oversized)
+  : > "$fw/repo/win/$fw_exe.pem"
+  fw_empty=$(fw_commit empty)
+  printf -- '-----BEGIN PKCS7-----\nAAAA\n-----END PKCS7-----\n' > "$fw/repo/win/$fw_exe.pem"
+  fw_garbage=$(fw_commit garbage)
+  fw_run() { # fw_run <name> <commit> [<tip of the tag's branch>|-]: as release-sign.yml runs it; sets $fw_rc; output in $fw/<name>.out
     fw_rc=0
+    fw_git branch --quiet -D v0.1.0-rc.1 2>/dev/null || true
+    [[ "${3:-$2}" == - ]] || fw_git branch --quiet -f v0.1.0-rc.1 "${3:-$2}"
     rm -rf "${fw:?}/$1" && mkdir -p "$fw/$1/sigs" "$fw/$1/out"
     cp "$e2e/rc-sigs/unsigned.SHA256SUMS" "$fw/$1/sigs/"
     "$here/../release/fetch-windows-signature.sh" --repo-url "$fw/repo" --commit "$2" --tag v0.1.0-rc.1 \
@@ -2007,7 +2018,30 @@ PY
     '[[ $fw_rc -ne 0 && ! -e "$fw/other/out/dist" && ! -e "$fw/other/sigs/win" ]] && grep -q "signed over another build" "$fw/other.out"'
   fw_run link "$fw_link"
   check "fetch-windows-signature: refuses a signature file that is a link in the commit, writing no installer" \
-    '[[ $fw_rc -ne 0 && ! -e "$fw/link/out/dist/$fw_exe" && ! -s "$fw/link/sigs/win/$fw_exe.pem" ]] && grep -q "is not a regular file" "$fw/link.out"'
+    '[[ $fw_rc -ne 0 && ! -e "$fw/link/out/dist" && ! -e "$fw/link/sigs/win" ]] && grep -q "is not a regular file" "$fw/link.out"'
+  fw_run not-tip "$fw_root" "$fw_good"
+  check "fetch-windows-signature: refuses a commit that is not the tip of the branch named after the tag, though the repository serves it" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/not-tip/out/dist" && ! -e "$fw/not-tip/sigs/win" ]] && grep -q "is not the tip of branch v0.1.0-rc.1" "$fw/not-tip.out" && grep -q "which is at $fw_good" "$fw/not-tip.out"'
+  fw_run no-branch "$fw_good" -
+  check "fetch-windows-signature: refuses a commit when the repository has no branch named after the tag" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/no-branch/out/dist" && ! -e "$fw/no-branch/sigs/win" ]] && grep -q "which is at no such branch" "$fw/no-branch.out"'
+  fw_git branch --quiet -f x/refs/heads/v0.1.0-rc.1 "$fw_good"
+  fw_run suffix "$fw_good" -
+  check "fetch-windows-signature: a branch whose name only ends in refs/heads/<tag> is not the tag's branch" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/suffix/out/dist" && ! -e "$fw/suffix/sigs/win" ]] && grep -q "which is at no such branch" "$fw/suffix.out"'
+  fw_git branch --quiet -D x/refs/heads/v0.1.0-rc.1
+  fw_run tagfile "$fw_tagfile"
+  check "fetch-windows-signature: refuses a commit whose entry for the tag is not a directory, and does not fall back to its root" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/tagfile/out/dist" && ! -e "$fw/tagfile/sigs/win" ]] && grep -q "is not a directory" "$fw/tagfile.out"'
+  fw_run big "$fw_big"
+  check "fetch-windows-signature: refuses a signature file larger than one mebibyte" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/big/out/dist" && ! -e "$fw/big/sigs/win" ]] && grep -q "is empty or larger than 1048576 bytes" "$fw/big.out"'
+  fw_run empty "$fw_empty"
+  check "fetch-windows-signature: refuses an empty signature file" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/empty/out/dist" && ! -e "$fw/empty/sigs/win" ]] && grep -q "is empty or larger than 1048576 bytes" "$fw/empty.out"'
+  fw_run garbage "$fw_garbage"
+  check "fetch-windows-signature: a signature that does not attach leaves nothing where the next steps read" \
+    '[[ $fw_rc -ne 0 && ! -e "$fw/garbage/out/dist" && ! -e "$fw/garbage/sigs/win" ]] && grep -q "does not attach" "$fw/garbage.out"'
 
   # Blocker #7: ci/release/fetch-unsigned.sh pins locally verified --tag-sha, verifies run + attestations + checksums before exposing files
   fu=$e2e/fetch-unsigned-test
@@ -2242,17 +2276,25 @@ FGH
 printf '%s\n' "\$@" > "$js/java.args"
 [[ "\${JS_TOKEN:-}" == test-token ]] || { echo "stand-in jsign: no token in the environment" >&2; exit 1; }
 f="\${@: -1}"
-osslsigncode sign -certs "$e2e/work/win.crt" -key "$e2e/work/win.key" -h sha256 -in "\$f" -out "\$f.signed" >/dev/null && mv "\$f.signed" "\$f"
+ts=(-TSA-certs "$e2e/work/tsa.crt" -TSA-key "$e2e/work/tsa.key")
+[[ -z "\${JS_NO_TIMESTAMP:-}" ]] || ts=()
+osslsigncode sign -certs "$e2e/work/win.crt" -key "$e2e/work/win.key" -h sha256 "\${ts[@]}" -in "\$f" -out "\$f.signed" >/dev/null && mv "\$f.signed" "\$f"
 JV
   chmod +x "$js/bin/java"
   js_args=(--version 0.1.0 --unsigned-dir "$js/unsigned" --sigs-dir "$js/sigs" --out-dir "$js/out"
     --jsign-jar "$js/jsign.jar" --jsign-storetype TRUSTEDSIGNING --jsign-keystore eus.codesigning.azure.net
     --jsign-alias account/profile --jsign-storepass-env JS_TOKEN --tsa http://timestamp.acs.microsoft.com)
   js_rc=0
-  PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/win.crt" > "$js/out.log" 2>&1 || js_rc=$?
+  PATH="$js/bin:$PATH" JS_TOKEN=test-token "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/win-and-tsa.pem" > "$js/out.log" 2>&1 || js_rc=$?
   check "sign-windows --jsign-jar: signs through jsign, detaches the signature and re-attaches it to the same bytes" \
-    '[[ $js_rc -eq 0 && -s "$js/sigs/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem" && -s "$js/out/dist/dash-wallet-0.1.0-windows-x64-setup.exe" ]]'
+    '[[ $js_rc -eq 0 && -s "$js/sigs/win/dash-wallet-0.1.0-windows-x64-setup.exe.pem" && -s "$js/out/dist/dash-wallet-0.1.0-windows-x64-setup.exe" ]] && grep -q "sign-windows: done" "$js/out.log"'
   if [[ $js_rc -ne 0 ]]; then cat "$js/out.log" >&2 || true; fi
+  js_rc=0
+  rm -rf "$js/sigs/win" "$js/out"
+  PATH="$js/bin:$PATH" JS_TOKEN=test-token JS_NO_TIMESTAMP=1 "$here/../release/sign-windows.sh" "${js_args[@]}" --ca-file "$e2e/work/win-and-tsa.pem" > "$js/nots.log" 2>&1 || js_rc=$?
+  check "sign-windows: stops when the signature it made carries no verified timestamp, and leaves no signature to push" \
+    '[[ $js_rc -ne 0 ]] && grep -q "no verified timestamp" "$js/nots.log" && ! grep -q "sign-windows: done" "$js/nots.log" && [[ -z "$(find "$js/sigs/win" "$js/out" -type f)" ]]'
+  if [[ $js_rc -eq 0 ]] || ! grep -q "no verified timestamp" "$js/nots.log"; then cat "$js/nots.log" >&2 || true; fi
   check "sign-windows --jsign-jar: jsign gets the store, the alias and the timestamp server, and the token only by the name of its variable" \
     'grep -qx -- "env:JS_TOKEN" "$js/java.args" && ! grep -q "test-token" "$js/java.args" "$js/out.log" && grep -qx -- "TRUSTEDSIGNING" "$js/java.args" && grep -qx -- "account/profile" "$js/java.args" && grep -qx -- "http://timestamp.acs.microsoft.com" "$js/java.args"'
   js_rc=0
@@ -2369,6 +2411,7 @@ assert "--skip-chain-verify" not in text, "no workflow may pass the test-only sk
 assert "id-token" not in sign, "the sign job must not be able to mint an OIDC token"
 for word in ("azure", "jsign", "sign-windows.sh"):
     assert word not in sign.lower(), f"the sign job must not use {word}"
+assert "secrets." not in sign.split("\n      - ")[0], "no secret may be set for the whole sign job"
 for i, text_of_step in enumerate(steps):
     assert "secrets." not in text_of_step or i > pinned, "no secret may reach a step before the publisher check"
 assert "continue-on-error" not in sign, "no step of the sign job may be allowed to fail"

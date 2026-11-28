@@ -183,13 +183,16 @@ else
   osslsigncode "${sign_args[@]}"
 fi
 
-echo "sign-windows: extracting detached PEM signature to $sig_pem"
-osslsigncode extract-signature -pem -in "$signed_direct" -out "$sig_pem"
+# Extracted, re-attached and verified in the working directory: --sigs-dir and --out-dir get a signature only
+# once it has passed every check below, so a failed run leaves nothing there to push.
+sig_staged="$work/detached.pem"
+attached_staged="$work/attached.exe"
+echo "sign-windows: extracting the detached PEM signature"
+osslsigncode extract-signature -pem -in "$signed_direct" -out "$sig_staged"
 
 echo "sign-windows: round-trip verifying attach-signature and verify"
-rm -f "$signed_out"
-attach_args=(attach-signature -in "$unsigned_exe" -sigin "$sig_pem" -out "$signed_out")
-verify_args=(verify -in "$signed_out")
+attach_args=(attach-signature -in "$unsigned_exe" -sigin "$sig_staged" -out "$attached_staged")
+verify_args=(verify -in "$attached_staged")
 if [[ -n "$ca_file" ]]; then
   # osslsigncode <= 2.13 verifies the chain inside attach-signature as well (ci/github/release-attach.sh).
   attach_help=$(osslsigncode attach-signature --help 2>&1 || true)
@@ -198,8 +201,16 @@ if [[ -n "$ca_file" ]]; then
   verify_args+=(-CAfile "$ca_file" -TSA-CAfile "$ca_file")
 fi
 osslsigncode "${attach_args[@]}"
-cmp -s "$signed_direct" "$signed_out" || die "round-trip attached .exe differed from directly signed .exe"
-osslsigncode "${verify_args[@]}"
+cmp -s "$signed_direct" "$attached_staged" || die "round-trip attached .exe differed from directly signed .exe"
+# The publish side refuses a signature without a verified timestamp (ci/github/windows-verify-pinned.sh, the
+# same test as here); osslsigncode alone does not. Find that out here, not after the signature is pushed.
+osslsigncode "${verify_args[@]}" | tee "$work/verify.out"
+if ! grep -qx 'Timestamp Server Signature verification: ok' "$work/verify.out" ||
+   grep -qE '^Timestamp (is not available|Server Signature verification: failed|Server Signature verification is disabled)' "$work/verify.out"; then
+  die "the signature carries no verified timestamp (the timestamp server $tsa_url, or its revocation list, was unreachable, or its root is not trusted here); sign again"
+fi
+cp "$sig_staged" "$sig_pem"
+cp "$attached_staged" "$signed_out"
 
 echo "sign-windows: done"
 echo "  detached sig: $sig_pem"

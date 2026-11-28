@@ -20,8 +20,9 @@
 #             never the release key or a subkey of it, and accepted for candidates only
 #   Windows   none. The Authenticode key is on the release signer's YubiKey and cannot leave it: the signer
 #             signs the installer with ci/release/sign-windows.sh and pushes the detached signature to the
-#             detached-signatures repository, and `windows_sig_ref` names that commit. This job attaches it and
-#             checks it against the pinned certificate (windows_leaf_sha256) before it signs anything else.
+#             detached-signatures repository, on the branch named after the tag. `windows_sig_ref` names that
+#             commit, which must be that branch's tip. This job attaches it and checks it against the pinned
+#             certificate (windows_leaf_sha256) before it signs anything else.
 #
 # A stable tag vX.Y.Z is refused: its updater feed needs the stable updater key, which is not in CI.
 name: Sign release in CI
@@ -38,7 +39,7 @@ on:
         required: true
         type: string
       windows_sig_ref:
-        description: "Full 40-hex commit in sigs_repo holding win/<setup.exe>.pem, the Windows signature made on the YubiKey"
+        description: "Full 40-hex commit, the tip of sigs_repo's branch named after the tag, holding win/<setup.exe>.pem signed on the YubiKey"
         required: true
         type: string
       sigs_repo:
@@ -92,7 +93,7 @@ jobs:
             echo "::error::release_run_id must be numeric (got '$INPUT_RUN_ID')" >&2
             exit 1
           }
-          # A commit, not a branch: what is approved is then what is fetched, whatever is pushed meanwhile.
+          # A commit, not a branch: the run fetches that commit or fails, whatever is pushed meanwhile.
           [[ "$INPUT_WIN_REF" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::windows_sig_ref must be the full 40-hex commit in sigs_repo that holds the YubiKey's Windows signature (got '$INPUT_WIN_REF')" >&2
             exit 1

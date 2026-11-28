@@ -2,9 +2,11 @@
 # release-sign.yml: take the Windows installer's detached signature, made on the release signer's YubiKey with
 # sign-windows.sh, from one commit of the detached-signatures repository, and attach it to CI's unsigned
 # installer. It runs in a job that later holds keys, and the repository is public and not this one, so:
-#   - the commit is named by its full hash, which a later push cannot change;
-#   - nothing is checked out: the two files are read as blobs, and only as regular files (no link, no
-#     submodule), from <tag>/ in that commit or from its root;
+#   - the commit is named by its full hash, and it must be the tip of that repository's branch named after
+#     the tag, where the runbook pushes it. GitHub also serves commits of a repository's forks through its
+#     URL, so the hash alone would not say whose commit it is;
+#   - nothing is checked out: the two files are read as blobs, and only as small regular files (no link, no
+#     submodule), from <tag>/ in that commit or, when it has no <tag> entry, from its root;
 #   - the signature must have been made over this run's unsigned build (unsigned.SHA256SUMS, byte for byte).
 # Whose signature it is, is not decided here: ci/github/windows-verify-pinned.sh checks that next.
 #
@@ -54,36 +56,56 @@ exe="dash-wallet-$version-windows-x64-setup.exe"
 [[ -s "$sigs_dir/unsigned.SHA256SUMS" && ! -L "$sigs_dir/unsigned.SHA256SUMS" ]] ||
   die "missing $sigs_dir/unsigned.SHA256SUMS (run ci/release/fetch-unsigned.sh first)"
 
+export GIT_TERMINAL_PROMPT=0
+max_blob=1048576
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+repo() { git -C "$work/repo" "$@"; }
 git init --quiet "$work/repo"
-git -C "$work/repo" fetch --quiet --depth 1 "$repo_url" "$commit" || die "could not fetch $commit from $repo_url"
-[[ "$(git -C "$work/repo" rev-parse FETCH_HEAD)" == "$commit" ]] || die "$repo_url did not return commit $commit"
+
+# ls-remote matches a pattern against the end of a ref's name, so the name is compared in full here.
+tip=$(repo ls-remote -- "$repo_url" "refs/heads/$tag" | awk -v ref="refs/heads/$tag" '$2 == ref { print $1 }') ||
+  die "could not list the branches of $repo_url"
+[[ "$tip" == "$commit" ]] ||
+  die "$commit is not the tip of branch $tag in $repo_url (which is at ${tip:-no such branch}); push the signature there and pass that commit"
+repo fetch --quiet --depth 1 -- "$repo_url" "$commit" || die "could not fetch $commit from $repo_url"
+[[ "$(repo rev-parse FETCH_HEAD)" == "$commit" && "$(repo cat-file -t "$commit")" == commit ]] ||
+  die "$repo_url did not return $commit as a commit"
 
 prefix=
-if [[ "$(git -C "$work/repo" ls-tree FETCH_HEAD -- "$tag" | awk '{ print $2 }')" == tree ]]; then
+tag_entry=$(repo ls-tree "$commit" -- "$tag" | awk '{ print $2 }')
+if [[ "$tag_entry" == tree ]]; then
   prefix="$tag/"
+elif [[ -n "$tag_entry" ]]; then
+  die "$tag in $commit is not a directory"
 fi
 
-read_blob() { # read_blob <path in the commit> <destination>: a regular file's content, or nothing
-  local path=$1 dest=$2 entry
-  entry=$(git -C "$work/repo" ls-tree FETCH_HEAD -- "$path")
-  [[ "$entry" == "100644 blob "* ]] || die "$path is not a regular file in $commit"
-  git -C "$work/repo" cat-file blob "FETCH_HEAD:$path" > "$dest"
+read_blob() { # read_blob <path in the commit> <destination>: the content of a small regular file, or the script stops
+  local path=$1 dest=$2 entry mode kind oid size
+  entry=$(repo ls-tree "$commit" -- "$path")
+  [[ "$entry" != *$'\n'* ]] || die "$path names more than one entry in $commit"
+  read -r mode kind oid _ <<<"$entry" || true
+  [[ "$mode" == 100644 && "$kind" == blob && "$oid" =~ ^[0-9a-f]{40,64}$ ]] || die "$path is not a regular file in $commit"
+  size=$(repo cat-file -s "$oid")
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 && "$size" -le "$max_blob" ]] || die "$path in $commit is empty or larger than $max_blob bytes"
+  repo cat-file blob "$oid" > "$dest"
 }
 
 read_blob "${prefix}unsigned.SHA256SUMS" "$work/unsigned.SHA256SUMS"
 cmp -s "$work/unsigned.SHA256SUMS" "$sigs_dir/unsigned.SHA256SUMS" ||
   die "$commit was signed over another build: its unsigned.SHA256SUMS differs from this run's"
+read_blob "${prefix}win/$exe.pem" "$work/$exe.pem"
 
-mkdir -p "$sigs_dir/win" "$out_dir/dist"
-read_blob "${prefix}win/$exe.pem" "$sigs_dir/win/$exe.pem"
-
-attach_args=(attach-signature -in "$unsigned_dir/$exe" -sigin "$sigs_dir/win/$exe.pem" -out "$out_dir/dist/$exe")
+attach_args=(attach-signature -in "$unsigned_dir/$exe" -sigin "$work/$exe.pem" -out "$work/$exe")
 if [[ -n "$ca_file" ]]; then
   attach_help=$(osslsigncode attach-signature --help 2>&1 || true)
   [[ "$attach_help" != *"-CAfile"* ]] || attach_args+=(-CAfile "$ca_file")
 fi
-rm -f "$out_dir/dist/$exe"
-osslsigncode "${attach_args[@]}"
+osslsigncode "${attach_args[@]}" || die "the signature in $commit does not attach to $exe"
+
+# Only a signature that attached reaches the directories the next steps read.
+mkdir -p "$sigs_dir/win" "$out_dir/dist"
+cp "$work/$exe.pem" "$sigs_dir/win/$exe.pem"
+cp "$work/$exe" "$out_dir/dist/$exe"
 echo "fetch-windows-signature: attached ${prefix}win/$exe.pem of $commit to $exe"

@@ -60,6 +60,18 @@ Or on github.com: **Settings ▸ Environments ▸ New environment**, name `relea
 reviewers** and add yourself; under **Deployment branches and tags** choose **Selected branches and tags** and add
 the tag rule `v*`. The existing `release` environment stays as it is, with no secrets.
 
+Check it before any secret goes in:
+
+```sh
+gh api "repos/$R/environments/release-signing" --jq '[.protection_rules[].type] | sort | join(" ")'
+gh api "repos/$R/environments/release-signing/deployment-branch-policies" --jq '[.branch_policies[] | "\(.type) \(.name)"] | join(", ")'
+```
+
+The first line must print `branch_policy required_reviewers` and the second exactly `tag v*`. Without
+`required_reviewers` nobody is asked before the keys are used. `branch v*` is the same pattern added as a branch
+rule: any pushed branch whose name starts with `v` could then use the secrets, and a tag could not. Delete that
+rule and add the tag rule.
+
 The checks inside `release-sign.yml` (a candidate tag, on `main`) are read from the tagged commit, so they bind
 only a tag made from `main`. Whoever can push a `v*` tag can push one with another workflow that names this
 environment, and the reviewer's approval is then the only gate. Two things close that:
@@ -146,7 +158,9 @@ detached-signatures repository. Three things from that file, each done once:
 - the tools and the YubiKey's PKCS#11 details ([section 2](RC-SIGNING.md#2-one-time-setup-on-the-signers-mac),
   "Tools" and "YubiKey PIV");
 - the public repository `PastaPastaPasta/dashwallet-detached-sigs`
-  ([the signer's checklist](RC-SIGNING.md#the-signers-checklist), item b);
+  ([the signer's checklist](RC-SIGNING.md#the-signers-checklist), item b). It must be public, because the signing
+  job fetches it with no token, and it needs a `main` branch:
+  `gh repo create PastaPastaPasta/dashwallet-detached-sigs --public --add-readme --description "Detached release signatures for Dash Wallet Desktop"`;
 - the certificate's SHA-256 for step 5, the `WIN_LEAF` line of that checklist's item a.
 
 ### 5. Pin the public identities (one pull request to `main`, before the tag)
@@ -187,23 +201,24 @@ detached-signatures repository. Three things from that file, each done once:
    export RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --branch "$TAG" --event push --limit 1 --json databaseId --jq '.[0].databaseId')
    export WORK="$HOME/dashwallet-release-work/$TAG" && rm -rf "$WORK" && mkdir -p "$WORK"
    ci/release/fetch-unsigned.sh --tag "$TAG" --tag-sha "$TAG_SHA" --run-id "$RUN_ID" --repo "$REPO" \
-     --unsigned-dir "$WORK/unsigned" --sigs-dir "$WORK/sigs"
+     --unsigned-dir "$WORK/unsigned" --sigs-dir "$WORK/sigs" &&
    ci/release/sign-windows.sh --version "$VERSION" --unsigned-dir "$WORK/unsigned" --sigs-dir "$WORK/sigs" --out-dir "$WORK/out" \
      --pkcs11-module "$YKCS11" --pkcs11-cert "pkcs11:id=%02;type=cert" --pkcs11-key "pkcs11:id=%02;type=private" \
-     --chain "$HOME/certs/dashcore-win-chain.pem" --tsa "http://timestamp.digicert.com"
-
-   git clone https://github.com/PastaPastaPasta/dashwallet-detached-sigs ~/src/dashwallet-detached-sigs 2>/dev/null || true
-   cd ~/src/dashwallet-detached-sigs && git fetch origin
-   git checkout -B "$TAG" "origin/$TAG" 2>/dev/null || git checkout -B "$TAG" origin/main
-   rm -rf "./$TAG" && mkdir "$TAG" && cp -R "$WORK/sigs/." "$TAG/"
-   git add "$TAG" && git commit -S -m "Add the Windows signature for $TAG" && git push origin "$TAG"
-   export SIGS_COMMIT=$(git rev-parse HEAD) && echo "$SIGS_COMMIT"
+     --chain "$HOME/certs/dashcore-win-chain.pem" --tsa "http://timestamp.digicert.com" &&
+   { [ -d ~/src/dashwallet-detached-sigs ] || git clone https://github.com/PastaPastaPasta/dashwallet-detached-sigs ~/src/dashwallet-detached-sigs; } &&
+   cd ~/src/dashwallet-detached-sigs && git fetch origin &&
+     { git checkout -B "$TAG" "origin/$TAG" 2>/dev/null || git checkout -B "$TAG" origin/main; } &&
+     rm -rf "./$TAG" && mkdir "$TAG" && cp -R "$WORK/sigs/." "$TAG/" &&
+     git add "$TAG" && git commit -S -m "Add the Windows signature for $TAG" && git push origin "refs/heads/$TAG" &&
+     export SIGS_COMMIT=$(git rev-parse HEAD) && echo "$SIGS_COMMIT"
    ```
 
-   `sign-windows.sh` prints `Signature verification: ok` and `Succeeded`, then `sign-windows: done`. What is
-   pushed is two small files, `unsigned.SHA256SUMS` and `win/dash-wallet-1.0.0-rc.2-windows-x64-setup.exe.pem`;
-   no binary and no key. `SIGS_COMMIT` is the full commit hash the workflow asks for: it takes a commit, never a
-   branch, so what you approve is what it fetches. Signing again for the same tag adds a commit on that branch.
+   `sign-windows.sh` prints `Timestamp Server Signature verification: ok`, `Signature verification: ok` and
+   `Succeeded`, then `sign-windows: done`; it stops, writes no signature, and nothing after it runs, if the
+   timestamp did not verify, because the workflow would refuse that signature. What is pushed is two small files, `unsigned.SHA256SUMS` and
+   `win/dash-wallet-1.0.0-rc.2-windows-x64-setup.exe.pem`; no binary and no key, on the branch named after the
+   tag. `SIGS_COMMIT` is the full commit hash the workflow asks for. It must be the tip of that branch when the
+   job runs, so signing again for the same tag (which adds a commit there) means dispatching with the new hash.
 3. Rehearse. This signs for real and verifies everything, then stops before attesting and publishing:
 
    ```sh

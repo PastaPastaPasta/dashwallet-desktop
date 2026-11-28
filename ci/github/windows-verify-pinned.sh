@@ -109,7 +109,15 @@ fi
 if ((!skip_chain_verify)); then
   if ! grep -qx 'Timestamp Server Signature verification: ok' "$work/verify.out" ||
      grep -qE '^Timestamp (is not available|Server Signature verification: failed|Server Signature verification is disabled)' "$work/verify.out"; then
-    die "the signature of $exe carries no verified timestamp, so it would stop verifying when its certificate expires"
+    # One refusal, three causes: say which, because only the first needs a new signature.
+    if grep -qx 'Timestamp is not available' "$work/verify.out"; then
+      why="it carries no timestamp: sign it again"
+    elif grep -qx 'Timestamp Server Signature CRL verification: failed' "$work/verify.out" || grep -q 'CRL' "$work/verify.err"; then
+      why="the timestamp authority's revocation check failed: if its list could not be fetched, run this again"
+    else
+      why="its timestamp does not verify under ${tsa_ca_file:-the default roots of osslsigncode}"
+    fi
+    die "the signature of $exe carries no verified timestamp, so it would stop verifying when its certificate expires ($why)"
   fi
 fi
 echo "windows-verify-pinned: $exe is signed by the pinned signer (leaf $leaf_hash)"
