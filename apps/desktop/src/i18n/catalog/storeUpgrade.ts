@@ -8,7 +8,7 @@ import type { Tree } from "../core";
  * its `dismiss` is the renderer's own. `restore` and
  * `restored` are the restore flow's (MG's restore copy): the renderer's own screens for `storage_restore`,
  * its confirm and banner, and the foreign screen's keys, which come in the engine's screen. `refused.recover`
- * is the damaged store's way out (Q107 C1) in the engine's screen, and the Restore screen's once a restore
+ * is the way out for a damaged store or retired backup in the engine's screen, and the Restore screen's once a restore
  * was refused for a shielded hold (`recover.restoreHeld`); `recover` is the renderer's own
  * confirm for it, `folder` there the refused folder. `notPrivate`
  * is the renderer's own screen for `storage_not_private`: `folder` there is the directory others can
@@ -73,6 +73,8 @@ export const storeUpgrade = {
         "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
       unverified:
         "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem.",
+      retired:
+        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Dash Wallet retired the backup from before the upgrade as part of removing a wallet. Choose Set up from recovery phrase to start again in a new data folder. Add each wallet from its own recovery phrase. Dash Wallet leaves {folder} as it is. Payment holds, in-progress operations, imported keys and other local records stay in that folder. If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
       support: "Choose Report a problem.",
       supportMigrated:
         "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Choose Report a problem.",

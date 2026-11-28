@@ -6417,7 +6417,7 @@ fn a_held_coin_spent_in_a_block_not_yet_final_keeps_the_wallet_awaiting() {
     let block = super::block_with(vec![spend.clone()]).block_hash();
     header_chain(&session, &[(TIP + 1, w_block), (TIP + 2, block)]);
     mined(&engine, &session, id, TIP + 2, vec![spend]);
-    reconciled(&engine, &session, id);
+    reconciles_done(&engine, &session);
     assert_eq!(observed(&engine, &session, id).get(&d), Some(&(TIP + 2)));
     assert_eq!(held_report(&session, id), (0, 0, true), "not final");
 
