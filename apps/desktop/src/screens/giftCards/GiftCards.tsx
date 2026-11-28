@@ -63,6 +63,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
     try {
       client.setQueryData(accountKey, await action());
       setAnother(false);
+      setTerms(false);
       void stored.refetch();
     } catch (e) {
       setError(problem(e, t("giftCards.providerError")));

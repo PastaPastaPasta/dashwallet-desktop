@@ -137,3 +137,31 @@ test("an open gift card confirmation closes at the wallet quote deadline", async
   await expect(page.getByText(/This payment quote expired/)).toBeVisible();
   expect(await page.evaluate(() => window.__dwFixture!.calls)).not.toContain("draft_prepare");
 });
+
+test("a second account keeps the first one selectable, and each signup accepts the terms anew", async ({ page }) => {
+  await page.goto(fixtureUrl("funded", "light", "&network=mainnet"));
+  await page.getByTestId("sidebar-settings").click();
+  await toggle(page).check({ timeout: 3000 });
+  await page.getByTestId("sidebar-explore").click();
+  const terms = page.getByLabel("I accept the PiggyCards terms and conditions");
+  const signUp = async (email: string) => {
+    await page.getByLabel("First name").fill("Fixture");
+    await page.getByLabel("Last name").fill("Buyer");
+    await page.getByLabel("US state").selectOption("CA");
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await expect(terms).not.toBeChecked();
+    await terms.check();
+    await page.getByRole("button", { name: "Send email code" }).click();
+    await page.getByLabel("Email code", { exact: true }).fill("123456");
+    await page.getByRole("button", { name: "Verify email" }).click();
+    await expect(page.getByText(`Signed in as ${email}`)).toBeVisible();
+  };
+  await signUp("first@example.invalid");
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Use another account" }).click();
+  await signUp("second@example.invalid");
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Use another account" }).click();
+  await page.getByRole("button", { name: "Sign in as first@example.invalid" }).click();
+  await expect(page.getByText("Signed in as first@example.invalid")).toBeVisible();
+});
