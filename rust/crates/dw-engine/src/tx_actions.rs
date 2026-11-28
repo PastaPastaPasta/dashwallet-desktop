@@ -1103,8 +1103,16 @@ fn settled_in_store(
             parents.entry(*t).or_default().extend(of.iter().copied());
         }
         for t in &other.records {
-            let Some(record) = persister.get_core_tx_record(*id, t)? else {
-                continue;
+            // Another's record that doesn't read links nothing, as before
+            // this walk; a marked payment's own still fails the load.
+            let record = match persister.get_core_tx_record(*id, t) {
+                Ok(Some(record)) => record,
+                Ok(None) => continue,
+                Err(e) if !candidates.contains_key(t) => {
+                    tracing::warn!(error = %e, "a stored record of another wallet does not read");
+                    continue;
+                }
+                Err(e) => return Err(e),
             };
             link(&mut parents, *t, &record.transaction);
             if record.context.block_info().is_some()

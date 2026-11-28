@@ -1987,7 +1987,7 @@ impl SessionHub {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
-        self.history.remove_wallet(id);
+        (self.history).remove_wallet_with(id, |h| self.retire_invalid(id, h));
         self.forget_drops(id);
         // Its notes go with its rows: a wallet restored under the same id
         // holds nothing of them.

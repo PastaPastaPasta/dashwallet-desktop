@@ -249,27 +249,34 @@ impl SessionHub {
 
 impl SessionHub {
     /// Keeps `id`'s invalid verdicts as it unloads, for the wallets still
-    /// loaded.
+    /// loaded. Only a history its load filled in full replaces those kept
+    /// before; any other (a failed open's) adds to them.
     pub(crate) fn retire_invalid(&self, id: &WalletId, h: &WalletHistory) {
-        let verdicts: BTreeSet<Txid> = invalid_txids(h).collect();
+        let verdicts = invalid_txids(h);
         let mut retired = self
             .retired_invalid
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        match verdicts.is_empty() {
-            true => retired.remove(id),
-            false => retired.insert(*id, verdicts),
-        };
+        if h.loaded && !h.load_incomplete {
+            retired.insert(*id, verdicts.collect());
+        } else {
+            retired.entry(*id).or_default().extend(verdicts);
+        }
     }
 
-    /// The retired verdicts of the wallets whose history is not loaded.
+    /// The retired verdicts of the wallets whose history is not loaded in
+    /// full.
     fn retired_invalid(&self, histories: &HashMap<WalletId, WalletHistory>) -> Vec<Txid> {
         let retired = self
             .retired_invalid
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         (retired.iter())
-            .filter(|(w, _)| !histories.get(*w).is_some_and(|h| h.loaded))
+            .filter(|(w, _)| {
+                !histories
+                    .get(*w)
+                    .is_some_and(|h| h.loaded && !h.load_incomplete)
+            })
             .flat_map(|(_, t)| t.iter().copied())
             .collect()
     }

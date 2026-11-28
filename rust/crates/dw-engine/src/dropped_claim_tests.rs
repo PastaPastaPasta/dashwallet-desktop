@@ -888,8 +888,9 @@ fn another_wallet_cannot_select_change_from_a_dropped_claim() {
     });
 }
 
-/// A proves the claim invalid and is closed: B's output of the claim stays
-/// out of B's balance, Max, coin control and Send.
+/// A proves the claim invalid and is closed, and an open of A fails: B's
+/// output of the claim stays out of B's balance, Max, coin control and
+/// Send.
 #[test]
 fn closing_the_wallet_that_proved_a_claim_invalid_keeps_the_recipients_output_out() {
     use super::own_spend_disk_tests::{Accept, fresh_address, prepare, second_wallet};
@@ -915,6 +916,9 @@ fn closing_the_wallet_that_proved_a_claim_invalid_keeps_the_recipients_output_ou
     });
 
     engine.block_on(session.unload_wallet(id)).unwrap();
+    // An open of A that fails before its history loads unloads it again.
+    session.hub.admit(id);
+    session.hub.unload_wallet(&id);
     mined(
         &engine,
         &session,
