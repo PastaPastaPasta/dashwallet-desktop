@@ -96,7 +96,7 @@ test("a payment link opens Pay ▸ To an address, prefilled", async ({ page }) =
     },
   ]);
   await expect(page.getByTestId("page-pay")).toBeVisible();
-  await expect(page.getByTestId("pay-tabs-address")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("pay-address")).toBeVisible();
   await expect(page.getByTestId("pay-address")).toHaveValue(ADDRESS);
   await expect(page.getByTestId("pay-amount")).toHaveValue(/^1\.5/);
   await expect(page.getByTestId("pay-label")).toHaveValue("Coffee");
@@ -120,7 +120,7 @@ test("dashpay and dashwallet links open their routes; refused ones say why", asy
   await expect(page.getByTestId("add-contact-link-error")).toHaveText("This link couldn't be verified on the Dash network.");
 
   await deliver(page, [{ kind: "scanQr" }]);
-  await expect(page.getByTestId("pay-tabs-address")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("pay-address")).toBeVisible();
   await expect(page.getByTestId("pay-address")).toHaveValue("");
 
   await deliver(page, [{ kind: "invitation", linkId: "" }]);

@@ -229,10 +229,27 @@ class Expect(unittest.TestCase):
                 walker.parse_expect(bad)
 
     def test_found_by_name_or_text_and_role(self):
-        tree = app(Node(R.DIALOG, "Import keys"), Node(R.HEADING, text="Backups"), Node(R.PUSH_BUTTON, "Import file"))
-        want = {(R.DIALOG, "Import keys"), (R.HEADING, "Backups"), (R.DIALOG, "Import file")}
+        tree = app(
+            Node(R.DIALOG, "Import keys"),
+            Node(R.HEADING, text="Backups"),
+            Node(R.PUSH_BUTTON, "Import file"),
+            Node(R.PARAGRAPH, text="You can join DashPay once the wallet has synced."),
+        )
+        want = {
+            (R.DIALOG, "Import keys"),
+            (R.HEADING, "Backups"),
+            (R.DIALOG, "Import file"),
+            (R.PARAGRAPH, "You can join DashPay once the wallet has synced."),
+        }
         _, _, found = walker.walk(tree, redact=False, expect=want)
-        self.assertEqual(found, {(R.DIALOG, "Import keys"), (R.HEADING, "Backups")})
+        self.assertEqual(
+            found,
+            {
+                (R.DIALOG, "Import keys"),
+                (R.HEADING, "Backups"),
+                (R.PARAGRAPH, "You can join DashPay once the wallet has synced."),
+            },
+        )
 
 
 if __name__ == "__main__":

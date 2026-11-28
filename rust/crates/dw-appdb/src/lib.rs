@@ -1780,6 +1780,12 @@ impl AppDb {
     /// key.
     pub fn settings_with_prefix(&self, scope: &str, prefix: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn();
+        #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+        fault::hit_on(
+            &conn,
+            &format!("settings.read_{prefix}"),
+            fault::Stage::Before,
+        )?;
         let mut stmt = conn.prepare(
             "SELECT key, value FROM settings_kv WHERE scope = ?1 AND substr(key, 1, ?3) = ?2
              ORDER BY key",

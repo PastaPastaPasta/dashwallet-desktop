@@ -4452,11 +4452,11 @@ fn an_abandon_stores_the_replay_of_a_descendant_that_arrives_before_it_applies()
     assert_eq!(f.abandon_state(descendant_id), (true, false));
 }
 
-/// A released coin whose funding the hub does not hold, or holds without
-/// a block, is replayed from the birth height.
+/// A coin whose funding the hub does not know requires a scan from birth.
+/// Known unmined funding cannot be found by that scan.
 #[test]
 fn an_abandon_releasing_a_coin_of_unknown_funding_height_replays_from_the_birth_height() {
-    for older in [OlderFunding::Withheld, OlderFunding::Unmined] {
+    for (older, checkpoint) in [(OlderFunding::Withheld, 49), (OlderFunding::Unmined, 149)] {
         let (f, root_id, descendant) = abandon_fixture(older);
         f.see_tx(&descendant);
         let abandoned = f.engine.block_on(abandon(&f, root_id)).unwrap().unwrap();
@@ -4467,8 +4467,8 @@ fn an_abandon_releasing_a_coin_of_unknown_funding_height_replays_from_the_birth_
         assert_eq!(abandoned.len(), 2);
         assert_eq!(
             record.map(|r| r.reached),
-            Some(49),
-            "replayed from above the birth height"
+            Some(checkpoint),
+            "replay covers the confirmed or unknown funding"
         );
     }
 }

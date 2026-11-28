@@ -21,7 +21,6 @@ const world = <T>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"
 
 async function fillPayment(page: Page, address: string, amount: string) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(address);
   await page.getByTestId("pay-amount").fill(amount);
 }

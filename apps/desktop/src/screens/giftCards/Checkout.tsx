@@ -57,7 +57,7 @@ export function Checkout({ details, invoice, network, walletId }: {
     label: null,
     message: t("giftCards.orderNote", { id: order.id }),
   }, DEFAULT_ADVANCED) : null;
-  const { estimate, general, ready } = useEstimate(walletId, draft, spec, DEFAULT_ADVANCED, locked || sheets.held, shown);
+  const { estimate, general, ready } = useEstimate(walletId, draft, spec, DEFAULT_ADVANCED, locked || sheets.held, shown, order.id);
   const issue = general ?? (estimate.isError ? failureText(estimate.error, shown.chain, shown.amountUnit) : null);
   const ratesOn = useRates().data?.settings.enabled === true;
   const usd = useRateCurrencies(payable && ratesOn).data?.find((rate) => rate.code === "USD");

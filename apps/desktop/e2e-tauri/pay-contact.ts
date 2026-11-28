@@ -174,7 +174,7 @@ export async function run(
    * `paying`: a form held back (any banner but a note) fails; on a rerun that pays nothing it is noted. */
   const pickPayee = async (paying: boolean) => {
     await wd.press(tid("sidebar-pay"));
-    await wd.press(tid("pay-tabs-contact"));
+    await wd.press(tid("pay-contacts"));
     // The strip and the picker fill once DashPay's bring-up has run.
     const chip = `${tid("pay-frequent-chip")}[data-contact="${payee}"]`;
     const row = `${tid("pay-picker-row")}[data-contact="${payee}"]`;
