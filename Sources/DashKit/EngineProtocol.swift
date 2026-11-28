@@ -12,7 +12,7 @@ public protocol EngineProtocol: AnyObject, Sendable {
     /// Engine signals; consumers re-query when one arrives.
     var events: EventBus { get }
     /// Data directory of `network` ("Open data folder").
-    func directory(for network: DashNetwork) -> URL
+    func directory(for network: DashNetwork) throws(DashKitError) -> URL
 
     // MARK: Sessions
 

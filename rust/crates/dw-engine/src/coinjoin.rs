@@ -2916,6 +2916,54 @@ impl NetworkSession {
         self.drop_sweep_outs(wallet_id, gone).await
     }
 
+    pub(crate) async fn pending_sweep_chunk(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<Option<Transaction>, EngineError> {
+        let (chunks, _) = self.sweep_out_states(wallet).await?;
+        Ok(chunks
+            .into_iter()
+            .find(|(chunk, state)| chunk.txid() == txid && *state == SweepOutState::Pending)
+            .map(|(chunk, _)| chunk.tx))
+    }
+
+    /// Activity's explicit recovery of an abandoned move. The sweep row and
+    /// reservation stay until the wallet has evidence of the chunk or a rival.
+    pub(crate) async fn restart_abandoned_sweep(
+        &self,
+        wallet: WalletId,
+        txid: Txid,
+    ) -> Result<(), EngineError> {
+        let _claim = self.coinjoin.claim_resend(wallet)?;
+        let gate = self.abandon_gate(wallet).write_owned().await;
+        let chunk =
+            self.pending_sweep_chunk(wallet, txid)
+                .await?
+                .ok_or(EngineError::TxActionRefused(
+                    crate::TxActionRefusal::Confirmed,
+                ))?;
+        if !self.manager()?.spv().is_started() {
+            return Err(EngineError::SpvNotRunning);
+        }
+        if self.hub.tracker().snapshot().connected_peers == 0 {
+            return Err(EngineError::NoPeers);
+        }
+        let handle = self.wallet(&wallet).await?;
+        self.clear_sweep_abandon(wallet, txid).await?;
+        let _gate = tokio::sync::OwnedRwLockWriteGuard::downgrade(gate);
+        match broadcast_sweep(self, &handle, &chunk).await {
+            Ok(sent) => {
+                self.hub.note_announced(sent);
+                Ok(())
+            }
+            Err(e) => Err(crate::send::SendFailure::BroadcastUnknown {
+                reason: e.to_string(),
+            }
+            .into()),
+        }
+    }
+
     /// [`sweep_out_states`] of `wallet_id`'s sweep rows.
     async fn sweep_out_states(
         &self,
@@ -3190,8 +3238,9 @@ impl NetworkSession {
     /// `Resolved`. Records that resolved are not sent and read `Resolved`,
     /// and are dropped once their resolution is final; any broadcast error
     /// keeps a record (`Unknown`), since an earlier send may have reached
-    /// the network: only network evidence of the chunk or of a transaction
-    /// that beat it releases its inputs ([`sweep_out_state`]). Refused
+    /// the network. A chunk marked abandoned is kept for evidence of the
+    /// chunk or a rival, and is omitted from replay. An explicit retry of
+    /// an abandoned pending chunk returns `AlreadyAbandoned`. Refused
     /// while a move of the wallet runs (`coinjoin.move_running`).
     pub async fn resend_mixed_coins(
         self: &Arc<Self>,
@@ -3213,6 +3262,15 @@ impl NetworkSession {
                 let state = if state != SweepOutState::Pending {
                     SweepResendState::Resolved
                 } else {
+                    let _gate = this.abandon_gate(wallet_id).read_owned().await;
+                    if this.abandon_marked(wallet_id, o.txid()).await {
+                        // The record still accounts for its inputs until
+                        // the chunk or a rival resolves them.
+                        if txid.is_some() {
+                            return Err(EngineError::TxActionRefused(crate::TxActionRefusal::AlreadyAbandoned));
+                        }
+                        continue;
+                    }
                     match broadcast_sweep(&this, &wallet, &o.tx).await {
                         Ok(sent) => {
                             this.hub.note_announced(sent);
@@ -3267,6 +3325,8 @@ impl NetworkSession {
                 let Ok(manager) = session.manager() else {
                     return;
                 };
+                let replay = Arc::clone(&session);
+                tokio::spawn(async move { replay.resume_rebroadcasts().await });
                 for id in manager.list_wallet_ids_blocking() {
                     if let Err(e) = session.resend_mixed_coins(WalletId(id), None).await {
                         tracing::debug!(error = %e, "sweep chunks not sent again");
