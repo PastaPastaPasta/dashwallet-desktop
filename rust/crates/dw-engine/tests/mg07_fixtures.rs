@@ -32,6 +32,7 @@ fn contested_names() -> ContestedNames {
             ContestedName {
                 label: "a11ce".into(),
                 ends_at: 1_800_003_600,
+                own: false,
                 contenders: vec![
                     NameContender {
                         identity: ID1.into(),
@@ -54,6 +55,7 @@ fn contested_names() -> ContestedNames {
             ContestedName {
                 label: "dash-pay".into(),
                 ends_at: 1_800_090_000,
+                own: false,
                 contenders: vec![NameContender {
                     identity: ID2.into(),
                     votes: Some(0),

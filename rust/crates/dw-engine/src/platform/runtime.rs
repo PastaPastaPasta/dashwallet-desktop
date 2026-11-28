@@ -1196,26 +1196,6 @@ impl NetworkSession {
         false
     }
 
-    /// The removal gate's hold ([`super::shielded_pool::removal_hold`]) of
-    /// any loaded wallet, carried over first: why a restore of this
-    /// network's earlier data is refused while it is open.
-    pub(crate) async fn restore_hold(&self) -> Option<crate::ShieldedHold> {
-        let live = self.live().ok()?;
-        let mut held = None;
-        for id in live.manager.list_wallet_ids_blocking() {
-            match super::shielded_pool::removal_hold(self, &live.manager, &live.appdb, WalletId(id))
-                .await
-            {
-                Some(crate::ShieldedHold::CarriedOver) => {
-                    return Some(crate::ShieldedHold::CarriedOver);
-                }
-                Some(hold) => held = Some(hold),
-                None => {}
-            }
-        }
-        held
-    }
-
     /// Whether SPV is starting or running ([`Self::spv_state`] tells which).
     /// While starting, calls that need a running SPV (`rescan`,
     /// `rotate_peers`, a broadcast) still fail as when it is stopped.

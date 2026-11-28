@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 117
+Contract-Version: 118
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1063,7 +1063,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 6cd4d6662b1fa9408acb9086e514d035a9f915ea190f333c659e7666678b9298 version: 117 -->
+<!-- surface-sha256: 45dbd28f6ee9c342f35e6fc9cdde2ce93cd962dbbc638ab8be0e375012e7fc0e version: 118 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1559,6 +1559,7 @@ pub use super::shielded::{ ShieldedStoreClosed, ShieldedSyncWait };
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
     Unavailable,
+    SessionOff,
     Timeout,
     ProofInvalid,
     TrustMismatch,
@@ -3152,9 +3153,11 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   present, or does not read, that wallet's Platform funds are refused the same way, until a session with Platform has
   checked the wallet after its load and run its drop-dead pass; `restore_status` then reads `platformOnly` with
   `platformPass` while a loaded wallet has it.
-- `platform.unavailable` (Contract-Version 106) in a session without Platform: every funds flow that needs Platform is
-  refused with it before any grant is redeemed or any lease, record or signature made (`LeaseError::PlatformUnavailable`
-  at its lease), whatever the restore's state; it takes precedence over `platform.restored`. The evonode credit
+- `platform.unavailable` in a session without Platform: every funds flow that needs Platform is refused with
+  `PlatformError::SessionOff` before any grant is redeemed or any lease, record or signature made
+  (`LeaseError::PlatformUnavailable` at its lease), regardless of the restore's state. It takes precedence over
+  `platform.restored`. `SessionOff` shares the `platform.unavailable` code and carries
+  `{"kind":"feature","feature":"platform"}` in the app error's data. The evonode credit
   withdrawal's calls answer `masternodes.platform_unavailable` (mn-engine), as before. Core sends, CoinJoin and Core
   transaction actions are not refused.
 - During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
@@ -5226,7 +5229,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     and stays unnamed. `ContactError` gains `Shielded(ShieldedError)` with the pool's codes. **Mainnet: off.** On mainnet
     the source refuses `platform.feature_off{feature: shielded_contact_payment}` as before this item: the facade's
     gates run in main's order and then refuse, `begin_flow(ContactPayFromBalance, shielded)` refuses, and
-    `ShieldedActivity.contact` stays unset. Testnet, regtest and devnet pay.
+    `ShieldedActivity.contact` stays unset. The Shielded spend build gate (item 111) allows payouts only on testnet.
 
 102. **A top-up from Platform as its Confirm showed (C-routes D-C3 review, version 81).** `top_up_from_platform`
     takes `fee_input: Option<PlatformAddressRow>`, its quote's input 0 (the fee source): a plan at submit that takes
@@ -5558,6 +5561,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     transfer, a withdrawal or a top-up from addresses, at the pinned platform revision (as item 103 does); a repin
     checks both again. A repin that changes the rules for address transfers or withdrawals also either ships the exit
     beside a held cancel (#1006) or shows that a held cancel's exact re-send still passes the transfer's pre-check.
+    A repin reruns `platform_address_signatures_pass_the_pinned_witness_check` to verify that the vault's compact
+    P2PKH witnesses use low S and a compressed key header and pass Platform's verifier.
     A held cancel has a way out beside its exact re-send (#1006; version 110): "Move to Dash wallet".
     `move_to_core_quote` beside a held cancel that is not `Pending` names the cancel in `exit_of`, plans on its inputs
     only, and pays the first unused receiving address that no withdrawal or payout at those inputs pays, other than

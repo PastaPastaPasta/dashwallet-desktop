@@ -99,8 +99,8 @@ const OUTCOME_SITES: {
     act: (page) => page.getByTestId("information-dashpay-sync-now").click(),
   },
   {
-    where: "Address Book ▸ Export (address-book-exported)",
-    region: '[data-testid="address-book-exported"]',
+    where: "Address Book ▸ Export (shared toast)",
+    region: ".toast-host",
     politeness: "polite",
     said: /Sending addresses\.csv/,
     reach: (page) => open(page, "funded", "addressBook"),

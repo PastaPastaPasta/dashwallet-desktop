@@ -533,6 +533,9 @@ impl NetworkSession {
             this.load_payment_locks(id).await;
             // Its contacts' profiles are fetched on its next pass (DP4-01 D12).
             this.expire_contact_profiles(&live.manager, id).await;
+            if this.hub.restore.row_present(&live.appdb, id) {
+                this.hub.restore.wake_for_retry();
+            }
             history?;
             this.hub.pump.mark_history(id, None);
             this.hub.pump.mark_balances(id);

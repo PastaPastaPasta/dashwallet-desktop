@@ -4,7 +4,7 @@
 
 use super::own_spend_disk_tests::{eventually, fresh_address, send, spendable};
 use super::*;
-use crate::send::CoinSource;
+use crate::send::{CoinSource, FeeMode};
 use crate::session::WALLET_DB_FILE;
 use crate::store_repair::{Stop, arm, repair};
 
@@ -273,15 +273,15 @@ fn a_claim_recorded_on_a_held_coin_and_left_at_an_exit_is_dropped_at_the_next_op
     );
 }
 
-/// S1: the claim's one input script isn't push-only but parses, and the
-/// verifier says unsigned: kept, A stays spent, nothing is recorded.
+/// S1: the claim has a parseable input script the verifier cannot decide.
+/// The claim stays stored and Send keeps its input out of the available coins.
 #[test]
 fn a_claim_on_a_held_coin_whose_input_script_isnt_push_only_is_kept() {
     let (_dir, engine, session, id) = engine_wallet();
     let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[0x61, 0x01, 0x01]);
     assert_eq!(
         crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
-        Ok(false)
+        Err(crate::input_authorization::SpendAuthorizationError::RuntimeAuthorization)
     );
     let session = reopen(&engine, session);
     assert!(
@@ -294,6 +294,13 @@ fn a_claim_on_a_held_coin_whose_input_script_isnt_push_only_is_kept() {
     );
     let a = OutPoint::new(funding.txid(), 0);
     assert!(!spendable(&engine, &session, id, a), "A stays spent");
+    let max = engine
+        .block_on(session.max_spendable(id, CoinSource::Any, FeeMode::PerKb(1_000)))
+        .unwrap();
+    assert!(
+        max < funding.output[0].value,
+        "Send Max included the claim's held input"
+    );
     assert!(records(&session, id).0.is_empty(), "nothing is recorded");
 }
 
