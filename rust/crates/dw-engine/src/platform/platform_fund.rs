@@ -397,10 +397,11 @@ async fn max_gate(
 async fn max_plan(
     lib: &impl FundLib,
     (rules, to): (&'static PlatformVersion, PlatformAddress),
+    expected: Option<[u8; 32]>,
     fence: &CoinFence,
 ) -> Result<(PlatformFundQuote, MaxPlan), CreditsError> {
     let fee = fee_credits(rules);
-    let plan = core_max::plan(lib.core_coins(fence).await?, minimum_duffs(rules))?;
+    let plan = core_max::plan(lib.core_coins(fence).await?, minimum_duffs(rules), expected)?;
     let quote = PlatformFundQuote {
         duffs: plan.duffs,
         fee_duffs: plan.fee_duffs,
@@ -426,11 +427,11 @@ pub(crate) async fn quote(
     platform_moves::address_sends_open(lib.network())?;
     match amount {
         FundAmount::Duffs { duffs } => plan(session, wallet, lib, duffs).await,
-        FundAmount::All => {
+        FundAmount::All | FundAmount::QuotedAll { .. } => {
             let gated = max_gate(session, wallet, lib).await?;
             let _claim = core_max::claim(session, wallet)?;
             let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-            Ok(max_plan(lib, gated, &fence).await?.0)
+            Ok(max_plan(lib, gated, None, &fence).await?.0)
         }
     }
 }
@@ -519,9 +520,13 @@ pub(crate) async fn fund(
     // The amount's plan, or a Core Max's gate: it holds the wallet's
     // CoinJoin claim through its funding.
     let (claim, quoted) = match amount {
-        FundAmount::All => {
+        FundAmount::All => return Err(CreditsError::CoinsChanged),
+        FundAmount::QuotedAll { coin_set } => {
             let gated = max_gate(session, wallet, lib).await?;
-            (Some(core_max::claim(session, wallet)?), Err(gated))
+            (
+                Some(core_max::claim(session, wallet)?),
+                Err((gated, coin_set)),
+            )
         }
         FundAmount::Duffs { duffs } => (None, Ok(plan(session, wallet, lib, duffs).await?)),
     };
@@ -533,9 +538,9 @@ pub(crate) async fn fund(
     // library tracks the lock.
     let (plan, max) = match quoted {
         Ok(plan) => (plan, None),
-        Err(gated) => {
+        Err((gated, coin_set)) => {
             let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-            let (plan, max) = max_plan(lib, gated, &fence).await?;
+            let (plan, max) = max_plan(lib, gated, Some(coin_set), &fence).await?;
             (plan, Some((max, fence)))
         }
     };
@@ -548,8 +553,7 @@ pub(crate) async fn fund(
         }
         .into());
     }
-    // A Max's grant is its quote's coins' sum: coins read again to another
-    // sum are not the quote's.
+    // A Core Max's grant must be exactly its quoted debit.
     if max.is_some() && plan.total_duffs != remaining {
         return Err(CreditsError::CoinsChanged);
     }

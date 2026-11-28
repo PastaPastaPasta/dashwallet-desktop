@@ -37,9 +37,10 @@ pub(crate) const BEFORE_PREFIX: &str = "before-upgrade";
 pub(crate) const UNRESTORABLE_PREFIX: &str = "part-upgraded";
 pub(crate) const MARKER: &str = "SNAPSHOT-COMPLETE";
 /// Written into a before-upgrade snapshot that verifies but is not of this
-/// wallet before the upgrade: the snapshot is retired, never read as a
-/// backup again, and never deleted.
+/// wallet before the upgrade, or when a wallet it contains is removed. A
+/// retired snapshot is never read as a backup again or deleted.
 pub const NOT_THIS_WALLET: &str = "NOT-THIS-WALLET";
+const REMOVED_WALLET_MARK: &[u8] = b"dw-store-upgrade retired for wallet removal\nformat 1\n";
 /// Written in `upgrade-backups/` by R1 under its lock, before the drop: the
 /// before-upgrade snapshot the file is upgraded from (its directory name and
 /// manifest sha256) and the file's `wallets.wallet_id` set, or `none`. Once
@@ -279,6 +280,17 @@ pub(crate) fn check_snapshot(
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(snapshot_fault(NOT_THIS_WALLET)(e)),
     }
+    let info = check_snapshot_contents(dir, verify_hashes)?;
+    if verify_hashes {
+        require_lineage(dir, &info)?;
+    }
+    Ok(info)
+}
+
+fn check_snapshot_contents(
+    dir: &Path,
+    verify_hashes: bool,
+) -> std::result::Result<SnapshotInfo, SnapshotFault> {
     let text = fs::read_to_string(dir.join(MARKER)).map_err(snapshot_fault("read marker"))?;
     let info = parse_marker(dir, &text).map_err(SnapshotFault::Defect)?;
     for f in &info.files {
@@ -304,9 +316,6 @@ pub(crate) fn check_snapshot(
             )));
         }
     }
-    if verify_hashes {
-        require_lineage(dir, &info)?;
-    }
     Ok(info)
 }
 
@@ -325,6 +334,75 @@ enum Lineage {
 
 fn lineage_path(network_dir: &Path) -> PathBuf {
     backups_dir(network_dir).join(UPGRADED_FROM)
+}
+
+/// Retires the named backup before deleting a wallet it contains. Older
+/// builds already honor the retirement marker.
+pub fn retire_snapshot_for_wallet_removal(network_dir: &Path, wallet: &[u8; 32]) -> Result<()> {
+    use std::io::Write;
+
+    crate::restore::refuse_if_restore_pending(network_dir)?;
+    let failure =
+        StoreUpgradeError::io("retire the upgrade backup before removing the wallet", true);
+    fsx::check_private_dir(&backups_dir(network_dir)).map_err(&failure)?;
+    let Some(Lineage::Snapshot { name, wallets, .. }) =
+        read_lineage(network_dir).map_err(&failure)?
+    else {
+        return Ok(());
+    };
+    if !wallets.contains(&hex(wallet).to_ascii_uppercase()) {
+        return Ok(());
+    }
+    let dir = backups_dir(network_dir).join(name);
+    let meta = match fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            write_lineage(network_dir, None)?;
+            return Ok(());
+        }
+        Err(e) => return Err(failure(e)),
+    };
+    if !meta.is_dir() {
+        return Err(failure(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the named backup is not a directory",
+        )));
+    }
+    fsx::check_private_dir(&dir).map_err(&failure)?;
+    let path = dir.join(NOT_THIS_WALLET);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => return fsx::fsync_dir(&dir).map_err(failure),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(failure(e)),
+    }
+    let mut temp = tempfile::NamedTempFile::new_in(&dir).map_err(&failure)?;
+    temp.write_all(REMOVED_WALLET_MARK).map_err(&failure)?;
+    temp.as_file().sync_all().map_err(&failure)?;
+    temp.persist_noclobber(&path)
+        .map_err(|e| failure(e.error))?;
+    fsx::fsync_dir(&dir).map_err(failure)
+}
+
+/// Whether this network's named backup was retired by Remove wallet.
+pub fn snapshot_retired_for_wallet_removal(network_dir: &Path) -> bool {
+    let Ok(Some(Lineage::Snapshot { name, .. })) = read_lineage(network_dir) else {
+        return false;
+    };
+    has_wallet_removal_marker(&backups_dir(network_dir).join(name))
+}
+
+fn has_wallet_removal_marker(dir: &Path) -> bool {
+    use std::io::Read;
+
+    let path = dir.join(NOT_THIS_WALLET);
+    let Ok(file) = dw_fs::open_owner_only(&path) else {
+        return false;
+    };
+    let mut marker = Vec::new();
+    file.take(REMOVED_WALLET_MARK.len() as u64 + 1)
+        .read_to_end(&mut marker)
+        .is_ok()
+        && marker == REMOVED_WALLET_MARK
 }
 
 /// [`UPGRADED_FROM`], `None` when there is none. A record that doesn't
@@ -704,15 +782,26 @@ pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
 }
 
 /// Whether an upgrade copy of `store` (one of [`STORE_FILES`]) exists: the
-/// newest verified before-upgrade snapshot lists it, or the `part-upgraded`
-/// copy [`PART_UPGRADED_BY`] records verifies with that manifest and does.
-/// A copy marked [`NOT_THIS_WALLET`] never counts. Reads only.
+/// newest verified before-upgrade snapshot, the named snapshot retired by
+/// wallet removal, or this upgrade's recorded `part-upgraded` copy lists it.
+/// Migration needs verified data from this upgrade. Restore also requires
+/// the current wallet IDs to match and refuses a retired copy. Reads only.
 pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool> {
     let lists = |info: &SnapshotInfo| info.files.iter().any(|f| f.name == store);
     if let SnapshotState::Verified(info) = snapshot_state(network_dir)?
         && lists(&info)
     {
         return Ok(true);
+    }
+    if let Ok(Some(Lineage::Snapshot { name, manifest, .. })) = read_lineage(network_dir) {
+        let dir = backups_dir(network_dir).join(name);
+        if fsx::check_private_dir(&dir).is_ok()
+            && has_wallet_removal_marker(&dir)
+            && check_snapshot_contents(&dir, true)
+                .is_ok_and(|i| i.manifest_sha256 == manifest && lists(&i))
+        {
+            return Ok(true);
+        }
     }
     let Some((name, manifest)) = recorded_part(network_dir)? else {
         return Ok(false);
