@@ -56,7 +56,7 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     await expect(page.getByTestId("source-detail-amount")).toContainText("0.1");
     await expect(page.getByTestId("source-detail-status")).toHaveText("Confirmed");
     await expect(page.getByTestId("source-detail-address")).toContainText("Platform address");
-    await expect(page.getByTestId("source-detail-address")).toContainText("tdash1q8u4e2c7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr");
+    await expect(page.getByTestId("source-detail-address").locator("bdi[title]")).toHaveAttribute("title", "tdash1q8u4e2c7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr");
     await expect(page.getByTestId("source-detail-block")).toHaveCount(0);
   });
 

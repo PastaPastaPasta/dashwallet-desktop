@@ -355,14 +355,14 @@ function reserve(s: ShieldedWorld, total: bigint) {
 
 /** A spend's end: refused, `pending` (it went out and its result is not confirmed: the notes stay
  * reserved, the row stays `pending` and the wallet re-sends it itself), or done with the balance debited. */
-function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">): { state: ShieldedSpendState; unresolved: UnresolvedSpend | null } {
-  if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the spend");
+function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">): { state: ShieldedSpendState; unresolved: UnresolvedSpend | null; pendingDispatch?: ShieldedSpendOutcome["pendingDispatch"] } {
+  if (s.next === "refused") raise(SHIELDED_CODES.spendRefused, "the fixture refuses the spend");
   if (s.next === "unknown") {
     reserve(s, total);
-    addRow(s, { ...row, status: "pending" });
+    addRow(s, { ...row, status: "pending", pendingDispatch: "queued" });
     const unresolved = { activityId: s.activity[0].id, transition: `ab${String(s.activity.length).padStart(62, "0")}`, attempts: 1 };
     s.unresolved = [...s.unresolved, unresolved];
-    return { state: "pending", unresolved };
+    return { state: "pending", pendingDispatch: "queued", unresolved };
   }
   s.balance = String(BigInt(s.balance) - total);
   if (s.notes) s.notes = s.balance === "0" ? [] : [s.balance];

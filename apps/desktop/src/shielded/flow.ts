@@ -21,6 +21,7 @@ import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing
 import { spendsOffRefusal, spendsOffText } from "./spends";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
+import { toastPendingTransfer, toastTransferFailure } from "../transfer/dispatch";
 import { platformHoldText } from "../api/platformHold";
 
 export type ShieldedApi = Pick<
@@ -225,15 +226,6 @@ export const SHIELDED_COPY = {
       },
       text: (amount: string) => t("transfer.shielded.done.send.text", { amount }),
     },
-    /** The spend went out and its result is not confirmed: pending, never failed, never offered for a resend. */
-    unconfirmed: {
-      get title() {
-        return t("transfer.shielded.done.unconfirmed.title");
-      },
-      get text() {
-        return t("transfer.shielded.done.unconfirmed.text");
-      },
-    },
     out: {
       get title() {
         return t("transfer.shielded.done.out.title");
@@ -377,6 +369,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return t("transfer.shielded.error.coinsLocked");
     case SHIELDED_CODES.unrecordedSpend:
       return SHIELDED_COPY.unrecorded.refused;
+    case SHIELDED_CODES.spendRefused:
+      return t("transfer.shielded.error.spendRefused");
     case SHIELDED_CODES.storeClosed:
       return t(SHIELDED_CLOSED_TEXT[shieldedClosedReason(e) ?? "failed"]);
     case SHIELDED_CODES.tooManyInputs:
@@ -557,12 +551,18 @@ export class ShieldedFlow extends Model {
     } catch (e) {
       this.error = e;
       this.step = "refused";
+      if (isCode(e, SHIELDED_CODES.spendRefused)) toastTransferFailure();
     } finally {
       this.running = false;
       this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) shieldedSettled();
-      this.changed();
+      const result = this.step === "done" ? this.result : null;
+      if (result?.kind === "spend" && result.outcome.state === "pending") {
+        toastPendingTransfer(result.outcome.pendingDispatch, () => this.close());
+      } else if (result?.kind === "shield" && result.outcome.state.kind === "proofWaiting") {
+        toastPendingTransfer(result.outcome.pendingDispatch, () => this.close());
+      } else this.changed();
     }
   }
 

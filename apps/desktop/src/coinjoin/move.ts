@@ -11,6 +11,7 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
+import { toastPendingTransfer } from "../transfer/dispatch";
 import type { ErrorCode } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
@@ -519,7 +520,9 @@ export class MoveMixedFlow extends Model {
       this.#unseen = !this.open;
     } finally {
       this.running = false;
-      this.changed();
+      if (this.step === "done" && this.shielded?.state.kind === "proofWaiting") {
+        toastPendingTransfer(this.shielded.pendingDispatch, () => this.close());
+      } else this.changed();
     }
   }
 

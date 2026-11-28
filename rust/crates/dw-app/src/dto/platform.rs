@@ -489,6 +489,17 @@ impl From<LockPhase> for LockProgress {
     }
 }
 
+/// Broadcast evidence for a transfer that has not settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingDispatch {
+    Broadcast,
+    Queued,
+    Preparing,
+}
+
+mirror_enum!(dw_engine::platform::PendingDispatch => PendingDispatch { Broadcast, Queued, Preparing });
+
 /// What the engine knows about a handed-off artifact (`dispatch_status`).
 /// Only `notSent` allows a retry the UI offers (H11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

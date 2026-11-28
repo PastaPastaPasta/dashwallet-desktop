@@ -88,7 +88,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
       <dl className="about-list contact-detail-facts">
         <dt>{t("contacts.pane.identity")}</dt>
         <dd data-testid="contact-detail-identity">
-          <CopyValue value={c.contact} action={t("contacts.pane.copyIdentity")} mono />
+          <CopyValue value={c.contact} action={t("contacts.pane.copyIdentity")} mono truncate />
         </dd>
         <dt>{t("contacts.pane.relation")}</dt>
         <dd data-testid="contact-detail-relation">{relationTitle(c.relation)}</dd>

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use super::credits::{CoreMax, FundAmount};
 use super::dashpay::DashPay;
 use super::errors::ShieldedError;
-use super::flows::{DispatchState, GrantRequest};
+use super::flows::{DispatchState, GrantRequest, PendingDispatch};
 use super::payments::Counterparty;
 use super::shielded_pool::{
     self as pool, on_pool, on_pool_keyset, on_pool_signing, on_pool_signing_keyset,
@@ -250,6 +250,9 @@ pub struct ShieldOutcome {
     /// The asset lock's txid (hex, display order).
     pub txid: String,
     pub state: ShieldState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_dispatch: Option<PendingDispatch>,
 }
 
 /// A shield's or a drain's funding whose outcome is unknown: its step
@@ -289,6 +292,8 @@ pub struct PendingShield {
     pub duffs: u64,
     /// The lock has its proof: `resume_shield` applies it at once.
     pub proved: bool,
+    #[serde(default)]
+    pub pending_dispatch: PendingDispatch,
     /// The lock may already be applied ("Checking"): Platform said so
     /// without proof, an apply failed after signing, or a restore read it
     /// back from the chain. Its amount may already be in the shielded

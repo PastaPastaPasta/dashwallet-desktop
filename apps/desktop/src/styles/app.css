@@ -1604,6 +1604,12 @@ input[type="radio"]:disabled {
   background: var(--dw-role-accent-tint);
 }
 
+/* Keep info chips on the card's opaque backing so row hover or fade transitions never double the tint. */
+.tx-row .chip-info {
+  background-color: var(--dw-role-accent-tint);
+  background-image: linear-gradient(var(--dw-role-accent-tint), var(--dw-role-accent-tint)), linear-gradient(var(--dw-role-card), var(--dw-role-card));
+}
+
 .tx-row-icon {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);
@@ -2088,6 +2094,11 @@ input[type="radio"]:disabled {
   color: var(--dw-role-text-secondary);
 }
 
+.identifier {
+  white-space: nowrap;
+  word-break: normal;
+}
+
 .copy-value {
   display: inline-flex;
   align-items: flex-start;
@@ -2151,7 +2162,8 @@ input[type="radio"]:disabled {
 
 .io-row {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto; /* the "#n" / short outpoint column */
+  grid-template-columns: minmax(140px, auto) minmax(0, 1fr) auto; /* the "#n" / short outpoint column */
+  align-items: center;
   gap: var(--dw-space-m);
   padding: var(--dw-space-xs) 0;
   font-size: var(--dw-type-footnote-size);

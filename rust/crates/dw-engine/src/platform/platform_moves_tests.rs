@@ -1118,6 +1118,16 @@ fn an_answer_without_the_nonce_stays_pending() {
     w.net.then(Act::AnswersOnly);
     let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
     assert_eq!(out.state, PlatformActivityState::Pending);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_dispatch"],
+        "broadcast"
+    );
+    let activity = w.activity();
+    let row = find(&activity, PlatformActivityKind::MoveToCore);
+    assert_eq!(
+        serde_json::to_value(row).unwrap()["pending_dispatch"],
+        "broadcast"
+    );
     let grant = w.f.grant(3 * DASH);
     assert_eq!(
         w.move_all(&grant).unwrap_err().code(),
@@ -1185,7 +1195,24 @@ fn an_unconfirmed_move_is_pending_and_holds_its_inputs() {
     w.net.then(Act::Unconfirmed);
     let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
     assert_eq!(out.state, PlatformActivityState::Pending);
+    assert_eq!(
+        serde_json::to_value(&out).unwrap()["pending_dispatch"],
+        "queued"
+    );
     let moves = w.moves();
+    let mut preparing = moves[0].clone();
+    preparing.signed = false;
+    preparing.answered = false;
+    assert_eq!(
+        serde_json::to_value(preparing.activity()).unwrap()["pending_dispatch"],
+        "preparing"
+    );
+    let activity = w.activity();
+    let row = find(&activity, PlatformActivityKind::MoveToCore);
+    assert_eq!(
+        serde_json::to_value(row).unwrap()["pending_dispatch"],
+        "queued"
+    );
     assert!(moves[0].signed && moves[0].can_land && moves[0].holds());
     assert_eq!(
         w.move_all(&w.f.grant(3 * DASH)).unwrap_err().code(),
@@ -3710,7 +3737,7 @@ fn the_rise_after_an_applied_fund_is_no_incoming_row() {
     );
     let s2 = Arc::clone(&s);
     (w.f.engine)
-        .block_on(async move { record_fund(&s2, id, (at, 1_000_000), a, 999).await })
+        .block_on(async move { record_fund(&s2, id, (at, 1_000_000), a, 999, true).await })
         .unwrap();
     // The apply executes on Platform while a read runs: not compared.
     let hold = FundHold::new(&s.platform.fund_holds, id, to.clone());
@@ -4818,4 +4845,52 @@ fn two_armed_records_absorb_in_arming_order() {
     let refund = w.refund_rows();
     assert_eq!(unshield.credits, DASH, "the unshield's first");
     assert_eq!((refund.len(), refund[0].credits), (1, DASH));
+}
+
+#[test]
+fn fund_record_and_from_shielded_record_pending_dispatch_labels() {
+    let at = dashcore::OutPoint::new(dashcore::Txid::from_byte_array([0x42; 32]), 0);
+    let mut broadcast_fund = FundRecord::pending((at, 1_000_000), "tdash1qtest".into(), 999);
+    broadcast_fund.lock_sent = true;
+    assert_eq!(
+        broadcast_fund.activity().pending_dispatch,
+        Some(PendingDispatch::Broadcast)
+    );
+
+    let queued_fund = FundRecord::pending((at, 1_000_000), "tdash1qtest".into(), 999);
+    assert_eq!(
+        queued_fund.activity().pending_dispatch,
+        Some(PendingDispatch::Queued)
+    );
+
+    let mut recovered_fund = broadcast_fund.clone();
+    recovered_fund.recovered = true;
+    assert_eq!(recovered_fund.activity().pending_dispatch, None);
+
+    let mut done_fund = broadcast_fund;
+    done_fund.state = PlatformActivityState::Done;
+    assert_eq!(done_fund.activity().pending_dispatch, None);
+
+    let unshield = FromShieldedRecord::staged(
+        FromShieldedSource::Unshield,
+        ([1u8; 32], [2u8; 32]),
+        "tdash1qtest".into(),
+        DASH,
+    );
+    assert_eq!(
+        unshield.activity().pending_dispatch,
+        Some(PendingDispatch::Queued)
+    );
+
+    let mut unshield_done = unshield;
+    unshield_done.state = PlatformActivityState::Done;
+    assert_eq!(unshield_done.activity().pending_dispatch, None);
+
+    let registration = FromShieldedRecord::staged(
+        FromShieldedSource::Registration { draft: 7 },
+        ([3u8; 32], [4u8; 32]),
+        "tdash1qtest".into(),
+        DASH,
+    );
+    assert_eq!(registration.activity().pending_dispatch, None);
 }

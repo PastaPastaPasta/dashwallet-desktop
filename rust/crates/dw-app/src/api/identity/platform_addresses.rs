@@ -10,6 +10,7 @@ use ts_rs::TS;
 use super::flows::GrantRequest;
 use super::unfinished::UnfinishedState;
 use crate::dto::mirror_enum;
+use crate::dto::platform::PendingDispatch;
 
 /// The wallet's Platform addresses as the last sync pass left them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -151,6 +152,10 @@ pub struct PlatformActivity {
     pub id: String,
     pub kind: PlatformActivityKind,
     pub state: PlatformActivityState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub credits: u64,
@@ -191,6 +196,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             id,
             kind,
             state,
+            pending_dispatch,
             credits,
             address,
             to,
@@ -207,6 +213,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             id,
             kind: kind.into(),
             state: state.into(),
+            pending_dispatch: pending_dispatch.map(Into::into),
             credits,
             address,
             to,
@@ -363,6 +370,10 @@ pub struct MoveToCoreOutcome {
     /// `null` when a group's outcome cannot attribute the destination.
     pub to: Option<String>,
     pub state: PlatformActivityState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
     /// Done: the fee taken.
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
@@ -382,6 +393,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             expected_duffs,
             to,
             state,
+            pending_dispatch,
             fee_credits,
             unattributed,
         } = o;
@@ -391,6 +403,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             expected_duffs,
             to,
             state: state.into(),
+            pending_dispatch: pending_dispatch.map(Into::into),
             fee_credits,
             winner_known: unattributed.then_some(false),
         }
@@ -639,14 +652,23 @@ pub struct PlatformFundOutcome {
     /// The asset lock's txid (hex).
     pub txid: String,
     pub state: PlatformFundState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
 }
 
 impl From<engine::PlatformFundOutcome> for PlatformFundOutcome {
     fn from(o: engine::PlatformFundOutcome) -> Self {
-        let engine::PlatformFundOutcome { txid, state } = o;
+        let engine::PlatformFundOutcome {
+            txid,
+            state,
+            pending_dispatch,
+        } = o;
         PlatformFundOutcome {
             txid,
             state: state.into(),
+            pending_dispatch: pending_dispatch.map(Into::into),
         }
     }
 }
@@ -696,6 +718,7 @@ mod tests {
             id: "move-1-0".into(),
             kind: engine::PlatformActivityKind::MoveToCore,
             state: engine::PlatformActivityState::Replaced,
+            pending_dispatch: None,
             credits: 1,
             address: None,
             to: None,
@@ -726,6 +749,7 @@ mod tests {
                 expected_duffs: None,
                 to: None,
                 state: engine::PlatformActivityState::Done,
+                pending_dispatch: None,
                 fee_credits: None,
                 unattributed,
             }))

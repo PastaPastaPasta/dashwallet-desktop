@@ -399,6 +399,11 @@ pub(crate) async fn fund_evidence(
             .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
             .map(|l| l.out_point)
             .collect(),
+        sent: rows
+            .iter()
+            .filter(|l| l.info.status.has_proof())
+            .map(|l| l.info.outpoint)
+            .collect(),
         caught_up: super::registration_flow::wallet_synced(session, wallet),
     }
 }

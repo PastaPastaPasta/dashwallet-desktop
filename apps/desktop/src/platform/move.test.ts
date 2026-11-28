@@ -80,7 +80,7 @@ describe("Move to Dash wallet", () => {
     stop();
   });
 
-  it("keeps a pending result, and its warning, after the sheet is dismissed, until Activity shows the move settled", async () => {
+  it("closes on a pending result and keeps the hold until Activity shows the move settled", async () => {
     const { flow, answer } = setup();
     const row = (state: PlatformActivity["state"]): PlatformActivity => ({ id: OUTCOME.id, kind: "moveToCore", state, credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, feeCredits: null, at: 1, mayLand: state === "pending", estimated: false });
     flow.begin();
@@ -88,14 +88,7 @@ describe("Move to Dash wallet", () => {
     await vi.waitFor(() => expect(flow.step).toBe("running"));
     answer({ ...OUTCOME, state: "pending" });
     await going;
-    // The sheet is open on the result: Activity settling it does not swap it for a new quote.
-    const settled = [{ id: OUTCOME.id, kind: "moveToCore", state: "done", credits: OUTCOME.credits, address: null, to: TO, expectedDuffs: OUTCOME.expectedDuffs, at: 1 }] as PlatformActivity[];
-    flow.settle(settled);
-    expect([flow.open, flow.step, flow.pending]).toEqual([true, "done", true]);
-    flow.close();
-    flow.begin();
-    flow.close();
-    // Dismissed twice: it is still the pending result, not a fresh quote, and nothing to "show".
+    expect(flow.open).toBe(false);
     expect([flow.step, flow.outcome?.state, flow.pending, flow.unseen]).toEqual(["done", "pending", true, false]);
     // Activity still has it pending, or does not list it yet: it stays.
     flow.settle([row("pending")]);

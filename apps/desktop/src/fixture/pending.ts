@@ -65,7 +65,7 @@ const UNLOCK_FEE_DUFFS = 226;
  * held top-up, send, move or payment that executed in its place (`lost`: the move is `failed` and moves
  * nothing). Beside a held cancel, `lost` is the cancelled move or payment going through, `lostToCancel`
  * the cancel. */
-export type MoveResult = "done" | "pending" | "refused" | "unproved" | "tooManyCoins" | "lost" | "lostToCancel";
+export type MoveResult = "done" | "pending" | "broadcast" | "refused" | "unproved" | "tooManyCoins" | "lost" | "lostToCancel";
 
 /** What the next `platform_fund` comes to: applied, locked with its proof still missing, locked and
  * possibly already applied (`checking`), locked and refused by Platform (`notApplied`), or locked
@@ -1025,7 +1025,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (p.nextMove === "refused") throw fail("platform.unavailable", "the fixture refuses the move");
     if (p.nextMove === "tooManyCoins") throw fail("invalid_argument", "more than 50 separate balances", { kind: "reason", reason: "Your Platform addresses hold too many separate balances to move at once. Consolidate coins first" });
     // `lost`: the held top-up it exits executed in its place, so the move fails and moves nothing.
-    const state = p.nextMove === "pending" ? "pending" : p.nextMove === "lost" || p.nextMove === "lostToCancel" ? "failed" : "done";
+    const state = p.nextMove === "pending" || p.nextMove === "broadcast" ? "pending" : p.nextMove === "lost" || p.nextMove === "lostToCancel" ? "failed" : "done";
+    const pendingDispatch = state === "pending" ? (p.nextMove === "broadcast" ? "broadcast" : "queued") : undefined;
     const expectedDuffs = p.nextMove === "unproved" ? null : q.expectedDuffs;
     // As the engine, the exit of a held send or cancel carries its link in its id.
     const id = exitOf != null && exited?.kind === "send" ? `exit-of-${exited.id}-at-1-${p.activity.length + 1}` : `pm-${p.activity.length + 1}`;
@@ -1044,7 +1045,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const send = exitOf != null && exited?.kind === "send" ? exited.id : null;
     // Of a group of moves at the same inputs at most one executes: the new one replaces the held ones.
     p.activity = [
-      { id, kind: "moveToCore", state, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
+      { id, kind: "moveToCore", state, pendingDispatch, credits: q.credits, address: null, to: q.to, expectedDuffs, feeCredits, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: state === "pending", estimated: false },
       // A held top-up and its exit: at most one executes. Once the exit is done (C3-9) the top-up can no
       // longer; while the exit is pending either may still.
       ...p.activity.map((a) =>
@@ -1070,7 +1071,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       spend(p, BigInt(exited.credits));
       if (winner === exited.id && cancelled !== null && exited.to) p.addresses = [...p.addresses, { address: exited.to, credits: String(BigInt(exited.credits) - SEND_FEE_CREDITS) }];
     } else if (state === "failed" && send) landSend(p, send);
-    return { id, credits: q.credits, expectedDuffs, to: q.to, state, feeCredits };
+    return { id, credits: q.credits, expectedDuffs, to: q.to, state, pendingDispatch, feeCredits };
   },
   platform_cancel_quote: ({ walletId, of }: { walletId: string; of: string }, ctx: Ctx) => cancelQuote(ctx, walletId, of),
   // As the engine: the cancel signs the held item's inputs at its nonces to the quote's own address. As

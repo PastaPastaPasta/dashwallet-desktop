@@ -165,11 +165,11 @@ const STATES: Record<string, State> = {
     },
   },
   "move-shielded-waiting": {
-    roots: ["move-mixed-sheet"],
-    data: [/^fixture: .+$/],
+    roots: ["toast"],
     open: async (page, theme, lang) => {
       await shieldMove(page, theme, lang, SHIELD_OUTCOMES["waiting"]);
-      await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-outcome", "shielded");
+      await expect(page.getByTestId("move-mixed-sheet")).toHaveCount(0);
+      await expect(page.getByTestId("toast")).toBeVisible();
     },
   },
   "move-shielded-checking": {

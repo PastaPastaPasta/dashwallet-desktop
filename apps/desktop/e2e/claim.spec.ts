@@ -88,12 +88,12 @@ test("Join entry: valid → name → recipient → Claim → progress → Done, 
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
 
-  // n3 (D6): the recipient and what the request carries, the identity whole, before Claim.
+  // n3 (D6): the recipient, the full identity in the tooltip, and what the request carries.
   await expect(page.getByTestId("claim-paid")).toBeVisible();
   await expect(page.getByTestId("claim-request")).toBeChecked();
   await expect(page.getByTestId("claim-recipient-text")).toContainText("A contact request will go to @bob.");
   await expect(page.getByTestId("claim-recipient-text")).toContainText("extended public key");
-  await expect(page.getByTestId("claim-recipient")).toContainText(IDENTITY.bob);
+  await expect(page.getByTestId("claim-recipient").locator("bdi[title]")).toHaveAttribute("title", IDENTITY.bob);
   await axe(page);
   await page.getByTestId("registration-pay").click();
   await authorize(page);

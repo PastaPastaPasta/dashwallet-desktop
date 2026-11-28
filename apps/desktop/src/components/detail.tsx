@@ -13,15 +13,39 @@ export function DetailRow({ label, children, testId }: { label: string; children
   );
 }
 
+export function middleTruncate(value: string): string {
+  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-7)}` : value;
+}
+
+export function Identifier({ value, mono = false, suffix }: { value: string; mono?: boolean; suffix?: string }) {
+  const shown = middleTruncate(value);
+  const full = suffix ? `${value}${suffix}` : value;
+  const visible = suffix ? `${shown}${suffix}` : shown;
+  if (shown === value) {
+    return (
+      <bdi className={mono ? "identifier mono" : "identifier"} title={full}>
+        {full}
+      </bdi>
+    );
+  }
+  return (
+    <bdi className={mono ? "identifier mono" : "identifier"} title={full}>
+      <span aria-hidden="true">{visible}</span>
+      <span className="sr-only">{full}</span>
+    </bdi>
+  );
+}
+
 /** `value` with a copy button; `display` is shown in its place when given (a shortened id). The
  * button's name is `action`, a whole sentence ("Copy data directory"), else the catalog's copy
  * sentence around the noun `label`. */
-export function CopyValue({ value, label, action, mono = false, display }: { value: string; mono?: boolean; display?: string } & ({ label: string; action?: undefined } | { label?: undefined; action: string })) {
+export function CopyValue({ value, label, action, mono = false, display, truncate = false, suffix }: { value: string; mono?: boolean; display?: string; truncate?: boolean; suffix?: string } & ({ label: string; action?: undefined } | { label?: undefined; action: string })) {
   const t = useT();
+  const copied = suffix ? `${value}${suffix}` : value;
   return (
     <span className="copy-value">
-      <span className={mono ? "mono" : undefined}>{display ?? value}</span>
-      <CopyIconButton text={value} label={action ?? t("components.copy.value", { label: label! })} />
+      {truncate ? <Identifier value={value} mono={mono} suffix={suffix} /> : <span className={mono ? "mono" : undefined}>{display ?? copied}</span>}
+      <CopyIconButton text={copied} label={action ?? t("components.copy.value", { label: label! })} />
     </span>
   );
 }

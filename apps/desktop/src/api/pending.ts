@@ -82,6 +82,7 @@ export const SHIELDED_CODES = {
   moveRunning: "shielded.move_running",
   coinsChanged: "shielded.coins_changed",
   unrecordedSpend: "shielded.unrecorded_spend",
+  spendRefused: "shielded.spend_refused",
   storeClosed: "shielded.store_closed",
 } as const satisfies Record<string, ShieldedCode>;
 

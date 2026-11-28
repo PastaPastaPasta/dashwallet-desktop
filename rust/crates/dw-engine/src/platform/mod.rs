@@ -164,7 +164,7 @@ pub use errors::{
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,
-    GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, RevokeCause,
+    GrantAction, GrantRequest, LeaseStateView, LeaseView, ParkReason, PendingDispatch, RevokeCause,
 };
 pub use identity::{
     FoundBy, FoundIdentity, IdentityDetail, IdentityKeyInfo, IdentityRefresh, IdentitySummary,

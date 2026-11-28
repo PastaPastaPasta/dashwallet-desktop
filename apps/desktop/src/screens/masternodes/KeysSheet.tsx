@@ -245,22 +245,22 @@ function KeyPanel({ walletId, k, noSeed }: { walletId: string; k: MasternodeKeyI
       </DetailRow>
       {k.address && (
         <DetailRow label={t(`${P}.address`)} testId={`mn-key-${k.index}-address`}>
-          <CopyValue value={k.address} label={t(`${P}.address`)} mono />
+          <CopyValue value={k.address} label={t(`${P}.address`)} mono truncate />
         </DetailRow>
       )}
       {k.platformNodeId && (
         <DetailRow label={t(`${P}.nodeId`)} testId={`mn-key-${k.index}-node-id`}>
-          <CopyValue value={k.platformNodeId} label={t(`${P}.nodeId`)} mono />
+          <CopyValue value={k.platformNodeId} label={t(`${P}.nodeId`)} mono truncate />
         </DetailRow>
       )}
       {!k.address && (
         <DetailRow label={t(`${P}.publicKey`)} testId={`mn-key-${k.index}-public-key`}>
-          <CopyValue value={k.publicKeyHex} label={t(`${P}.publicKey`)} mono />
+          <CopyValue value={k.publicKeyHex} label={t(`${P}.publicKey`)} mono truncate />
         </DetailRow>
       )}
       {k.legacyPublicKeyHex && (
         <DetailRow label={t(`${P}.legacyPublicKey`)} testId={`mn-key-${k.index}-legacy-key`}>
-          <CopyValue value={k.legacyPublicKeyHex} label={t(`${P}.legacyPublicKey`)} mono />
+          <CopyValue value={k.legacyPublicKeyHex} label={t(`${P}.legacyPublicKey`)} mono truncate />
         </DetailRow>
       )}
       <DetailRow label={t(`${P}.privateKey`)} testId={`mn-key-${k.index}-secret`}>

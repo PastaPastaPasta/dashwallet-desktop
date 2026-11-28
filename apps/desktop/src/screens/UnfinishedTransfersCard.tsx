@@ -10,7 +10,6 @@ import { useBackend, usePendingPlatformFunds, usePoolBalances, useShieldedStatus
 import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
-import { shortId } from "../dashpay/identities";
 import { known } from "../format/homeBalance";
 import { unreadText } from "../dashpay/registration";
 import { creditsToDuffs } from "../api/pending";
@@ -245,7 +244,7 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                   {offHere ? C.sheet.testNetworksOnly : C.sheet.state[lock.state]}
                 </span>
                 <br />
-                <CopyValue value={lock.txid} display={shortId(lock.txid)} action={tr("home.unfinished.copyTxid")} mono />
+                <CopyValue value={lock.txid} action={tr("home.unfinished.copyTxid")} mono truncate />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
                     {resultText(result, errorText, recovered ? "platformAddress" : lock.kind)}

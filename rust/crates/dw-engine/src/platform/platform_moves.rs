@@ -117,7 +117,7 @@ use serde::{Deserialize, Serialize};
 
 use super::credits::{TopUpFromPlatformOutcome, TopUpFromPlatformQuote, WithdrawAmount};
 use super::errors::{CreditsError, PlatformError};
-use super::flows::{FlowKind, GrantRequest};
+use super::flows::{FlowKind, GrantRequest, PendingDispatch};
 use super::identity_writes::identity_locks;
 use super::input0::{self, Input0Refused, Input0Rules};
 use super::money_gate::{Refusal, Subject};
@@ -454,6 +454,8 @@ pub(crate) struct FundRecord {
     /// recorded (a restored one): only a proved apply completes it.
     #[serde(default)]
     pub(crate) restored: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    lock_sent: bool,
     /// A recover of a partly used shield lock's remaining value
     /// (`unfinished_remainder`), not an "Add from Dash wallet".
     #[serde(default)]
@@ -476,6 +478,8 @@ impl FundRecord {
                 false => PlatformActivityKind::FromCore,
             },
             state: self.state,
+            pending_dispatch: (self.state == PlatformActivityState::Pending && !self.recovered)
+                .then(|| PendingDispatch::from_broadcast_evidence(self.lock_sent)),
             credits: self.credits,
             address: Some(self.address.clone()),
             to: None,
@@ -528,6 +532,7 @@ impl FundRecord {
             vout: outpoint.vout,
             armed: false,
             restored: false,
+            lock_sent: false,
             recovered: false,
             remainder_credits: None,
             claims: Vec::new(),
@@ -748,6 +753,9 @@ impl FromShieldedRecord {
                 FromShieldedSource::Registration { .. } => PlatformActivityKind::RegistrationRefund,
             },
             state: self.state,
+            pending_dispatch: (self.state == PlatformActivityState::Pending
+                && matches!(self.source, FromShieldedSource::Unshield))
+            .then_some(PendingDispatch::Queued),
             credits: self.shown(),
             address: Some(self.to.clone()),
             to: None,
@@ -839,6 +847,7 @@ fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, Platfo
         id: format!("released-{at}-{tag}"),
         kind: PlatformActivityKind::Incoming,
         state: PlatformActivityState::Done,
+        pending_dispatch: None,
         credits,
         address: Some(address.to_owned()),
         to: None,
@@ -1074,6 +1083,8 @@ pub(crate) struct FundEvidence {
     /// Every fund lock the library tracks, any status.
     pub(crate) tracked: HashSet<OutPoint>,
     pub(crate) tracked_shields: HashSet<OutPoint>,
+    /// Locks whose exact outpoint has been seen locked on Core.
+    pub(crate) sent: HashSet<OutPoint>,
     /// SPV and the wallet's scan caught up: a lock not tracked now is gone.
     pub(crate) caught_up: bool,
 }
@@ -1149,6 +1160,7 @@ pub(crate) async fn record_fund(
     (outpoint, duffs): (OutPoint, u64),
     address: String,
     credits: u64,
+    lock_sent: bool,
 ) -> Result<(), PlatformError> {
     let lock = wallet_lock(wallet);
     let _one = lock.lock().await;
@@ -1157,7 +1169,10 @@ pub(crate) async fn record_fund(
     if store.fund(&txid).await?.is_some() {
         return Ok(());
     }
-    let record = FundRecord::pending((outpoint, duffs), address, credits);
+    let record = FundRecord {
+        lock_sent,
+        ..FundRecord::pending((outpoint, duffs), address, credits)
+    };
     store.commit(vec![fund_write(&record)?]).await
 }
 
@@ -1395,6 +1410,15 @@ impl MoveRecord {
                 MoveKind::ToIdentity | MoveKind::Register => PlatformActivityKind::ToIdentity,
             },
             state: self.state,
+            pending_dispatch: (self.state == PlatformActivityState::Pending
+                && self.kind == MoveKind::ToCore)
+                .then(|| {
+                    if self.answered || self.signed {
+                        PendingDispatch::from_broadcast_evidence(self.answered)
+                    } else {
+                        PendingDispatch::Preparing
+                    }
+                }),
             credits,
             address: None,
             to,
@@ -2035,6 +2059,7 @@ pub(crate) fn changes(
             id: format!("seen-{height}-{address}"),
             kind,
             state: PlatformActivityState::Done,
+            pending_dispatch: None,
             credits,
             address: Some(address.clone()),
             to: None,
@@ -3613,7 +3638,15 @@ pub(crate) async fn activity(
     }
     let mut out: Vec<PlatformActivity> = (stored.into_iter().map(|(_, r)| r))
         .chain(moves.iter().map(MoveRecord::activity))
-        .chain(funds.iter().map(FundRecord::activity))
+        .chain(funds.iter().map(|f| {
+            let mut row = f.activity();
+            if row.pending_dispatch == Some(PendingDispatch::Queued)
+                && f.outpoint().is_some_and(|at| ev.sent.contains(&at))
+            {
+                row.pending_dispatch = Some(PendingDispatch::Broadcast);
+            }
+            row
+        }))
         .chain(
             shielded
                 .iter()
@@ -4507,6 +4540,7 @@ pub(crate) async fn move_to_core(
         expected_duffs: row.expected_duffs,
         to: row.to,
         state: record.state,
+        pending_dispatch: row.pending_dispatch,
         fee_credits: row.fee_credits,
         unattributed: record.winner_unknown(),
     })

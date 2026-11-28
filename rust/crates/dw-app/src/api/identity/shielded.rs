@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 use super::flows::GrantRequest;
 use crate::dto::mirror_enum;
-use crate::dto::platform::DispatchStateName;
+use crate::dto::platform::{DispatchStateName, PendingDispatch};
 use crate::error::{AppError, EngineCode};
 
 /// A credit amount the renderer sends as a decimal string.
@@ -427,14 +427,23 @@ pub struct ShieldOutcome {
     /// The asset lock's txid (hex).
     pub txid: String,
     pub state: ShieldState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
 }
 
 impl From<engine::ShieldOutcome> for ShieldOutcome {
     fn from(o: engine::ShieldOutcome) -> Self {
-        let engine::ShieldOutcome { txid, state } = o;
+        let engine::ShieldOutcome {
+            txid,
+            state,
+            pending_dispatch,
+        } = o;
         ShieldOutcome {
             txid,
             state: state.into(),
+            pending_dispatch: pending_dispatch.map(Into::into),
         }
     }
 }
@@ -578,6 +587,10 @@ pub struct PendingShield {
     pub txid: String,
     pub duffs: u64,
     pub proved: bool,
+    /// Broadcast evidence for this asset lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
     /// The lock may already be applied ("Checking": Platform said so
     /// unproved, an apply failed after signing, or a restore read it back);
     /// its amount may already be in the shielded balance. `resumeShield`
@@ -592,12 +605,14 @@ impl From<engine::PendingShield> for PendingShield {
             txid,
             duffs,
             proved,
+            pending_dispatch,
             consumption_unknown,
         } = p;
         PendingShield {
             txid,
             duffs,
             proved,
+            pending_dispatch: Some(pending_dispatch.into()),
             consumption_unknown,
         }
     }
@@ -653,6 +668,10 @@ pub struct ShieldedSpendOutcome {
     /// The address paid.
     pub to: String,
     pub state: ShieldedSpendState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
     /// For a `pending` spend, the library's record of it, when it kept one.
     pub unresolved: Option<UnresolvedSpend>,
 }
@@ -671,6 +690,8 @@ impl From<engine::ShieldedSpendOutcome> for ShieldedSpendOutcome {
             balance,
             to,
             state: state.into(),
+            pending_dispatch: (state == engine::ShieldedSpendState::Pending)
+                .then_some(PendingDispatch::Queued),
             unresolved: unresolved.map(Into::into),
         }
     }
@@ -693,6 +714,10 @@ pub struct UnshieldToPlatformOutcome {
     /// The Platform address paid.
     pub to: String,
     pub state: ShieldedSpendState,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
     pub unresolved: Option<UnresolvedSpend>,
     pub record: Option<String>,
 }
@@ -712,14 +737,16 @@ impl From<engine::UnshieldToPlatformOutcome> for UnshieldToPlatformOutcome {
             balance,
             to,
             state: state.into(),
+            pending_dispatch: (state == engine::ShieldedSpendState::Pending)
+                .then_some(PendingDispatch::Queued),
             unresolved: unresolved.map(Into::into),
             record,
         }
     }
 }
 
-/// Where a spend stands when the call returns. `pending`: it went out and
-/// its result is not confirmed. It is never failed meanwhile: its history
+/// Where a spend stands when the call returns. `pending`: the wallet
+/// holds the spend and its result is unknown. Its history
 /// row (`unresolved.activityId`) turns `confirmed` when a scan sees it
 /// executed, or `failed` when the notes come back (not executed). The
 /// wallet re-sends the same signed transition itself; offer no retry.
@@ -878,6 +905,10 @@ pub struct ShieldedActivity {
     pub memo: Option<String>,
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
+    /// Broadcast evidence while the transfer is pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pending_dispatch: Option<PendingDispatch>,
     pub created_at: Option<u64>,
     /// The DashPay contact a withdrawal paid, when it was a contact
     /// payment.
@@ -916,6 +947,8 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             memo,
             block_height,
             status: status.into(),
+            pending_dispatch: (status == engine::ShieldedActivityStatus::Pending)
+                .then_some(PendingDispatch::Queued),
             created_at,
             contact: contact.map(Into::into),
             refusal: refusal.map(Into::into),
@@ -933,6 +966,31 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn unconfirmed_shielded_spends_cross_as_queued() {
+        let engine = engine::ShieldedSpendOutcome {
+            credits: 1,
+            balance: 2,
+            to: "fixture".into(),
+            state: engine::ShieldedSpendState::Pending,
+            unresolved: None,
+        };
+        let shielded = serde_json::to_value(ShieldedSpendOutcome::from(engine.clone())).unwrap();
+        assert_eq!(shielded["pendingDispatch"], "queued");
+        let platform = serde_json::to_value(UnshieldToPlatformOutcome::from(
+            engine::UnshieldToPlatformOutcome {
+                credits: engine.credits,
+                balance: engine.balance,
+                to: engine.to,
+                state: engine.state,
+                unresolved: engine.unresolved,
+                record: Some("from-shielded-fixture".into()),
+            },
+        ))
+        .unwrap();
+        assert_eq!(platform["pendingDispatch"], "queued");
+    }
 
     #[test]
     fn core_max_coin_set_round_trips_through_the_app_contract() {

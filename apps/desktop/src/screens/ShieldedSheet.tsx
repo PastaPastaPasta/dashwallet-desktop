@@ -327,11 +327,11 @@ function Outcome({ flow, fmt }: { flow: ShieldedFlow; fmt: ReturnType<typeof use
   if (r.kind === "shield") {
     const s = r.outcome.state;
     if (s.kind === "applied") ({ title, text } = { title: C.done.add.title, text: C.done.add.text(fmt.credits(s.balance)) });
-    else if (s.kind === "proofWaiting") ({ title, text } = C.done.waiting);
+    else if (s.kind === "proofWaiting") return null;
     else if (s.kind === "consumptionUnknown") ({ title, text } = C.done.checking);
     else ({ title, text } = { title: C.done.notApplied.title, text: C.done.notApplied.text(s.error) });
   } else if (r.outcome.state === "pending") {
-    ({ title, text } = C.done.unconfirmed);
+    return null;
   } else if (flow.kind === "toPlatform") {
     ({ title } = C.done.toPlatform);
     text = C.done.toPlatform.text(r.outcome.to);

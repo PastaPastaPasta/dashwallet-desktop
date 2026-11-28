@@ -500,7 +500,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
         {contact && row?.counterparty && <ContactFact walletId={walletId} counterparty={row.counterparty} name={contact} sent={amount < 0} onView={onViewContact} />}
         {counterparty && (
           <DetailRow label={amount < 0 ? "To" : "Received with"}>
-            <CopyValue value={counterparty} label="address" />
+            <CopyValue value={counterparty} label="address" truncate />
             {own && <span className="detail-note"> (own address)</span>}
           </DetailRow>
         )}
@@ -524,7 +524,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
           {confirmations && <DetailRow label="Confirmations">{confirmations}</DetailRow>}
           {d.blockHeight !== null && <DetailRow label="Block">{d.blockHeight.toLocaleString(backend.locale)}</DetailRow>}
           <DetailRow label="Transaction ID" testId="tx-detail-txid">
-            <CopyValue value={d.txid} label="transaction ID" mono />
+            <CopyValue value={d.txid} label="transaction ID" mono truncate />
           </DetailRow>
           <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
           {d.rawHex && (
@@ -537,8 +537,10 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
         <ul role="list" className="io-list" data-testid="tx-detail-inputs">
           {d.inputs.map((i) => (
             <li key={`${i.previousTxid}:${i.previousVout}`} className="io-row">
-              <span className="mono io-ref">{`${i.previousTxid.slice(0, 16)}…:${i.previousVout}`}</span>
-              <span>{i.address ?? "—"}</span>
+              <span className="mono io-ref">
+                <CopyValue value={i.previousTxid} suffix={`:${i.previousVout}`} label="transaction ID" mono truncate />
+              </span>
+              <span>{i.address ? <CopyValue value={i.address} label="address" truncate /> : "—"}</span>
               {i.amount !== null ? <AmountText text={display.full(i.amount)} unitName={unit} glyph={false} /> : <span title="Not a wallet input">—</span>}
             </li>
           ))}
@@ -549,7 +551,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             <li key={o.vout} className="io-row">
               <span className="mono io-ref">#{o.vout}</span>
               <span>
-                {o.address ?? "—"}
+                {o.address ? <CopyValue value={o.address} label="address" truncate /> : "—"}
                 {o.isChange ? " (change)" : o.isMine ? " (own address)" : ""}
               </span>
               <AmountText text={display.full(o.amount)} unitName={unit} glyph={false} />

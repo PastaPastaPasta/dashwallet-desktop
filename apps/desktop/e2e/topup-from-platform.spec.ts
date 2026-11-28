@@ -299,14 +299,18 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
-  test(`an open outcome sheet takes Activity's answer once the exit can no longer land (${theme})`, async ({ page }) => {
+  test(`a pending exit changes to failed in Activity once it can no longer land (${theme})`, async ({ page }) => {
     const errors = await heldTopUp(page, theme);
     await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
     await page.getByTestId("topup-move-to-core").click();
     await moveConfirm(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await expect(page.locator(".toast")).toHaveText("Sending…");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    await page.getByTestId("sidebar-activity").click();
+    const row = page.locator('[data-txid^="platform:moveToCore:"]').first();
+    await expect(row).toContainText("Sending…");
     // Activity proves the top-up executed in the exit's place.
     await page.evaluate(() => {
       const f = window.__dwFixture!;
@@ -316,9 +320,8 @@ for (const theme of THEMES) {
       );
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } } as never);
     });
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
-    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again.");
-    await moveShot(page, theme, "exit-settled-failed");
+    await expect(row).toContainText("Not accepted");
+    await expect(row).not.toContainText("Sending…");
     expect(errors).toEqual([]);
   });
 
