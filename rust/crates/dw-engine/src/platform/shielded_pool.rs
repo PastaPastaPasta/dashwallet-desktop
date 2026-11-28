@@ -3091,7 +3091,7 @@ struct OrphanedDispatch {
     activity: [u8; 32],
     st_hash: [u8; 32],
     anchor: [u8; 32],
-    recorded_at: u64,
+    recorded_at: Option<u64>,
     nullifiers: Vec<[u8; 32]>,
 }
 
@@ -3110,8 +3110,7 @@ async fn orphaned_dispatches(
         for artifact in artifacts {
             if artifact.origin != ArtifactOrigin::Dispatched
                 || !open_artifact(&artifact)
-                || artifact.selected.is_empty()
-                || artifact.selected.iter().any(|(_, spent)| *spent)
+                || artifact.selected.iter().all(|(_, spent)| *spent)
             {
                 continue;
             }
@@ -3131,7 +3130,7 @@ async fn orphaned_dispatches(
             ) {
                 continue;
             }
-            let Some(Some(recorded_at)) =
+            let Some(recorded_at) =
                 super::shielded_release::presence(session, wallet, st_hash).await
             else {
                 continue;
@@ -3142,7 +3141,11 @@ async fn orphaned_dispatches(
                 st_hash,
                 anchor,
                 recorded_at,
-                nullifiers: artifact.selected.into_iter().map(|(n, _)| n).collect(),
+                nullifiers: artifact
+                    .selected
+                    .into_iter()
+                    .filter_map(|(n, spent)| (!spent).then_some(n))
+                    .collect(),
             });
         }
     }
@@ -3167,7 +3170,12 @@ async fn release_orphaned_dispatches(
     let mut failure = None;
     for c in candidates {
         let subwallet = SubwalletId::new(c.wallet.0, SHIELDED_ACCOUNT);
-        if !evidence.proves_spend_cannot_execute(&reading, &c.anchor, c.recorded_at, &c.nullifiers)
+        let Some(recorded_at) = c.recorded_at else {
+            continue;
+        };
+        // Already-spent inputs retain their journal holds. One unspent input
+        // in this covering scan rules out execution of the atomic transition.
+        if !evidence.proves_spend_cannot_execute(&reading, &c.anchor, recorded_at, &c.nullifiers)
             || !matches!(
                 holds_activity(&*coordinator.store().read().await, subwallet, &c.activity),
                 Ok(false)
@@ -6089,6 +6097,16 @@ async fn pass(
         return PassOutcome::HeldImports;
     }
     let orphaned = orphaned_dispatches(session, &coordinator, &wallets).await;
+    let heightless = orphaned
+        .iter()
+        .filter(|c| c.recorded_at.is_none())
+        .map(|c| (c.wallet, c.st_hash, c.anchor))
+        .collect();
+    if let Err(e) =
+        super::shielded_release::remember_orphan_anchors(session, manager, heightless).await
+    {
+        tracing::warn!(error = %e, "the orphaned dispatch anchors could not be recorded");
+    }
     if let Some((count, proved_at)) = count
         && orphaned.is_empty()
         && pool_is_idle(session, manager, &coordinator, count)

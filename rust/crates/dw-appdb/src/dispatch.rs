@@ -2211,18 +2211,17 @@ impl DispatchJournal {
             )));
         }
         if disposition == Some(("not_executed", Some("pruned"))) {
-            let spent = tx.query_row(
-                "SELECT EXISTS (
-                    SELECT 1 FROM shielded_artifact a
-                    JOIN shielded_artifact_note n USING (wallet, activity)
-                    WHERE a.wallet = ?1 AND a.st_hash = ?2 AND n.spent = 1
-                )",
+            let no_unspent_inputs = tx.query_row(
+                "SELECT COALESCE(MIN(n.spent), 0) = 1
+                 FROM shielded_artifact a
+                 JOIN shielded_artifact_note n USING (wallet, activity)
+                 WHERE a.wallet = ?1 AND a.st_hash = ?2 AND a.status <> 'archived'",
                 params![&wallet[..], &st_hash[..]],
                 |row| row.get::<_, bool>(0),
             )?;
-            if spent {
+            if no_unspent_inputs {
                 return Err(AppDbError::Corrupt(
-                    "the pruned dispatch has inputs already marked spent".into(),
+                    "the pruned dispatch has every input marked spent".into(),
                 ));
             }
         }

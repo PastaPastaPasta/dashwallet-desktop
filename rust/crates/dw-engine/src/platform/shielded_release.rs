@@ -231,6 +231,28 @@ pub(crate) async fn anchor_recorded_at_dispatch(
     Ok(())
 }
 
+/// Repairs a missing dispatch height only while a verified anchor proof can still show it.
+pub(super) async fn remember_orphan_anchors(
+    session: &NetworkSession,
+    manager: &Manager,
+    orphans: Vec<(WalletId, [u8; 32], [u8; 32])>,
+) -> Result<(), String> {
+    if orphans.is_empty() {
+        return Ok(());
+    }
+    let Some(anchors) = scoped(release_net(session, manager).anchors()).await else {
+        return Ok(());
+    };
+    if anchors.verified {
+        for (wallet, hash, anchor) in orphans {
+            if anchors.value.contains(&anchor) {
+                record_presence(session, wallet, hash, anchors.height).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the journal keeps the library's `Unresolved(Cancelled)` for `a`.
 pub(crate) fn disposition_is_cancelled(a: &ShieldedArtifact) -> bool {
     a.disposition
