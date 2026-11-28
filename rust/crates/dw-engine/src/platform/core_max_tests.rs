@@ -594,6 +594,7 @@ fn core_max_leaves_other_accounts() {
             denomination_other,
             pending_other,
         ],
+        excluded: Default::default(),
     };
     let path = |p: &str| Some(DerivationPath::from_str(p).unwrap());
     let account: std::collections::HashMap<OutPoint, Option<DerivationPath>> = [

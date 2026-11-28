@@ -1070,6 +1070,7 @@ mod tests {
             coins: CoinSnapshot {
                 height: 100,
                 coins: Vec::new(),
+                excluded: Default::default(),
             },
             unspent: HashSet::new(),
             locked: HashSet::new(),

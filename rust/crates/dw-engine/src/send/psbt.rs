@@ -45,6 +45,106 @@ fn held_lock_input(tx: &Transaction, held: &HashSet<OutPoint>) -> Result<(), Psb
     }
 }
 
+/// Why `outpoint` is held by the wallet and what frees it, or `None` when
+/// PSBT signing and broadcast may spend it. User-locked coins without a
+/// wallet hold stay allowed so a user can lock an input while collecting
+/// co-signatures (`pin_377_a_signed_psbts_coin_locked_by_hand_is_not_spent_and_the_psbt_still_broadcasts`).
+fn held_input_reason(
+    outpoint: OutPoint,
+    snapshot: &crate::coins::CoinSnapshot,
+    recovery_excluded: &crate::withhold::Exclusions,
+    unresolved_locks: &HashSet<OutPoint>,
+) -> Option<String> {
+    let mut lock_held = unresolved_locks.contains(&outpoint);
+    let mut handoff = false;
+    let mut mixing_held = false;
+    let mut awaiting_history = false;
+    let mut reserved = false;
+    let mut excluded = snapshot
+        .excluded
+        .get(&outpoint)
+        .copied()
+        .max(recovery_excluded.get(&outpoint).copied());
+
+    for coin in snapshot
+        .coins
+        .iter()
+        .filter(|c| c.utxo.outpoint == outpoint)
+    {
+        lock_held |= coin.lock_input || coin.unresolved_lock;
+        handoff |= coin.coinjoin_handoff.is_some();
+        mixing_held |= coin.mixing_held;
+        awaiting_history |= coin.awaiting_history;
+        reserved |= coin.reserved;
+        if let Some(reason) = coin.excluded {
+            excluded = Some(excluded.map_or(reason, |cur| cur.max(reason)));
+        }
+    }
+
+    if lock_held {
+        return Some(format!(
+            "input {outpoint} is held: an asset lock spends it, unresolved (Resolve stuck funding)"
+        ));
+    }
+    if let Some(reason) = excluded {
+        let why = match reason {
+            crate::ExclusionReason::ForkKeptLock => {
+                "a chain fork returned a coin that an InstantSend payment may still spend (wait for sync to settle or rescan the wallet)"
+            }
+            crate::ExclusionReason::RescanHold => {
+                "waiting for a wallet rescan or pending retry to confirm it is unspent (let the rescan finish or wait for the pending transaction to settle)"
+            }
+            crate::ExclusionReason::PendingUnproven => {
+                "it comes from an unconfirmed payment that may not confirm (wait for it to confirm or receive an InstantSend lock)"
+            }
+        };
+        return Some(format!("input {outpoint} is held: {why}"));
+    }
+    if handoff {
+        return Some(format!(
+            "input {outpoint} is held: it was handed to CoinJoin mixing and may still be spent by a round (wait for the round to confirm or use CoinJoin -> Return to Core)"
+        ));
+    }
+    if mixing_held {
+        return Some(format!(
+            "input {outpoint} is held: it is locked in an active CoinJoin mixing session (stop mixing and wait for the session to end)"
+        ));
+    }
+    if awaiting_history {
+        return Some(format!(
+            "input {outpoint} is held: its transaction history has not finished loading (wait for wallet sync to finish)"
+        ));
+    }
+    if reserved {
+        return Some(format!(
+            "input {outpoint} is held: another pending payment, sweep, or restore hold reserves it (wait for it to confirm or abandon it in Activity)"
+        ));
+    }
+    None
+}
+
+/// Refuses `tx` when any of its inputs is held by the wallet (unresolved asset
+/// lock, fork/rescan/unproven exclusion, CoinJoin hand-off, active mixing
+/// session, awaiting history, or another reservation).
+fn check_held_inputs(
+    tx: &Transaction,
+    snapshot: &crate::coins::CoinSnapshot,
+    recovery_excluded: &crate::withhold::Exclusions,
+    unresolved_locks: &HashSet<OutPoint>,
+) -> Result<(), PsbtFailure> {
+    for input in &tx.input {
+        if let Some(reason) = held_input_reason(
+            input.previous_output,
+            snapshot,
+            recovery_excluded,
+            unresolved_locks,
+        ) {
+            return Err(PsbtFailure::Invalid(reason));
+        }
+    }
+    Ok(())
+}
+
 /// Why a PSBT call failed (`psbt.*` codes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PsbtFailure {
@@ -313,6 +413,16 @@ impl TxDraft {
                 let history = session.hub.history.snapshot(&this.wallet_id);
                 let state = crate::wallet_read::info_of(&wallet).await?;
                 let info = &state.core_wallet;
+                let recovery_excluded = session.hub.recovery_exclusions(this.wallet_id, info);
+                if let Some(input) = tx
+                    .input
+                    .iter()
+                    .find(|i| recovery_excluded.contains_key(&i.previous_output))
+                {
+                    return Err(
+                        super::SendFailure::OutpointUnavailable(input.previous_output).into(),
+                    );
+                }
                 let network = this.network();
                 let inputs = tx
                     .input
@@ -458,9 +568,10 @@ impl NetworkSession {
     /// unknown and nothing is signed (`FeeUnknown`). A fee above
     /// [`MAX_TX_FEE`](super::MAX_TX_FEE) is refused (`AbsurdFee`), as the
     /// send flow does: a signed PSBT can be broadcast anywhere, past
-    /// `broadcast_psbt`'s rate check. An input of an asset lock, tracked or
-    /// signed by a funding call whose step is unresolved, is refused
-    /// (`Invalid`, [`held_lock_input`]).
+    /// `broadcast_psbt`'s rate check. Any input held by the wallet (unresolved
+    /// asset lock, fork/rescan/unproven exclusion, CoinJoin hand-off, active
+    /// mixing session, awaiting history, or another reservation) is refused
+    /// (`Invalid`, [`check_held_inputs`]).
     pub async fn sign_psbt(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -499,15 +610,17 @@ impl NetworkSession {
             // for, as a send or contact payment.
             this.replay_guard(wallet_id, 0).await?;
             let snapshot = this.coin_snapshot(&_fence, &w).await?;
-            // The raw set too: an input the wallet already reads spent (the
-            // lock seen, not proved) is no coin of the snapshot.
-            let mut held = this.leases.unresolved_lock_inputs(wallet_id);
-            held.extend(
-                (snapshot.coins.iter())
-                    .filter(|c| c.lock_input || c.unresolved_lock)
-                    .map(|c| c.utxo.outpoint),
-            );
-            held_lock_input(&psbt.unsigned_tx, &held)?;
+            let recovery_excluded = {
+                let state = crate::wallet_read::info_of(&w).await?;
+                this.hub.recovery_exclusions(wallet_id, &state.core_wallet)
+            };
+            let unresolved = this.leases.unresolved_lock_inputs(wallet_id);
+            check_held_inputs(
+                &psbt.unsigned_tx,
+                &snapshot,
+                &recovery_excluded,
+                &unresolved,
+            )?;
             let vault = this.vault.clone();
             let signer = tokio::task::spawn_blocking(move || {
                 let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
@@ -531,11 +644,13 @@ impl NetworkSession {
     /// 0.1 DASH/kB (from txid-verified input values only; an input without
     /// one is `Invalid`) and broadcasts with the send flow's verdict rules
     /// (accepted; never sent: `NoPeers` / `BroadcastRejected`; no verdict:
-    /// `BroadcastUnknown`). Returns the txid. An input of an asset lock a
-    /// funding call of any wallet signed whose step is unresolved is
-    /// refused (`Invalid`, [`held_lock_input`]), read right before the send
-    /// under the coin fence of each wallet owning a signable input, held through the
-    /// send (up to dash-spv's acceptance wait).
+    /// `BroadcastUnknown`). Returns the txid. Any input held by an owning
+    /// wallet (unresolved asset lock, fork/rescan/unproven exclusion, CoinJoin
+    /// hand-off, active mixing session, awaiting history, or another
+    /// reservation) is refused (`Invalid`, [`check_held_inputs`] /
+    /// [`held_lock_input`]), read right before the send under the coin fence
+    /// of each wallet owning a signable input, held through the send (up to
+    /// dash-spv's acceptance wait).
     pub async fn broadcast_psbt(
         self: &Arc<Self>,
         mut psbt: PartiallySignedTransaction,
@@ -574,7 +689,7 @@ impl NetworkSession {
             let network = this.network.core_network();
             let mut wallets = manager.list_wallet_ids_blocking();
             wallets.sort_unstable();
-            let mut fences = Vec::new();
+            let mut owning = Vec::new();
             for id in wallets.into_iter().map(WalletId) {
                 let Ok(w) = this.wallet(&id).await else {
                     continue;
@@ -588,8 +703,18 @@ impl NetworkSession {
                         .is_empty()
                 };
                 if owns {
-                    fences.push(this.coin_fences.acquire(id).await);
+                    let fence = this.coin_fences.acquire(id).await;
+                    owning.push((id, w, fence));
                 }
+            }
+            for (id, w, fence) in &owning {
+                let snapshot = this.coin_snapshot(fence, w).await?;
+                let recovery_excluded = {
+                    let state = crate::wallet_read::info_of(w).await?;
+                    this.hub.recovery_exclusions(*id, &state.core_wallet)
+                };
+                let unresolved = this.leases.unresolved_lock_inputs(*id);
+                check_held_inputs(&tx, &snapshot, &recovery_excluded, &unresolved)?;
             }
             held_lock_input(&tx, &this.leases.unresolved_lock_inputs_of_any())?;
             if !started {

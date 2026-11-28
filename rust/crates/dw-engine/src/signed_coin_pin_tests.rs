@@ -671,3 +671,158 @@ fn mixing_session_held_coins_keep_coinjoin_total_steady() {
     assert_eq!(after.amount_and_rounds.amount, 4 * DENOM);
     assert_eq!(after.progress, before.progress);
 }
+
+#[test]
+fn psbt_sign_and_broadcast_refuse_coinjoin_handoff_input() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let make_coin = |seed: u8| {
+        let s = Arc::clone(&session);
+        let to = engine
+            .block_on(
+                session.on_runtime(async move { s.reserve_coinjoin_addresses(id, 1, false).await }),
+            )
+            .unwrap();
+        let paid = funding(seed, &to, DENOM);
+        mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+        mined(&engine, &session, id, TIP, vec![foreign()]);
+        let outpoint = OutPoint::new(paid.txid(), 0);
+        (paid, outpoint)
+    };
+    let psbt_of = |prev: &Transaction, outpoint: OutPoint| {
+        let unsigned = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: outpoint,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: DENOM - 1_000,
+                script_pubkey: super::elsewhere(),
+            }],
+            special_transaction_payload: None,
+        };
+        let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+        psbt.inputs[0].non_witness_utxo = Some(prev.clone());
+        psbt
+    };
+    let grant = || {
+        session
+            .vault()
+            .authorize(
+                GrantPurpose::Spend {
+                    max_duffs: 2 * DENOM,
+                },
+                Some(&id.0),
+                Credential::None,
+            )
+            .unwrap()
+            .id
+    };
+    fn assert_handoff_refused<T: std::fmt::Debug>(
+        r: Result<T, crate::EngineError>,
+        outpoint: OutPoint,
+    ) {
+        match r {
+            Err(crate::EngineError::Psbt(crate::PsbtFailure::Invalid(d))) => {
+                assert!(
+                    d.contains(&outpoint.to_string())
+                        && d.contains("held")
+                        && d.contains("Return to Core"),
+                    "expected held CoinJoin hand-off refusal naming coin and way out, got: {d}"
+                );
+            }
+            other => {
+                panic!("expected PsbtFailure::Invalid for held hand-off coin, got: {other:?}")
+            }
+        }
+    }
+
+    // Case 1: durable FinalInputs hand-off after signing into a mixing round.
+    let (prev_round, coin_round) = make_coin(61);
+    let psbt_round = psbt_of(&prev_round, coin_round);
+    let pre_signed_round = engine
+        .block_on(session.sign_psbt(id, psbt_round.clone(), grant()))
+        .expect("free CoinJoin coin signs before hand-off");
+    sign_into_round(
+        &engine,
+        &session,
+        id,
+        coin_round,
+        crate::coins::now_secs(),
+        |_| {},
+    );
+    let session = reopen(&engine, session);
+    assert_handoff_refused(
+        engine.block_on(session.sign_psbt(id, psbt_round, {
+            session
+                .vault()
+                .authorize(
+                    GrantPurpose::Spend {
+                        max_duffs: 2 * DENOM,
+                    },
+                    Some(&id.0),
+                    Credential::None,
+                )
+                .unwrap()
+                .id
+        })),
+        coin_round,
+    );
+    assert_handoff_refused(
+        engine.block_on(session.broadcast_psbt(pre_signed_round)),
+        coin_round,
+    );
+
+    // Case 2: legacy CoinJoin hand-off on an untracked wallet.
+    let s = Arc::clone(&session);
+    let to_legacy = engine
+        .block_on(
+            session.on_runtime(async move { s.reserve_coinjoin_addresses(id, 1, false).await }),
+        )
+        .unwrap();
+    let prev_legacy = funding(62, &to_legacy, DENOM);
+    mined(&engine, &session, id, TIP + 1, vec![prev_legacy.clone()]);
+    mined(&engine, &session, id, TIP + 2, vec![foreign()]);
+    let coin_legacy = OutPoint::new(prev_legacy.txid(), 0);
+    let psbt_legacy = psbt_of(&prev_legacy, coin_legacy);
+    let legacy_grant = session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 2 * DENOM,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let pre_signed_legacy = engine
+        .block_on(session.sign_psbt(id, psbt_legacy.clone(), legacy_grant))
+        .expect("free CoinJoin coin signs before legacy classification");
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+    let legacy_grant2 = session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 2 * DENOM,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    assert_handoff_refused(
+        engine.block_on(session.sign_psbt(id, psbt_legacy, legacy_grant2)),
+        coin_legacy,
+    );
+    assert_handoff_refused(
+        engine.block_on(session.broadcast_psbt(pre_signed_legacy)),
+        coin_legacy,
+    );
+}
