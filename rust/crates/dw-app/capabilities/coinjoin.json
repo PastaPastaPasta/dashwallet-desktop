@@ -19,6 +19,8 @@
     "allow-coinjoin-recovery-scan",
     "allow-mixed-coins-sweep-plan",
     "allow-move-mixed-coins",
+    "allow-return-from-mixing-plan",
+    "allow-return-from-mixing",
     "allow-mixed-coins-consolidation-plan",
     "allow-consolidate-mixed-coins",
     "allow-resend-mixed-coins"

@@ -26,14 +26,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "NetworkSession::coinjoin_addresses_for_test",
         "test only: dwcli's `mix-shield-test` funds the CoinJoin account for the regtest suite (debug builds only)",
     ),
-    (
-        "NetworkSession::return_from_mixing",
-        "CLI: `dwcli move-mixed --held` returns inputs held after mixing",
-    ),
-    (
-        "NetworkSession::return_from_mixing_plan",
-        "CLI: `dwcli move-mixed --held` previews the return and its fee",
-    ),
 ];
 
 /// The CoinJoin options (Options, CoinJoin, QT-046). Global for the
@@ -314,6 +306,10 @@ pub struct CoinJoinBalances {
     /// Every free coin of the CoinJoin account, mixed or not: the move card
     /// shows while it is above zero.
     pub coinjoin_account: u64,
+    /// Confirmed, unlocked CoinJoin-account coins held by a coordinator
+    /// hand-off (`Legacy`, `FinalInputs`, `Collateral`): what "Return to Core"
+    /// can recover.
+    pub held_from_mixing: u64,
 }
 
 impl From<EngineBalances> for CoinJoinBalances {
@@ -325,6 +321,7 @@ impl From<EngineBalances> for CoinJoinBalances {
             fully_mixed,
             mixable_unfinished,
             coinjoin_account,
+            held_from_mixing,
         } = b;
         CoinJoinBalances {
             anonymizable,
@@ -333,6 +330,7 @@ impl From<EngineBalances> for CoinJoinBalances {
             fully_mixed,
             mixable_unfinished,
             coinjoin_account,
+            held_from_mixing,
         }
     }
 }
@@ -845,6 +843,33 @@ commands! {
             .move_mixed_coins(id, destination.into(), quote_id, grant_id)
             .await?;
         Ok(result.into())
+    }
+
+    /// Quotes the explicit self-payment that returns coordinator-held inputs
+    /// to fresh Core addresses of this wallet.
+    #[facade("NetworkSession::return_from_mixing_plan")]
+    fn return_from_mixing_plan(state, wallet_id: String) -> MixedCoinsSweepPlan {
+        let id = parse_wallet_id(&wallet_id)?;
+        Ok(state
+            .session()
+            .await?
+            .return_from_mixing_plan(id)
+            .await?
+            .into())
+    }
+
+    /// Runs the user-approved Return to Core self-payment for held inputs.
+    #[facade("NetworkSession::return_from_mixing")]
+    fn return_from_mixing(
+        state,
+        wallet_id: String,
+        quote_id: String,
+        grant_id: String,
+    ) -> MixedCoinsSweepResult {
+        let id = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        let _in_flight = state.broadcasting();
+        Ok(session.return_from_mixing(id, quote_id, grant_id).await?.into())
     }
 
     /// The consolidation round before a move to Shielded. Reads coins only.

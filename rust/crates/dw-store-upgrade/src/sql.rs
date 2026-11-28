@@ -266,11 +266,15 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+pub(crate) fn sha256_reader(reader: &mut impl std::io::Read) -> std::io::Result<String> {
+    let mut h = Sha256::new();
+    std::io::copy(reader, &mut h)?;
+    Ok(hex(&h.finalize()))
+}
+
 pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    std::io::copy(&mut f, &mut h)?;
-    Ok(hex(&h.finalize()))
+    sha256_reader(&mut f)
 }
 
 pub(crate) fn integrity_ok(conn: &Connection) -> rusqlite::Result<bool> {

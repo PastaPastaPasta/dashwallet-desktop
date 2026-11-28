@@ -552,6 +552,10 @@ export interface Backend {
   mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDestination): Promise<MixedCoinsSweepPlan>;
   /** Runs the confirmed plan (`quoteId`); `coinjoin.plan_changed` when its coins changed. */
   moveMixedCoins(walletId: string, destination: MixedCoinsDestination, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult>;
+  /** Quotes a fee-bearing self-payment for inputs held from a coordinator. */
+  returnFromMixingPlan(walletId: string): Promise<MixedCoinsSweepPlan>;
+  /** Runs the user-approved Return to Core self-payment. */
+  returnFromMixing(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult>;
   /** "Try again" on a chunk of unknown outcome: its recorded bytes again, never a new signature. */
   resendMixedCoins(walletId: string, txid: string | null): Promise<MixedCoinsResend[]>;
   /** The consolidation round before a move to Shielded of more coins than one lock takes (50). */

@@ -1771,6 +1771,21 @@ export function moveMixedCoins(walletId: string, destination: MixedCoinsDestinat
 }
 
 /**
+ * Quotes the explicit self-payment that returns coordinator-held inputs
+ * to fresh Core addresses of this wallet.
+ */
+export function returnFromMixingPlan(walletId: string): Promise<MixedCoinsSweepPlan> {
+  return invoke<MixedCoinsSweepPlan>("return_from_mixing_plan", { walletId });
+}
+
+/**
+ * Runs the user-approved Return to Core self-payment for held inputs.
+ */
+export function returnFromMixing(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("return_from_mixing", { walletId, quoteId, grantId });
+}
+
+/**
  * The consolidation round before a move to Shielded. Reads coins only.
  */
 export function mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoinsConsolidationPlan> {
@@ -4056,6 +4071,8 @@ export type CommandArgs = {
   coinjoin_recovery_scan: { walletId: string };
   mixed_coins_sweep_plan: { walletId: string; destination: MixedCoinsDestination };
   move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; quoteId: string; grantId: string };
+  return_from_mixing_plan: { walletId: string };
+  return_from_mixing: { walletId: string; quoteId: string; grantId: string };
   mixed_coins_consolidation_plan: { walletId: string };
   consolidate_mixed_coins: { walletId: string; quoteId: string; grantId: string };
   resend_mixed_coins: { walletId: string; txid: string | null };
@@ -4489,6 +4506,8 @@ export type CommandResults = {
   coinjoin_recovery_scan: CoinJoinRecoveryReport;
   mixed_coins_sweep_plan: MixedCoinsSweepPlan;
   move_mixed_coins: MixedCoinsSweepResult;
+  return_from_mixing_plan: MixedCoinsSweepPlan;
+  return_from_mixing: MixedCoinsSweepResult;
   mixed_coins_consolidation_plan: MixedCoinsConsolidationPlan;
   consolidate_mixed_coins: MixedCoinsSweepResult;
   resend_mixed_coins: Array<MixedCoinsResend>;
@@ -4924,6 +4943,8 @@ export const COMMANDS: Record<CommandName, string> = {
   coinjoin_recovery_scan: "coinjoin",
   mixed_coins_sweep_plan: "coinjoin",
   move_mixed_coins: "coinjoin",
+  return_from_mixing_plan: "coinjoin",
+  return_from_mixing: "coinjoin",
   mixed_coins_consolidation_plan: "coinjoin",
   consolidate_mixed_coins: "coinjoin",
   resend_mixed_coins: "coinjoin",

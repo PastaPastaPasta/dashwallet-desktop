@@ -539,3 +539,60 @@ fn nothing_records_a_snapshot_while_a_restore_is_requested() {
     assert_eq!(record(&f), before);
     assert!(!backups.join(crate::snapshot::PART_UPGRADED_BY).exists());
 }
+
+/// If recording `snapshot removed` (or `snapshot none`) renames `UPGRADED-FROM`
+/// and then fails to fsync `upgrade-backups/`, a retry must sync
+/// `upgrade-backups/` before succeeding rather than trusting the unsynced record.
+#[test]
+fn missing_snapshot_removal_retry_syncs_backups_dir_before_succeeding() {
+    let (f, s) = migrated();
+    let conn = rusqlite::Connection::open(f.wallet()).unwrap();
+    let id: Vec<u8> = conn
+        .query_row("SELECT wallet_id FROM wallets LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    drop(conn);
+    let wallet: [u8; 32] = id.try_into().unwrap();
+    let expected_name = s.dir().file_name().unwrap().to_string_lossy().into_owned();
+    let expected_manifest = s.manifest_sha256().to_string();
+    fs::remove_dir_all(s.dir()).unwrap();
+
+    arm_fault("fsx.fsync_dir", 0);
+    let first = crate::retire_snapshot_for_wallet_removal(&f.net, &wallet);
+    disarm_fault();
+    assert!(
+        matches!(first, Err(StoreUpgradeError::Io { .. })),
+        "post-rename dir fsync failure must abort removal: {first:?}"
+    );
+    assert!(
+        record(&f).contains(&format!(
+            "snapshot removed {expected_name} {expected_manifest}\n"
+        )),
+        "rename wrote snapshot removed before dir fsync failed: {}",
+        record(&f)
+    );
+
+    arm_fault("fsx.fsync_dir", 0);
+    let retry = crate::retire_snapshot_for_wallet_removal(&f.net, &wallet);
+    disarm_fault();
+    assert!(
+        matches!(retry, Err(StoreUpgradeError::Io { .. })),
+        "retry must still fsync upgrade-backups/ before succeeding: {retry:?}"
+    );
+
+    crate::retire_snapshot_for_wallet_removal(&f.net, &wallet).unwrap();
+
+    // An explicit `snapshot none` record also requires a successful dir fsync on retry.
+    fs::write(
+        f.net.join(UPGRADE_BACKUPS_DIR).join(UPGRADED_FROM),
+        "dw-store-upgrade upgraded from\nformat 1\nsnapshot none\n",
+    )
+    .unwrap();
+    arm_fault("fsx.fsync_dir", 0);
+    let none_retry = crate::retire_snapshot_for_wallet_removal(&f.net, &wallet);
+    disarm_fault();
+    assert!(
+        matches!(none_retry, Err(StoreUpgradeError::Io { .. })),
+        "retry on snapshot none must still fsync upgrade-backups/: {none_retry:?}"
+    );
+    crate::retire_snapshot_for_wallet_removal(&f.net, &wallet).unwrap();
+}

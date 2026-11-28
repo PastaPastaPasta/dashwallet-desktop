@@ -7,7 +7,7 @@ import { useId, useRef, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus, useShieldedStatus } from "../../api/queries";
-import { MOVE_COPY, moveMixedFor, moveShieldWait, showsMoveCard } from "../../coinjoin/move";
+import { MOVE_COPY, moveMixedFor, moveShieldWait, RETURN_COPY, returnToCoreFor, showsMoveCard } from "../../coinjoin/move";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -21,6 +21,7 @@ import { SHIELDED_SPENDS_COPY, shieldedSpendsOff } from "../../shielded/spends";
 import { Page } from "../Routes";
 import { useViewAction, ViewFacts } from "./CoinJoinCard";
 import { MoveMixedSheet } from "./MoveMixedSheet";
+import { ReturnToCoreSheet } from "./ReturnToCoreSheet";
 
 const autoLockText = (secs: number) => AUTO_LOCK_CHOICES.find((c) => c.secs === secs)?.label ?? SecurityText.autoLockSeconds(secs);
 
@@ -112,14 +113,21 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
   const t = useT();
   const b = useBackend();
   const flow = moveMixedFor(b, walletId);
+  const returnFlow = returnToCoreFor(b, walletId);
   useModel(flow);
+  useModel(returnFlow);
+  const plain = useCoinJoinAmount(network);
+  const masked = useMaskedAmount(network);
+  const shownAmount = (duffs: number) => masked ?? plain(duffs);
   const id = useId();
   const shieldedStatus = useShieldedStatus(walletId);
   const shielded = shieldedStatus.data?.active === true;
   const spendsOff = shieldedSpendsOff(shieldedStatus.data);
   const wait = moveShieldWait(shieldedStatus.data);
   // The plan itself says what there is to move.
-  if (!showsMoveCard(status, flow)) return null;
+  if (!showsMoveCard(status, flow, returnFlow)) return null;
+  const hasFree = status.balances.coinjoinAccount > 0 || flow.open || flow.running || flow.step === "done";
+  const hasHeld = status.balances.heldFromMixing > 0 || returnFlow.open || returnFlow.running || returnFlow.step === "done";
   return (
     <section
       className="coinjoin-move card-l1"
@@ -128,25 +136,38 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
       aria-labelledby={`${id}-title`}
     >
       <h2 className="card-title" id={`${id}-title`}>
-        {MOVE_COPY.card.title}
+        {hasFree ? MOVE_COPY.card.title : RETURN_COPY.settingsTitle}
       </h2>
-      <p className="field-hint">{shielded ? MOVE_COPY.card.textShielded : MOVE_COPY.card.text}</p>
+      {hasFree && <p className="field-hint">{shielded ? MOVE_COPY.card.textShielded : MOVE_COPY.card.text}</p>}
+      {status.balances.heldFromMixing > 0 && (
+        <p className="field-hint" data-testid="coinjoin-held-note">
+          {RETURN_COPY.cardHeld(shownAmount(status.balances.heldFromMixing))}
+        </p>
+      )}
       <div className="coinjoin-move-actions">
-        <DashButton variant="tintedBlue" data-testid="coinjoin-move-open" onClick={() => flow.begin("wallet")}>
-          {MOVE_COPY.card.open}
-        </DashButton>
-        {shielded && (
+        {hasFree && (
+          <DashButton variant="tintedBlue" data-testid="coinjoin-move-open" onClick={() => flow.begin("wallet")}>
+            {MOVE_COPY.card.open}
+          </DashButton>
+        )}
+        {hasFree && shielded && (
           <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={spendsOff || wait !== null} why={spendsOff ? SHIELDED_SPENDS_COPY.shieldIn : wait?.why} onClick={() => flow.begin("shielded")}>
             {MOVE_COPY.card.shield}
           </DashButton>
         )}
-        {shielded && !spendsOff && wait?.unlock && (
+        {hasFree && shielded && !spendsOff && wait?.unlock && (
           <DashButton variant="tintedBlue" data-testid="coinjoin-move-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
             {wait.unlock === "unlock" ? t("transfer.shielded.receive.unlock") : t("shell.status.unlockFully")}
           </DashButton>
         )}
+        {hasHeld && (
+          <DashButton variant="tintedBlue" data-testid="coinjoin-return-open" onClick={() => returnFlow.begin()}>
+            {RETURN_COPY.open}
+          </DashButton>
+        )}
       </div>
       <MoveMixedSheet flow={flow} network={network} />
+      <ReturnToCoreSheet flow={returnFlow} network={network} />
     </section>
   );
 }

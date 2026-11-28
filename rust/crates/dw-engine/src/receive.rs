@@ -382,6 +382,60 @@ impl NetworkSession {
         Ok(self.address_info(&fresh, &view, &labels, &self.tx_counts(&wallet)))
     }
 
+    /// Picks a BIP44 receive address for a Return to Core chunk: prefers a
+    /// freshly issued unused address ([`Self::issue_address`]), and when the
+    /// receive gap limit is already full of issued-but-unused addresses, falls
+    /// back to an available receiving address not already used in this sweep
+    /// (preferring one without an open payment request).
+    pub(crate) async fn return_receive_address(
+        &self,
+        wallet: WalletId,
+        used_in_sweep: &HashSet<Address>,
+    ) -> Result<Address, EngineError> {
+        match self.issue_address(wallet, None).await {
+            Ok(info) => {
+                let addr = info
+                    .address
+                    .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
+                    .map_err(|e| EngineError::Internal(format!("issued address: {e}")))?
+                    .require_network(self.network.core_network())
+                    .map_err(|e| EngineError::Internal(format!("issued address network: {e}")))?;
+                if !used_in_sweep.contains(&addr) {
+                    return Ok(addr);
+                }
+            }
+            Err(EngineError::GapLimit) => {}
+            Err(e) => return Err(e),
+        }
+        let view = self.pool_view(wallet).await?;
+        let appdb = self.live()?.appdb;
+        let w = wallet.to_string();
+        let requested: HashSet<String> = tokio::task::spawn_blocking(move || {
+            appdb
+                .receive_requests(&w)
+                .map(|rs| rs.into_iter().map(|r| r.address).collect())
+        })
+        .await?
+        .map_err(|e| EngineError::Storage(e.to_string()))?;
+        let mut available: Vec<&PoolAddress> = view
+            .addresses
+            .iter()
+            .filter(|a| {
+                a.chain == AddressChain::Receiving
+                    && matches!(a.state, AddressState::Available)
+                    && !used_in_sweep.contains(&a.address)
+            })
+            .collect();
+        available.sort_by_key(|a| a.index);
+        let picked = available
+            .iter()
+            .find(|a| !requested.contains(&a.address.to_string()))
+            .or_else(|| available.first())
+            .copied()
+            .ok_or(EngineError::GapLimit)?;
+        Ok(picked.address.clone())
+    }
+
     /// Stores a payment request on a freshly issued address (QT-081/082).
     /// An amount of 0 means "any amount", as in dash-qt.
     pub async fn create_receive_request(

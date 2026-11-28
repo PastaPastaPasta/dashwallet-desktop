@@ -26,4 +26,10 @@ mixableUnfinished: number,
  * Every free coin of the CoinJoin account, mixed or not: the move card
  * shows while it is above zero.
  */
-coinjoinAccount: number, };
+coinjoinAccount: number,
+/**
+ * Confirmed, unlocked CoinJoin-account coins held by a coordinator
+ * hand-off (`Legacy`, `FinalInputs`, `Collateral`): what "Return to Core"
+ * can recover.
+ */
+heldFromMixing: number, };
