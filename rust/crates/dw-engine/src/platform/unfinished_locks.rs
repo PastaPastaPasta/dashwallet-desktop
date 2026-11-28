@@ -404,9 +404,14 @@ fn mark_rows(
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let prefix = mark_prefix(kind, mark);
     let rows = db.settings_with_prefix(&scope, &prefix)?;
-    Ok((rows.into_iter())
-        .filter_map(|(key, value)| Some((key[prefix.len()..].parse().ok()?, value)))
-        .collect())
+    rows.into_iter()
+        .map(|(key, value)| {
+            let at = key[prefix.len()..].parse().map_err(|_| {
+                AppDbError::Corrupt(format!("invalid outpoint in lock record {key}"))
+            })?;
+            Ok((at, value))
+        })
+        .collect()
 }
 
 /// `wallet`'s `mark` records of `kind`'s locks.
@@ -459,26 +464,29 @@ async fn on_appdb<T: Send + 'static>(
         })
 }
 
-/// `wallet`'s [`Mark::Remaining`] records of `kind`'s locks: the credits
-/// each read left; none when they cannot be read (nothing is then offered a
-/// recover). A record whose value does not parse is skipped.
+/// The proved remaining values, including old records of a used-up lock.
 pub(crate) async fn remaining_of(
     session: &NetworkSession,
     wallet: WalletId,
     kind: LockKindId,
-) -> HashMap<OutPoint, u64> {
-    let read = on_appdb(session, move |db| {
-        mark_rows(db, wallet, kind, Mark::Remaining)
-    });
-    match read.await {
-        Ok(rows) => (rows.into_iter())
-            .filter_map(|(at, value)| Some((at, value.parse().ok()?)))
-            .collect(),
-        Err(e) => {
-            tracing::warn!(wallet_id = %wallet, ?kind, error = %e, "could not read a kind's remaining values");
-            HashMap::new()
-        }
-    }
+) -> Result<HashMap<OutPoint, u64>, PlatformError> {
+    on_appdb(session, move |db| {
+        let scope = dw_appdb::local_scope(&wallet.to_string());
+        let prefix = mark_prefix(kind, Mark::Remaining);
+        db.settings_with_prefix(&scope, &prefix)?
+            .into_iter()
+            .map(|(key, value)| {
+                let at = key[prefix.len()..].parse().map_err(|_| {
+                    AppDbError::Corrupt(format!("invalid outpoint in remaining value key {key}"))
+                })?;
+                let credits = value.parse().map_err(|_| {
+                    AppDbError::Corrupt(format!("invalid remaining value for {at}"))
+                })?;
+                Ok((at, credits))
+            })
+            .collect()
+    })
+    .await
 }
 
 /// Records that `kind`'s lock at `outpoint` has `credits` left
@@ -513,11 +521,19 @@ pub(crate) async fn marks_of(
     kind: LockKindId,
     mark: Mark,
 ) -> HashSet<OutPoint> {
-    let read = on_appdb(session, move |db| read_marks(db, wallet, kind, mark));
-    read.await.unwrap_or_else(|e| {
+    try_marks_of(session, wallet, kind, mark).await.unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, ?kind, ?mark, error = %e, "could not read a kind's lock records");
         HashSet::new()
     })
+}
+
+pub(crate) async fn try_marks_of(
+    session: &NetworkSession,
+    wallet: WalletId,
+    kind: LockKindId,
+    mark: Mark,
+) -> Result<HashSet<OutPoint>, PlatformError> {
+    on_appdb(session, move |db| read_marks(db, wallet, kind, mark)).await
 }
 
 /// [`write_mark`] on `session`'s `app.sqlite`, off the async threads.
@@ -571,8 +587,10 @@ pub(crate) trait LockKind: Send + Sync {
     /// the credits left: they list as
     /// [`UnfinishedState::Recoverable`] (or too small) and are never
     /// applied again as the kind. None by default.
-    fn remaining_locks(&self) -> impl Future<Output = HashMap<OutPoint, u64>> + Send {
-        std::future::ready(HashMap::new())
+    fn remaining_locks(
+        &self,
+    ) -> impl Future<Output = Result<HashMap<OutPoint, u64>, PlatformError>> + Send {
+        std::future::ready(Ok(HashMap::new()))
     }
     /// The least remaining value (credits) a recover of a partly used lock
     /// takes: Platform's minimum fee for moving it. `None` when it cannot
@@ -609,6 +627,13 @@ pub(crate) trait LockKind: Send + Sync {
     /// The lock serializing the wallet's calls of this kind: every apply,
     /// and the kind's own fundings, run under it.
     fn wallet_lock(&self) -> Arc<tokio::sync::Mutex<()>>;
+    fn before_apply(
+        &self,
+        _at: OutPoint,
+        _lock: &UnfinishedLock,
+    ) -> impl Future<Output = Option<LockFinish>> + Send {
+        std::future::ready(None)
+    }
     /// The script of the credit output at `outpoint` (the lock's payload
     /// `credit_outputs[vout]`), as the library tracks the lock's
     /// transaction; `None` when it is not tracked.
@@ -767,6 +792,7 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
     if info.status == LockStatus::Consumed
         || ev.settled.holds(lock)
         || ev.reported_used.contains(&info.outpoint)
+        || ev.remaining.get(&info.outpoint) == Some(&0)
     {
         return None;
     }
@@ -824,7 +850,7 @@ pub(crate) async fn detect(kind: &impl LockKind) -> Result<Vec<UnfinishedLock>, 
     let readiness = kind
         .not_active()
         .map_or(Readiness::Ready, Readiness::NotActive);
-    let remaining = &kind.remaining_locks().await;
+    let remaining = &kind.remaining_locks().await?;
     let ev = Evidence {
         own: &own,
         settled: &settled,
@@ -962,7 +988,7 @@ where
     let readiness = kind.readiness().await;
     let (settled, unknown) = (kind.settled_locks().await, kind.unknown_locks().await);
     let reported = kind.reported_locks().await;
-    let remaining = kind.remaining_locks().await;
+    let remaining = kind.remaining_locks().await?;
     let ev = Evidence {
         own: &own,
         settled: &settled,
@@ -976,7 +1002,9 @@ where
     let Some(unfinished) = classify(kind.id(), &lock, &ev) else {
         // Platform said it is used, nothing proves it: finished elsewhere.
         let proved = lock.info.status == LockStatus::Consumed || settled.holds(&lock);
-        return Ok((!proved && reported.contains(&outpoint)).then_some(LockFinish::ReportedUsed));
+        return Ok((!proved
+            && (reported.contains(&outpoint) || remaining.get(&outpoint) == Some(&0)))
+        .then_some(LockFinish::ReportedUsed));
     };
     match unfinished.state {
         UnfinishedState::Unsupported => {
@@ -1000,6 +1028,9 @@ where
     }
     if let Readiness::NotActive(code) | Readiness::Held(code) = readiness {
         return Ok(Some(LockFinish::NotApplied { error: code }));
+    }
+    if let Some(result) = kind.before_apply(outpoint, &unfinished).await {
+        return Ok(Some(result));
     }
     let script = kind
         .credit_script(outpoint)

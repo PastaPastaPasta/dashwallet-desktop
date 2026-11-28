@@ -48,7 +48,6 @@ test.describe("General", () => {
     // The exact amount: every decimal of mDASH (five), trailing zeros trimmed to two.
     await expect(page.getByTestId("hero-amount")).toContainText(/^\d[\d ]*\.\d{2,5}\s?mtDASH$/);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await expect(page.getByText("Amount (mtDASH)")).toBeVisible();
     await page.getByTestId("pay-amount").fill("0.123456");
     await expect(page.getByText("Enter an amount in mDASH, for example 0.25.")).toBeVisible();
@@ -59,7 +58,6 @@ test.describe("General", () => {
     await settings(page, "general");
     await page.getByTestId("settings-subtract-fee").check();
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await expect(page.getByTestId("pay-subtract-fee")).toBeChecked();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill("0.1");

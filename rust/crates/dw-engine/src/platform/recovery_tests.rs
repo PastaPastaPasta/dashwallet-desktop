@@ -2549,6 +2549,18 @@ fn skipped_at_restart(
     (engine, s, id, platform)
 }
 
+#[test]
+fn caught_up_survives_a_later_offline_spv_report() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session) = session(dir.path(), Arc::new(Platform::default()));
+    let id = restore(&engine, &session);
+    session.hub.tracker().set_running(true);
+    caught_up(&session, id);
+
+    dash_spv::EventHandler::on_progress(session.hub.as_ref(), &dash_spv::SyncProgress::default());
+    assert!(super::registration_flow::wallet_synced(&session, id));
+}
+
 /// SPV caught up, as dash-spv reports it, so a funding of wallet `id` is
 /// held by nothing but its bring-up.
 pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {

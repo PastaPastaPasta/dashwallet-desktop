@@ -5,7 +5,7 @@
 // finishes them: one lock under a one-duff grant, or all of them with Repair's "Finish transfers".
 // Only a proved apply finishes a lock; "checking" means it may already be in the balance.
 
-import type { Backend } from "../api/backend";
+import { isAppError, type Backend } from "../api/backend";
 import type { AppError } from "../api/generated/AppError";
 import type { LockFinish } from "../api/generated/LockFinish";
 import type { LockKind } from "../api/generated/LockKind";
@@ -130,6 +130,8 @@ export const RECOVERY_COPY = {
     get testNetworksOnly() {
       return t("onboarding.unfinished.sheet.testNetworksOnly");
     },
+    get recoverBelowFee() { return t("onboarding.unfinished.sheet.recoverBelowFee"); },
+    get recoverFinished() { return t("onboarding.unfinished.sheet.recoverFinished"); },
     get recoverFailed() {
       return t("onboarding.unfinished.sheet.recoverFailed");
     },
@@ -175,7 +177,7 @@ export interface RecoverAsk {
 }
 
 /** What a recover of a lock came to, when it moved nothing: too small to move, or it failed. */
-export type RecoverNote = { kind: "tooSmall"; credits: string } | { kind: "failed" } | { kind: "checking" } | { kind: "off" };
+export type RecoverNote = { kind: "tooSmall"; credits: string } | { kind: "belowFee" } | { kind: "failed" } | { kind: "checking" } | { kind: "off" };
 
 /** The engine's refusal of a recover on mainnet (`unfinished_remainder::FEATURE`). */
 const FEATURE_OFF = "platform.feature_off";
@@ -185,6 +187,8 @@ export function recoverNoteText(note: RecoverNote, duffs: (d: number) => string)
   switch (note.kind) {
     case "tooSmall":
       return RECOVERY_COPY.sheet.recoverTooSmall(duffs(creditsToDuffs(note.credits)));
+    case "belowFee":
+      return RECOVERY_COPY.sheet.recoverBelowFee;
     case "checking":
       return RECOVERY_COPY.sheet.recoverChecking;
     case "off":
@@ -194,7 +198,11 @@ export function recoverNoteText(note: RecoverNote, duffs: (d: number) => string)
   }
 }
 
-const refusalNote = (error: string): RecoverNote => (error === FEATURE_OFF ? { kind: "off" } : { kind: "failed" });
+function refusalNote(error: string): RecoverNote {
+  if (error === FEATURE_OFF) return { kind: "off" };
+  if (error === "credits.below_minimum") return { kind: "belowFee" };
+  return { kind: "failed" };
+}
 
 /** A transfer to Shielded Platform proved partly used: listed whatever its origin (this device's own
  * refused shield is no pending shield), and only ever recovered. */
@@ -393,9 +401,8 @@ export class RecoveryModel extends Model {
       return this.#set({ kind: "idle" });
     }
     if (quote?.kind === "finished") {
-      // Recovered, or used up elsewhere: the list read again drops it.
       notifySettled();
-      return this.#set({ kind: "idle" });
+      return this.#set({ kind: "done", text: RECOVERY_COPY.sheet.recoverFinished });
     }
     const note: RecoverNote = quote?.kind === "tooSmall" ? { kind: "tooSmall", credits: quote.credits } : quote?.kind === "notApplied" ? refusalNote(quote.error) : { kind: "failed" };
     this.notes.set(key, note);
@@ -493,9 +500,10 @@ export class RecoveryModel extends Model {
       const note: RecoverNote = got.value.kind === "notApplied" ? refusalNote(got.value.error) : { kind: "checking" };
       this.notes.set(key, note);
       return { kind: "done", text: recoverNoteText(note, String) };
-    } catch {
-      this.notes.set(key, { kind: "failed" });
-      return { kind: "done", text: RECOVERY_COPY.sheet.recoverFailed };
+    } catch (error) {
+      const note: RecoverNote = isAppError(error) ? refusalNote(error.code) : { kind: "failed" };
+      this.notes.set(key, note);
+      return { kind: "done", text: recoverNoteText(note, String) };
     }
   }
 

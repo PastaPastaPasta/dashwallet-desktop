@@ -2,21 +2,16 @@ import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { artifactPath, authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
-// Pay that never dead-ends (PRODUCT #6): Pay opens on To an address without contacts and on To a
-// contact with them; a username that is no contact is searched on DashPay as Add contact does,
-// and the user found gets a card; nothing found offers To an address; no username leaves one line.
-
 async function openPay(page: Page, scenario: string, theme: Theme = "light") {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await page.getByTestId("pay-tabs").waitFor();
+  await page.getByTestId("pay-address").waitFor();
   return errors;
 }
 
-const selected = (page: Page, tab: "contact" | "address") => expect(page.getByTestId(`pay-tabs-${tab}`)).toHaveAttribute("aria-selected", "true");
-const searchField = (page: Page) => page.getByTestId("pay-contact-search").locator("input");
+const searchField = (page: Page) => page.getByTestId("pay-address");
 const searchFor = (page: Page, text: string) => searchField(page).fill(text);
 /** The engine's signal that DashPay's state changed: every DashPay read is read again. */
 const dashpayChanged = (page: Page) =>
@@ -26,35 +21,21 @@ const dashpayChanged = (page: Page) =>
   });
 const networkRow = (page: Page, name: string) => page.getByTestId("network-row").filter({ has: page.locator(".contact-row-name", { hasText: name }) });
 
-test("PAY-6 Pay opens on To a contact with contacts, and on To an address without", async ({ page }) => {
-  const errors = await openPay(page, "dashpay-registered");
-  await selected(page, "contact");
-  await page.getByTestId("pay-frequent").waitFor();
-  for (const scenario of ["dashpay-contacts-empty", "dashpay-no-identity"]) {
-    await openPay(page, scenario);
-    await selected(page, "address");
-    await expect(page.getByTestId("pay-address")).toBeVisible();
+test("Pay opens with the recipient field in every DashPay state", async ({ page }) => {
+  for (const scenario of ["dashpay-registered", "dashpay-contacts-empty", "dashpay-no-identity"]) {
+    const errors = await openPay(page, scenario);
+    await expect(searchField(page)).toBeEditable();
+    await expect(searchField(page)).toHaveValue("");
+    await expect(page.getByTestId("pay-recipient-popover")).toHaveCount(0);
+    expect(errors).toEqual([]);
   }
-  expect(errors).toEqual([]);
 });
 
-test("PAY-6 coming back to Pay chooses its tab again; a tab picked meanwhile stays while Pay is open", async ({ page }) => {
-  await openPay(page, "dashpay-contacts-empty");
-  await page.getByTestId("pay-tabs-contact").click();
-  await page.getByTestId("pay-picker-empty").waitFor();
-  // Opening Pay while it is open keeps the tab picked.
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await selected(page, "contact");
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await selected(page, "address");
-});
-
-test("PAY-6 without a username To a contact is a single Join DashPay line", async ({ page }) => {
+test("The Contacts button offers Join DashPay without a username", async ({ page }) => {
   await openPay(page, "dashpay-no-identity");
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   const line = page.getByTestId("pay-contact-none");
-  await expect(line).toHaveText("Join DashPay to pay people by their username. Join DashPay");
+  await expect(line).toContainText("Join DashPay to pay people by their username.");
   await expect(page.locator(".empty-state")).toHaveCount(0);
   await page.getByTestId("pay-contact-join").click();
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
@@ -62,8 +43,7 @@ test("PAY-6 without a username To a contact is a single Join DashPay line", asyn
 
 test("PAY-6 a username that is no contact finds the user, who gets a contact request", async ({ page }) => {
   const errors = await openPay(page, "dashpay-contacts-empty");
-  await page.getByTestId("pay-tabs-contact").click();
-  await expect(page.getByTestId("pay-picker-empty")).toContainText("Type a username above to find someone on DashPay.");
+  await page.getByTestId("pay-contacts").click();
   await searchFor(page, "mar");
   await expect(page.getByTestId("pay-search-announce")).toHaveText(/people found on DashPay|person found on DashPay/);
   await networkRow(page, "Marta").click();
@@ -115,7 +95,7 @@ test("PAY-6 a request sent, an ignored sender and oneself are found, not 'No one
 
 test("PAY-6 a found user's check that fails on a re-read offers Try again, not the answer before it", async ({ page }) => {
   const errors = await openPay(page, "dashpay-contacts-empty");
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   await searchFor(page, "mar");
   await networkRow(page, "Marta").click();
   await expect(page.getByTestId("pay-found-send")).toBeVisible();
@@ -130,23 +110,6 @@ test("PAY-6 a found user's check that fails on a re-read offers Try again, not t
   expect(errors).toEqual([]);
 });
 
-test("PAY-6 Pay opens on To an address when DashPay's state could not be read again", async ({ page }) => {
-  const errors = await openPay(page, "dashpay-registered");
-  await selected(page, "contact");
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
-  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_status").length);
-  const before = await reads();
-  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", "rpc"));
-  await dashpayChanged(page);
-  await expect.poll(reads).toBeGreaterThan(before);
-  // The failed read settles in the next frames.
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await selected(page, "address");
-  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
-  expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
-});
-
 /** Makes the next call of `command` fail, and holds it until `release(page)`. */
 const failHeld = (page: Page, command: "dashpay_status" | "dashpay_contacts") =>
   page.evaluate((command) => {
@@ -156,43 +119,23 @@ const failHeld = (page: Page, command: "dashpay_status" | "dashpay_contacts") =>
   }, command);
 const release = (page: Page) => page.evaluate(() => (window as unknown as { __release: () => void }).__release());
 
-test("PAY-6 Pay waits for a re-read of DashPay's state that is still out, and opens on To an address when it fails", async ({ page }) => {
-  const errors = await openPay(page, "dashpay-registered");
-  await selected(page, "contact");
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
-  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_status").length);
-  const before = await reads();
-  await failHeld(page, "dashpay_status");
-  await dashpayChanged(page);
-  await expect.poll(reads).toBeGreaterThan(before);
-  // The cached status still names the identity, but the re-read may overturn it: no tab yet.
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await expect(page.getByTestId("pay-tab-loading")).toBeVisible();
-  await release(page);
-  await selected(page, "address");
-  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
-  expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
-});
-
-test("PAY-6 Pay waits for a re-read of the contact list that is still out, and opens on To an address when it fails", async ({ page }) => {
-  const errors = await openPay(page, "dashpay-registered");
-  await selected(page, "contact");
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
-  // The change marks Pay's cached list stale; Pay reads it again as it opens.
-  await dashpayChanged(page);
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-  await failHeld(page, "dashpay_contacts");
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await expect(page.getByTestId("pay-tab-loading")).toBeVisible();
-  await release(page);
-  await selected(page, "address");
-  await page.evaluate(() => window.__dwFixture!.fail("dashpay_contacts", null));
-  expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
-});
+for (const command of ["dashpay_status", "dashpay_contacts"] as const) {
+  test(`A pending or failed ${command} read does not block address entry`, async ({ page }) => {
+    await openPay(page, "dashpay-registered");
+    const address = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
+    await failHeld(page, command);
+    if (command === "dashpay_contacts") await page.getByTestId("pay-contacts").click();
+    else await dashpayChanged(page);
+    await searchField(page).fill(address);
+    await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
+    await release(page);
+    await expect(searchField(page)).toHaveValue(address);
+  });
+}
 
 test("PAY-6 a request sent from the card turns into Pay once they accept", async ({ page }) => {
   const errors = await openPay(page, "dashpay-contacts-empty");
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   await searchFor(page, "mar");
   await networkRow(page, "Marta").click();
   await page.getByTestId("pay-found-send").click();
@@ -228,9 +171,9 @@ test("PAY-6 a refused Enable on the found user's card says why", async ({ page }
 
 test("PAY-6 under two characters without contacts asks to keep typing", async ({ page }) => {
   await openPay(page, "dashpay-contacts-empty");
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   await searchFor(page, "z");
-  await expect(page.getByTestId("pay-picker-empty")).toContainText("Keep typing to search DashPay usernames.");
+  await expect(page.getByTestId("pay-picker-none")).toContainText("Keep typing to search DashPay usernames.");
   await searchFor(page, "zz");
   await expect(page.getByTestId("pay-picker-none")).toContainText("No one found");
   await expect(page.getByTestId("pay-search-announce")).toHaveText("No one found");
@@ -243,54 +186,47 @@ test("PAY-6 a username search that fails is announced", async ({ page }) => {
   await expect(page.getByTestId("pay-search-announce")).toHaveText("Could not search");
 });
 
-test("PAY-6 a wallet switch on Pay chooses the tab again for that wallet", async ({ page }) => {
+test("Switching wallets clears an ordinary recipient draft", async ({ page }) => {
   await openPay(page, "dashpay-two-wallets");
-  await selected(page, "contact");
-  await page.getByTestId("pay-tabs-address").click();
-  await selected(page, "address");
+  await searchFor(page, "bob");
+  await expect(page.getByTestId("pay-picker-row").first()).toBeVisible();
   await page.getByTestId("toolbar-wallet-picker").selectOption({ index: 1 });
-  await selected(page, "contact");
-  await page.getByTestId("pay-frequent").waitFor();
+  await expect(searchField(page)).toHaveValue("");
+  await expect(page.getByTestId("pay-recipient-popover")).toHaveCount(0);
 });
 
-test("PAY-6 a wallet switch after a payment link keeps the link's form on To an address", async ({ page }) => {
+test("PAY-6 a wallet switch after a payment link keeps the linked address", async ({ page }) => {
   await openPay(page, "dashpay-two-wallets");
-  await selected(page, "contact");
   const address = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
   await page.evaluate((a) => window.__dwFixture!.deliverLinks([{ kind: "pay", uri: { address: a, amount: null, label: null, message: null }, username: null }]), address);
-  await selected(page, "address");
   await expect(page.getByTestId("pay-address")).toHaveValue(address);
   await page.getByTestId("toolbar-wallet-picker").selectOption({ index: 1 });
-  await selected(page, "address");
   await expect(page.getByTestId("pay-address")).toHaveValue(address);
 });
 
-test("PAY-6 a link's form is gone once Pay is left; a later wallet switch chooses the tab again", async ({ page }) => {
+test("PAY-6 a link's form is gone once Pay is left; wallet switches keep the form empty", async ({ page }) => {
   await openPay(page, "dashpay-two-wallets");
   await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "pay", uri: { address: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", amount: null, label: null, message: null }, username: null }]));
-  await selected(page, "address");
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await selected(page, "contact");
-  await page.getByTestId("pay-tabs-address").click();
   await expect(page.getByTestId("pay-address")).toHaveValue("");
   await page.getByTestId("toolbar-wallet-picker").selectOption({ index: 1 });
-  await selected(page, "contact");
 });
 
-test("PAY-6 a contact picked on Pay is gone once Pay is left; the next visit opens the chooser", async ({ page }) => {
+test("PAY-6 a contact picked on Pay is gone once Pay is left; the next visit has an empty field", async ({ page }) => {
   await openPay(page, "dashpay-registered");
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-picker-row").first().click();
   await expect(page.getByTestId("pay-payee-change")).toBeVisible();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await selected(page, "contact");
-  await expect(page.getByTestId("pay-contact-search")).toBeVisible();
+  await expect(page.getByTestId("pay-address")).toBeVisible();
   await expect(page.getByTestId("pay-payee-change")).toHaveCount(0);
 });
 
 test("PAY-6 a payment link that arrives while Pay is open drops the contact picked", async ({ page }) => {
   await openPay(page, "dashpay-registered");
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-picker-row").first().click();
   await expect(page.getByTestId("pay-payee-change")).toBeVisible();
   await page.evaluate(() =>
@@ -298,9 +234,8 @@ test("PAY-6 a payment link that arrives while Pay is open drops the contact pick
       { kind: "pay", uri: { address: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", amount: null, label: null, message: null }, username: null },
     ]),
   );
-  await selected(page, "address");
-  await page.getByTestId("pay-tabs-contact").click();
-  await expect(page.getByTestId("pay-contact-search")).toBeVisible();
+  await page.getByTestId("pay-contacts").click();
+  await expect(page.getByTestId("pay-address")).toBeVisible();
   await expect(page.getByTestId("pay-payee-change")).toHaveCount(0);
 });
 
@@ -320,21 +255,20 @@ test("PAY-6 the username search still answers when the picker's own contacts can
   await page.goto(fixtureUrl("dashpay-registered", "light", "&fail=dashpay_contacts:none"));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
-  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-contacts").click();
   await searchFor(page, "ma");
   await expect(networkRow(page, "Mallory")).toBeVisible();
   await expect(page.getByTestId("pay-search-announce")).toContainText("found on DashPay");
 });
 
-test("PAY-6 nothing found says so and offers To an address", async ({ page }) => {
+test("A search miss leaves the same field ready for an address", async ({ page }) => {
   const errors = await openPay(page, "dashpay-registered");
   await searchFor(page, "zzz");
   const none = page.getByTestId("pay-picker-none");
   await expect(none).toContainText("No one found");
-  await expect(none).toContainText("No contact or DashPay username starts with “zzz”.");
   await expect(page.getByTestId("pay-search-announce")).toHaveText("No one found");
-  await page.getByTestId("pay-none-to-address").click();
-  await selected(page, "address");
+  await searchFor(page, "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
+  await expect(page.getByTestId("pay-recipient-chip")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -342,12 +276,12 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<unk
   "no-contacts": { scenario: "dashpay-contacts-empty", go: (page) => page.getByTestId("pay-address").waitFor() },
   "no-username": {
     scenario: "dashpay-no-identity",
-    go: async (page) => (await page.getByTestId("pay-tabs-contact").click(), page.getByTestId("pay-contact-none").waitFor()),
+    go: async (page) => (await page.getByTestId("pay-contacts").click(), page.getByTestId("pay-contact-none").waitFor()),
   },
   found: {
     scenario: "dashpay-contacts-empty",
     go: async (page) => {
-      await page.getByTestId("pay-tabs-contact").click();
+      await page.getByTestId("pay-contacts").click();
       await searchFor(page, "mar");
       await networkRow(page, "Marta").click();
       await page.getByTestId("pay-found-send").waitFor();
@@ -356,7 +290,7 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<unk
   sent: {
     scenario: "dashpay-contacts-empty",
     go: async (page) => {
-      await page.getByTestId("pay-tabs-contact").click();
+      await page.getByTestId("pay-contacts").click();
       await searchFor(page, "mar");
       await networkRow(page, "Marta").click();
       await page.getByTestId("pay-found-send").click();
@@ -367,7 +301,7 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<unk
   "after-change": {
     scenario: "dashpay-contacts-empty",
     go: async (page) => {
-      await page.getByTestId("pay-tabs-contact").click();
+      await page.getByTestId("pay-contacts").click();
       await searchFor(page, "mar");
       await networkRow(page, "Marta").click();
       await page.getByTestId("pay-found-send").click();
@@ -377,7 +311,7 @@ const STATES: Record<string, { scenario: string; go: (page: Page) => Promise<unk
       await expect(networkRow(page, "Marta")).toContainText("Request sent");
     },
   },
-  "no-match": { scenario: "dashpay-registered", go: async (page) => (await searchFor(page, "zzz"), page.getByTestId("pay-none-to-address").waitFor()) },
+  "no-match": { scenario: "dashpay-registered", go: async (page) => (await searchFor(page, "zzz"), page.getByTestId("pay-picker-none").waitFor()) },
 };
 
 for (const theme of THEMES) {

@@ -99,8 +99,8 @@ const OUTCOME_SITES: {
     act: (page) => page.getByTestId("information-dashpay-sync-now").click(),
   },
   {
-    where: "Address Book ▸ Export (address-book-exported)",
-    region: '[data-testid="address-book-exported"]',
+    where: "Address Book ▸ Export (shared toast)",
+    region: ".toast-host",
     politeness: "polite",
     said: /Sending addresses\.csv/,
     reach: (page) => open(page, "funded", "addressBook"),
@@ -143,7 +143,6 @@ async function shown(page: Page, selector: string) {
 test("Address Book picker ▸ a book that cannot be read (address-book-problem): the error is said by the region the picker opens with", async ({ page }) => {
   const errors = await open(page, "funded");
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.evaluate(() => window.__dwFixture!.fail("address_book", "none"));
   const selector = '[data-testid="address-book-picker"] [data-testid="address-book-problem"]';
   const added = await regionWhenAdded(page, selector);

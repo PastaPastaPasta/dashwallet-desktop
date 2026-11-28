@@ -29,7 +29,7 @@ test("IOS-074 accepts a request from the pane under a passphrase grant; the cont
   await expect(page.getByTestId("contact-accept")).toHaveText("Accepting…");
   await expect(page.getByTestId("grant-sheet")).toContainText("authorize this Dash Platform operation");
   await authorize(page);
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveText("You and heidi are now contacts.");
+  await expect(page.locator(".toast-host")).toHaveText("You and heidi are now contacts.");
   await expect(names(page, "requests")).toHaveText(["Grace Hopper"]);
   await expect(names(page, "contacts")).toContainText(["heidi"]);
   // Now a contact: Pay is offered while the channel finishes its setup (DP3-06 D15), and the
@@ -48,7 +48,7 @@ test("D28 after a keyboard accept in the pane, focus goes to what the pane offer
   await authorize(page);
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Contact");
   await expect(page.getByTestId("contact-pane-actions")).toBeFocused();
-  await expect(page.getByTestId("contact-pane-actions")).toContainText("You and heidi are now contacts.");
+  await expect(page.locator(".toast-host")).toHaveText("You and heidi are now contacts.");
   // Ignore and Unignore move it the same way.
   await row(page, "Grace Hopper").click();
   await page.getByTestId("contact-ignore").focus();
@@ -78,7 +78,7 @@ test("D3 a cancelled passphrase sends nothing; the request stays", async ({ page
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
   await expect(page.getByTestId("contact-accept")).toHaveText("Accept");
-  await expect(page.getByTestId("contact-pane-outcome")).toBeEmpty();
+  await expect(page.locator(".toast-host")).toBeEmpty();
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
 });
 
@@ -94,7 +94,7 @@ test("D15 a request row's Ignore works without selecting it, and a toast says so
   await row(page, "Grace Hopper").click();
   await expect(page.getByTestId("contact-pane-note")).toHaveText("You ignored this contact request.");
   await page.getByTestId("contact-unignore").click();
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveText("The request is back in Contact Requests.");
+  await expect(page.locator(".toast-host")).toHaveText("The request is back in Contact Requests.");
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
   await expect(page.getByTestId("contact-accept")).toBeEnabled();
 });
@@ -109,7 +109,7 @@ test("IOS-074 saves an alias and a note under a grant; Hide saves at once and mo
   await expect(save).toBeEnabled();
   await save.click();
   await authorize(page);
-  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Saved");
+  await expect(page.locator(".toast-host")).toHaveText("Saved");
   await expect(names(page, "contacts")).toContainText(["Bobby"]);
   await expect(page.getByTestId("contact-alias")).toHaveValue("Bobby");
   await expect(save).toBeDisabled();
@@ -129,7 +129,7 @@ test("D7 Hide keeps an alias being typed, and a refused Hide shows the saved val
   await page.getByTestId("contact-alias").fill("Bobby");
   await page.getByTestId("contact-hide").check();
   await authorize(page);
-  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Saved");
+  await expect(page.locator(".toast-host")).toHaveText("Saved");
   await expect(page.getByTestId("contact-hide")).toBeChecked();
   // Hide saved the alias as it was; the one typed stays, unsaved.
   await expect(page.getByTestId("contact-alias")).toHaveValue("Bobby");
@@ -139,7 +139,7 @@ test("D7 Hide keeps an alias being typed, and a refused Hide shows the saved val
   await row(page, "Bob Builder").click();
   await page.getByTestId("contact-hide").check();
   await authorize(page);
-  await expect(page.getByTestId("contact-details-outcome")).toHaveText("Not enough credits. Top up your credits and try again.");
+  await expect(page.getByTestId("toast-alert-text")).toHaveText("Not enough credits. Top up your credits and try again.");
   await expect(page.getByTestId("contact-hide")).not.toBeChecked();
 });
 
@@ -195,11 +195,34 @@ test("IOS-072 D10 without DashPay keys the banner offers Enable with its fee, an
   expect(errors).toEqual([]);
 });
 
-test("D4 a refused accept says why in the pane", async ({ page }) => {
+test("D4 a refused accept stays in an alert until dismissed; a toast shows under it, not over it", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => undefined } });
+  });
   await openContacts(page, "dashpay-low-credits");
   await row(page, "heidi").click();
   await page.getByTestId("contact-accept").click();
   await authorize(page);
-  await expect(page.getByTestId("contact-pane-outcome")).toHaveText("Not enough credits. Top up your credits and try again.");
+  const alert = page.getByTestId("toast-alert");
+  const why = "Not enough credits. Top up your credits and try again.";
+  await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+  await expect(alert).toHaveAttribute("role", "alert");
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
+
+  await page.getByRole("button", { name: "Copy identity" }).click();
+  await expect(page.locator(".toast")).toHaveText("Copied");
+  await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+  // A toast coming and going under the alert does not move it.
+  const box = await alert.boundingBox();
+  await expect(page.locator(".toast")).toHaveCount(0, { timeout: 5_000 });
+  await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+  expect(await alert.boundingBox()).toEqual(box);
+
+  // Escape on Dismiss takes it down, and focus goes back where it was.
+  const accept = page.getByTestId("contact-accept");
+  await accept.focus();
+  await page.getByTestId("toast-alert-dismiss").focus();
+  await page.keyboard.press("Escape");
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByTestId("toast-alert-dismiss")).toHaveCount(0);
 });

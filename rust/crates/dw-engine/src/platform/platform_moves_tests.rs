@@ -422,6 +422,7 @@ pub(crate) enum Act {
     /// The transition sent `n`-th (from 0) executes instead of this one,
     /// which is answered with the addresses' snapshot.
     EarlierExecutes(usize),
+    EarlierExecutesThenStaleNonce(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
     /// Signed and broadcast; the wait ends unconfirmed, a structure refusal
@@ -818,6 +819,13 @@ impl FakeMoves {
             Act::EarlierExecutes(n) => {
                 self.execute_sent(n);
                 Ok(())
+            }
+            Act::EarlierExecutesThenStaleNonce(n) => {
+                use dpp::consensus::state::address_funds::AddressInvalidNonceError;
+                assert!(self.execute_sent(n));
+                let (address, (nonce, _)) = inputs.first_key_value().unwrap();
+                let stale = AddressInvalidNonceError::new(*address, *nonce, nonce + 1);
+                Err(PlatformWalletError::Sdk(ConsensusError::from(stale).into()))
             }
         };
         result.map_err(Box::new)
@@ -4557,7 +4565,7 @@ fn a_removed_restored_funds_give_back_goes_to_the_unshield_it_hid() {
     let at = dashcore::OutPoint::new(txid.parse().unwrap(), 0);
     let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
     let arming = (w.f.engine)
-        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100, false).await });
+        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100, None).await });
     assert_eq!(arming, Ok(Arming::Made));
     w.net.fund(a, DASH);
     let rows = w.activity();
@@ -4582,6 +4590,133 @@ fn a_removed_restored_funds_give_back_goes_to_the_unshield_it_hid() {
     assert_eq!(incoming_total(&w.activity()), 0, "given back once");
     w.net.fund(a, DASH);
     assert_eq!(incoming_total(&w.activity()), DASH, "a later payment");
+}
+
+#[test]
+fn a_retried_recover_absorbs_only_its_exact_fresh_remainder() {
+    let w = World::new();
+    let a = w.address(0);
+    let to = bech32m(&a, Network::Regtest);
+    let at = OutPoint::new("cf".repeat(32).parse().unwrap(), 0);
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    w.arm_unshield(1, a, 120).unwrap();
+    w.settle_unshield(1, dw_appdb::dispatch::ArtifactStatus::NotExecuted);
+    w.net.fund(a, 20);
+    w.activity();
+    let arm = |remainder: u64, estimate| {
+        let (s, to) = (Arc::clone(&s), to.clone());
+        w.f.engine
+            .block_on(async move {
+                arm_fund(
+                    &s,
+                    id,
+                    (at, remainder.div_ceil(1000)),
+                    to,
+                    estimate,
+                    Some(remainder),
+                )
+                .await
+            })
+            .unwrap()
+    };
+    let record = || {
+        let s = Arc::clone(&s);
+        w.f.engine.block_on(async move {
+            fund_record(&s, id, &at.txid.to_string())
+                .await
+                .unwrap()
+                .unwrap()
+        })
+    };
+    assert_eq!(arm(7_400, 6_000), Arming::Made);
+    w.net.fund(a, 310);
+    w.activity();
+    let first = record();
+    assert_eq!(first.absorbed, 310);
+    assert!(!first.claims.is_empty());
+
+    assert_eq!(arm(3_700, 2_300), Arming::Unchanged);
+    let updated = record();
+    assert_eq!(
+        (updated.duffs, updated.credits, updated.absorbed),
+        (4, 2300, 310)
+    );
+    assert_eq!(updated.claims, first.claims);
+    w.net.fund(a, 3_500);
+    assert_eq!(incoming_total(&w.activity()), 20 + 110);
+    assert_eq!(record().absorbed, 3_700);
+}
+
+#[test]
+fn an_untracked_recover_closes_only_when_core_has_caught_up() {
+    let w = World::new();
+    let wallet = w.f.wallet;
+    let s = Arc::clone(&w.f.s);
+    let to = bech32m(&w.address(0), Network::Regtest);
+    let recovered = OutPoint::new("cf".repeat(32).parse().unwrap(), 0);
+    let ordinary = OutPoint::new("ce".repeat(32).parse().unwrap(), 0);
+    w.f.engine.block_on(async move {
+        arm_fund(
+            &s,
+            wallet,
+            (recovered, 100),
+            to.clone(),
+            1_000,
+            Some(100_000),
+        )
+        .await
+        .unwrap();
+        arm_fund(&s, wallet, (ordinary, 100), to, 1_000, None)
+            .await
+            .unwrap();
+        let store = Store::of(&s, wallet).unwrap();
+        let mut records = store.funds().await.unwrap();
+        let held = BTreeSet::new();
+        let mut evidence = FundEvidence::default();
+        assert!(
+            !reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        evidence.caught_up = true;
+        evidence.shielded_proofs_read = true;
+        evidence.tracked_shields.insert(recovered);
+        assert!(
+            !reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        evidence.tracked_shields.clear();
+        evidence.shielded_proofs_read = false;
+        assert!(
+            !reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        evidence.shielded_proofs_read = true;
+        evidence.unread_lock_status.insert(recovered);
+        assert!(
+            !reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        evidence.unread_lock_status.clear();
+        assert!(
+            reconcile(&store, &mut records, &evidence, &held)
+                .await
+                .unwrap()
+        );
+        assert!(
+            records
+                .iter()
+                .any(|f| f.recovered && f.state == PlatformActivityState::Failed)
+        );
+        assert!(
+            records
+                .iter()
+                .any(|f| !f.recovered && f.state == PlatformActivityState::Pending)
+        );
+    });
 }
 
 /// A settle whose write fails records nothing: the next read settles the

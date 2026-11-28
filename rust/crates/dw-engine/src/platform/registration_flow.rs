@@ -4103,11 +4103,11 @@ impl RegistrationLib for PwLib {
     }
 
     async fn wait_proof(&self, outpoint: OutPoint, timeout: Duration) -> Result<(), FundError> {
-        self.wallet
-            .asset_locks()
-            .resume_asset_lock(&outpoint, Some(timeout))
+        self.session
+            .resume_asset_lock_once(Arc::clone(&self.wallet), outpoint, timeout)
             .await
-            .map(|_| ())
+            .map_err(|e| FundError::Failed(e.into()))?
+            .ok_or(FundError::Failed(PlatformError::Unavailable))?
             .map_err(|e| match e {
                 // A `Built` lock's re-broadcast that reached no peer: the
                 // lock stays tracked; the network is waited for.

@@ -624,7 +624,7 @@ pub(crate) struct SessionHub {
     /// establishes the account, which hosts hear even when it found nothing.
     shielded_synced: Mutex<HashSet<WalletId>>,
     /// The wallets whose last shielded pass failed, until one succeeds.
-    shielded_failed: Mutex<HashSet<WalletId>>,
+    shielded_failed: Mutex<HashMap<WalletId, Option<&'static str>>>,
     /// The wallets a status read found ready (a ledger restored from the
     /// store), before any pass of this session scanned them.
     shielded_ready: Mutex<HashSet<WalletId>>,
@@ -660,6 +660,8 @@ pub(crate) struct SessionHub {
     /// report last ran (`NetworkSession::refresh_held`): the spend notes
     /// above it that are not final go.
     held_forks: Mutex<HashMap<WalletId, u32>>,
+    /// Coins given back by a sweep while the current client's retry map exists.
+    rebroadcast_holds: Mutex<Option<HashMap<WalletId, BTreeSet<dashcore::OutPoint>>>>,
     /// Held through each drop of dead transactions
     /// (`NetworkSession::drop_dead`).
     pub(crate) drop_gate: tokio::sync::Mutex<()>,
@@ -731,6 +733,8 @@ pub(crate) struct SessionHub {
     /// transaction, before its hand-off.
     #[cfg(test)]
     pub(crate) pause_resend: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_rebroadcast_rearm: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: each txid an abandon stopped dash-spv rebroadcasting, with
     /// whether its abandon mark was already written then.
     #[cfg(test)]
@@ -789,6 +793,8 @@ pub(crate) struct SessionHub {
     /// its sweep.
     #[cfg(test)]
     pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_shared_abandon_sign: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next dropped payment's release of key-wallet's
     /// reservation, before it runs.
     #[cfg(test)]
@@ -940,7 +946,24 @@ impl SessionHub {
 
     /// `wallet`'s last shielded pass of this session failed.
     pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
-        lock(&self.shielded_failed).contains(&wallet)
+        lock(&self.shielded_failed).contains_key(&wallet)
+    }
+
+    pub(crate) fn shielded_pass_failure_reason(&self, wallet: WalletId) -> Option<&'static str> {
+        lock(&self.shielded_failed).get(&wallet).copied().flatten()
+    }
+
+    pub(crate) fn note_shielded_pass_hold(
+        &self,
+        wallets: impl IntoIterator<Item = WalletId>,
+        reason: &'static str,
+    ) {
+        let mut failed = lock(&self.shielded_failed);
+        for wallet in wallets {
+            if failed.insert(wallet, Some(reason)) != Some(Some(reason)) {
+                self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
+            }
+        }
     }
 
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
@@ -1039,7 +1062,7 @@ impl SessionHub {
             final_sends: Mutex::new(Vec::new()),
             shielded_scan: Mutex::new(None),
             shielded_synced: Mutex::new(HashSet::new()),
-            shielded_failed: Mutex::new(HashSet::new()),
+            shielded_failed: Mutex::default(),
             shielded_ready: Mutex::new(HashSet::new()),
             platform_addresses: Mutex::new(HashMap::new()),
             dead_children: Mutex::new(Vec::new()),
@@ -1048,6 +1071,7 @@ impl SessionHub {
             dropped_holds: Mutex::new(HashMap::new()),
             held_locks: Mutex::new(HashMap::new()),
             held_forks: Mutex::new(HashMap::new()),
+            rebroadcast_holds: Mutex::new(None),
             drop_gate: tokio::sync::Mutex::new(()),
             restore: Default::default(),
             #[cfg(test)]
@@ -1075,6 +1099,8 @@ impl SessionHub {
             pause_ops_read: Mutex::new(None),
             #[cfg(test)]
             pause_resend: Mutex::new(None),
+            #[cfg(test)]
+            pause_rebroadcast_rearm: Mutex::new(None),
             #[cfg(test)]
             stopped_rebroadcasts: Mutex::new(Vec::new()),
             #[cfg(test)]
@@ -1123,6 +1149,8 @@ impl SessionHub {
             last_abandon_hold: Mutex::new(None),
             #[cfg(test)]
             pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            pause_shared_abandon_sign: Mutex::new(None),
             #[cfg(test)]
             pause_release: Mutex::new(None),
             #[cfg(test)]
@@ -1920,6 +1948,55 @@ impl SessionHub {
         self.drain_drops();
     }
 
+    pub(crate) fn begin_rebroadcast_holds(&self) {
+        let mut holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        holds.get_or_insert_with(HashMap::new);
+    }
+
+    pub(crate) fn end_rebroadcast_holds(&self) {
+        let holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(holds) = holds {
+            for id in holds.into_keys() {
+                if let Some(reread) = self.balance_reread.get() {
+                    reread(id);
+                }
+                self.pump.mark_history(id, None);
+            }
+        }
+    }
+
+    pub(crate) fn hold_rebroadcast_coins(&self, id: WalletId, coins: &[dashcore::OutPoint]) {
+        if coins.is_empty() {
+            return;
+        }
+        let mut holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(wallets) = holds.as_mut() {
+            wallets.entry(id).or_default().extend(coins);
+        }
+    }
+
+    pub(crate) fn rebroadcast_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self
+            .rebroadcast_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        holds
+            .as_ref()
+            .and_then(|wallets| wallets.get(id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn set_spv_running(&self, running: bool) {
         if self.tracker().set_running(running) {
             self.pump.mark_sync();
@@ -2128,10 +2205,13 @@ impl SessionHub {
         let _ = self.settle_rescan_holds(id, None);
     }
 
-    /// The coins of wallet `id` given back that still wait for their
-    /// rescan (`crate::rescan_hold`): neither counted nor offered.
+    /// Coins of wallet `id` that still wait for the rescan or the old
+    /// SPV client to stop: neither counted nor offered.
     pub(crate) fn rescan_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
-        (self.history).read_wallet(id, |h| h.rescan_holds.keys().copied().collect())
+        let mut coins = self.rebroadcast_held(id);
+        self.history
+            .read_wallet(id, |h| coins.extend(h.rescan_holds.keys()));
+        coins
     }
 
     /// Lets go of wallet `id`'s holds whose rescan is back, and reads its
@@ -2152,7 +2232,9 @@ impl SessionHub {
         }
         let state = self.wallet_state(&id);
         let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(&id));
-        let back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
+        let mut back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
+        let retrying = self.rebroadcast_held(&id);
+        back.retain(|o| !retrying.contains(o));
         if back.is_empty() {
             return BTreeSet::new();
         }
@@ -2270,7 +2352,9 @@ impl SessionHub {
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         self.note_held_fork(id, height);
-        let changed = self.history.truncate(id, found.removed, found.unconfirmed);
+        let changed = self
+            .history
+            .truncate(id, height, found.removed, found.unconfirmed);
         self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
@@ -2490,6 +2574,7 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
+                self.hold_rebroadcast_coins(id, released_outpoints);
                 // Read before the history forgets them: what is built on
                 // them is checked against their bytes (#739).
                 let (swept, own): (Vec<Transaction>, Vec<_>) =
@@ -3035,14 +3120,14 @@ impl PlatformEventHandler for SessionHub {
                 WalletShieldedOutcome::Ok(pass) if pass.is_cooldown_skip => continue,
                 WalletShieldedOutcome::Ok(pass) => pass,
                 WalletShieldedOutcome::Err(_) => {
-                    if failed.insert(wallet) {
+                    if failed.insert(wallet, None) != Some(None) {
                         self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
                     }
                     continue;
                 }
                 WalletShieldedOutcome::Skipped => continue,
             };
-            let recovered = failed.remove(&wallet);
+            let recovered = failed.remove(&wallet).is_some();
             let first = synced.insert(wallet);
             let found = (pass.notes_result.new_notes_per_account.values())
                 .chain(pass.newly_spent_per_account.values())

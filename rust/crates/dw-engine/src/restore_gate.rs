@@ -58,6 +58,7 @@ pub(crate) const PLATFORM_ROWS_FAULT: &str = "restore_gate.platform_rows";
 
 /// How often the gate's watcher looks again without a wake.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
+const CLOSED_WALLET_RECHECK: Duration = Duration::from_secs(60);
 
 /// The longest a failed clear waits before the next attempt.
 const CLEAR_BACKOFF_MAX: Duration = Duration::from_secs(60);
@@ -156,6 +157,8 @@ pub(crate) struct RestoreGate {
     /// Tests: how many clears were tried.
     #[cfg(test)]
     pub(crate) clear_attempts: std::sync::atomic::AtomicU32,
+    #[cfg(test)]
+    pub(crate) row_scan_attempts: std::sync::atomic::AtomicU32,
     /// Tests: every backoff after a failed clear, in place of the growing one.
     #[cfg(test)]
     pub(crate) backoff: Mutex<Option<Duration>>,
@@ -267,6 +270,11 @@ impl RestoreGate {
             return backoff;
         }
         clear_backoff(failures)
+    }
+
+    pub(crate) fn wake_for_retry(&self) {
+        self.retry.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
     }
 
     /// Reads the network's mark; returns whether it is set. A mark whose
@@ -712,7 +720,7 @@ impl NetworkSession {
         wallet: WalletId,
     ) -> Result<(), crate::platform::PlatformError> {
         if self.platform.funds_off() {
-            return Err(crate::platform::PlatformError::Unavailable);
+            return Err(crate::platform::PlatformError::SessionOff);
         }
         match self.wallet_platform_held(wallet) {
             true => Err(crate::platform::PlatformError::Restored),
@@ -887,12 +895,17 @@ impl NetworkSession {
                             }
                         }
                         gate.clear_failed.store(failures > 0, Ordering::SeqCst);
-                        next_try = tokio::time::Instant::now() + gate.backoff(failures);
+                        let delay = if failures == 0 && !session.any_platform_held() {
+                            CLOSED_WALLET_RECHECK
+                        } else {
+                            gate.backoff(failures)
+                        };
+                        next_try = tokio::time::Instant::now() + delay;
                     }
                     session.publish_restore_status().await;
                     let left = next_try.saturating_duration_since(tokio::time::Instant::now());
                     let wait = match failures {
-                        0 => WATCH_EVERY,
+                        0 => WATCH_EVERY.max(left),
                         _ => WATCH_EVERY.min(left),
                     };
                     (Arc::clone(&session.hub), wait)
@@ -989,8 +1002,7 @@ impl NetworkSession {
         if !self.any_platform_held() {
             return Ok(());
         }
-        gate.retry.store(true, Ordering::SeqCst);
-        gate.wake.notify_one();
+        gate.wake_for_retry();
         if !self.platform.enabled() {
             return Ok(());
         }
@@ -1144,23 +1156,21 @@ impl NetworkSession {
         {
             let seeds = tokio::task::spawn_blocking(move || {
                 let persisted = crate::history_ops::persisted_txids(&db_path);
+                let listed = persisted.is_ok();
+                let mut persisted = persisted.unwrap_or_default();
                 (wallets.into_iter())
                     .map(|w| {
                         let (here, read) = crate::tx_actions::load_dropped(&appdb, w);
-                        let mut dead: crate::tx_actions::Dead = match &persisted {
-                            Ok(p) => (p.get(&w.0).into_iter())
-                                .flat_map(|p| {
-                                    (p.dropped.iter())
-                                        .filter(|t| !p.dropped_doubtful.contains(*t))
-                                        .map(|t| (*t, crate::history::DropCause::InvalidClaim))
-                                })
-                                .collect(),
-                            Err(_) => Default::default(),
-                        };
+                        let mut p = persisted.remove(&w.0).unwrap_or_default();
+                        let store_read = p.add_store_dropped(&appdb, w);
+                        let mut dead: crate::tx_actions::Dead = (p.dropped.iter())
+                            .filter(|t| !p.dropped_doubtful.contains(*t))
+                            .map(|t| (*t, crate::history::DropCause::InvalidClaim))
+                            .collect();
                         for (t, cause) in here {
                             dead.entry(t).or_insert(cause);
                         }
-                        let complete = read && persisted.is_ok();
+                        let complete = read && listed && store_read;
                         (w, dead, complete)
                     })
                     .collect::<Vec<(WalletId, crate::tx_actions::Dead, bool)>>()
@@ -1194,6 +1204,8 @@ impl NetworkSession {
             return Ok(true);
         }
         let gate = &self.hub.restore;
+        #[cfg(test)]
+        gate.row_scan_attempts.fetch_add(1, Ordering::SeqCst);
         let appdb = self.live()?.appdb;
         let rowed: Vec<WalletId> = (self.registered_wallets().await?.into_iter())
             .filter(|w| gate.row_present(&appdb, *w))

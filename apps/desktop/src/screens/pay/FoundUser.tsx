@@ -4,8 +4,6 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { EligibilityName } from "../../api/generated/EligibilityName";
-import type { UserHit } from "../../api/generated/UserHit";
-import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
 import type { ActionOutcome } from "../../contacts/actions";
 import { unverifiedWarning } from "../../contacts/model";
@@ -17,6 +15,7 @@ import { useActionToast, useRefocus } from "../contacts/afterAction";
 import { Avatar } from "../contacts/Avatar";
 import { EnableButton, EnableFailure, SendRequestButton } from "../contacts/RequestButton";
 import { foundLine, payeeOf, type Payee } from "./contact";
+import type { FoundHit } from "./recipient";
 
 export function FoundUser({
   walletId,
@@ -27,7 +26,7 @@ export function FoundUser({
 }: {
   walletId: string;
   identity: string;
-  hit: UserHit;
+  hit: FoundHit;
   onPay: (payee: Payee) => void;
   onBack: () => void;
 }) {
@@ -115,11 +114,6 @@ export function FoundUser({
       )}
       <Outcome ok={false} text={failed?.text ?? null} testId="pay-found-outcome" />
       <EnableFailure actions={actions} testId="pay-found-enable-outcome" />
-      <p className="placeholder-note pay-found-address">
-        <DashButton variant="plainBlue" size="small" data-testid="pay-contact-to-address" onClick={() => ui.set({ payTab: "address" })}>
-          {t("pay.contact.toAddressInstead")}
-        </DashButton>
-      </p>
       <GrantSheet grants={actions.grants} />
     </div>
   );

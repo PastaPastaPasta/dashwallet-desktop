@@ -61,7 +61,11 @@ fn a_group_writable_data_root_is_refused_with_nothing_written() {
             .expect("a group-writable data root is refused");
         match &err {
             EngineError::DataFolderNotPrivate { folder, reason, .. } => {
-                assert_eq!(folder, root, "{err}");
+                assert_eq!(
+                    std::fs::canonicalize(folder).unwrap(),
+                    std::fs::canonicalize(root).unwrap(),
+                    "{err}"
+                );
                 assert_eq!(*reason, dw_fs::InsecureReason::GroupWritable, "{err}");
             }
             other => panic!("not a data-folder refusal: {other:?}"),
