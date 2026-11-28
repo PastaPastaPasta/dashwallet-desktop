@@ -1,7 +1,5 @@
 # MG governance engine contract (`dw-engine` facade)
 
-Contract-Version: 12
-
 Status: **draft**, 2026-10-16 (ROADMAP MG-02). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.md`](../design/MG-02-governance.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -10,9 +8,9 @@ the changes in §1 below.
 The facade is plain Rust in dw-engine. `dwcli` and the console drive it directly; dw-app binds it for the Tauri UI
 (`api/governance.rs`, BL-232), with binding derives in the binding crate only. MG-03 (masternodes), MG-05 (voting
 grants), MG-06 (proposals) and MG-07 (contested names) extend this file; **a change to a signature, a record or a code updates this file and
-raises `Contract-Version` in the same change.** `rust/crates/dw-engine/tests/mg_governance_contract.rs` enforces it
-the way `m4_dashpay_contract.rs` enforces m4: the generated §3 listing with its SHA-256 (`DW_BLESS=1` to approve a
-raised version), one §2 row per call with matching Kind and Errors, the §4 codes per variant and the `vote_rejected`
+regenerates §3 with `DW_BLESS=1` in the same change.** `rust/crates/dw-engine/tests/mg_governance_contract.rs` enforces it
+the way `m4_dashpay_contract.rs` enforces m4: the generated §3 listing (`DW_BLESS=1` to approve a
+change), one §2 row per call with matching Kind and Errors, the §4 codes per variant and the `vote_rejected`
 reasons, and the stub calls' `governance.not_implemented{call}`.
 
 ## 0. Object model and files
@@ -120,16 +118,14 @@ masternode and poll, one vote and its changes; `votes_used` counts the ones this
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `contested_names(wallet: WalletId)` | async | `ContestedNames`: the open DPNS contests, soonest ending first (the first page of 100 of Platform's end-date index from now on, each with its first page of 100 contenders, `contenders_complete` false for a full page; MG-07 D9; each contender's `name` is its own spelling from the `domain` document on that page, `null` when the document is missing, does not decode or fold to the label, or the page's proof used a quorum key SPV did not verify, MG-11 F1), the voters in list order, each with its key (`keychain{index}` or `attached`), Platform's weight (1, 4 for an evonode) and `current`: its proved choice (one votes-by-identity query per voter, MG-07 D4) and `votes_used` in each listed contest where it has either; and `votes_allowed`. | `GovernanceError` |
+| `contested_names(wallet: WalletId)` | async | `ContestedNames`: the open DPNS contests, soonest ending first (the first page of 100 of Platform's end-date index from now on, each with its first page of 100 contenders, `contenders_complete` false for a full page; MG-07 D9; each contender's `name` is its own spelling from the `domain` document on that page, `null` when the document is missing, does not decode or fold to the label, or the page's proof used a quorum key SPV did not verify, MG-11 F1). Each contest's `own` flag identifies a request from the queried wallet, backed by an SPV-verified contender match or a locally recorded registration. A complete SPV-verified page takes precedence over the local record. The answer also gives the voters in list order, each with its key (`keychain{index}` or `attached`), Platform's weight (1, 4 for an evonode) and `current`: its proved choice (one votes-by-identity query per voter, MG-07 D4) and `votes_used` in each listed contest where it has either; and `votes_allowed`. | `GovernanceError` |
 | `vote_name(wallet: WalletId, label: String, choice: NameChoice, masternodes: Vec<String>, grant: String)` | async | Casts `choice` (`towards_identity{identity}` base58, `abstain`, `lock`) on DPNS's poll of `label` for each masternode (proTxHash), under one `voting` lease begun from `grant` (a `Governance` grant of `wallet`) and ended when the call returns. Each vote is a `MasternodeVoteTransition` the vault lays out and signs (MG-07 D5), admitted through the fence as a row-less vote keyed by its hash, broadcast and waited for (MG-07 D12). Returns `Vec<NameVoteCast>`, one per masternode in the given order. **Whole-call errors**, before the grant is redeemed, in this order: `invalid_argument` (a label that cannot be contested, a malformed identity, no masternodes, a malformed or repeated proTxHash), `governance.list_unavailable`, `invalid_argument` for more masternodes than the list holds, `platform.unavailable` (no Platform, or a poll read failed), `governance.contest_not_found`, `governance.contest_closed`, `governance.not_a_contender`, then `wallet_not_found`; then the lease's `platform.*` errors (MG-05 D12). **Per masternode**, `rejected` is `unknown_masternode`, `no_voting_key`, `cancelled`, `signer_unavailable`, `in_flight` (MG-05's meanings), `vote_limit` (this app saw it use `votes_allowed`, or Platform refused it as over the limit; at the local limit a choice that is already the masternode's present one is `already_voted`, as Drive answers, MG-07 D18), `platform_unavailable` (the nonce read failed, or the transition never left; no `transition` then), `unconfirmed` (it may have left: no answer or no proof came back, or the dispatch permit's deadline came during the broadcast; MG-07 D7, D16), or Platform's refusal: `already_voted`, `contest_closed`, `contest_not_found`, `masternode_not_found`, `wrong_voting_key`, `choice_not_allowed`, `no_voter_identity`, `voting_key_disabled`, `refused` (MG-07 D10), `already_voted` also when the broadcast is answered "already exists" and the present choice is the one cast (MG-07 D18); else `transition` is the transition's hash (hex) and the vote counts. `transition` is also set on every refusal after the broadcast. | `GovernanceError` |
 
 ## 3. Surface (generated)
 
-Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLESS=1` rewrites it after
-`Contract-Version` is raised.
+Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLESS=1` rewrites it.
 
 <!-- BEGIN GENERATED: governance-surface -->
-<!-- surface-sha256: 1081d076ed3c1ac0062d2849d1ef46f4c60fb1714ef8687da1ded1bf296c4227 version: 12 -->
 
 ```rust
 // src/governance/contested.rs
@@ -415,6 +411,7 @@ pub struct NameContender {
 pub struct ContestedName {
     pub label: String,
     pub ends_at: u64,
+    pub own: bool,
     pub contenders: Vec<NameContender>,
     pub lock_votes: Option<u32>,
     pub abstain_votes: Option<u32>,

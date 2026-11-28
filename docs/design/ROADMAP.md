@@ -448,6 +448,7 @@ The "Release" column of §2's tables and the waves of §3 are superseded by this
 | 2026-11-01 | Mainnet shielded: the pool is expected active (no "not active" notice on mainnet). The per-action protocol-version gate stays (ShieldFromIdentity and top-up from shielded need PV14). | Platform Explorer latest block appVersion 13 (mainnet) and 14 (testnet) on 11-01; the pin activates the pool at PV12 (`rs-platform-version/src/version/feature_initial_protocol_versions.rs`). |
 | 2026-11-01 | Every date is a deadline; each version and patch ships as soon as it is done (DEC-1029). | pasta, 11-01. |
 | 2026-11-24 | DashConnect (DASHPAY F24) moves from 0.4 into 1.0 as App Connect v2 sign-ins: testnet and devnet on, mainnet behind its flag until the keys ruling; Connected apps and Disconnect follow the sign-in. | Pasta, 11-24. |
+| 2026-11-27 | App Connect (DASHPAY F24) is on for mainnet in 1.0: sign-ins, Connected apps and Disconnect run on every network. | Owner's ruling, 11-27. |
 | 2026-11-01 | MG-08 (owner dwcli commands + nightly regtest suites) is in 0.3 with MG-10/10b/12/13; it had no version. | Manager, 11-01. |
 | 2026-11-01 | Added cut: if the shielded build lands late on Monday, the shielded screens ship as minimal forms (receive address + QR; amount + address send) and shielded Activity rows move to 0.1.1. The never-cut list is unchanged. | Manager, 11-01. |
 

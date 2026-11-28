@@ -871,8 +871,13 @@ impl NetworkSession {
             // dropped as unsigned, or on what this app dropped, is dropped
             // with it (#739).
             if complete && !dropped.is_empty() {
-                self.abandon_on_dead(&live.manager, wallet, &dropped, true)
-                    .await;
+                self.abandon_on_dead(
+                    &live.manager,
+                    wallet,
+                    &dropped,
+                    crate::tx_actions::DeadSource::Load,
+                )
+                .await;
             }
             // The excluded coins (`crate::withhold`) read the history: the
             // balance read before it loaded counts them.

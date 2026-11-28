@@ -487,7 +487,6 @@ impl From<InvitationError> for AppError {
 codes! {
     ConnectCode {
         Network = "connect.network",
-        MainnetOff = "connect.mainnet_off",
         Unsupported = "connect.unsupported",
         Invalid = "connect.invalid",
         Stale = "connect.stale",
@@ -562,7 +561,6 @@ impl From<ConnectError> for AppError {
         let message = e.code().to_owned();
         let (code, data) = match e {
             C::Network => (ConnectCode::Network, None),
-            C::MainnetOff => (ConnectCode::MainnetOff, None),
             C::Unsupported => (ConnectCode::Unsupported, None),
             C::Invalid => (ConnectCode::Invalid, None),
             C::Stale => (ConnectCode::Stale, None),
@@ -931,7 +929,6 @@ mod tests {
         }
         let connect = [
             ConnectError::Network,
-            ConnectError::MainnetOff,
             ConnectError::Unsupported,
             ConnectError::Invalid,
             ConnectError::Stale,

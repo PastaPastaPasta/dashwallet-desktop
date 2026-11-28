@@ -528,8 +528,6 @@ impl InvitationError {
 pub enum ConnectError {
     #[error("the request is for another network")]
     Network,
-    #[error("app connect is off on mainnet")]
-    MainnetOff,
     #[error("the request asks for what this wallet does not support")]
     Unsupported,
     #[error("the request breaks the protocol's rules")]
@@ -564,7 +562,6 @@ impl ConnectError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Network => "connect.network",
-            Self::MainnetOff => "connect.mainnet_off",
             Self::Unsupported => "connect.unsupported",
             Self::Invalid => "connect.invalid",
             Self::Stale => "connect.stale",
@@ -603,7 +600,7 @@ impl ConnectError {
     pub fn status(&self) -> Option<dw_uri::connect::Status> {
         use dw_uri::connect::Status;
         Some(match self {
-            Self::Unsupported | Self::Protocol | Self::MainnetOff => Status::Unsupported,
+            Self::Unsupported | Self::Protocol => Status::Unsupported,
             Self::Invalid | Self::Owner => Status::Invalid,
             Self::Stale => Status::Stale,
             Self::Failed {

@@ -43,6 +43,10 @@ export const STORE_COPY: Readonly<Record<string, string>> = Object.fromEntries(C
 
 const button = (name: string) => ({ key: refused(name), label: english(refused(name)), destructive: false, defaultFocus: false });
 
+export function offersEarlierRestore(refusal: StoreRefusedData): boolean {
+  return refusal.screen.buttons.some(({ key }) => key === refused("restore"));
+}
+
 type Detail = "contactsTable" | "shapeMismatch" | "devBuild" | "damaged" | "historyMismatch";
 type WayOut = "previous" | "support" | "restore" | "damaged" | "retired";
 

@@ -45,8 +45,10 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // (BL-153 D19).
     case "walletCreated":
     case "walletRemoved":
-    case "walletLoadChanged":
       return [keys.wallets, keys.dashpayStatus(event.walletId)];
+    // A wallet's load can bring back its Platform restore hold, and no sync may follow soon (#1021).
+    case "walletLoadChanged":
+      return [keys.wallets, keys.dashpayStatus(event.walletId), keys.restoreStatus];
     // Sync ends `noIdentity`'s `waitingForSync` and sends no Platform signal (BL-153 D9); only
     // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
@@ -302,7 +304,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
           // Only a list that was partial is read again: sync events arrive up to 4 times a second.
           void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as UnfinishedTransfers | null | undefined)?.complete === false });
         else if (queryKey === keys.restored) void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data === true });
-        else if (queryKey === keys.restoreStatus) void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data !== null });
+        else if (queryKey === keys.restoreStatus && event.kind === "sync") void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data !== null });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();

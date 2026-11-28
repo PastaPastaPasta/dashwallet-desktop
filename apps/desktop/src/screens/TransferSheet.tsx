@@ -56,7 +56,7 @@ import { GrantSheet } from "./tools/common";
 import { platformHoldText } from "../api/platformHold";
 
 /** The balances the sheet shows and checks, from the reads Home's cards use. */
-export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
+export function useTransferPools(walletId: string, network: NetworkInfo, hold: ReturnType<typeof usePlatformHold>): Pools {
   const b = useBackend();
   const spendable = useQuery({ queryKey: [...keys.coinsAll(walletId), "transferSpendable"], queryFn: () => b.maxSpendable(walletId, { kind: "any" }, { kind: "perKb", duffsPerKb: 1000 }) });
   const coins = useUtxos(walletId, true);
@@ -65,7 +65,6 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const status = statusRead.isError ? null : statusRead.data;
   const pools = usePoolBalances(walletId);
   const addresses = usePlatformAddresses(walletId).data;
-  const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
   const sync = useSyncStatus().data;
   const core = spendable.data ?? null;
@@ -572,9 +571,10 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
   useModel(shielded);
   useModel(fund);
   useModel(move);
-  const pools = useTransferPools(walletId, network);
+  const hold = usePlatformHold(walletId, move);
+  const pools = useTransferPools(walletId, network, hold);
   const status = useShieldedStatus(walletId).data ?? null;
-  const { block } = usePlatformHold(walletId, move);
+  const { block } = hold;
   const defaultHere = defaultRoute(pools);
   const mainnet = network.kind === "mainnet";
   useEffect(() => t.setMainnet(mainnet), [t, mainnet]);

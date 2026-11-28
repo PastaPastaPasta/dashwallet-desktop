@@ -16,7 +16,7 @@ use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_coinjoin::client::MixingWallet;
 use dw_vault::{Credential, GrantPurpose};
 
-use super::own_spend_disk_tests::{FUNDED_AT, TIP, abandon, foreign, funding};
+use super::own_spend_disk_tests::{FUNDED_AT, TIP, foreign, funding};
 use super::{engine_wallet, mempool, mined, reopen, rows};
 use crate::coinjoin::SweepDestination;
 use crate::coinjoin::sweep_test_hooks::{Broadcast, Hooks};
@@ -140,6 +140,7 @@ fn sign_into_round(
     session: &Arc<NetworkSession>,
     id: WalletId,
     coin: OutPoint,
+    ended_at: u64,
     stage: impl Fn(&str),
 ) -> Transaction {
     let (wallet, owner) = session.mixing_wallet_for_test(id);
@@ -200,15 +201,13 @@ fn sign_into_round(
     );
     round.input[0] = signed[0].clone();
     stage("dss");
-    session.hold_signed_for_test(id, owner, &[coin], crate::coins::now_secs());
+    session.hold_signed_for_test(id, owner, &[coin], ended_at);
     session.expire_held_for_test(id);
     stage("the session's end");
     round
 }
 
-/// "Move mixed coins" of the whole account, its broadcast answered by
-/// `answer`; returns the result and the chunks handed to the network.
-fn move_mixed(
+fn return_held(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
@@ -225,7 +224,7 @@ fn move_mixed(
         ..Hooks::default()
     };
     let quote = engine
-        .block_on(session.mixed_coins_sweep_plan(id, SweepDestination::Wallet))
+        .block_on(session.return_from_mixing_plan(id))
         .unwrap()
         .quote_id;
     let grant = session
@@ -240,7 +239,7 @@ fn move_mixed(
         .unwrap()
         .id;
     let result = engine
-        .block_on(session.move_mixed_coins(id, SweepDestination::Wallet, quote, grant))
+        .block_on(session.return_from_mixing(id, quote, grant))
         .unwrap();
     let sent = wire.lock().unwrap().clone();
     (result, sent)
@@ -268,9 +267,16 @@ fn pin_377_a_a_coin_signed_into_a_round_is_not_offered_while_the_wallet_stays_up
     assert_eq!(offered(&engine, &session, id, coin), EVERYWHERE);
     assert_no_payment_takes(&session, &engine, id, coin);
 
-    let round = sign_into_round(&engine, &session, id, coin, |at| {
-        assert_eq!(offered(&engine, &session, id, coin), NOWHERE, "at {at}");
-    });
+    let round = sign_into_round(
+        &engine,
+        &session,
+        id,
+        coin,
+        crate::coins::now_secs(),
+        |at| {
+            assert_eq!(offered(&engine, &session, id, coin), NOWHERE, "at {at}");
+        },
+    );
 
     mempool(&engine, &session, id, &round);
     session.expire_held_for_test(id);
@@ -283,89 +289,43 @@ fn pin_377_a_a_coin_signed_into_a_round_is_not_offered_while_the_wallet_stays_up
     assert!(session.spends.snapshot(&id).is_empty(), "no claim left");
 }
 
-/// (a), past Dash Core's observation timeout: a round whose transaction
-/// the wallet has not seen an hour after the session ended frees its
-/// coin (`COINJOIN_PENDING_OBSERVATION_TIMEOUT`).
 #[test]
-fn pin_377_a_an_unseen_round_frees_its_coin_after_the_observation_timeout() {
+fn a_signed_rounds_coin_stays_held_past_the_observation_timeout() {
     let (_dir, engine, session, id) = engine_wallet();
     let coin = denomination(&engine, &session, id);
     let timeout = crate::coinjoin::PENDING_OBSERVATION_FOR_TEST;
 
-    let (_, owner) = session.mixing_wallet_for_test(id);
-    session.spends.reserve(id, owner, [coin]);
-    let ended = crate::coins::now_secs() - timeout + 60;
-    session.hold_signed_for_test(id, owner, &[coin], ended);
+    let ended = crate::coins::now_secs() - timeout;
+    sign_into_round(&engine, &session, id, coin, ended, |_| {});
     session.expire_held_for_test(id);
     assert_eq!(
         offered(&engine, &session, id, coin),
         NOWHERE,
-        "59 minutes after the session"
-    );
-    session.spends.release(&id, owner);
-
-    let (_, owner) = session.mixing_wallet_for_test(id);
-    session.spends.reserve(id, owner, [coin]);
-    let ended = crate::coins::now_secs() - timeout;
-    session.hold_signed_for_test(id, owner, &[coin], ended);
-    session.expire_held_for_test(id);
-    assert_eq!(
-        offered(&engine, &session, id, coin),
-        EVERYWHERE,
         "an hour after the session"
     );
 }
 
-/// (b) A restart after the signature, before the round's transaction
-/// arrives: the coin is offered again, and "Move mixed coins" signs it
-/// into a second spend and hands it to the network. The way out: Abandon
-/// the move (the wallet keeps the coin spent until a rescan), then the
-/// round's block clears the coin, across a restart too.
+/// A restart does not free a handed-out input. The round's block brings
+/// back its output without offering the spent input again.
 #[test]
-fn pin_377_b_after_a_restart_a_coin_signed_into_a_round_is_offered_and_moved() {
+fn a_coin_signed_into_a_round_stays_held_after_restart() {
     let (_dir, engine, session, id) = engine_wallet();
     let coin = denomination(&engine, &session, id);
-    let round = sign_into_round(&engine, &session, id, coin, |_| {});
+    let round = sign_into_round(
+        &engine,
+        &session,
+        id,
+        coin,
+        crate::coins::now_secs(),
+        |_| {},
+    );
     let session = reopen(&engine, session);
     assert_eq!(
         offered(&engine, &session, id, coin),
-        EVERYWHERE,
+        NOWHERE,
         "after the restart"
     );
     assert_no_payment_takes(&session, &engine, id, coin);
-
-    let (moved, sent) = move_mixed(&engine, &session, id, |tx| Ok(tx.txid()));
-    assert_eq!(moved.failure_code, None, "{moved:?}");
-    assert_eq!(sent.len(), 1);
-    let chunk = sent[0].clone();
-    assert_eq!(
-        chunk
-            .input
-            .iter()
-            .map(|i| i.previous_output)
-            .collect::<Vec<_>>(),
-        vec![coin],
-        "a second spend of the coin"
-    );
-    assert_ne!(chunk.txid(), round.txid());
-    mempool(&engine, &session, id, &chunk);
-    assert_eq!(
-        offered(&engine, &session, id, coin),
-        NOWHERE,
-        "the move holds it"
-    );
-
-    abandon(&engine, &session, id, chunk.txid());
-    assert_eq!(
-        status(&engine, &session, id, chunk.txid()),
-        Some(TxStatusKind::Abandoned)
-    );
-    let freed = offered(&engine, &session, id, coin);
-    assert_eq!(
-        (freed.listed_free, freed.mixing),
-        (false, false),
-        "abandoned, the round unseen: the wallet keeps the coin spent: {freed:?}"
-    );
 
     mined(&engine, &session, id, TIP + 1, vec![round.clone()]);
     let cleared = offered(&engine, &session, id, coin);
@@ -384,24 +344,24 @@ fn pin_377_b_after_a_restart_a_coin_signed_into_a_round_is_offered_and_moved() {
         (false, false),
         "after a second restart"
     );
-    assert_eq!(
-        status(&engine, &session, id, chunk.txid()),
-        Some(TxStatusKind::Abandoned)
-    );
     assert!(session.spends.snapshot(&id).is_empty());
 }
 
-/// (b), the round's transaction already on the network: the move is
-/// refused there and nothing of it is kept. The coin stays offered until
-/// the round's block reaches the wallet.
 #[test]
-fn pin_377_b_a_move_the_network_refuses_leaves_the_coin_offered_until_the_round_is_mined() {
+fn a_return_rejected_by_the_network_leaves_the_coin_held_until_the_round_is_mined() {
     let (_dir, engine, session, id) = engine_wallet();
     let coin = denomination(&engine, &session, id);
-    let round = sign_into_round(&engine, &session, id, coin, |_| {});
+    let round = sign_into_round(
+        &engine,
+        &session,
+        id,
+        coin,
+        crate::coins::now_secs(),
+        |_| {},
+    );
     let session = reopen(&engine, session);
 
-    let (moved, sent) = move_mixed(&engine, &session, id, |_| {
+    let (moved, sent) = return_held(&engine, &session, id, |_| {
         Err(Box::new(
             platform_wallet::PlatformWalletError::TransactionBroadcast(
                 "rejected: txn-mempool-conflict".into(),
@@ -412,7 +372,7 @@ fn pin_377_b_a_move_the_network_refuses_leaves_the_coin_offered_until_the_round_
     assert!(moved.failure_code.is_some(), "refused: {moved:?}");
     assert_eq!(
         offered(&engine, &session, id, coin),
-        EVERYWHERE,
+        NOWHERE,
         "refused, the round unseen"
     );
 
@@ -423,6 +383,114 @@ fn pin_377_b_a_move_the_network_refuses_leaves_the_coin_offered_until_the_round_
         (false, false),
         "the round mined"
     );
+}
+
+#[test]
+fn a_legacy_coin_stays_held_across_restart() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let coin = denomination(&engine, &session, id);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+    assert_eq!(offered(&engine, &session, id, coin), NOWHERE);
+    let session = reopen(&engine, session);
+    assert_eq!(offered(&engine, &session, id, coin), NOWHERE);
+    assert_no_payment_takes(&session, &engine, id, coin);
+}
+
+#[test]
+fn a_coordinator_can_only_receive_the_recorded_collateral_bytes_after_restart() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let s = Arc::clone(&session);
+    let address = engine
+        .block_on(
+            session.on_runtime(async move { s.reserve_coinjoin_addresses(id, 1, false).await }),
+        )
+        .unwrap();
+    let deposit = funding(51, &address, dw_coinjoin::denoms::MAX_COLLATERAL_AMOUNT);
+    mined(&engine, &session, id, FUNDED_AT, vec![deposit.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let coin = OutPoint::new(deposit.txid(), 0);
+    let collateral = Transaction {
+        version: 1,
+        lock_time: 0,
+        input: vec![TxIn {
+            previous_output: coin,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: 0,
+            script_pubkey: ScriptBuf::from_bytes(vec![0x6a]),
+        }],
+        special_transaction_payload: None,
+    };
+    let handoff = |session: &Arc<NetworkSession>, tx: Transaction| {
+        let (wallet, _) = session.mixing_wallet_for_test(id);
+        engine
+            .block_on(session.on_runtime(async move {
+                wallet.lock_coins(&[coin]);
+                let result = wallet.handoff_collateral(&tx).await;
+                wallet.unlock_coins(&[coin]);
+                Ok(result)
+            }))
+            .unwrap()
+    };
+    assert!(handoff(&session, collateral.clone()).is_ok());
+    let session = reopen(&engine, session);
+    assert_eq!(offered(&engine, &session, id, coin), NOWHERE);
+    let changed = Transaction {
+        lock_time: 1,
+        ..collateral.clone()
+    };
+    assert!(handoff(&session, changed).is_err());
+    assert!(handoff(&session, collateral).is_ok());
+}
+
+#[test]
+fn returning_to_core_spends_only_the_held_coins_and_waits_for_confirmation() {
+    use crate::send::FeeMode;
+    let (_dir, engine, session, id) = engine_wallet();
+    let coin = denomination(&engine, &session, id);
+    sign_into_round(
+        &engine,
+        &session,
+        id,
+        coin,
+        crate::coins::now_secs(),
+        |_| {},
+    );
+    let another = denomination(&engine, &session, id);
+    assert_ne!(another, coin);
+    let (returned, sent) = return_held(&engine, &session, id, |tx| Ok(tx.txid()));
+    assert_eq!(returned.failure_code, None);
+    let [tx] = sent.as_slice() else {
+        panic!("expected one return transaction")
+    };
+    assert_eq!(
+        tx.input
+            .iter()
+            .map(|i| i.previous_output)
+            .collect::<Vec<_>>(),
+        [coin]
+    );
+    assert_eq!(tx.output.len(), 1);
+    assert_eq!(tx.output[0].value + returned.fee, DENOM);
+    let core = || {
+        engine
+            .block_on(session.max_spendable(
+                id,
+                CoinSource::Any,
+                FeeMode::Recommended { target_blocks: 6 },
+            ))
+            .unwrap()
+    };
+    mempool(&engine, &session, id, tx);
+    assert_eq!(core(), 0);
+    mined(&engine, &session, id, TIP + 1, vec![tx.clone()]);
+    assert_eq!(core(), returned.received);
 }
 
 /// What a session asks of the real wallet before it submits or signs a
@@ -602,4 +670,279 @@ fn mixing_session_held_coins_keep_coinjoin_total_steady() {
     assert_eq!(after.balances.anonymizable, 4 * DENOM);
     assert_eq!(after.amount_and_rounds.amount, 4 * DENOM);
     assert_eq!(after.progress, before.progress);
+}
+
+#[test]
+fn held_from_mixing_counts_legacy_and_handoff_coins_and_clears_after_return() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let free_coin = denomination(&engine, &session, id);
+    let held_denom = denomination(&engine, &session, id);
+    assert_ne!(free_coin, held_denom);
+
+    let read_status = || {
+        let s = Arc::clone(&session);
+        engine
+            .block_on(session.on_runtime(async move {
+                s.refresh_coinjoin_status(id).await;
+                Ok(())
+            }))
+            .unwrap();
+        session.coinjoin_status(id).unwrap()
+    };
+
+    // A free CoinJoin coin alongside a FinalInputs-held coin: only the
+    // held coin counts in `held_from_mixing`, never the free coin.
+    sign_into_round(
+        &engine,
+        &session,
+        id,
+        held_denom,
+        crate::coins::now_secs(),
+        |_| {},
+    );
+    let mixed_state = read_status();
+    assert_eq!(mixed_state.balances.coinjoin_account, DENOM);
+    assert_eq!(mixed_state.balances.held_from_mixing, DENOM);
+
+    let (returned_handoff, sent_handoff) = return_held(&engine, &session, id, |tx| Ok(tx.txid()));
+    assert_eq!(returned_handoff.failure_code, None);
+    assert_eq!(sent_handoff.len(), 1);
+    assert_eq!(sent_handoff[0].input.len(), 1);
+    assert_eq!(sent_handoff[0].input[0].previous_output, held_denom);
+    mined(&engine, &session, id, TIP + 1, sent_handoff);
+
+    let after_handoff = read_status();
+    assert_eq!(after_handoff.balances.held_from_mixing, 0);
+    assert_eq!(after_handoff.balances.coinjoin_account, DENOM);
+
+    // Untracked/legacy wallet: both the remaining denomination and a
+    // collateral coin are held as legacy coins, and locking one removes it
+    // from `held_from_mixing` until unlocked and returned.
+    let s = Arc::clone(&session);
+    let col_addr = engine
+        .block_on(
+            session.on_runtime(async move { s.reserve_coinjoin_addresses(id, 1, false).await }),
+        )
+        .unwrap();
+    let col_tx = funding(52, &col_addr, dw_coinjoin::denoms::MAX_COLLATERAL_AMOUNT);
+    mined(&engine, &session, id, TIP + 2, vec![col_tx.clone()]);
+    mined(&engine, &session, id, TIP + 3, vec![foreign()]);
+    let col = OutPoint::new(col_tx.txid(), 0);
+
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+
+    let held = read_status();
+    assert_eq!(held.balances.coinjoin_account, 0);
+    assert_eq!(
+        held.balances.held_from_mixing,
+        DENOM + dw_coinjoin::denoms::MAX_COLLATERAL_AMOUNT
+    );
+
+    engine
+        .block_on(session.lock_outpoints(id, vec![col]))
+        .unwrap();
+    assert_eq!(read_status().balances.held_from_mixing, DENOM);
+    engine
+        .block_on(session.unlock_outpoints(id, vec![col]))
+        .unwrap();
+
+    let (returned, sent) = return_held(&engine, &session, id, |tx| Ok(tx.txid()));
+    assert_eq!(returned.failure_code, None);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].input.len(), 2);
+    assert!(sent[0].input.iter().any(|i| i.previous_output == free_coin));
+    assert!(sent[0].input.iter().any(|i| i.previous_output == col));
+    mined(&engine, &session, id, TIP + 4, sent);
+
+    let cleared = read_status();
+    assert_eq!(cleared.balances.held_from_mixing, 0);
+    assert_eq!(cleared.balances.coinjoin_account, 0);
+}
+
+#[test]
+fn return_from_mixing_pays_distinct_unissued_bip44_addresses_per_chunk() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let shared = engine
+        .block_on(session.next_receive_address(id, None))
+        .unwrap();
+    let shared_script = shared
+        .address
+        .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
+        .unwrap()
+        .assume_checked()
+        .script_pubkey();
+
+    let a = denomination(&engine, &session, id);
+    let b = denomination(&engine, &session, id);
+    assert_ne!(a, b);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let w = Arc::clone(&wire);
+    let broadcast: Broadcast = Arc::new(move |tx| {
+        w.lock().unwrap().push(tx.clone());
+        Ok(tx.txid())
+    });
+    *session.coinjoin.sweep_hooks.lock().unwrap() = Hooks {
+        max_inputs: Some(1),
+        broadcast: Some(broadcast),
+        ..Hooks::default()
+    };
+    let plan = engine
+        .block_on(session.return_from_mixing_plan(id))
+        .unwrap();
+    assert_eq!(plan.chunks.len(), 2);
+    let grant = session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 10 * DENOM,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let result = engine
+        .block_on(session.return_from_mixing(id, plan.quote_id, grant))
+        .unwrap();
+    assert_eq!(result.failure_code, None);
+    let sent = wire.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    let out0 = &sent[0].output[0].script_pubkey;
+    let out1 = &sent[1].output[0].script_pubkey;
+    assert_ne!(
+        out0, &shared_script,
+        "chunk 0 reused an issued receive address"
+    );
+    assert_ne!(
+        out1, &shared_script,
+        "chunk 1 reused an issued receive address"
+    );
+    assert_ne!(
+        out0, out1,
+        "multi-chunk return reused the same receive address"
+    );
+}
+
+#[test]
+fn return_from_mixing_falls_back_to_distinct_available_addresses_at_gap_limit() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let mut issued_scripts = std::collections::HashSet::new();
+    loop {
+        match engine.block_on(session.next_receive_address(id, None)) {
+            Ok(info) => {
+                let script = info
+                    .address
+                    .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
+                    .unwrap()
+                    .assume_checked()
+                    .script_pubkey();
+                issued_scripts.insert(script);
+            }
+            Err(crate::EngineError::GapLimit) => break,
+            Err(e) => panic!(
+                "unexpected error issuing address #{}: {e:?}",
+                issued_scripts.len()
+            ),
+        }
+    }
+    assert!(
+        issued_scripts.len() >= 20,
+        "expected full receive gap limit, got {}",
+        issued_scripts.len()
+    );
+
+    let a = denomination(&engine, &session, id);
+    let b = denomination(&engine, &session, id);
+    assert_ne!(a, b);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(session.appdb_op(move |db| {
+            db.set_setting_durable(&scope, crate::coinjoin::TRACKED_WALLET_KEY, None)
+        }))
+        .unwrap();
+
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let w = Arc::clone(&wire);
+    let broadcast: Broadcast = Arc::new(move |tx| {
+        w.lock().unwrap().push(tx.clone());
+        Ok(tx.txid())
+    });
+    *session.coinjoin.sweep_hooks.lock().unwrap() = Hooks {
+        max_inputs: Some(1),
+        broadcast: Some(broadcast),
+        ..Hooks::default()
+    };
+    let plan = engine
+        .block_on(session.return_from_mixing_plan(id))
+        .unwrap();
+    assert_eq!(plan.chunks.len(), 2);
+    let grant = session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 10 * DENOM,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let result = engine
+        .block_on(session.return_from_mixing(id, plan.quote_id, grant))
+        .expect("return at gap limit should fall back to available receive addresses");
+    assert_eq!(result.failure_code, None);
+    let sent = wire.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    let out0 = &sent[0].output[0].script_pubkey;
+    let out1 = &sent[1].output[0].script_pubkey;
+    assert_ne!(
+        out0, out1,
+        "fallback multi-chunk return reused the same receive address"
+    );
+    assert!(
+        issued_scripts.contains(out0) && issued_scripts.contains(out1),
+        "fallback return paid an address outside the wallet's receiving pool"
+    );
+}
+
+#[test]
+fn return_from_mixing_plan_refuses_while_restored() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let coin = denomination(&engine, &session, id);
+    sign_into_round(
+        &engine,
+        &session,
+        id,
+        coin,
+        crate::coins::now_secs(),
+        |_| {},
+    );
+
+    let dir = session
+        .data_dir()
+        .join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("RESTORED"), "restored\nformat 1\n").unwrap();
+    let session = reopen(&engine, session);
+    assert!(session.restored(), "restored mark must be active");
+
+    let err = engine
+        .block_on(session.return_from_mixing_plan(id))
+        .expect_err("plan must refuse while restored");
+    assert!(
+        matches!(err, crate::EngineError::Restored),
+        "expected Restored, got {err:?}"
+    );
 }

@@ -239,5 +239,35 @@ export const coinjoin = {
     planChanged: "Your CoinJoin balance changed since you reviewed this move. Review it again.",
     close: "Close",
     again: "Try again",
+    returnToCore: {
+      cardHeld: "{amount} in your CoinJoin balance is held after a mixing session and cannot be mixed or sent until returned.",
+      open: "Return to Core",
+      settingsTitle: "Held CoinJoin coins",
+      title: "Return to Core",
+      planning: "Reading your held CoinJoin coins…",
+      confirm: {
+        message: "Send your held CoinJoin coins to a new Core address of this wallet. Once confirmed, they are spendable in your Core balance.",
+        heldAmount: "Held amount",
+        destination: "Destination",
+        destinationCore: "Core wallet",
+        action: "Return to Core",
+      },
+      mixing: {
+        text: "Stop mixing first before returning held coins to Core.",
+      },
+      running: {
+        title: "Returning coins to Core…",
+      },
+      done: {
+        title: "Coins returning to Core",
+        text: "{received} is on its way to your Core balance. Network fee: {fee}.",
+      },
+      partial: {
+        title: "Not all held coins returned",
+        text: "{received} is on its way to your Core balance (network fee {fee}); {remaining} stayed held. Try again to return the rest.",
+      },
+      nothing: "There are no held CoinJoin coins to return.",
+      planChanged: "Your held CoinJoin coins changed since you reviewed this return. Review it again.",
+    },
   },
 } as const satisfies Tree;

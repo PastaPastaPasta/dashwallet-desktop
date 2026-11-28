@@ -134,9 +134,9 @@ export function useContactActions(walletId: string, identity: string): ContactAc
 
 /** Whether `identity` has its DashPay keys, from the shell's identities query; `undefined`
  * while unknown (DP2-09 D2, D10). */
-export function useHasKeys(walletId: string, identity: string): boolean | undefined {
+export function useHasKeys(walletId: string, identity: string | null): boolean | undefined {
   const b = useBackend();
-  const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId) });
+  const identities = useQuery({ queryKey: keys.identities(walletId), queryFn: () => b.identities(walletId), enabled: identity !== null });
   return identities.data?.find((i) => i.identity === identity)?.hasDashpayKeys;
 }
 

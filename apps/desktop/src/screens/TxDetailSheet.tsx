@@ -254,7 +254,7 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
   const b = useBackend();
   const client = useQueryClient();
   const extras = useTxDetailExtras(walletId, txid);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<"abandon" | "sweep" | null>(null);
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
@@ -262,8 +262,9 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
   const abandon = actionOffer(!!x?.canAbandon, walletRestored);
   const resend = actionOffer(!!x?.canResend, walletRestored);
   useEffect(() => {
-    if (abandon !== "offer") setConfirming(false);
-  }, [abandon]);
+    if (confirming === "abandon" && abandon !== "offer") setConfirming(null);
+    if (confirming === "sweep" && (resend !== "offer" || !x?.abandoned)) setConfirming(null);
+  }, [abandon, resend, x?.abandoned, confirming]);
   const shown = (a: typeof abandon) => a === "offer" || a === "waiting";
   const can = shown(abandon) || shown(resend);
   const gated = abandon === "gated" || resend === "gated";
@@ -272,17 +273,24 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
   const run = async (what: "abandon" | "resend") => {
     setBusy(true);
     setNote(null);
+    const restartingSweep = what === "resend" && x.abandoned;
     try {
       if (what === "abandon") await b.abandonTransaction(walletId, txid);
       else await b.resendTransaction(walletId, txid);
       setNote({ text: what === "abandon" ? "The transaction was abandoned." : "The transaction was sent to the network again.", problem: false });
-      setConfirming(false);
+      setConfirming(null);
       await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
       const wallets = await b.listWallets().catch(() => []);
-      if (what === "abandon" && hasCode(e, "rescan_in_progress")) setConfirming(false);
-      setNote({ text: actionProblem(e, what, wallets), problem: true });
+      if (what === "abandon" && hasCode(e, "rescan_in_progress")) setConfirming(null);
+      if (restartingSweep) {
+        setConfirming(null);
+        await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
+        await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
+      }
+      const pending = restartingSweep && hasCode(e, "send.broadcast_unknown");
+      setNote({ text: pending ? t("activity.abandon.sweepResendUnknown") : actionProblem(e, what, wallets), problem: !pending });
     } finally {
       setBusy(false);
     }
@@ -290,7 +298,21 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
   const hint = abandonHint(x);
   return (
     <section className="tx-actions card-l1" aria-label="Actions" data-testid="tx-detail-actions">
-      {confirming && abandon === "offer" ? (
+      {confirming === "sweep" && resend === "offer" ? (
+        <>
+          <p className="tx-actions-question" data-testid="tx-sweep-resend-question">
+            {t("activity.abandon.sweepResendQuestion")}
+          </p>
+          <span className="tx-actions-row">
+            <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(null)}>
+              {t("activity.abandon.sweepResendCancel")}
+            </DashButton>
+            <DashButton variant="tintedBlue" size="small" data-testid="tx-sweep-resend-confirm" disabled={busy} onClick={() => void run("resend")}>
+              {t("activity.abandon.sweepResendConfirm")}
+            </DashButton>
+          </span>
+        </>
+      ) : confirming === "abandon" && abandon === "offer" ? (
         <>
           {hint && (
             <p className="tx-actions-question" data-testid="tx-abandon-restored-hint">
@@ -301,7 +323,7 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
             {abandonQuestion(x)}
           </p>
           <span className="tx-actions-row">
-            <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(false)}>
+            <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(null)}>
               Keep it
             </DashButton>
             <DashButton variant="plainRed" size="small" data-testid="tx-abandon-confirm" disabled={busy} onClick={() => void run("abandon")}>
@@ -313,12 +335,12 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
         can && (
           <span className="tx-actions-row">
             {shown(resend) && (
-              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy || resend === "waiting"} onClick={() => void run("resend")}>
+              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy || resend === "waiting"} onClick={() => (x.abandoned ? setConfirming("sweep") : void run("resend"))}>
                 Resend
               </DashButton>
             )}
             {shown(abandon) && (
-              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy || abandon === "waiting"} onClick={() => setConfirming(true)}>
+              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy || abandon === "waiting"} onClick={() => setConfirming("abandon")}>
                 Abandon transaction
               </DashButton>
             )}
@@ -328,6 +350,11 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
       {gated && (
         <p className="placeholder-note" role="status" data-testid="tx-restored-gate">
           {abandon === "gated" ? t("activity.abandon.restoredGate") : t("storeUpgrade.restore.banner")}
+        </p>
+      )}
+      {x.abandoned && shown(resend) && confirming !== "sweep" && (
+        <p className="placeholder-note" data-testid="tx-sweep-resend-hint">
+          {t("activity.abandon.sweepResendHint")}
         </p>
       )}
       {!confirming && <UnprovenAbandonHint x={x} />}
