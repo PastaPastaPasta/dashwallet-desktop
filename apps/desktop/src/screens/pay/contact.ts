@@ -16,7 +16,6 @@ import type { LockStateName } from "../../api/generated/LockStateName";
 import type { PaymentSourceName } from "../../api/generated/PaymentSourceName";
 import type { UserHit } from "../../api/generated/UserHit";
 import type { UserRelation } from "../../api/generated/UserRelation";
-import type { PayTab } from "../../app/ui";
 import { actionError } from "../../contacts/actions";
 import { cardLine } from "../../contacts/add";
 import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
@@ -61,24 +60,10 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
   }
 }
 
-/** The tab Pay opens on when nothing named one: To a contact only when there is someone to pay
- * there (a contact or a request), else To an address; `null` while that is still being read
- * (`owner` is `undefined` until DashPay's status is read). */
-export function defaultPayTab(
-  owner: (ContactsOwner & { failed?: boolean; fetching?: boolean }) | undefined,
-  list: { data: ContactList | undefined; failed: boolean; fetching?: boolean },
-): PayTab | null {
-  // The tab is chosen once, so not from a cached answer that a running read may yet overturn.
-  if (owner === undefined || owner.fetching || list.fetching) return null;
-  // A failed read keeps the last good answer, which may be stale: To an address, not that list.
-  if (owner.kind !== "identity" || owner.failed || list.failed) return "address";
-  if (list.data === undefined) return null;
-  return pickerGroups(list.data).length > 0 ? "contact" : "address";
-}
-
 // ---------------------------------------------------------------- the picker (D4)
 
 export interface PickerRow extends Payee {
+  unverified: boolean;
   /** Why it cannot be paid now (selecting it shows the banner), else `null`. */
   reason: string | null;
 }
@@ -96,7 +81,7 @@ const GROUP_TITLES = messageTable("pay.contact.groups", ["contacts", "requests"]
 export function pickerGroups(list: ContactList | undefined): PickerGroup[] {
   const groups: PickerGroup[] = [];
   for (const id of ["contacts", "requests"] as const) {
-    const rows = (list?.sections.find((s) => s.section === id)?.contacts ?? []).map((c) => ({ ...payeeOf(c), reason: rowReason(c) }));
+    const rows = (list?.sections.find((s) => s.section === id)?.contacts ?? []).map((c) => ({ ...payeeOf(c), unverified: c.unverified, reason: rowReason(c) }));
     if (rows.length > 0) groups.push({ id, title: GROUP_TITLES[id], rows });
   }
   return groups;

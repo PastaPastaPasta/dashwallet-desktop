@@ -18,7 +18,6 @@ async function open(page: Page, scenario: string) {
 
 async function payTo(page: Page, address: string) {
   await page.getByTestId("sidebar-pay").click();
-  await page.getByTestId("pay-tabs-address").click();
   await page.getByTestId("pay-address").fill(address);
   await page.locator("[data-testid=platform-send-intro], [data-testid=platform-send-empty]").first().waitFor();
 }
@@ -153,12 +152,27 @@ test.describe("Pay from Platform", () => {
     await page.getByTestId("sidebar-home").click();
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    const platform = page.getByTestId("breakdown-platform");
+    await expect(platform.locator(".amount-number")).toHaveText("0.40");
+    await expect(platform.locator(".breakdown-subtitle")).toHaveText("Outgoing pending · cached balance");
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.84698287 tDASH");
     // Transfer from Platform waits, says why, and links to Activity.
     expect(await platformMoveWhy(page)).toBeTruthy();
     await openTransfer(page, "platformToCore");
     await page.getByTestId("platform-move-view").click();
     await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await page.getByTestId("tx-list").waitFor();
+
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const send = f.world.pending.platform!.activity.find((op) => op.kind === "send" && op.state === "pending")!;
+      f.landPlatformSend(send.id);
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
+    });
+    await page.getByTestId("sidebar-home").click();
+    await expect(platform.locator(".amount-number")).toHaveText("0.389935");
+    await expect(platform.locator(".breakdown-subtitle")).toBeEmpty();
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.83691787 tDASH");
   });
 
   test("a send that did not go through in time says it may still go through, keeps the form, and shows in Activity", async ({ page }) => {

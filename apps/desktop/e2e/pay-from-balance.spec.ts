@@ -15,6 +15,7 @@ async function openBob(page: Page, theme: Theme = "light") {
   await page.goto(fixtureUrl("dashpay-registered", theme));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-frequent-chip").first().click();
   await expect(page.getByTestId("pay-payee-name")).toHaveText("Bob Builder");
   await page.getByTestId("pay-from").waitFor();
@@ -52,6 +53,7 @@ test("PAY-FROM the form opens on the Dash wallet, every source listed with its b
   await expect(page.getByTestId("pay-subtract-fee")).toHaveCount(0);
   // Never remembered: the next form opens on the Dash wallet again.
   await page.getByTestId("pay-payee-change").click();
+  await page.getByTestId("pay-contacts").click();
   await page.getByTestId("pay-frequent-chip").first().click();
   await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Dash wallet/ })).toBeChecked();
   expect(errors).toEqual([]);

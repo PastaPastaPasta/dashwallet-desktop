@@ -105,7 +105,7 @@ impl NetworkSession {
         first: bool,
     ) -> Result<Outcome, MasternodesError> {
         let txid = tx.txid().to_string();
-        let (result, pending) = match self.new_draft(wallet, HashSet::new(), false) {
+        let (result, pending) = match self.new_shared_abandon_draft(wallet) {
             Ok(draft) => {
                 self.hand_off(&draft, tx, summary, charge, fence, !first, None)
                     .await
@@ -143,7 +143,10 @@ impl NetworkSession {
         if !recorded {
             return Err(MasternodesError::SharedSessionNotFound);
         }
-        Ok(outcome)
+        match result {
+            Err(e @ EngineError::Send(SendFailure::OutpointUnavailable(_))) => Err(e.into()),
+            _ => Ok(outcome),
+        }
     }
 
     /// The outcome, and whether nothing was handed off: the transaction
@@ -393,7 +396,7 @@ impl NetworkSession {
             {
                 let state = crate::wallet_read::info_of(&w).await?;
                 let core = &state.core_wallet;
-                let excluded = self.hub.excluded_coins(wallet, core);
+                let excluded = self.hub.recovery_exclusions(wallet, core);
                 let available = crate::coins::read_coins(core);
                 if tx.input.iter().any(|input| {
                     let coin = &input.previous_output;

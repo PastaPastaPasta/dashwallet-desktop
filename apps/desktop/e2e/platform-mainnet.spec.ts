@@ -137,7 +137,6 @@ for (const theme of ["light", "dark"] as const) {
     test("Pay to a Platform address shows the line, with no amount or Review", async ({ page }) => {
       const errors = await open(page, "funded", theme);
       await page.getByTestId("sidebar-pay").click();
-      await page.getByTestId("pay-tabs-address").click();
       await page.getByTestId("pay-address").fill(PAYEE);
       await expect(page.getByTestId("platform-send-mainnet-off")).toHaveText(OFF);
       await expect(page.getByTestId("pay-amount")).toHaveCount(0);

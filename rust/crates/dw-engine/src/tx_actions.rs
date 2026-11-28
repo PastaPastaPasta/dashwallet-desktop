@@ -614,8 +614,23 @@ pub(crate) enum SentRead {
 /// The sent marks for a history load: [`load_sent`], except that a failed
 /// query of the saved copies keeps the marks that read ([`SentRead::CoinsOnly`]).
 pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
+    read_sent_with(appdb, wallet, |_| {})
+}
+
+/// History can use partial evidence. Replay needs to retry any failed query.
+fn read_replay_sent(appdb: &AppDb, wallet: WalletId) -> dw_appdb::Result<Sent> {
+    let mut reads = Ok(());
+    let (sent, _) = read_sent_with(appdb, wallet, |error| reads = Err(error));
+    reads.map(|()| sent)
+}
+
+fn read_sent_with(
+    appdb: &AppDb,
+    wallet: WalletId,
+    mut read_failed: impl FnMut(dw_appdb::AppDbError),
+) -> (Sent, SentRead) {
     let scope = wallet.to_string();
-    let rows = |prefix: &str| match appdb.settings_with_prefix_lossy(&scope, prefix) {
+    let mut rows = |prefix: &str| match appdb.settings_with_prefix_lossy(&scope, prefix) {
         Ok(rows) => Some(
             (rows.into_iter())
                 .filter_map(|(key, value)| {
@@ -625,6 +640,7 @@ pub(crate) fn read_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, SentRead) {
         ),
         Err(e) => {
             tracing::warn!(%wallet, prefix, error = %e, "could not read the sent marks");
+            read_failed(e);
             None
         }
     };
@@ -2199,7 +2215,7 @@ impl NetworkSession {
         // Read after the history: an Abandon writes its mark under the
         // manager's lock the view waits on, and flags the entry only once
         // its sweep is stored.
-        f.abandon_marked = self.abandon_marked(wallet, txid).await;
+        f.abandon_marked = self.read_abandon_mark(wallet, txid).await?;
         Ok((entry, f))
     }
 
@@ -2540,6 +2556,10 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
+        let mut funding_gates = Vec::with_capacity(own.len());
+        for txid in own {
+            funding_gates.push(self.asset_lock_gate(wallet, *txid).write_owned().await);
+        }
         let proof = self.root_proof(manager, wallet, root).await;
         let _gate = self.abandon_gate(wallet).write_owned().await;
         // Planned on a copy under the lock that applies it, so the replay
@@ -2721,7 +2741,10 @@ impl NetworkSession {
             let refuse = false;
             let abandoned = match refuse {
                 true => BTreeSet::new(),
-                false => abandon_with(&mut info.core_wallet, root, &descendants),
+                false => {
+                    self.hub.hold_rebroadcast_coins(wallet, &released);
+                    abandon_with(&mut info.core_wallet, root, &descendants)
+                }
             };
             if abandoned.is_empty() {
                 #[cfg(test)]
@@ -3995,7 +4018,13 @@ impl NetworkSession {
         let refused = false;
         let abandoned = match refused {
             true => BTreeSet::new(),
-            false => abandon_with(core, root, &rest),
+            false => {
+                self.hub.hold_rebroadcast_coins(
+                    wallet,
+                    &plan.freed.iter().copied().collect::<Vec<_>>(),
+                );
+                abandon_with(core, root, &rest)
+            }
         };
         if abandoned.is_empty() {
             // key-wallet refused (it settled the root meanwhile): the marks
@@ -4548,6 +4577,8 @@ impl NetworkSession {
         let Ok(manager) = self.manager() else {
             return;
         };
+        // A reconnect during a failing attempt must see the generation it rearms.
+        let _replay = self.rebroadcast_replay_gate.lock().await;
         let generation = manager.spv().run_session();
         if generation == 0
             || self
@@ -4557,34 +4588,70 @@ impl NetworkSession {
         {
             return;
         }
+        let mut restored = HashSet::new();
+        let mut replay = async || {
+            self.restore_pending_rebroadcasts(&manager, generation, &mut restored)
+                .await
+        };
+        let mut result = replay().await;
+        if matches!(result, Err(EngineError::Storage(_))) {
+            // A brief read failure can clear while the peer stays connected.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if manager.spv().run_session() != generation {
+                return;
+            }
+            result = replay().await;
+        }
+        if matches!(result, Err(EngineError::NoPeers | EngineError::Storage(_))) {
+            #[cfg(test)]
+            if matches!(result, Err(EngineError::NoPeers)) {
+                let pause = self.hub.pause_rebroadcast_rearm.lock().unwrap().take();
+                crate::coinjoin::test_pause(pause).await;
+            }
+            // Leave persistent failures for the next peer, preserving a newer rebuild.
+            let _ = self.rebroadcast_replay.compare_exchange(
+                0,
+                generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    async fn restore_pending_rebroadcasts(
+        &self,
+        manager: &Manager,
+        generation: u64,
+        restored: &mut HashSet<(WalletId, Txid)>,
+    ) -> Result<(), EngineError> {
+        let mut reads = Ok(());
         for wallet in manager.wallet_ids().await.into_iter().map(WalletId) {
-            let sent = self.appdb_op(move |db| Ok(load_sent(db, wallet).0)).await;
-            let Ok(sent) = sent else {
-                continue;
+            let sent = match self.appdb_op(move |db| read_replay_sent(db, wallet)).await {
+                Ok(sent) => sent,
+                Err(e @ EngineError::Storage(_)) => {
+                    reads = Err(e);
+                    continue;
+                }
+                Err(e) => return Err(e),
             };
             for (txid, mark) in sent {
-                if !mark.kept && mark.coins.is_empty() {
+                if (!mark.kept && mark.coins.is_empty()) || restored.contains(&(wallet, txid)) {
                     continue;
                 }
                 match self
                     .resend_transaction_inner(wallet, txid, Some(generation))
                     .await
                 {
-                    Err(EngineError::NoPeers) => {
-                        // Preserve a request made by a newer rebuild.
-                        let _ = self.rebroadcast_replay.compare_exchange(
-                            0,
-                            generation,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        );
-                        return;
+                    Ok(()) => {
+                        restored.insert((wallet, txid));
                     }
-                    Err(EngineError::SpvNotRunning) => return,
-                    Ok(()) | Err(_) => {}
+                    Err(e @ (EngineError::NoPeers | EngineError::SpvNotRunning)) => return Err(e),
+                    Err(e @ EngineError::Storage(_)) => reads = Err(e),
+                    Err(_) => {}
                 }
             }
         }
+        reads
     }
 
     /// dash-qt "Resend transaction" (QT-091): hands the stored transaction
@@ -4640,25 +4707,20 @@ impl NetworkSession {
         // Read again, held against an abandon through the hand-off: one
         // since the check committed its mark, and its bytes stay unsent.
         let gate = self.abandon_gate(wallet).read_owned().await;
-        if self.abandon_marked(wallet, txid).await {
+        if self.read_abandon_mark(wallet, txid).await? {
             return Err(EngineError::TxActionRefused(
                 TxActionRefusal::AlreadyAbandoned,
             ));
         }
         let transaction = if replay_generation.is_some() {
             let persister = self.live()?.persister;
-            let pending = tokio::task::spawn_blocking(move || {
-                persister
-                    .get_core_tx_record(wallet.0, &txid)
-                    .ok()
-                    .flatten()
-                    .filter(|r| {
-                        matches!(r.context, TransactionContext::Mempool)
-                            && r.transaction.txid() == txid
-                    })
-            })
-            .await?;
-            let Some(record) = pending else {
+            let pending =
+                tokio::task::spawn_blocking(move || persister.get_core_tx_record(wallet.0, &txid))
+                    .await?
+                    .map_err(|e| EngineError::Storage(e.to_string()))?;
+            let Some(record) = pending.filter(|r| {
+                matches!(r.context, TransactionContext::Mempool) && r.transaction.txid() == txid
+            }) else {
                 return Ok(());
             };
             record.transaction

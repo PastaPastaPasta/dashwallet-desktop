@@ -282,7 +282,7 @@ describe("sign and send copy", () => {
 
   it("reads as refused exactly the codes the engine does", () => {
     const rust = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
-    const list = (src: string, name: string) => [...(new RegExp(`${name}: &\\[&str\\] = &\\[([^\\]]*)\\]`).exec(src)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const list = (src: string, name: string) => [...(new RegExp(`${name}: &\\[&str\\] =\\s*&\\[([^\\]]*)\\]`).exec(src)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     const inherited = list(rust("../../../../rust/crates/dw-appdb/src/shared_sessions.rs"), "INHERITED_REFUSED_CODES");
     const since = list(rust("../../../../rust/crates/dw-engine/src/send/mod.rs"), "REFUSED_SINCE_INHERITED");
     expect(inherited.length).toBeGreaterThan(0);
