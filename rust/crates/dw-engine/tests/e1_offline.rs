@@ -389,10 +389,11 @@ fn receive_addresses_requests_and_lookahead() {
     let first = engine
         .block_on(s.next_receive_address(id, Some("Shop".into())))
         .unwrap();
-    assert_eq!(first.index, 0);
+    assert_ne!(first.address, current.address);
+    assert_eq!(first.index, 1);
     assert_eq!(first.label.as_deref(), Some("Shop"));
     let second = engine.block_on(s.next_receive_address(id, None)).unwrap();
-    assert_eq!(second.index, 1, "an issued address is never issued again");
+    assert_eq!(second.index, 2, "an issued address is never issued again");
 
     let request = engine
         .block_on(s.create_receive_request(
@@ -402,7 +403,7 @@ fn receive_addresses_requests_and_lookahead() {
             Some("May".into()),
         ))
         .unwrap();
-    assert_eq!(request.address, address_at(ABANDON_12, "m/44'/1'/0'/0/2"));
+    assert_eq!(request.address, address_at(ABANDON_12, "m/44'/1'/0'/0/3"));
     assert_eq!(
         request.uri,
         format!(
@@ -441,7 +442,7 @@ fn receive_addresses_requests_and_lookahead() {
     assert!(receiving >= 30 && change >= 30, "{receiving} {change}");
     let labelled = all
         .iter()
-        .find(|a| a.index == 2 && a.chain == AddressChain::Receiving)
+        .find(|a| a.index == 3 && a.chain == AddressChain::Receiving)
         .unwrap();
     assert_eq!(labelled.label.as_deref(), Some("Rent"));
     let only_change = engine

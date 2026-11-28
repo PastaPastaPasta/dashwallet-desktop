@@ -317,9 +317,10 @@ impl NetworkSession {
     }
 
     /// Issues a fresh receiving address: unused, not reserved by
-    /// key-wallet and never issued before. Stored as a `receive` address-book
-    /// entry with `label` (dash-qt `getNewDestination(label)`, QT-081).
-    /// `GapLimit` when every address inside the gap is already issued.
+    /// key-wallet, different from [`Self::current_receive_address`], and never
+    /// issued before. Stored as a `receive` address-book entry with `label`
+    /// (dash-qt `getNewDestination(label)`, QT-081). `GapLimit` when every
+    /// other address inside the gap is already issued.
     pub async fn next_receive_address(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -339,9 +340,12 @@ impl NetworkSession {
         label: Option<String>,
     ) -> Result<AddressInfo, EngineError> {
         let view = self.pool_view(wallet).await?;
+        let current = current_receiving(&view, &BTreeSet::new())?
+            .address
+            .to_string();
         let appdb = self.live()?.appdb;
         let w = wallet.to_string();
-        let issued: HashSet<String> = {
+        let mut issued: HashSet<String> = {
             let appdb = Arc::clone(&appdb);
             let w = w.clone();
             tokio::task::spawn_blocking(move || -> Result<HashSet<String>, dw_appdb::AppDbError> {
@@ -356,6 +360,10 @@ impl NetworkSession {
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?
         };
+        // `current_receive_address` is already the wallet's displayed address,
+        // so issuing a new address skips past it instead of returning the same
+        // unused index on the first click (#1279).
+        issued.insert(current);
         let fresh = view
             .addresses
             .iter()
@@ -727,5 +735,258 @@ mod tests {
             request_uri("yAddr", None, None, None, Some("al1ce")),
             "dash:yAddr?user=al1ce"
         );
+    }
+
+    struct NoEvents;
+
+    impl crate::EventSink for NoEvents {
+        fn emit(&self, _: crate::EngineEvent) {}
+    }
+
+    fn test_engine(root: &std::path::Path) -> crate::Engine {
+        crate::Engine::new(
+            crate::EngineConfig {
+                data_root: root.to_path_buf(),
+                worker_threads: Some(2),
+                vault: dw_vault::VaultConfig {
+                    kdf: dw_vault::KdfPolicy::Fixed(dw_vault::KdfParams::TEST),
+                    os_store: Arc::new(dw_vault::MemoryOsStore::new()),
+                    ..dw_vault::VaultConfig::default()
+                },
+            },
+            Arc::new(NoEvents),
+        )
+        .unwrap()
+    }
+
+    fn open_regtest(engine: &crate::Engine) -> Arc<NetworkSession> {
+        engine
+            .block_on(engine.open_network(
+                crate::DashNetwork::Regtest,
+                crate::SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap()
+    }
+
+    /// Issue #1279: on a freshly created wallet, the first `next_receive_address`
+    /// must advance to a different unused address rather than repeating
+    /// `current_receive_address`, survive restarts without repeating, and stop
+    /// at `GapLimit` without deriving past the pool's gap limit.
+    #[test]
+    fn first_next_receive_address_advances_past_current_within_gap_limit() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = test_engine(dir.path());
+        let session = open_regtest(&engine);
+        engine
+            .block_on(session.vault_op(|v| v.create(None)))
+            .unwrap();
+        let wallet = engine
+            .block_on(session.create_wallet(12))
+            .unwrap()
+            .wallet_id;
+
+        let receiving_before = engine
+            .block_on(session.addresses(
+                wallet,
+                AddressFilter {
+                    chain: Some(AddressChain::Receiving),
+                    used: Some(false),
+                },
+            ))
+            .unwrap();
+        let gap = receiving_before.len();
+        assert!(gap >= 2, "expected gap limit >= 2, got {gap}");
+
+        let current = engine
+            .block_on(session.current_receive_address(wallet))
+            .unwrap();
+        assert_eq!(current.index, 0);
+        assert!(!current.used);
+
+        let first = engine
+            .block_on(session.next_receive_address(wallet, None))
+            .unwrap();
+        assert_ne!(
+            first.address, current.address,
+            "first New address must not repeat current_receive_address"
+        );
+        assert_eq!(first.index, 1);
+        assert!(!first.used);
+
+        let second = engine
+            .block_on(session.next_receive_address(wallet, None))
+            .unwrap();
+        assert_ne!(second.address, first.address);
+        assert_ne!(second.address, current.address);
+        assert_eq!(second.index, 2);
+        assert!(!second.used);
+        assert_eq!(
+            engine
+                .block_on(session.current_receive_address(wallet))
+                .unwrap()
+                .address,
+            current.address,
+            "current_receive_address stays at index 0 until paid"
+        );
+
+        // Across a restart, neither current (0) nor already-issued (1, 2) repeats.
+        engine
+            .block_on(engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap();
+        let session = open_regtest(&engine);
+        assert_eq!(
+            engine
+                .block_on(session.current_receive_address(wallet))
+                .unwrap()
+                .address,
+            current.address
+        );
+        let third = engine
+            .block_on(session.next_receive_address(wallet, None))
+            .unwrap();
+        assert_eq!(third.index, 3);
+        assert_ne!(third.address, current.address);
+
+        // Exhausting the rest of the gap issues distinct addresses and stops at GapLimit.
+        let mut seen = HashSet::from([
+            current.address.clone(),
+            first.address.clone(),
+            second.address.clone(),
+            third.address.clone(),
+        ]);
+        let mut last_err = None;
+        for _ in 0..=gap {
+            match engine.block_on(session.next_receive_address(wallet, None)) {
+                Ok(addr) => {
+                    assert!(!addr.used);
+                    assert!(
+                        seen.insert(addr.address.clone()),
+                        "repeated address {addr:?}"
+                    );
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        assert!(
+            matches!(last_err, Some(EngineError::GapLimit)),
+            "expected GapLimit, got {last_err:?}"
+        );
+        assert_eq!(
+            seen.len(),
+            gap,
+            "current + issued addresses must match the gap pool without skipping past it"
+        );
+        let receiving_after = engine
+            .block_on(session.addresses(
+                wallet,
+                AddressFilter {
+                    chain: Some(AddressChain::Receiving),
+                    used: Some(false),
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            receiving_after.len(),
+            gap,
+            "issuing up to GapLimit must not derive past the gap limit"
+        );
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// After the initial address is paid and `current_receive_address` rotates
+    /// to index 1, the first `next_receive_address` still skips the displayed
+    /// current address and returns index 2.
+    #[test]
+    fn next_receive_address_skips_current_after_initial_address_is_paid() {
+        use dash_spv::EventHandler;
+        use dashcore::{Block, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid};
+        use platform_wallet::key_wallet_manager::{WalletEvent, WalletInterface};
+
+        let dir = dw_testutil::private_tempdir();
+        let engine = test_engine(dir.path());
+        let session = open_regtest(&engine);
+        engine
+            .block_on(session.vault_op(|v| v.create(None)))
+            .unwrap();
+        let wallet = engine
+            .block_on(session.create_wallet(12))
+            .unwrap()
+            .wallet_id;
+
+        let initial = engine
+            .block_on(session.current_receive_address(wallet))
+            .unwrap();
+        assert_eq!(initial.index, 0);
+
+        let to = initial
+            .address
+            .parse::<Address<dashcore::address::NetworkUnchecked>>()
+            .unwrap()
+            .assume_checked();
+        let payment = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([7; 32]), 0),
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: 100_000_000,
+                script_pubkey: to.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        let mut block = Block {
+            header: dashcore::blockdata::block::Header {
+                version: dashcore::blockdata::block::Version::from_consensus(1),
+                prev_blockhash: BlockHash::all_zeros(),
+                merkle_root: dashcore::TxMerkleNode::all_zeros(),
+                time: 1_793_598_712,
+                bits: dashcore::CompactTarget::from_consensus(0x207f_ffff),
+                nonce: 0,
+            },
+            txdata: vec![payment],
+        };
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+        let manager = session.manager().unwrap();
+        let events: Vec<WalletEvent> = engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let mut rx = wm.subscribe_events();
+            wm.process_block_for_wallets(
+                &block,
+                block.block_hash(),
+                1,
+                &BTreeSet::from([wallet.0]),
+            )
+            .await;
+            wm.update_wallet_synced_height(&wallet.0, 1);
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        });
+        for event in &events {
+            session.hub.on_wallet_event(event);
+        }
+
+        let current = engine
+            .block_on(session.current_receive_address(wallet))
+            .unwrap();
+        assert_eq!(current.index, 1);
+        assert_ne!(current.address, initial.address);
+
+        let next = engine
+            .block_on(session.next_receive_address(wallet, None))
+            .unwrap();
+        assert_eq!(next.index, 2);
+        assert_ne!(next.address, current.address);
+        assert!(!next.used);
+        engine.block_on(engine.shutdown()).unwrap();
     }
 }
