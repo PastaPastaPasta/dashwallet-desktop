@@ -353,8 +353,8 @@ mod tests {
         assert_eq!(reopened.unwrap(), path);
         assert_eq!(recovered.unwrap(), path);
         assert_eq!(other.unwrap(), root.path().join("mainnet"));
-        assert!(!root.path().join(PENDING_RECOVERY_FILE).exists());
         assert_eq!(resolve(root.path(), &network).unwrap(), path);
+        assert!(!root.path().join(PENDING_RECOVERY_FILE).exists());
     }
 
     #[test]
