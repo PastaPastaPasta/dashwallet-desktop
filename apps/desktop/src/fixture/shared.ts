@@ -161,6 +161,7 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     resendAbandonCharge: null,
     activityAbandonTxids: [],
     activityResendTxids: [],
+    confirming: null,
     ...patch,
   });
 }
@@ -592,19 +593,20 @@ function planDissolve(shares: SharedShares, actor: number, fee: number): Dissolv
 
 function dissolveOp(world: World, hash: string, fee: number, debit: number): ProTxOperation {
   const n = world.shared.sent.length + 1;
+  const sent = world.shared.handoff === null || world.shared.handoff === "send.broadcast_unknown";
   const op: ProTxOperation = {
     id: fake(`d15${n.toString(16)}`, 32),
     kind: "dissolve",
     proTxHash: hash,
     txid: h(`d${n}`),
-    state: world.shared.handoff === null ? { kind: "sent" } : { kind: "not_sent" },
+    state: sent ? { kind: "sent" } : { kind: "not_sent" },
     signRequest: null,
     fee,
     debit,
     overdue: false,
     createdAt: NOW,
     signedAt: NOW,
-    sentAt: world.shared.handoff === null ? NOW : null,
+    sentAt: sent ? NOW : null,
     lastError: world.shared.handoff,
     terms: {
       masternodeType: "regular",
@@ -1068,7 +1070,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       checkFee(request.fee);
       const shares = eligible(world, hash);
       ownShare(shares, request.shareIndex);
-      const least = Math.max(1_000, 300 + 110 * shares.shares.length);
+      const least = 300 + 110 * shares.shares.length;
       if (request.fee < least) throw fail("masternodes.shared_funding_mismatch", "the fee doesn't relay", { kind: "sharedFunding", reason: "fee_low", needed: least });
       capped(world, walletId, grantId, request.fee);
       const s = session(h("ed3"), "coordinator", {
@@ -1224,6 +1226,17 @@ export function sharedScenarios(base: Base) {
         s.sessions = [sentRegistration()];
         s.abandoned = [SH_COORD];
       }),
+    /** Sent, and another spend of its coins is in a block that isn't final yet: no Send again. */
+    "sh-coordinator-sent-contested": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ next: "nothing", confirming: { by: "other_spend", confirmations: 2 } }))),
+    /** Out and abandoned; the spend back is in a block that isn't final yet. */
+    "sh-close-out-abandon-confirming": (t: ThemeName | null) =>
+      shBase(
+        base,
+        t,
+        withSessions(
+          participantSession("funding_signed", { next: "nothing", abandonable: false, abandonCharge: null, abandonSpend: { txid: h("a8"), state: null, overdue: false, code: null }, confirming: { by: "abandon_tx", confirmations: 1 } }),
+        ),
+      ),
     /** Participant at `combined` on mainnet: no Sign. */
     "sh-participant-combined-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [participantSession("combined")]))),
     "sh-participant-invited": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("invited"))),

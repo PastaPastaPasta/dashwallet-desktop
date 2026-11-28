@@ -395,6 +395,9 @@ pub enum ErrorData {
         left_duffs: u64,
         arriving_duffs: u64,
         arriving_clears: bool,
+        #[ts(type = "\"held\" | \"inputCap\" | null")]
+        arriving_block: Option<dw_engine::platform::CoreMaxArrivalBlock>,
+        other_arriving_duffs: u64,
     },
     /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },
@@ -775,7 +778,9 @@ impl From<dw_engine::platform::lease::StuckFundingRefusal> for StuckFundingRefus
             R::NoMarker => Self::NoMarker,
             R::CallRunning => Self::CallRunning,
             R::JournalUnavailable => Self::JournalUnavailable,
-            R::SpendUnsettled(t) => Self::SpendUnsettled { txid: txid(t) },
+            R::SpendUnsettled(t) | R::OwnLockUnfinalized(t) => {
+                Self::SpendUnsettled { txid: txid(t) }
+            }
             R::LockInputsSpent(t) => Self::LockInputsSpent { txid: txid(t) },
             R::LockAbandoned(t) => Self::LockAbandoned { txid: txid(t) },
             R::MissesSignedLock(t) => Self::MissesSignedLock { txid: txid(t) },

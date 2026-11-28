@@ -683,6 +683,7 @@ fn before_dirs(network_dir: &Path) -> io::Result<Vec<PathBuf>> {
 /// Every `<prefix>-*` directory in `upgrade-backups/`, oldest name first.
 fn dirs_named(network_dir: &Path, prefix: &str) -> io::Result<Vec<PathBuf>> {
     let root = backups_dir(network_dir);
+    fsx::check_private_dir(&root)?;
     let entries = match fs::read_dir(&root) {
         Ok(e) => e,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1109,6 +1110,8 @@ fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
 /// hides an older one that is this upgrade's, and is passed over. Once
 /// upgraded, a fault reading the named one is retried.
 pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo> {
+    fsx::check_private_dir(&backups_dir(network_dir))
+        .map_err(StoreUpgradeError::io("check upgrade backups", true))?;
     let mut missing = None;
     let mut between = false;
     crate::token::refuse_if_held(network_dir)?;

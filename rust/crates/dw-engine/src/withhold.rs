@@ -11,6 +11,10 @@
 //! A block that mines the payment, or an InstantSend lock, brings them back
 //! at the next read; a reorg that takes it out of its block withholds them
 //! again. Nothing is dropped, freed or abandoned here.
+//!
+//! [`ExclusionReason::ForkKeptLock`]: inputs a fork gave back while a verified
+//! InstantSend lock still holds them, or while a lock may have been evicted
+//! from the session's buffer ([`fork_kept_inputs`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -35,6 +39,9 @@ pub enum ExclusionReason {
     /// unspent, waiting for that rewind's rescan (`crate::rescan_hold`):
     /// not listed at all.
     RescanHold,
+    /// A coin a fork gave back that may still be spent by an InstantSend
+    /// payment. Left out of the coin list.
+    ForkKeptLock,
 }
 
 impl ExclusionReason {
@@ -43,7 +50,7 @@ impl ExclusionReason {
     pub(crate) fn listed(self) -> bool {
         match self {
             Self::PendingUnproven => true,
-            Self::RescanHold => false,
+            Self::RescanHold | Self::ForkKeptLock => false,
         }
     }
 }
@@ -61,10 +68,9 @@ pub(crate) struct Excluded {
     /// The value of those shown as pending ([`ExclusionReason::listed`]):
     /// a coin waiting for its rescan is kept out without being shown.
     pub pending: u64,
-    /// Each coin's share, with its account and whether it is shown as
-    /// pending: a coin released before the next read leaves at once
-    /// ([`Self::release`]).
-    pub coins: BTreeMap<OutPoint, (AccountType, WalletCoreBalance, bool)>,
+    /// Each coin's share, with its account and why it is excluded: a coin
+    /// released before the next read leaves at once ([`Self::release_rescan`]).
+    pub coins: BTreeMap<OutPoint, (AccountType, WalletCoreBalance, ExclusionReason)>,
 }
 
 impl Excluded {
@@ -79,10 +85,12 @@ impl Excluded {
         let height = core.last_processed_height();
         for account in core.accounts.all_funding_accounts() {
             let t = account.managed_account_type().to_account_type();
-            for u in (account.utxos.values()).filter(|u| coins.contains_key(&u.outpoint)) {
+            for u in account.utxos.values() {
+                let Some(&reason) = coins.get(&u.outpoint) else {
+                    continue;
+                };
                 let value = u.txout.value;
-                let listed = coins.get(&u.outpoint).is_some_and(|r| r.listed());
-                if listed {
+                if reason.listed() {
                     out.pending += value;
                 }
                 let share = if u.is_locked {
@@ -97,26 +105,33 @@ impl Excluded {
                 if share.total() > 0 {
                     out.balance += share;
                     *out.accounts.entry(t).or_default() += share;
-                    out.coins.insert(u.outpoint, (t, share, listed));
+                    out.coins.insert(u.outpoint, (t, share, reason));
                 }
             }
         }
         out
     }
 
-    /// Lets `gone` back into the balances until the next read recomputes
-    /// the share.
-    pub(crate) fn release(&mut self, gone: &BTreeSet<OutPoint>) {
+    pub(crate) fn rescan_share(&self, o: &OutPoint) -> Option<WalletCoreBalance> {
+        self.coins.get(o).and_then(|(_, share, reason)| {
+            (*reason == ExclusionReason::RescanHold).then_some(*share)
+        })
+    }
+
+    /// Releases settled rescan holds. A later read may already have
+    /// recorded another reason for excluding a coin.
+    pub(crate) fn release_rescan(&mut self, gone: &BTreeSet<OutPoint>) {
         for o in gone {
-            let Some((t, share, listed)) = self.coins.remove(o) else {
+            let std::collections::btree_map::Entry::Occupied(entry) = self.coins.entry(*o) else {
                 continue;
             };
+            if entry.get().2 != ExclusionReason::RescanHold {
+                continue;
+            }
+            let (t, share, _) = entry.remove();
             self.balance = Self::subtract(&self.balance, Some(&share));
             if let Some(a) = self.accounts.get_mut(&t) {
                 *a = Self::subtract(a, Some(&share));
-            }
-            if listed {
-                self.pending = self.pending.saturating_sub(share.total());
             }
         }
     }
@@ -124,7 +139,7 @@ impl Excluded {
     /// The coins kept out while they wait for their rescan.
     pub(crate) fn waiting(&self) -> BTreeSet<OutPoint> {
         (self.coins.iter())
-            .filter(|(_, (_, _, listed))| !listed)
+            .filter(|(_, (_, _, r))| *r == ExclusionReason::RescanHold)
             .map(|(o, _)| *o)
             .collect()
     }
@@ -178,17 +193,21 @@ impl SessionHub {
         let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let skip = false;
-        let withheld = if skip {
-            BTreeSet::new()
-        } else {
-            (self.history).read_wallet(&wallet, |h| pending_unproven(core, h))
-        };
+        let (withheld, kept) = (self.history).read_wallet(&wallet, |h| {
+            let withheld = if skip {
+                BTreeSet::new()
+            } else {
+                pending_unproven(core, h)
+            };
+            (withheld, fork_kept_inputs(core, h))
+        });
         let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
             .collect();
         out.extend(
             (self.rescan_held(&wallet).into_iter()).map(|o| (o, ExclusionReason::RescanHold)),
         );
+        out.extend(kept.into_iter().map(|o| (o, ExclusionReason::ForkKeptLock)));
         out
     }
 
@@ -209,6 +228,8 @@ impl SessionHub {
         excluded
             || (self.history).read_wallet(id, |h| {
                 !h.rescan_holds.is_empty()
+                    || !h.fork_kept_locks.is_empty()
+                    || !h.uncertain_fork_spends.is_empty()
                     || (h.txs.iter())
                         .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
             })
@@ -236,6 +257,38 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
         let o = &i.previous_output;
         history_owns(h, t, n, o, e) || h.txs.contains_key(&o.txid)
     })
+}
+
+/// The coins of `core` that a payment of [`WalletHistory::fork_kept_locks`]
+/// spends, which key-wallet holds unspent: a fork gave them back when it
+/// removed that payment. Held while the history keeps the payment out of a
+/// block and key-wallet holds no record of it. Its block, or its record seen
+/// again, ends the hold: key-wallet then spends them itself. So does a
+/// winner's block that spends them (key-wallet no longer holds them), an
+/// abandon the ChainLock exception lets through, and the end of the session.
+fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
+    if h.fork_kept_locks.is_empty() && h.uncertain_fork_spends.is_empty() {
+        return BTreeSet::new();
+    }
+    let accounts = core.accounts.all_accounts();
+    let recorded = |t: &Txid| {
+        accounts.iter().any(|a| {
+            !a.managed_account_type()
+                .to_account_type()
+                .is_contact_owned()
+                && a.has_transaction(t)
+        })
+    };
+    let funding = core.accounts.all_funding_accounts();
+    let unspent = |o: &OutPoint| funding.iter().any(|a| a.utxos.contains_key(o));
+    (h.fork_kept_locks.iter())
+        .filter(|t| !recorded(t))
+        .filter_map(|t| h.txs.get(t))
+        .filter(|e| e.context.block_info().is_none() && !e.is_abandoned())
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .chain(h.uncertain_fork_spends.values().flatten().copied())
+        .filter(unspent)
+        .collect()
 }
 
 /// E1 (Q100): the coins of `core` withheld because a payment they descend

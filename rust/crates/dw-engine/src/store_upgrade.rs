@@ -150,18 +150,18 @@ fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, Engine
     order::record(network_dir, order::Step::Restore);
     let found = std::cell::Cell::new(None);
     let probe_failed = std::cell::Cell::new(None);
-    let holds = |dir: &Path| {
+    let holds = |dir: &Path, snapshot: &dw_store_upgrade::SnapshotInfo| {
         if let Err(e) = crate::platform::shielded_pool::refuse_missing_store(dir, false) {
             let detail = e.to_string();
             probe_failed.set(Some(e));
             return Err(detail);
         }
-        match crate::platform::restore_hold::restore_hold(dir) {
+        match crate::platform::restore_hold::restore_hold(dir, Some(snapshot)) {
             Some(hold) => {
                 found.set(Some(hold));
                 Err(format!("a shielded spend is held ({hold:?})"))
             }
-            None => Ok(()),
+            None => crate::platform::restore_hold::check_core_dispatch(dir),
         }
     };
     let info = dw_store_upgrade::run_pending_restore(network_dir, SystemTime::now(), &holds)
@@ -178,7 +178,7 @@ fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, Engine
             );
             match map_error(network_dir, StoreUpgradeStage::Restore, e, false) {
                 EngineError::StoreRestore(mut r) if held => {
-                    r.cause = hold_cause(found.get());
+                    r.cause = found.get().map_or("other", |hold| hold_cause(Some(hold)));
                     EngineError::StoreRestore(r)
                 }
                 e => e,
@@ -317,9 +317,18 @@ pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
             false,
         ));
     }
-    if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir) {
+    if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir, None) {
         return Err(EngineError::ShieldedSpendHeld(hold));
     }
+    crate::platform::restore_hold::check_core_dispatch(network_dir).map_err(|detail| {
+        EngineError::StoreRestore(Box::new(RestoreFailure {
+            state: RestoreState::NotStarted,
+            cause: "other",
+            needed_bytes: None,
+            folder: network_dir.to_path_buf(),
+            detail,
+        }))
+    })?;
     crate::platform::shielded_pool::refuse_missing_store(network_dir, false)?;
     match dw_store_upgrade::snapshot_state(network_dir)
         .map_err(|e| EngineError::RetryableIo(format!("read the upgrade backups: {e}")))?

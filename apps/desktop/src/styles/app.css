@@ -614,8 +614,43 @@ input[type="radio"]:disabled {
   color: var(--dw-role-text-secondary);
 }
 
-.add-contact-status .add-contact-actions {
-  flex-wrap: wrap;
+.add-contact-status {
+  display: grid;
+  gap: var(--dw-space-xs);
+}
+
+.add-contact-action-slot {
+  block-size: calc(2 * var(--dw-type-subhead-medium-line) + var(--dw-space-xs));
+}
+
+.add-contact-action-slot > * {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.add-contact-action-slot > .dash-button {
+  padding-block: 0;
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.add-contact-action-skeleton {
+  border-radius: var(--dw-button-medium-radius);
+  background: var(--dw-role-separator);
+}
+
+.add-contact-note-slot,
+.add-contact-claim-slot {
+  block-size: calc(2 * var(--dw-type-footnote-line));
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.add-contact-note-slot.is-unverified {
+  block-size: calc(4 * var(--dw-type-footnote-line) + 2 * var(--dw-space-sm));
+}
+
+.add-contact-claim-slot {
+  block-size: calc(4 * var(--dw-type-footnote-line));
 }
 
 .add-contact-search,

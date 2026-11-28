@@ -145,7 +145,8 @@ export class OpenFailureActions extends Model {
   keep = (reopen: () => void) => this.#then(() => this.api.keepCurrentFiles(), reopen);
   cancelRestore = (reopen: () => void) => this.#then(() => this.api.cancelRestore(), reopen);
   /** The confirm's Restart and restore: the request, then the restart that runs it; after a failed
-   * restart, only the restart again. */
+   * restart, only the restart again. The confirm is only reachable from the refused-open screen
+   * with a Restore earlier data action. */
   restore = async () => {
     const held = (e: unknown) => {
       this.restoreHeld ||= hasCode(e, "shielded_spend_unresolved");

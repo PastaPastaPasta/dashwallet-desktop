@@ -211,16 +211,28 @@ describe("remove wallet", () => {
     expect(fixture.calls).toContain("remove_wallet");
   });
 
-  it("IOS110_theQuestionSaysHowTheWalletComesBack", () => {
-    expect(WalletsText.removeQuestion("Main", false)).toMatch(/recovery phrase, or a backup or export you kept/);
-    expect(WalletsText.removeQuestion("Watcher", true)).toMatch(/extended public key adds it again/);
-    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/recovery phrase/);
+  it("IOS110_theQuestionSaysHowTheWalletComesBack", async () => {
+    const model = new WalletsModel(b);
+    await model.load();
+    const row = model.rows[0];
+    expect(WalletsText.removeQuestion(row)).toMatch(/recovery phrase and its BIP39 passphrase, if you set one/);
+    for (const summary of [{ hasMnemonic: false, legacyIssued: false }, { hasMnemonic: true, legacyIssued: true }]) {
+      const wallet = fixture.world.wallets.find((w) => w.summary.walletId === A)!;
+      wallet.summary = { ...wallet.summary, ...summary };
+      await model.load();
+      const question = WalletsText.removeQuestion(model.rows[0]);
+      expect(question).toContain("Only a wallet backup or export made before removal");
+      expect(question).not.toMatch(/recovery phrase/);
+    }
+    const watch = WalletsText.removeQuestion({ ...row, watchOnly: true });
+    expect(watch).toMatch(/extended public key adds it again/);
+    expect(watch).not.toMatch(/recovery phrase/);
   });
 
   it("Q-PURGE: the question no longer says a removal deletes a pending shielded record", () => {
     // A wallet holding a shielded payment is not removed at all (the refusals below).
-    expect(WalletsText.removeQuestion("Main", false)).not.toMatch(/shielded/i);
-    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/shielded/i);
+    expect(WalletsText.removeQuestion({ name: "Main", watchOnly: false, hasMnemonic: true, legacyIssued: false })).not.toMatch(/shielded/i);
+    expect(WalletsText.removeQuestion({ name: "Watcher", watchOnly: true, hasMnemonic: false, legacyIssued: false })).not.toMatch(/shielded/i);
   });
 
   const HELD = {

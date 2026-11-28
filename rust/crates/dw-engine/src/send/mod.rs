@@ -417,13 +417,14 @@ impl SpendOwner {
 /// close drops them all.
 #[derive(Debug, Default)]
 pub(crate) struct PendingSpends {
-    inner: Mutex<HashMap<WalletId, HashMap<OutPoint, HashSet<SpendOwner>>>>,
+    inner: Mutex<WalletClaims>,
+    generation: AtomicU64,
 }
 
+type WalletClaims = HashMap<WalletId, HashMap<OutPoint, HashMap<SpendOwner, u64>>>;
+
 impl PendingSpends {
-    fn map(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<WalletId, HashMap<OutPoint, HashSet<SpendOwner>>>> {
+    fn map(&self) -> std::sync::MutexGuard<'_, WalletClaims> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -435,6 +436,26 @@ impl PendingSpends {
             .unwrap_or_default()
     }
 
+    /// The coins any owner holds, and the subset held only by CoinJoin mixing sessions.
+    pub(crate) fn snapshot_by_kind(
+        &self,
+        wallet: &WalletId,
+    ) -> (HashSet<OutPoint>, HashSet<OutPoint>) {
+        let map = self.map();
+        let Some(claims) = map.get(wallet) else {
+            return (HashSet::new(), HashSet::new());
+        };
+        let mut all = HashSet::with_capacity(claims.len());
+        let mut mixing_only = HashSet::new();
+        for (o, owners) in claims {
+            all.insert(*o);
+            if !owners.is_empty() && owners.keys().all(|w| matches!(w, SpendOwner::Mixing(_))) {
+                mixing_only.insert(*o);
+            }
+        }
+        (all, mixing_only)
+    }
+
     /// The coins an owner other than `owner` holds (a ProTx resend's
     /// check, MG-04 D7).
     pub(crate) fn held_by_others(&self, wallet: &WalletId, owner: SpendOwner) -> HashSet<OutPoint> {
@@ -443,7 +464,7 @@ impl PendingSpends {
             .map(|claims| {
                 claims
                     .iter()
-                    .filter(|(_, owners)| owners.iter().any(|o| *o != owner))
+                    .filter(|(_, owners)| owners.keys().any(|o| *o != owner))
                     .map(|(o, _)| *o)
                     .collect()
             })
@@ -458,7 +479,7 @@ impl PendingSpends {
             .map(|claims| {
                 claims
                     .iter()
-                    .filter(|(_, owners)| owners.contains(&owner))
+                    .filter(|(_, owners)| owners.contains_key(&owner))
                     .map(|(o, _)| *o)
                     .collect()
             })
@@ -470,12 +491,23 @@ impl PendingSpends {
         wallet: WalletId,
         owner: SpendOwner,
         outpoints: impl IntoIterator<Item = OutPoint>,
-    ) {
-        let mut map = self.map();
+    ) -> u64 {
+        self.reserve_locked(&mut self.map(), wallet, owner, outpoints)
+    }
+
+    fn reserve_locked(
+        &self,
+        map: &mut WalletClaims,
+        wallet: WalletId,
+        owner: SpendOwner,
+        outpoints: impl IntoIterator<Item = OutPoint>,
+    ) -> u64 {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed);
         let claims = map.entry(wallet).or_default();
         for o in outpoints {
-            claims.entry(o).or_default().insert(owner);
+            claims.entry(o).or_default().insert(owner, generation);
         }
+        generation
     }
 
     /// [`Self::reserve`] unless another owner holds one of `outpoints`:
@@ -491,16 +523,13 @@ impl PendingSpends {
             let held = outpoints.iter().find(|o| {
                 claims
                     .get(*o)
-                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+                    .is_some_and(|owners| owners.keys().any(|w| *w != owner))
             });
             if let Some(o) = held {
                 return Err(*o);
             }
         }
-        let claims = map.entry(wallet).or_default();
-        for o in outpoints {
-            claims.entry(*o).or_default().insert(owner);
-        }
+        self.reserve_locked(&mut map, wallet, owner, outpoints.iter().copied());
         Ok(())
     }
 
@@ -516,14 +545,18 @@ impl PendingSpends {
             outpoints.iter().any(|o| {
                 claims
                     .get(o)
-                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+                    .is_some_and(|owners| owners.keys().any(|w| *w != owner))
             })
         })
     }
 
     /// Removes every claim of `owner`.
     pub(crate) fn release(&self, wallet: &WalletId, owner: SpendOwner) {
-        self.release_where(wallet, owner, |_| true);
+        self.release_where(wallet, owner, |_, _| true);
+    }
+
+    fn release_instance(&self, wallet: &WalletId, owner: SpendOwner, generation: u64) -> bool {
+        self.release_where(wallet, owner, |_, current| generation == current)
     }
 
     /// Removes `owner`'s claims on `outpoints`; other owners keep theirs.
@@ -534,20 +567,25 @@ impl PendingSpends {
         outpoints: impl IntoIterator<Item = OutPoint>,
     ) {
         let outpoints: HashSet<OutPoint> = outpoints.into_iter().collect();
-        self.release_where(wallet, owner, |o| outpoints.contains(o));
+        self.release_where(wallet, owner, |o, _| outpoints.contains(o));
     }
 
     fn release_where(
         &self,
         wallet: &WalletId,
         owner: SpendOwner,
-        pick: impl Fn(&OutPoint) -> bool,
-    ) {
+        pick: impl Fn(&OutPoint, u64) -> bool,
+    ) -> bool {
+        let mut released = false;
         let mut map = self.map();
         if let Some(claims) = map.get_mut(wallet) {
             claims.retain(|o, owners| {
-                if pick(o) {
+                if owners
+                    .get(&owner)
+                    .is_some_and(|&generation| pick(o, generation))
+                {
                     owners.remove(&owner);
+                    released = true;
                 }
                 !owners.is_empty()
             });
@@ -555,6 +593,7 @@ impl PendingSpends {
                 map.remove(wallet);
             }
         }
+        released
     }
 
     /// Drops regular reservations of an unloaded wallet.
@@ -569,7 +608,7 @@ impl PendingSpends {
         if let Some(claims) = map.get_mut(wallet) {
             claims.retain(|o, owners| {
                 if !unspent.contains(o) {
-                    owners.retain(|owner| *owner == SpendOwner::LegacyRepair);
+                    owners.retain(|owner, _| *owner == SpendOwner::LegacyRepair);
                 }
                 !owners.is_empty()
             });
@@ -1393,9 +1432,11 @@ impl TxDraft {
                 network,
             );
             let owner = SpendOwner::Tx(tx.txid());
-            session
-                .spends
-                .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
+            let generation = session.spends.reserve(
+                wallet_id,
+                owner,
+                tx.input.iter().map(|i| i.previous_output),
+            );
             drop(fence);
             let artifact = ArtifactId::from_txid(&tx.txid());
             if let Some(charge) = charge {
@@ -1408,6 +1449,7 @@ impl TxDraft {
                 summary,
                 records,
                 owner,
+                generation,
                 signed: Mutex::new(None),
                 mixed: Some(tx),
                 coinjoin_send: r.fully_mixed_only && r.data.is_none(),
@@ -1458,9 +1500,10 @@ impl TxDraft {
         );
         let tx = signed.transaction();
         let owner = SpendOwner::Tx(tx.txid());
-        session
-            .spends
-            .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
+        let generation =
+            session
+                .spends
+                .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
         drop(fence);
         let artifact = ArtifactId::from_txid(&signed.transaction().txid());
         if let Some(charge) = charge {
@@ -1477,6 +1520,7 @@ impl TxDraft {
                 .map(|rc| (rc.address.to_string(), rc.label.clone(), rc.message.clone()))
                 .collect(),
             owner,
+            generation,
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
             coinjoin_send: false,
@@ -1507,7 +1551,7 @@ impl TxDraft {
         own_inputs: Option<Vec<OutPoint>>,
     ) -> Arc<PreparedTx> {
         let owner = SpendOwner::Tx(tx.txid());
-        self.session.spends.reserve(
+        let generation = self.session.spends.reserve(
             self.wallet_id,
             owner,
             tx.input.iter().map(|i| i.previous_output),
@@ -1523,6 +1567,7 @@ impl TxDraft {
             summary,
             records: Vec::new(),
             owner,
+            generation,
             signed: Mutex::new(None),
             mixed: Some(tx),
             coinjoin_send: false,
@@ -1681,10 +1726,10 @@ impl TxDraft {
         self.settle_contact(&prepared, first, next).await;
         *prepared.phase() = next;
         match next {
-            Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
+            Phase::Sent => drop(prepared.release_claim()),
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
-            Phase::Released => prepared.release(&self.session).await,
+            Phase::Released => prepared.release().await,
             Phase::Pending | Phase::Unknown | Phase::Broadcasting => {}
         }
         let dispatched = matches!(
@@ -1902,7 +1947,7 @@ impl TxDraft {
                         }
                     }
                 }
-                prepared.release(&session).await;
+                prepared.release().await;
                 Ok(())
             })
             .await
@@ -2202,6 +2247,7 @@ pub struct PreparedTx {
     /// Its claim on its inputs in the engine's reservations: released by
     /// this owner only, never by outpoint (DEC-179).
     owner: SpendOwner,
+    generation: u64,
     signed: Mutex<Option<Arc<SignedCoreTransaction>>>,
     /// A CoinJoin-page payment (QT-051), signed by the engine: no
     /// key-wallet reservation, only the engine's pending spends.
@@ -2302,19 +2348,22 @@ impl PreparedTx {
         self.signed.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Releases the reservation (key-wallet's, owner-guarded, and the
-    /// engine's) of a transaction that will not be sent.
-    async fn release(&self, session: &NetworkSession) {
-        if let Some((lease, artifact)) = &self.lease {
-            lease
-                .table
-                .unbind_spend(lease.id(), lease.wallet(), *artifact);
+    fn release_claim(&self) -> ReleaseClaim {
+        ReleaseClaim {
+            session: Arc::clone(&self.session),
+            wallet_id: self.wallet_id,
+            owner: self.owner,
+            generation: self.generation,
         }
+    }
+
+    async fn release(&self) {
+        let claim = self.release_claim();
+        self.refund_unadmitted();
         let signed = self.signed().take();
-        if let (Some(signed), Ok(wallet)) = (signed, session.wallet(&self.wallet_id).await) {
-            wallet.core().abandon_transaction(&signed).await;
+        if let Some(signed) = signed {
+            claim.abandon(signed).await;
         }
-        session.spends.release(&self.wallet_id, self.owner);
     }
 }
 
@@ -2322,63 +2371,62 @@ impl PreparedTx {
 /// outcome is unknown releases nothing: it may be on the network, so its
 /// inputs stay reserved until the wallet sees them spent or the session
 /// closes (platform-wallet's pending-spend fence holds them the same way).
-/// The engine's claim goes only after key-wallet's reservation (#745): a
-/// coin read in between still reads reserved, so no plan takes a coin
-/// key-wallet's build would then drop.
 impl Drop for PreparedTx {
     fn drop(&mut self) {
         if *self.phase() != Phase::Pending {
             return;
         }
-        if let Some((lease, artifact)) = &self.lease {
-            lease
-                .table
-                .unbind_spend(lease.id(), lease.wallet(), *artifact);
-        }
-        let session = Arc::clone(&self.session);
-        let wallet_id = self.wallet_id;
-        let owner = self.owner;
+        let claim = self.release_claim();
+        self.refund_unadmitted();
         let Some(signed) = self.signed().take() else {
-            session.spends.release(&wallet_id, owner);
             return;
         };
-        let claim = ReleaseClaim {
-            session: Arc::clone(&session),
-            wallet_id,
-            owner,
-        };
-        let rt = session.rt.clone();
-        rt.spawn(async move {
-            let _claim = claim;
-            // Admitted like any operation, so a close in progress is not
-            // raced; after the close there is no wallet left to release in.
-            if let Ok(_op) = session.enter().await
-                && let Ok(wallet) = session.wallet(&wallet_id).await
-            {
-                #[cfg(test)]
-                let pause = session.hub.pause_release.lock().unwrap().take();
-                #[cfg(test)]
-                if let Some(pause) = pause {
-                    pause.mark_reached();
-                    pause.release.notified().await;
-                }
-                wallet.core().abandon_transaction(&signed).await;
+        let session = Arc::clone(&self.session);
+        self.session.rt.spawn(async move {
+            if let Ok(_op) = session.enter().await {
+                claim.abandon(signed).await;
             }
         });
     }
 }
 
-/// The engine's claim of a dropped payment, released when its task ends,
-/// panics or is dropped unpolled at shutdown.
 struct ReleaseClaim {
     session: Arc<NetworkSession>,
     wallet_id: WalletId,
     owner: SpendOwner,
+    generation: u64,
+}
+
+impl ReleaseClaim {
+    async fn abandon(self, signed: Arc<SignedCoreTransaction>) {
+        if let Ok(wallet) = self.session.wallet(&self.wallet_id).await {
+            #[cfg(test)]
+            let pause = self.session.hub.pause_release.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = &pause {
+                pause.mark_reached();
+                pause.release.notified().await;
+            }
+            // Keep the engine's claim until key-wallet frees its reservation.
+            wallet.core().abandon_transaction(&signed).await;
+            drop(self);
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.done.store(true, Ordering::SeqCst);
+            }
+        }
+    }
 }
 
 impl Drop for ReleaseClaim {
     fn drop(&mut self) {
-        self.session.spends.release(&self.wallet_id, self.owner);
+        if self
+            .session
+            .spends
+            .release_instance(&self.wallet_id, self.owner, self.generation)
+        {
+            self.session.hub.pump.mark_balances(self.wallet_id);
+        }
     }
 }
 

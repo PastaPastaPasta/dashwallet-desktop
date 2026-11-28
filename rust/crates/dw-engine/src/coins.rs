@@ -196,6 +196,8 @@ pub(crate) struct WalletCoin {
     /// The lock is dust protection's (QT-075), not the user's.
     pub dust_locked: bool,
     pub reserved: bool,
+    /// Reserved only by an active CoinJoin mixing session (`SpendOwner::Mixing`).
+    pub mixing_held: bool,
     /// Reserved only as the input of a tracked `Built` or `Broadcast`
     /// asset lock, or of an unresolved signed one (module doc), not by a
     /// payment of the engine.
@@ -793,6 +795,7 @@ fn collect(
             user_locked: false,
             dust_locked: false,
             reserved: false,
+            mixing_held: false,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
@@ -866,21 +869,33 @@ pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
     funding_accounts(accounts).any(locked) || accounts.coinjoin_accounts.values().any(locked)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum UnsettledSpend {
+    Mempool,
+    InstantSend,
+    Mined,
+}
+
 /// The transactions of the funding accounts (BIP44, BIP32, DashPay
 /// receiving) that spend one of the wallet's coins and are not ChainLocked
 /// yet. Repair's self-spend waits for none (`platform/lease/repair.rs`):
 /// a coin such a transaction spends is no coin of the self-spend, so a lost
 /// asset lock that conflicts only with it is not beaten by the self-spend.
-/// Each is mapped to whether it is only in the mempool: neither mined nor
-/// InstantSend-locked, so an abandon may take it.
-pub(crate) fn unsettled_spends(info: &ManagedWalletInfo) -> BTreeMap<Txid, bool> {
+pub(crate) fn unsettled_spends(info: &ManagedWalletInfo) -> BTreeMap<Txid, UnsettledSpend> {
     use key_wallet::transaction_checking::TransactionContext;
     let mut out = BTreeMap::new();
     for r in (funding_accounts(&info.accounts))
         .flat_map(|a| a.transactions().values())
-        .filter(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
+        .filter(|r| !r.input_details.is_empty())
     {
-        *out.entry(r.txid).or_insert(true) &= matches!(r.context, TransactionContext::Mempool);
+        let state = match r.context {
+            TransactionContext::Mempool => UnsettledSpend::Mempool,
+            TransactionContext::InstantSend(_) => UnsettledSpend::InstantSend,
+            TransactionContext::InBlock(_) => UnsettledSpend::Mined,
+            TransactionContext::InChainLockedBlock(_) => continue,
+        };
+        let entry = out.entry(r.txid).or_insert(state);
+        *entry = (*entry).max(state);
     }
     out
 }
@@ -1149,7 +1164,7 @@ impl NetworkSession {
         let swept = crate::coinjoin::held_inputs(&pending);
         let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
-        let reserved = self.spends.snapshot(&wallet_id);
+        let (reserved, mixing_only) = self.spends.snapshot_by_kind(&wallet_id);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
@@ -1171,19 +1186,21 @@ impl NetworkSession {
             coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
             // A lock's own input stays held as the lock's.
             let lock_held = lock_reserved || coin.unresolved_lock;
-            let spend_reserved = reserved.contains(&o)
-                || swept.contains(&o)
+            let other_spend_reserved = swept.contains(&o)
                 || (spent.contains(&o) && !lock_held)
                 || unseen.contains(&o)
                 || restore_outputs.contains(&o.txid)
                 || restore_inputs.contains(&o);
+            let spend_reserved = reserved.contains(&o) || other_spend_reserved;
             coin.lock_input = !spend_reserved && lock_held;
+            coin.mixing_held = !other_spend_reserved && !lock_held && mixing_only.contains(&o);
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
             coin.excluded = excluded.get(&o).copied();
             if coin.excluded.is_some() {
                 coin.reserved = true;
                 coin.lock_input = false;
+                coin.mixing_held = false;
             }
         }
         // An excluded coin is listed with its reason, or not at all.
@@ -1959,6 +1976,7 @@ mod tests {
             user_locked: false,
             dust_locked: false,
             reserved: false,
+            mixing_held: false,
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
