@@ -333,7 +333,7 @@ export function grantCap(action: Exclude<SharedAction, "copy" | "join" | "approv
 
 /** The stored hand-off codes the engine reads as refused (its `outcome_of_code`, MG-10 §4.4 rule
  * 3): nothing left. Any other code, the resend marker included, may have left. */
-export const REFUSED_HANDOFF: readonly string[] = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled", "network_not_open", "wallet_not_found", "send.held_until_restart"];
+export const REFUSED_HANDOFF: readonly string[] = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled", "network_not_open", "wallet_not_found", "send.held_until_restart", "send.outpoint_unavailable"];
 
 /** §2.3.3's hand-off line under a sent registration, `null` when the hand-off left no error or
  * once it is abandoned (`lastError` is then the spend back's, which `spendBackLine` reads). A
