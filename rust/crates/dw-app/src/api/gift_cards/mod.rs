@@ -309,6 +309,91 @@ impl<'a> Context<'a> {
     }
 }
 
+impl GiftOrder {
+    async fn revalidate(
+        &self,
+        piggy: &Piggy,
+        access: &str,
+    ) -> Result<(GiftInvoice, tokio::time::Instant), AppError> {
+        let invoice = self
+            .invoice
+            .as_ref()
+            .ok_or_else(|| fail("The gift card invoice is unavailable."))?;
+        let data = piggy.order(&self.id, access).await?;
+        data.verify_quote(invoice)?;
+        Ok((
+            invoice.clone(),
+            tokio::time::Instant::now() + self.remaining()?,
+        ))
+    }
+
+    fn remaining(&self) -> Result<Duration, AppError> {
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(self.expires_at))
+            .and_then(|limit| limit.duration_since(SystemTime::now()).ok())
+            .filter(|remaining| {
+                !remaining.is_zero() && *remaining <= Duration::from_secs(INVOICE_WINDOW_SECS)
+            })
+            .ok_or_else(|| fail("The gift card quote expired. Get a new quote before paying."))
+    }
+}
+
+impl piggy::OrderData {
+    fn verify_quote(&self, invoice: &GiftInvoice) -> Result<(), AppError> {
+        if !matches!(
+            GiftOrderStatus::from(self.status.as_str()),
+            GiftOrderStatus::AwaitingPayment
+        ) {
+            return Err(fail(
+                "This gift card order is no longer awaiting payment. Refresh its status.",
+            ));
+        }
+        let uri = self.pay_to.as_deref().ok_or_else(|| {
+            fail("PiggyCards has not returned a payable invoice. Refresh the order before paying.")
+        })?;
+        let current = GiftInvoice::parse(uri, Network::Mainnet)?;
+        if current.address != invoice.address || current.duffs != invoice.duffs {
+            return Err(fail(
+                "The gift card invoice changed. Get a new quote before paying.",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn check_before_prepare(
+    state: &AppState,
+    draft: u64,
+) -> Result<Option<(String, u64, tokio::time::Instant)>, AppError> {
+    let Some(key) = state.sends.invoice_key(draft)? else {
+        return Ok(None);
+    };
+    let ctx = Context::open(state).await?;
+    let (account, token) = ctx.credentials().await?;
+    let account = account.key();
+    let wallet = state
+        .sends
+        .for_payment(draft, Some(key))?
+        .wallet_id()
+        .to_string();
+    let orders = ctx.orders()?;
+    let order = orders
+        .entries
+        .iter()
+        .find(|o| {
+            o.wallet == wallet && o.account == account && invoice_key(&account, &o.view.id) == key
+        })
+        .ok_or_else(|| fail("Refresh the gift card order before paying."))?;
+    if ctx.session.invoice_payment(key).await?.is_some() {
+        return Err(fail(
+            "A payment was already started for this gift card order.",
+        ));
+    }
+    let (invoice, deadline) = order.view.revalidate(ctx.piggy, &token.access).await?;
+    check_active(state, &ctx.session)?;
+    Ok(Some((invoice.address, invoice.duffs, deadline)))
+}
+
 fn checked_id(id: &str) -> Result<(), AppError> {
     if id.is_empty()
         || id.len() > 128
@@ -325,8 +410,11 @@ fn claim_url(text: &str) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(text).ok()?;
     let domain = url.domain()?;
     let suffix = domain.rsplit_once('.')?.1;
-    if url.scheme() != "https" || url.port().is_some() || !url.username().is_empty()
-        || url.password().is_some() || matches!(suffix, "" | "local" | "localhost" | "internal" | "test")
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || matches!(suffix, "" | "local" | "localhost" | "internal" | "test")
     {
         return None;
     }
@@ -456,6 +544,9 @@ commands! {
         }
         let mut view = order.view.clone();
         view.txid = payment;
+        if view.invoice.as_ref().is_some_and(|known| data.verify_quote(known).is_err()) {
+            view.expires_at = 0;
+        }
         if missing_invoice && view.invoice.is_some() {
             orders.save()?;
         }
@@ -471,6 +562,22 @@ commands! {
             Vec::new()
         };
         Ok(GiftOrderDetails { order: view, status, cards })
+    }
+
+    /// Revalidates an order before manually relaying its previously signed payment.
+    #[facade("NetworkSession::resend_invoice_transaction", "NetworkSession::invoice_payment")]
+    fn gift_card_resend(state, wallet_id: String, order_id: String) -> () {
+        let ctx = Context::open(&state).await?;
+        let (account, token) = ctx.credentials().await?;
+        let account = account.key();
+        let mut orders = ctx.orders()?;
+        let order = orders.find(&order_id, &account, &wallet_id)?;
+        let key = invoice_key(&account, &order_id);
+        let txid = ctx.session.invoice_payment(key).await?.ok_or_else(|| fail("No payment was recorded for this order."))?;
+        let (_, deadline) = order.view.revalidate(ctx.piggy, &token.access).await?;
+        check_active(&state, &ctx.session)?;
+        ctx.session.resend_invoice_transaction(parse_wallet_id(&wallet_id)?, txid.parse().map_err(|_| fail("The recorded transaction ID is invalid."))?, key, deadline).await?;
+        Ok(())
     }
 
     /// Opens a completed card's provider-issued HTTPS redemption link.
@@ -524,29 +631,11 @@ commands! {
         let wallet = d.wallet_id().to_string();
         let mut orders = ctx.orders()?;
         let order = orders.find(&order_id, &account_key, &wallet)?;
-        let invoice = order.view.invoice.as_ref().ok_or_else(|| fail("The gift card invoice is unavailable."))?;
         let previous = ctx.session.invoice_payment(key).await?;
         if previous.as_deref().is_some_and(|id| id != tx.summary().txid) {
             return Err(fail("A payment was already started for this gift card order."));
         }
-        let data = ctx.piggy.order(&order_id, &token.access).await?;
-        let status = GiftOrderStatus::from(data.status.as_str());
-        if !matches!(status, GiftOrderStatus::AwaitingPayment) {
-            return Err(fail("This gift card order is no longer awaiting payment. Refresh its status."));
-        }
-        if let Some(uri) = data.pay_to {
-            let current = GiftInvoice::parse(&uri, Network::Mainnet)?;
-            if current.address != invoice.address || current.duffs != invoice.duffs {
-                return Err(fail("The gift card invoice changed. Get a new quote before paying."));
-            }
-        }
-        let wall_now = SystemTime::now();
-        let expired = || fail("The gift card quote expired. Get a new quote before paying.");
-        let remaining = UNIX_EPOCH.checked_add(Duration::from_secs(order.view.expires_at))
-            .and_then(|limit| limit.duration_since(wall_now).ok())
-            .filter(|remaining| *remaining <= Duration::from_secs(INVOICE_WINDOW_SECS))
-            .ok_or_else(expired)?;
-        let deadline = tokio::time::Instant::now() + remaining;
+        let (invoice, deadline) = order.view.revalidate(ctx.piggy, &token.access).await?;
         check_active(&state, &ctx.session)?;
         let d = state.sends.for_payment(draft, Some(key))?;
         let tx = send::prepared_of(&state, draft, prepared)?;

@@ -434,6 +434,7 @@ export interface Backend {
   giftCardOrders(walletId: string): Promise<GiftOrder[]>;
   giftCardCreateOrder(walletId: string, brand: string, productId: number, cents: number): Promise<GiftOrder>;
   giftCardDetails(walletId: string, orderId: string): Promise<GiftOrderDetails>;
+  giftCardResend(walletId: string, orderId: string): Promise<null>;
   giftCardOpenClaim(walletId: string, orderId: string, card: number, host: string): Promise<null>;
   giftCardDraft(walletId: string, orderId: string): Promise<number>;
   giftCardBroadcast(orderId: string, draft: number, prepared: number): Promise<BroadcastOutcome>;

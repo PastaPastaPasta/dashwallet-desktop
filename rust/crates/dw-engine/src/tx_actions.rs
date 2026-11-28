@@ -4482,11 +4482,40 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
     ) -> Result<(), EngineError> {
+        self.resend_stored(wallet, txid, None).await
+    }
+
+    /// Resends the same stored transaction only for its original payment order.
+    pub async fn resend_invoice_transaction(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        txid: Txid,
+        invoice: [u8; 32],
+        deadline: tokio::time::Instant,
+    ) -> Result<(), EngineError> {
+        self.resend_stored(wallet, txid, Some((invoice, deadline)))
+            .await
+    }
+
+    async fn resend_stored(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        txid: Txid,
+        invoice: Option<([u8; 32], tokio::time::Instant)>,
+    ) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.refuse_tx_action_while_restored()?;
-            if this.is_invoice_payment(wallet, txid).await? {
+            if let Some((key, _)) = invoice {
+                if this.invoice_payment(key).await? != Some(txid.to_string())
+                    || !this.is_invoice_payment(wallet, txid).await?
+                {
+                    return Err(EngineError::InvalidArgument(
+                        "This transaction does not belong to this order.".into(),
+                    ));
+                }
+            } else if this.is_invoice_payment(wallet, txid).await? {
                 return Err(EngineError::InvalidArgument(
                     "Check the gift card order in Explore before paying it again.".into(),
                 ));
@@ -4522,6 +4551,11 @@ impl NetworkSession {
             // send dash-spv refuses outright (no connection) is reported.
             let mut task = tokio::spawn(async move {
                 let _gate = gate;
+                if invoice.is_some_and(|(_, deadline)| tokio::time::Instant::now() >= deadline) {
+                    return Err(EngineError::InvalidArgument(
+                        "The gift card quote expired. Check the order before retrying.".into(),
+                    ));
+                }
                 #[cfg(test)]
                 if let Some(wire) = wire {
                     wire.lock().unwrap().push(entry.tx.txid());
@@ -4534,7 +4568,18 @@ impl NetworkSession {
                         tracing::info!(%txid, error = %e, "resent transaction: no acceptance seen")
                     }
                 }
-                outcome
+                match outcome {
+                    Err(error) if invoice.is_some() => {
+                        Err(crate::send::SendFailure::BroadcastUnknown {
+                            reason: error.to_string(),
+                        }
+                        .into())
+                    }
+                    Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)) => {
+                        Err(EngineError::NoPeers)
+                    }
+                    _ => Ok(txid),
+                }
             });
             {
                 let mut resends = this.resends.lock().unwrap_or_else(|p| p.into_inner());
@@ -4542,9 +4587,7 @@ impl NetworkSession {
                 resends.push(task.abort_handle());
             }
             match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
-                Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
-                    return Err(EngineError::NoPeers);
-                }
+                Ok(Ok(Err(error))) => return Err(error),
                 Ok(Err(e)) => return Err(e.into()),
                 Ok(Ok(_)) | Err(_) => {}
             }

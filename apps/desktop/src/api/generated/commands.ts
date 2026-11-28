@@ -3725,6 +3725,13 @@ export function giftCardDetails(walletId: string, orderId: string): Promise<Gift
 }
 
 /**
+ * Revalidates an order before manually relaying its previously signed payment.
+ */
+export function giftCardResend(walletId: string, orderId: string): Promise<null> {
+  return invoke<null>("gift_card_resend", { walletId, orderId });
+}
+
+/**
  * Opens a completed card's provider-issued HTTPS redemption link.
  */
 export function giftCardOpenClaim(walletId: string, orderId: string, card: number, host: string): Promise<null> {
@@ -4274,6 +4281,7 @@ export type CommandArgs = {
   gift_card_orders: { walletId: string };
   gift_card_create_order: { walletId: string; brand: string; productId: number; cents: number };
   gift_card_details: { walletId: string; orderId: string };
+  gift_card_resend: { walletId: string; orderId: string };
   gift_card_open_claim: { walletId: string; orderId: string; card: number; host: string };
   gift_card_draft: { walletId: string; orderId: string };
   gift_card_broadcast: { orderId: string; draft: number; prepared: number };
@@ -4704,6 +4712,7 @@ export type CommandResults = {
   gift_card_orders: Array<GiftOrder>;
   gift_card_create_order: GiftOrder;
   gift_card_details: GiftOrderDetails;
+  gift_card_resend: null;
   gift_card_open_claim: null;
   gift_card_draft: number;
   gift_card_broadcast: BroadcastOutcome;
@@ -5136,6 +5145,7 @@ export const COMMANDS: Record<CommandName, string> = {
   gift_card_orders: "gift_cards",
   gift_card_create_order: "gift_cards",
   gift_card_details: "gift_cards",
+  gift_card_resend: "gift_cards",
   gift_card_open_claim: "gift_cards",
   gift_card_draft: "gift_cards",
   gift_card_broadcast: "gift_cards",

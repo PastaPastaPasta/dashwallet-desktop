@@ -762,6 +762,26 @@ struct Resolved {
 }
 
 impl Resolved {
+    fn check_invoice(
+        &self,
+        invoice: Option<&(String, u64, tokio::time::Instant)>,
+    ) -> Result<(), EngineError> {
+        let Some((address, amount, deadline)) = invoice else {
+            return Ok(());
+        };
+        if tokio::time::Instant::now() >= *deadline
+            || self.contact.is_some()
+            || self.data.is_some()
+            || !matches!(self.change, ChangeTarget::Auto)
+            || !matches!(self.recipients.as_slice(), [r] if !r.subtract_fee && r.address.to_string() == *address && r.amount == *amount)
+        {
+            return Err(EngineError::InvalidArgument(
+                "Refresh the gift card quote and confirm the payment again.".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// key-wallet's builder for exactly this plan: the planned inputs, the
     /// recipient outputs and the change as an explicit output paying
     /// `change`. The builder always budgets a change output; without change
@@ -1178,11 +1198,20 @@ impl TxDraft {
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        self.prepare_checked(grant_id, None).await
+    }
+
+    /// Builds the normal Pay transaction and verifies the resolved recipient before authorizing it.
+    pub async fn prepare_checked(
+        self: &Arc<Self>,
+        grant_id: String,
+        invoice: Option<(String, u64, tokio::time::Instant)>,
+    ) -> Result<Arc<PreparedTx>, EngineError> {
         let this = Arc::clone(self);
         self.session
             .on_runtime(async move {
                 let _op = this.session.enter().await?;
-                this.prepare_inner(grant_id).await
+                this.prepare_inner(grant_id, invoice).await
             })
             .await
     }
@@ -1190,12 +1219,18 @@ impl TxDraft {
     async fn prepare_inner(
         self: &Arc<Self>,
         grant_id: String,
+        invoice: Option<(String, u64, tokio::time::Instant)>,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         if self.session.hub.restore.is_restored() {
             return Err(SendFailure::Restored.into());
         }
         let contact = self.state().contact;
         if let Some(pair) = contact {
+            if invoice.is_some() {
+                return Err(EngineError::InvalidArgument(
+                    "Gift card orders require an invoice address.".into(),
+                ));
+            }
             return self.prepare_contact(grant_id, pair).await;
         }
         let session = &self.session;
@@ -1216,7 +1251,8 @@ impl TxDraft {
             lease
                 .check_tx_signer(purpose)
                 .map_err(|e| lease_failure(e, 0))?;
-            return (self.prepare_leased(lease.clone(), purpose, fence, guarded)).await;
+            return (self.prepare_leased(lease.clone(), purpose, fence, guarded, invoice.as_ref()))
+                .await;
         }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
@@ -1236,8 +1272,12 @@ impl TxDraft {
         // What the grant caps: everything that leaves the wallet, fee
         // included (the same outflow `sign_psbt` caps).
         let outflow = external_sent.saturating_add(r.plan.fee);
+        r.check_invoice(invoice.as_ref())?;
         let vault = session.vault.clone();
         let signer = tokio::task::spawn_blocking(move || {
+            if invoice.is_some_and(|(_, _, deadline)| tokio::time::Instant::now() >= deadline) {
+                return Ok(Err(SendFailure::Cancelled));
+            }
             let token = vault.redeem_grant(&grant_id, GrantKind::Spend, Some(&wallet_id.0))?;
             let max_duffs = token.max_duffs().unwrap_or(0);
             if outflow > max_duffs {
@@ -1272,12 +1312,14 @@ impl TxDraft {
         purpose: crate::platform::BudgetPurpose,
         fence: CoinFence,
         guarded: u32,
+        invoice: Option<&(String, u64, tokio::time::Instant)>,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
         let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
         let outflow = external_sent.saturating_add(r.plan.fee);
         // One J step: a payment exactly at the cap is charged and signs.
+        r.check_invoice(invoice)?;
         let (charge, signer) = lease
             .charge_tx_signer(purpose, outflow)
             .map_err(|e| lease_failure(e, outflow))?;
@@ -1724,7 +1766,9 @@ impl TxDraft {
                     .await
             }
             None => {
-                let outcome = self.dispatch(&prepared, first, deadline).await;
+                let outcome = self
+                    .dispatch(&prepared, first, deadline, invoice.is_some())
+                    .await;
                 let next = settle(first, &outcome);
                 (outcome, next)
             }
@@ -1822,13 +1866,16 @@ impl TxDraft {
                         prepared,
                         first,
                         Some(deadline.map_or(permit.deadline(), |end| end.min(permit.deadline()))),
+                        deadline.is_some(),
                     )
                     .await;
                 let s = permit.finish(attempt_outcome(&result));
                 (result, s)
             }
             Verdict::Resend(guard) | Verdict::FirstUnleased(guard) => {
-                let result = self.dispatch(prepared, false, deadline).await;
+                let result = self
+                    .dispatch(prepared, false, deadline, deadline.is_some())
+                    .await;
                 let s = guard.finish(attempt_outcome(&result));
                 (result, s)
             }
@@ -1879,6 +1926,7 @@ impl TxDraft {
         prepared: &PreparedTx,
         first: bool,
         deadline: Option<tokio::time::Instant>,
+        invoice: bool,
     ) -> Result<BroadcastOutcome, EngineError> {
         let ready = async {
             let wallet = self.session.wallet(&self.wallet_id).await?;
@@ -1890,7 +1938,9 @@ impl TxDraft {
                 return Ok((wallet, Some(seam)));
             }
             let manager = self.session.manager()?;
-            if !manager.spv().is_started() {
+            if !manager.spv().is_started()
+                || (invoice && self.session.hub.tracker().snapshot().connected_peers == 0)
+            {
                 // Nothing to send to; handled like dash-spv's never-sent
                 // rejection.
                 return Err(if first {
@@ -1944,7 +1994,7 @@ impl TxDraft {
         let Some(sent) = sent else {
             return Err(SendFailure::PreparedTxSpent.into());
         };
-        broadcast_result(sent, first)
+        broadcast_result(sent, first && !invoice)
     }
 
     /// Releases the inputs of `prepared`. Idempotent for a pending or

@@ -1055,6 +1055,14 @@ impl SendHandles {
             .ok_or_else(|| unknown(id))
     }
 
+    pub(crate) fn invoice_key(&self, id: u64) -> Result<Option<[u8; 32]>, AppError> {
+        self.lock()
+            .drafts
+            .get(&id)
+            .map(|handle| handle.invoice)
+            .ok_or_else(|| unknown(id))
+    }
+
     pub(crate) fn for_payment(
         &self,
         id: u64,

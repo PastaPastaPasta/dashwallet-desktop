@@ -173,6 +173,7 @@ export class IpcBackend implements Backend {
   giftCardOrders = cmd.giftCardOrders;
   giftCardCreateOrder = cmd.giftCardCreateOrder;
   giftCardDetails = cmd.giftCardDetails;
+  giftCardResend = cmd.giftCardResend;
   giftCardOpenClaim = cmd.giftCardOpenClaim;
   giftCardDraft = cmd.giftCardDraft;
   giftCardBroadcast = cmd.giftCardBroadcast;

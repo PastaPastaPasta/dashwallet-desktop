@@ -79,6 +79,12 @@ export function giftCardsHandlers(send: Handlers): Handlers {
           : { name: order.name, code: "FIXTURE-GIFT-CODE", pin: "0000", claimHost: null }] : [],
       };
     },
+    gift_card_resend: ({ walletId, orderId }, { world }) => {
+      const order = signedIn(world).orders.find((o) => o.id === orderId && o.walletId === walletId);
+      if (!order?.txid || order.paid || Date.now() >= order.expiresAt * 1000) throw fail("This order cannot be resent.");
+      order.paid = true;
+      return null;
+    },
     gift_card_open_claim: ({ walletId, orderId, card, host }, { world }) => {
       const order = signedIn(world).orders.find((o) => o.id === orderId && o.walletId === walletId);
       if (!order?.paid || order.cents !== 5000 || card !== 0 || host !== "link-only.fixture.invalid") throw fail("The redemption link is unavailable.");

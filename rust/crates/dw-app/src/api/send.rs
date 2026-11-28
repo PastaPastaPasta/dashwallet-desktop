@@ -194,11 +194,12 @@ commands! {
     /// the call fails with `app.unknown_handle`. The handle is reserved
     /// first: with the table full (open and in-flight prepares), the call
     /// fails with `app.too_many_handles` before the grant is redeemed.
-    #[facade("TxDraft::prepare", "PreparedTx::summary")]
+    #[facade("TxDraft::prepare", "TxDraft::prepare_checked", "PreparedTx::summary")]
     fn draft_prepare(state, draft: u64, grant_id: String) -> PreparedTxHandle {
         let d = draft_of(&state, draft)?;
         let slot = state.sends.reserve_prepared(draft)?;
-        let prepared = d.prepare(grant_id).await?;
+        let invoice = super::gift_cards::check_before_prepare(&state, draft).await?;
+        let prepared = d.prepare_checked(grant_id, invoice).await?;
         let summary = PreparedTxSummary::from(prepared.summary().clone());
         let handle = slot.fill(prepared)?;
         Ok(PreparedTxHandle { handle, summary })

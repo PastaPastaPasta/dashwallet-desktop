@@ -7740,6 +7740,41 @@ fn invoice_payment_recovered_in_activity_cannot_be_resent() {
     assert!(
         matches!(result, Err(EngineError::InvalidArgument(message)) if message.contains("gift card order"))
     );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    assert!(
+        f.engine
+            .block_on(
+                f.session
+                    .resend_invoice_transaction(f.wallet, txid, [5; 32], deadline)
+            )
+            .is_err()
+    );
+    f.engine.block_on(f.session.start_spv()).unwrap();
+    f.engine.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !matches!(f.session.spv_state().unwrap(), crate::SpvState::Running) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+    dash_spv::EventHandler::on_network_event(
+        &*f.session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected("127.0.0.1:9".parse().unwrap()),
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *f.session.hub.resend_wire.lock().unwrap() = Some(wire.clone());
+    f.engine
+        .block_on(f.session.resend_invoice_transaction(
+            f.wallet,
+            txid,
+            [4; 32],
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        ))
+        .unwrap();
+    assert_eq!(*wire.lock().unwrap(), [txid]);
 }
 
 #[test]
@@ -7829,4 +7864,71 @@ fn invoice_payment_expiring_before_handoff_clears_the_unsent_marks() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn invoice_entering_transport_before_expiry_remains_bound_after_restart() {
+    struct Queued(Arc<std::sync::atomic::AtomicBool>);
+    impl super::TestBroadcaster for Queued {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+
+        fn broadcast(
+            &self,
+            _: &Transaction,
+            _: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
+                    + Send,
+            >,
+        > {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }
+    }
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let prepared = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = prepared.summary().txid.clone();
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(Queued(entered.clone())));
+    let key = [7; 32];
+    let expires = tokio::time::Instant::now() + Duration::from_secs(1);
+    assert!(matches!(
+        send_failure(
+            f.engine
+                .block_on(draft.broadcast_invoice(prepared, key, expires))
+        ),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+    drop(draft);
+    let f = f.reopen();
+    assert_eq!(
+        f.engine.block_on(f.session.invoice_payment(key)).unwrap(),
+        Some(txid)
+    );
+}
+
+#[test]
+fn changed_invoice_is_rejected_before_redeeming_the_spend_grant() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let grant = f.spend_grant(10_000_000 + FEE_ROOM);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let rejected = f.engine.block_on(draft.prepare_checked(
+        grant.clone(),
+        Some((FOREIGN.to_string(), 9_000_000, deadline)),
+    ));
+    assert!(matches!(rejected, Err(EngineError::InvalidArgument(_))));
+    f.engine
+        .block_on(draft.prepare_checked(grant, Some((FOREIGN.to_string(), 10_000_000, deadline))))
+        .unwrap();
 }

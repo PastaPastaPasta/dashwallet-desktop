@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { GiftInvoice } from "../../api/generated/GiftInvoice";
 import type { GiftOrderDetails } from "../../api/generated/GiftOrderDetails";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useLockStatus } from "../../api/queries";
+import { useBackend, useLockStatus } from "../../api/queries";
 import { AmountText, DashButton } from "../../components/basics";
 import { useRateCurrencies, useRates } from "../../fiat/rates";
 import { useDisplay } from "../../format/display";
@@ -24,6 +24,9 @@ export function Checkout({ details, invoice, network, walletId }: {
   const { order, status } = details;
   const t = useT();
   const client = useQueryClient();
+  const backend = useBackend();
+  const [relaying, setRelaying] = useState(false);
+  const [relayError, setRelayError] = useState<string | null>(null);
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
   const draft = useDraft(walletId, locked, order.id);
@@ -81,9 +84,28 @@ export function Checkout({ details, invoice, network, walletId }: {
           }}>{t("giftCards.continue")}</DashButton>
         </div>
       )}
-      {status === "awaitingPayment" && pending && <p className="field-hint">{t("giftCards.sentPending")}</p>}
+      {pending && status !== "complete" && status !== "processing" && (
+        <>
+          <p className="field-hint">{t("giftCards.sentPending", { id: order.id })}</p>
+          {status === "awaitingPayment" && order.txid && !expired && phase.kind !== "result" && (
+            <DashButton variant="tintedGray" disabled={relaying} onClick={async () => {
+              setRelaying(true);
+              setRelayError(null);
+              try {
+                await backend.giftCardResend(walletId, order.id);
+              } catch (error) {
+                setRelayError(failureText(error, shown.chain, shown.amountUnit));
+              } finally {
+                setRelaying(false);
+                refresh();
+              }
+            }}>{t("giftCards.resend")}</DashButton>
+          )}
+          {relayError && <p role="alert">{relayError}</p>}
+        </>
+      )}
       {status === "awaitingPayment" && expired && !pending && <p className="field-hint">{t("giftCards.expired")}</p>}
-      {phase.kind === "confirm" && (
+      {phase.kind === "confirm" && payable && (
         <ConfirmSheet confirmed={phase.confirmed} spec={phase.spec} coins={DEFAULT_ADVANCED} walletId={walletId}
           network={network} draft={draft} returnFocus={backToReview} onCancel={sheets.cancel}
           onOutcome={sheets.outcome} onSend={sheets.begin} />

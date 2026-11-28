@@ -81,7 +81,7 @@ async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
             request_line: "POST /dash/v1/signup HTTP/1.1",
             authorization: None,
             body: Some(
-                json!({"first_name":"Fixture","last_name":"Buyer","email":"fixture@example.invalid","country":"US","state":"CA"}),
+                json!({"firstName":"Fixture","lastName":"Buyer","email":"fixture@example.invalid","country":"US","state":"CA"}),
             ),
             response: r#"{"userId":"fixture-user"}"#,
         },
@@ -167,7 +167,10 @@ async fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
     );
     assert_eq!(fulfilled.cards[0].claim_pin.as_deref(), Some("0000"));
     let link = fulfilled.cards[1].claim_link.as_deref().unwrap();
-    assert_eq!(crate::api::gift_cards::claim_url(link).unwrap().domain(), Some("redeem.fixture.invalid"));
+    assert_eq!(
+        crate::api::gift_cards::claim_url(link).unwrap().domain(),
+        Some("redeem.fixture.invalid")
+    );
     assert!(matches!(
         secrets.sign_out().await.unwrap(),
         GiftAccount::CanSignIn { .. }
@@ -245,17 +248,81 @@ fn a_signing_draft_must_match_the_invoice_and_keep_change_in_the_wallet() {
     assert!(invoice.verify(&[recipient.clone(), recipient]).is_err());
 }
 
-
 #[test]
 fn redemption_links_require_credentialless_public_https_urls() {
     use crate::api::gift_cards::claim_url;
 
     for bad in [
-        "http://merchant.invalid/claim", "https://name:secret@merchant.invalid/claim",
-        "https://localhost/claim", "https://127.0.0.1/claim", "https://[::1]/claim",
-        "https://merchant.local/claim", "https://merchant.invalid:8443/claim",
-        "javascript:alert(1)", "https://merchant/claim",
+        "http://merchant.invalid/claim",
+        "https://name:secret@merchant.invalid/claim",
+        "https://localhost/claim",
+        "https://127.0.0.1/claim",
+        "https://[::1]/claim",
+        "https://merchant.local/claim",
+        "https://merchant.invalid:8443/claim",
+        "javascript:alert(1)",
+        "https://merchant/claim",
     ] {
         assert!(claim_url(bad).is_none(), "{bad}");
     }
+}
+
+#[test]
+fn refreshed_order_must_still_authorize_the_confirmed_payment() {
+    let mut confirmed = GiftInvoice::parse(INVOICE, dashcore::Network::Mainnet).unwrap();
+    let check = |status: &str, uri: Option<&str>, expected: &GiftInvoice| {
+        let order: OrderData = serde_json::from_value(json!({
+            "status":status, "orderId":"fixture", "payTo":uri
+        }))
+        .unwrap();
+        order.verify_quote(expected).is_ok()
+    };
+    assert!(check("Payment pending", Some(INVOICE), &confirmed));
+    assert!(!check("Paid", Some(INVOICE), &confirmed));
+    assert!(!check("Cancelled", Some(INVOICE), &confirmed));
+    assert!(!check("Payment pending", None, &confirmed));
+    confirmed.duffs += 1;
+    assert!(!check("Payment pending", Some(INVOICE), &confirmed));
+    confirmed.duffs -= 1;
+    confirmed.address = "previous-address".into();
+    assert!(!check("Payment pending", Some(INVOICE), &confirmed));
+}
+
+#[tokio::test]
+async fn reopened_order_cannot_relay_when_the_provider_has_cancelled_it() {
+    use crate::api::gift_cards::{
+        GiftOrder,
+        store::{Order, Orders},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut orders = Orders::open(dir.path()).unwrap();
+        orders.entries.push(Order {
+            view: GiftOrder {
+                id: "fixture".into(),
+                name: "Fixture card".into(),
+                cents: 2500,
+                invoice: Some(GiftInvoice::parse(INVOICE, dashcore::Network::Mainnet).unwrap()),
+                expires_at: crate::api::gift_cards::now() + 120,
+                txid: None,
+            },
+            account: "account".into(),
+            wallet: "wallet".into(),
+        });
+        orders.save().unwrap();
+    }
+    let (provider, server) = mock_piggy(vec![get(
+        "GET /dash/v1/orders/fixture HTTP/1.1",
+        r#"{"code":200,"data":{"orderId":"fixture","status":"Cancelled","payTo":"dash:Xs6DNcUzKPYSvDDxpwFdDpGk4kNqhnUQ1T?amount=0.12345678"}}"#,
+    )]);
+    let mut orders = Orders::open(dir.path()).unwrap();
+    let order = orders.find("fixture", "account", "wallet").unwrap();
+    assert!(
+        order
+            .view
+            .revalidate(&provider, "fixture-token")
+            .await
+            .is_err()
+    );
+    server.join().unwrap();
 }

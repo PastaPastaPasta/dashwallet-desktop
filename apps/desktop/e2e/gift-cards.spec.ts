@@ -85,7 +85,7 @@ test("returning to an order with an unknown broadcast cannot start a second paym
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("sidebar-explore").click();
   await page.getByRole("button", { name: /fixture-order-1/ }).click();
-  await expect(page.getByText("A payment was started for this order. Check Activity for its status.")).toBeVisible();
+  await expect(page.getByText(/contact support@piggy.cards with order fixture-order-1/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue to Pay" })).toHaveCount(0);
 });
 
@@ -125,3 +125,13 @@ for (const network of ["testnet", "regtest"]) {
     await expect(page.getByTestId("sidebar-explore")).toHaveCount(0);
   });
 }
+
+test("an open gift card confirmation closes at the wallet quote deadline", async ({ page }) => {
+  await page.clock.install();
+  await quote(page, "light");
+  await openConfirmation(page);
+  await page.clock.fastForward(125_000);
+  await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+  await expect(page.getByText(/This payment quote expired/)).toBeVisible();
+  expect(await page.evaluate(() => window.__dwFixture!.calls)).not.toContain("draft_prepare");
+});

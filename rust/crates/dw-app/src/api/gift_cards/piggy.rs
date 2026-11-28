@@ -230,8 +230,8 @@ impl Piggy {
             "signup",
             None,
             json!({
-                "first_name": info.first_name,
-                "last_name": info.last_name,
+                "firstName": info.first_name,
+                "lastName": info.last_name,
                 "email": info.email,
                 "country": "US",
                 "state": info.state,
