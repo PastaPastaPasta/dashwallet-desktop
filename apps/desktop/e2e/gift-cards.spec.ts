@@ -79,8 +79,9 @@ test("returning to an order with an unknown broadcast cannot start a second paym
   await expect(page.getByTestId("pay-result-retry")).toBeVisible();
   const copy = page.getByRole("button", { name: "Copy transaction ID" });
   await copy.focus();
+  // The quote window bounds signing only: the signed payment can still be relayed.
   await page.clock.fastForward(125_000);
-  await expect(page.getByTestId("pay-result-retry")).toHaveCount(0);
+  await expect(page.getByTestId("pay-result-retry")).toBeVisible();
   await expect(copy).toBeFocused();
   await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
   await page.getByTestId("pay-result-close").click();
@@ -89,6 +90,7 @@ test("returning to an order with an unknown broadcast cannot start a second paym
   await page.getByRole("button", { name: /fixture-order-1/ }).click();
   await expect(page.getByText(/contact support@piggy.cards with order fixture-order-1/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue to Pay" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Resend original payment" })).toBeVisible();
 });
 
 test("an in-flight retry remains visible if its quote expires", async ({ page }) => {
@@ -107,7 +109,8 @@ test("an in-flight retry remains visible if its quote expires", async ({ page })
   await expect(retry).toContainText("Sending");
   await release.evaluate((settle) => settle());
   await release.dispose();
-  await expect(retry).toHaveCount(0);
+  // Still maybe sent, so the same payment can be relayed again.
+  await expect(retry).toBeEnabled();
   await expect(page.getByTestId("pay-result-close")).toBeEnabled();
 });
 

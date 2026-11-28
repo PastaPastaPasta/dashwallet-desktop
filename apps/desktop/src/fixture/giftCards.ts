@@ -105,7 +105,7 @@ export function giftCardsHandlers(send: Handlers): Handlers {
     },
     gift_card_resend: ({ walletId, orderId }, { world }) => {
       const order = signedIn(world, walletId).orders.find((o) => o.id === orderId && o.walletId === walletId);
-      if (!order?.txid || order.paid || Date.now() >= order.expiresAt * 1000) throw fail("This order cannot be resent.");
+      if (!order?.txid || order.paid) throw fail("This order cannot be resent.");
       order.paid = true;
       return null;
     },
@@ -140,7 +140,7 @@ export function giftCardsHandlers(send: Handlers): Handlers {
       const recipients = tx?.summary.outputs.filter((o) => !o.isChange);
       if (!order || !invoice || !tx || state.drafts.get(draft) !== orderId || tx.draft !== draft || recipients?.length !== 1 ||
         recipients[0].address !== invoice.address || recipients[0].amount !== invoice.duffs ||
-        recipients[0].isMine || Date.now() >= order.expiresAt * 1000) throw fail("The payment differs from the gift card invoice.");
+        recipients[0].isMine || tx.summary.outputs.some((o) => o.isChange && !o.isMine)) throw fail("The payment differs from the gift card invoice.");
       if (order.txid && order.txid !== tx.summary.txid) throw fail("A payment already started for this order.");
       order.txid = tx.summary.txid;
       try {
