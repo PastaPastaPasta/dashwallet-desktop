@@ -5,4 +5,4 @@
  * moves: `duffs`, its fee on top, or everything in the Dash wallet's
  * account 0 (Max), the fee out of it.
  */
-export type FundAmount = { "kind": "duffs", duffs: number, } | { "kind": "all" };
+export type FundAmount = { "kind": "duffs", duffs: number, } | { "kind": "all" } | { "kind": "quotedAll", coinSet: string, };
