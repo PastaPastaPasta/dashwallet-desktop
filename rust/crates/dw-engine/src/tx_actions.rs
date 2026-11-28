@@ -1506,9 +1506,17 @@ fn add_known(
 }
 
 /// Adds one loaded wallet's records and verified locks to `known`.
-/// A lock proves the parents it names even without a transaction record.
+/// A lock proves the parents it names even without a transaction record,
+/// and the inputs a fork kept for a removed ancestor of a lock still link
+/// it to its parents, which it neither settles nor mines.
 fn add_wallet(known: &mut HashMap<Txid, Known>, h: &WalletHistory, core: &ManagedWalletInfo) {
     add_known(known, &h.txs, core);
+    for (t, inputs) in &h.fork_kept_ancestor_inputs {
+        known.entry(*t).or_insert_with(|| Known {
+            parents: inputs.iter().map(|o| o.txid).collect(),
+            ..Known::default()
+        });
+    }
     for (t, parents) in h.lock_parent_links() {
         known
             .entry(*t)

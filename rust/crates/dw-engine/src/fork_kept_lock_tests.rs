@@ -22,6 +22,10 @@ use crate::session::NetworkSession;
 use crate::tx_actions::TxActionRefusal;
 use crate::{CoinFilter, Engine, EngineError, WalletId};
 
+/// The phrase of [`second_wallet`].
+const RECIPIENT_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
 /// What P pays someone else.
 const PAID_OUT: u64 = COIN * 2 / 5;
 /// P's change.
@@ -36,6 +40,7 @@ struct Scenario {
     id: WalletId,
     a: OutPoint,
     p: Transaction,
+    a_owner: dashcore::Address,
 }
 
 fn scenario() -> Scenario {
@@ -60,6 +65,7 @@ fn before_funding() -> (Scenario, Transaction) {
         id,
         a,
         p,
+        a_owner: addresses[0].clone(),
     };
     (s, paid)
 }
@@ -112,11 +118,16 @@ impl Scenario {
 
     /// A fork takes the block at `TIP + 1` away, and the hub hears it.
     fn fork(&self) {
+        self.fork_above(TIP);
+    }
+
+    /// A fork takes the blocks above `height` away, and the hub hears it.
+    fn fork_above(&self, height: u32) {
         let heard = self.session.hub.truncations();
-        deliver(&self.engine, &self.session, self.id, |wm| {
+        deliver(&self.engine, &self.session, self.id, move |wm| {
             Box::pin(async move {
                 use platform_wallet::key_wallet_manager::WalletInterface;
-                wm.truncate_above(TIP).unwrap();
+                wm.truncate_above(height).unwrap();
             })
         });
         assert!(
@@ -226,6 +237,38 @@ impl Scenario {
             matches!(self.row(), Some((status, false, _)) if status != TxStatusKind::Unconfirmed)
         );
         assert!(!spendable(&self.engine, &self.session, self.id, self.a));
+    }
+
+    /// SPV verifies the lock of a child that spends `coin` to someone else
+    /// and that no wallet records.
+    fn hear_child_lock(&self, coin: OutPoint) -> Txid {
+        let child = super::spend_of(coin, vec![(super::elsewhere(), COIN / 8)]);
+        self.hear_verified_lock(InstantLock {
+            txid: child.txid(),
+            inputs: vec![coin],
+            ..InstantLock::default()
+        });
+        child.txid()
+    }
+
+    /// The wallet's own spend of `from`'s output `vout` to its fresh
+    /// change address, signed by the wallet.
+    fn own_spend(&self, from: &Transaction, vout: u32, value: u64) -> Transaction {
+        let owner = dashcore::Address::from_script(
+            &from.output[vout as usize].script_pubkey,
+            dashcore::Network::Regtest,
+        )
+        .unwrap();
+        let change = fresh_address(&self.engine, &self.session, self.id).script_pubkey();
+        let tx = super::spend_of(OutPoint::new(from.txid(), vout), vec![(change, value)]);
+        super::signed_by_wallet(&self.engine, &self.session, self.id, &owner, tx)
+    }
+
+    /// P signed by the wallet, as its other device signs it.
+    fn signed_p(mut self) -> Self {
+        let p = self.p.clone();
+        self.p = super::signed_by_wallet(&self.engine, &self.session, self.id, &self.a_owner, p);
+        self
     }
 
     fn assert_fork_holds_funding_coin(&self) {
@@ -370,8 +413,10 @@ fn a_child_lock_in_another_wallet_protects_the_senders_forked_input() {
         ..InstantLock::default()
     });
     let history = &s.session.hub.history;
-    assert!(history.read_wallet(&recipient, |h| h.session_locks.contains(&child.txid())));
-    assert!(history.read_wallet(&s.id, |h| !h.session_locks.contains(&child.txid())));
+    // The sender holds the payment whose output the lock names.
+    for id in [recipient, s.id] {
+        assert!(history.read_wallet(&id, |h| h.session_locks.contains(&child.txid())));
+    }
 
     s.fork();
     assert!(s.a_held(), "key-wallet restored the sender's funding coin");
@@ -652,4 +697,264 @@ fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     s.hear_lock();
     let kept = hub.history.read_wallet(&s.id, |h| h.session_locks.clone());
     assert_eq!(kept, [s.p.txid()].into_iter().collect());
+}
+
+/// A locked child the wallet records keeps its lock across a restart: its
+/// parent, sent from another device, reaches the wallet only after the
+/// restart (the scan had not reached its block), and a fork of that block
+/// still holds the coin the parent spent, though no lock is heard again.
+#[test]
+fn a_recorded_locked_child_protects_its_forked_parent_after_a_restart() {
+    let s = scenario().signed_p();
+    let change = OutPoint::new(s.p.txid(), 1);
+    let owner =
+        dashcore::Address::from_script(&s.p.output[1].script_pubkey, dashcore::Network::Regtest)
+            .unwrap();
+    let back = fresh_address(&s.engine, &s.session, s.id).script_pubkey();
+    let child = super::spend_of(
+        change,
+        vec![(super::elsewhere(), CHANGE / 4), (back, CHANGE / 4)],
+    );
+    let child = super::signed_by_wallet(&s.engine, &s.session, s.id, &owner, child);
+    mempool(&s.engine, &s.session, s.id, &child);
+    let lock = InstantLock {
+        txid: child.txid(),
+        inputs: vec![change],
+        ..InstantLock::default()
+    };
+    let locked = child.clone();
+    let wallet_lock = lock.clone();
+    deliver(&s.engine, &s.session, s.id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.process_mempool_instant_send_lock(&locked, wallet_lock)
+                .await;
+        })
+    });
+    s.hear_verified_lock(lock);
+    wait_stored(&s.session, s.id, &[child.txid()]);
+
+    let s = s.reopen();
+    let entry = s.session.hub.history.get(&s.id, &child.txid()).unwrap();
+    assert!(crate::history::instant_locked(&entry) && entry.context.block_info().is_none());
+    s.mined();
+    assert!(!s.a_held(), "P spends a");
+    let (max_before, inputs_before) = s.max();
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the parent's funding coin");
+    // P's change goes with P; the child's output to the wallet stays.
+    let after = balances(&s.session, s.id);
+    let (max, inputs) = s.max();
+    assert_eq!(
+        (
+            (after.total, after.confirmed),
+            max,
+            inputs,
+            s.a_listed(),
+            spendable(&s.engine, &s.session, s.id, s.a)
+        ),
+        (
+            (11 * COIN + CHANGE / 4, 11 * COIN + CHANGE / 4),
+            max_before,
+            inputs_before,
+            false,
+            false
+        ),
+        "balance, Max, Send selection and coin control after the fork"
+    );
+}
+
+/// A fork takes a payment G and its spend P, under P's locked child, and G
+/// alone returns: Abandon refuses G and Remove Unconfirmed drops nothing,
+/// and the coins they would free stay out of spending.
+#[test]
+fn a_returning_payment_under_a_forked_spend_with_a_locked_child_is_kept() {
+    let s = scenario().signed_p();
+    let spend = s.own_spend(&s.p, 1, CHANGE / 2);
+    mined(
+        &s.engine,
+        &s.session,
+        s.id,
+        TIP + 1,
+        vec![s.p.clone(), spend.clone()],
+    );
+    s.hear_child_lock(OutPoint::new(spend.txid(), 0));
+    s.fork();
+    assert!(s.session.hub.history.get(&s.id, &spend.txid()).is_none());
+
+    mempool(&s.engine, &s.session, s.id, &s.p);
+    assert!(!s.a_held(), "G spends a again");
+    let g_change = OutPoint::new(s.p.txid(), 1);
+    let before = balances(&s.session, s.id);
+    let (max_before, inputs_before) = s.max();
+    assert!(!inputs_before.contains(&g_change));
+    start_offline_spv(&s.engine, &s.session);
+    let abandoned = s
+        .engine
+        .block_on(s.session.abandon_transaction(s.id, s.p.txid()));
+    let removed = s.engine.block_on(s.session.drop_unconfirmed(Some(s.id)));
+    assert!(
+        matches!(
+            abandoned,
+            Err(EngineError::TxActionRefused(
+                TxActionRefusal::SettledDescendant
+            ))
+        ) && matches!(removed, Ok(0)),
+        "G is kept: Abandon {abandoned:?}, Remove Unconfirmed {removed:?}"
+    );
+    assert!(matches!(
+        s.row(),
+        Some((TxStatusKind::Unconfirmed, false, _))
+    ));
+    let after = balances(&s.session, s.id);
+    let (max, inputs) = s.max();
+    assert_eq!(
+        (
+            (after.total, after.confirmed),
+            max,
+            inputs,
+            s.a_listed(),
+            spendable(&s.engine, &s.session, s.id, s.a),
+            spendable(&s.engine, &s.session, s.id, g_change),
+        ),
+        (
+            (before.total, before.confirmed),
+            max_before,
+            inputs_before,
+            false,
+            false,
+            false
+        ),
+        "balance, Max, Send selection and coin control after Abandon and Remove Unconfirmed"
+    );
+}
+
+/// The intermediary between a forked payment and a locked child was
+/// abandoned before the child's lock arrived: its inputs still link the
+/// lock to the payment, whose coin stays out of spending.
+#[test]
+fn an_abandoned_intermediary_still_links_a_locked_child_to_its_forked_parent() {
+    let s = scenario();
+    s.mined();
+    let spend = s.own_spend(&s.p, 1, CHANGE / 2);
+    mempool(&s.engine, &s.session, s.id, &spend);
+    super::own_spend_disk_tests::abandon(&s.engine, &s.session, s.id, spend.txid());
+    s.hear_child_lock(OutPoint::new(spend.txid(), 0));
+    assert!(!s.a_held());
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the payment's funding coin");
+    s.assert_fork_holds_funding_coin();
+}
+
+/// The recipient still shows the transaction that links a locked child to
+/// the sender's forked payment in a block at or below the fork's height
+/// (as when the sender hears the fork first): the link holds.
+#[test]
+fn an_intermediary_the_recipient_still_shows_mined_links_the_lock_to_the_forked_payment() {
+    let s = scenario();
+    let recipient = second_wallet(&s.engine, &s.session);
+    let to = |value| {
+        (
+            fresh_address(&s.engine, &s.session, recipient).script_pubkey(),
+            value,
+        )
+    };
+    let payment = super::spend_of(s.a, vec![to(PAID_OUT)]);
+    let onward = super::spend_of(OutPoint::new(payment.txid(), 0), vec![to(PAID_OUT / 2)]);
+    mined(&s.engine, &s.session, recipient, TIP, vec![onward.clone()]);
+    mined(&s.engine, &s.session, s.id, TIP + 1, vec![payment]);
+    let child = s.hear_child_lock(OutPoint::new(onward.txid(), 0));
+    let history = &s.session.hub.history;
+    assert!(history.read_wallet(&recipient, |h| h.session_locks.contains(&child)));
+    assert!(!s.a_held());
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the sender's funding coin");
+    s.assert_fork_holds_funding_coin();
+}
+
+/// A verified lock of a child that spends the output a payment pays to
+/// someone else (no wallet of the app) holds the payment's coin across a
+/// fork, and shows the child nowhere.
+fn assert_external_child_lock_protects(buffered: bool) {
+    let s = scenario();
+    let paid_out = OutPoint::new(s.p.txid(), 0);
+    let child = if buffered {
+        let child = s.hear_child_lock(paid_out);
+        s.mined();
+        child
+    } else {
+        s.mined();
+        s.hear_child_lock(paid_out)
+    };
+    assert!(!s.a_held());
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the payment's funding coin");
+    s.assert_fork_holds_funding_coin();
+    let child = child.to_string();
+    assert!(
+        rows(&s.engine, &s.session, s.id)
+            .iter()
+            .all(|r| r.0 != child)
+    );
+}
+
+#[test]
+fn an_external_recipients_child_lock_protects_the_senders_forked_input() {
+    assert_external_child_lock_protects(false);
+}
+
+#[test]
+fn a_buffered_external_recipients_child_lock_protects_the_senders_forked_input() {
+    assert_external_child_lock_protects(true);
+}
+
+/// The first fork takes a payment to another wallet, whose onward spend
+/// has a locked child, and keeps the payment's input held; that wallet
+/// closes, and a deeper fork takes the payment's own parent: its coin
+/// stays held too.
+#[test]
+fn a_deeper_fork_after_the_recipient_closes_keeps_the_ancestry_held() {
+    let s = scenario();
+    let recipient = second_wallet(&s.engine, &s.session);
+    let to = |value| {
+        (
+            fresh_address(&s.engine, &s.session, recipient).script_pubkey(),
+            value,
+        )
+    };
+    s.mined();
+    let g_change = OutPoint::new(s.p.txid(), 1);
+    let owner =
+        dashcore::Address::from_script(&s.p.output[1].script_pubkey, dashcore::Network::Regtest)
+            .unwrap();
+    let payment = super::spend_of(g_change, vec![to(CHANGE / 2)]);
+    let payment = super::signed_by_wallet(&s.engine, &s.session, s.id, &owner, payment);
+    let onward = super::spend_of(OutPoint::new(payment.txid(), 0), vec![to(CHANGE / 4)]);
+    let recipient_owner = dashcore::Address::from_script(
+        &payment.output[0].script_pubkey,
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    let onward = super::signed_by_phrase_each(
+        &s.engine,
+        &s.session,
+        recipient,
+        RECIPIENT_PHRASE,
+        &[recipient_owner],
+        onward,
+    );
+    for id in [s.id, recipient] {
+        mined(&s.engine, &s.session, id, TIP + 2, vec![payment.clone()]);
+    }
+    mempool(&s.engine, &s.session, recipient, &onward);
+    s.hear_child_lock(OutPoint::new(onward.txid(), 0));
+
+    s.fork_above(TIP + 1);
+    assert!(!spendable(&s.engine, &s.session, s.id, g_change));
+    s.engine
+        .block_on(s.session.unload_wallet(recipient))
+        .unwrap();
+    s.fork();
+    assert!(s.a_held(), "key-wallet restored the parent's funding coin");
+    s.assert_fork_holds_funding_coin();
 }

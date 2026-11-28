@@ -1646,6 +1646,21 @@ impl WalletHistory {
         {
             self.remember_session_lock(*txid, inputs);
         }
+        let outputs = self.txs.get(txid).map_or(0, |e| e.tx.output.len());
+        let spenders: Vec<Txid> = (0..outputs as u32)
+            .filter_map(|vout| locks.spends.get(&OutPoint::new(*txid, vout)))
+            .flatten()
+            .copied()
+            .collect();
+        for spender in spenders {
+            self.remember_session_lock(spender, &locks.inputs[&spender]);
+        }
+    }
+
+    fn holds_output(&self, o: &OutPoint) -> bool {
+        self.txs
+            .get(&o.txid)
+            .is_some_and(|e| (o.vout as usize) < e.tx.output.len())
     }
 
     fn remember_session_lock(&mut self, txid: Txid, inputs: &[OutPoint]) {
@@ -2039,7 +2054,6 @@ impl EarlyInstantLocks {
 fn forked_ancestor_inputs(
     wallets: &HashMap<WalletId, WalletHistory>,
     wallet: WalletId,
-    height: u32,
     removed: &[Txid],
     unconfirmed: &[Txid],
 ) -> Vec<(Txid, Vec<OutPoint>)> {
@@ -2050,8 +2064,16 @@ fn forked_ancestor_inputs(
     let removed: HashSet<_> = removed.iter().copied().collect();
     let mut parents: Vec<_> = wallets
         .values()
-        .flat_map(WalletHistory::lock_parent_links)
-        .flat_map(|(_, parents)| parents.iter().copied())
+        .flat_map(|h| {
+            let links = h.lock_parent_links().flat_map(|(_, p)| p.iter().copied());
+            let locked = (h.txs.values())
+                .filter(|e| {
+                    e.context.block_info().is_none() && !e.is_abandoned() && instant_locked(e)
+                })
+                .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output.txid));
+            let kept = (h.fork_kept_ancestor_inputs.values().flatten()).map(|o| o.txid);
+            links.chain(locked).chain(kept)
+        })
         .chain(
             wallets
                 .get(&wallet)
@@ -2066,30 +2088,17 @@ fn forked_ancestor_inputs(
             continue;
         }
         let forked = removed.contains(&parent);
-        // A different wallet may still show the old block, or may already
-        // have removed this record and kept its inputs.
-        for h in wallets.values() {
-            if let Some(inputs) = h.fork_kept_ancestor_inputs.get(&parent) {
-                parents.extend(inputs.iter().map(|o| o.txid));
-                if forked {
-                    held.push((parent, inputs.clone()));
-                }
-                break;
-            }
-            if let Some(entry) = h.txs.get(&parent)
-                && (forked
-                    || (!entry.is_abandoned()
-                        && entry
-                            .context
-                            .block_info()
-                            .is_none_or(|b| b.height() > height)))
-            {
-                let inputs = entry.tx.input.iter().map(|i| i.previous_output);
-                parents.extend(inputs.clone().map(|o| o.txid));
-                if forked {
-                    held.push((parent, inputs.collect()));
-                }
-                break;
+        // Any wallet's record links its inputs, whatever its status, as do
+        // the inputs a wallet kept for a record it already removed.
+        let inputs = wallets.values().find_map(|h| {
+            (h.fork_kept_ancestor_inputs.get(&parent).cloned()).or_else(|| {
+                (h.txs.get(&parent)).map(|e| e.tx.input.iter().map(|i| i.previous_output).collect())
+            })
+        });
+        if let Some(inputs) = inputs {
+            parents.extend(inputs.iter().map(|o| o.txid));
+            if forked {
+                held.push((parent, inputs));
             }
         }
     }
@@ -2124,13 +2133,12 @@ impl HistoryStore {
     pub(crate) fn truncate(
         &self,
         wallet: WalletId,
-        height: u32,
         removed: &[Txid],
         unconfirmed: &[Txid],
     ) -> Vec<Txid> {
         let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         let locks = self.early_locks.read().unwrap_or_else(|p| p.into_inner());
-        let held = forked_ancestor_inputs(&wallets, wallet, height, removed, unconfirmed);
+        let held = forked_ancestor_inputs(&wallets, wallet, removed, unconfirmed);
         let history = wallets.entry(wallet).or_default();
         history.fork_kept_ancestor_inputs.extend(held);
         history.truncate(removed, unconfirmed, locks.overflow)
@@ -2273,7 +2281,8 @@ impl HistoryStore {
         let mut marked = Vec::new();
         for (id, h) in map.iter_mut().filter(|(id, _)| !skip.contains(*id)) {
             if let Some(inputs) = verified_inputs
-                && (h.txs.contains_key(txid) || inputs.iter().any(|o| h.owns_output(o)))
+                && (h.txs.contains_key(txid)
+                    || inputs.iter().any(|o| h.owns_output(o) || h.holds_output(o)))
             {
                 h.remember_session_lock(*txid, inputs);
             }
@@ -3512,7 +3521,7 @@ mod tests {
         assert_eq!(store.registration_collaterals(&wallet).len(), 3);
         store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
         assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
-        store.truncate(wallet, 0, &[removed.txid()], &[kept.txid()]);
+        store.truncate(wallet, &[removed.txid()], &[kept.txid()]);
         assert_eq!(
             store.registration_collaterals(&wallet),
             vec![kept_collateral],
