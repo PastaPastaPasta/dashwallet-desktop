@@ -889,7 +889,6 @@ export const dashpay = {
     planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
     err: {
       network: "This request is for {requested}, but this wallet uses {current}.",
-      mainnetOff: "This version can sign in to apps on test networks only.",
       unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
       invalid: "This sign-in request can't be read. Ask the app for a new one.",
       newer: "This link needs a newer version of Dash Wallet.",

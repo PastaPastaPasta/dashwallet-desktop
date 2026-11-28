@@ -364,12 +364,6 @@ pub(crate) fn disconnect_fee_at(
     Ok(margined_processing.saturating_add(disk))
 }
 
-/// Whether App Connect runs on `network`: not on mainnet in this build,
-/// until its keys ruling; there every call is `connect.mainnet_off`.
-pub(crate) fn enabled_on(network: &DashNetwork) -> bool {
-    *network != DashNetwork::Mainnet
-}
-
 /// Why an App Connect login stopped after it was approved, from a fixed
 /// list: the host shows its own words for each, never Platform's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1070,14 +1064,11 @@ fn candidates(session: &NetworkSession, wallet: WalletId) -> Result<Vec<Candidat
         .collect())
 }
 
-/// The checks that need no read: the network, the flag, what this wallet
+/// The checks that need no read: the network and what this wallet
 /// supports.
 fn check_link(network: &DashNetwork, link: &ConnectUri) -> Result<(), ConnectError> {
     if !link.network.matches(network.core_network()) {
         return Err(ConnectError::Network);
-    }
-    if !enabled_on(network) {
-        return Err(ConnectError::MainnetOff);
     }
     link.request
         .check_supported()
@@ -2492,13 +2483,6 @@ pub(crate) async fn retry_send(
     }
 }
 
-fn check_enabled(network: &DashNetwork) -> Result<(), ConnectError> {
-    if !enabled_on(network) {
-        return Err(ConnectError::MainnetOff);
-    }
-    Ok(())
-}
-
 fn parse_request_hash(text: &str) -> Result<[u8; 20], ConnectError> {
     let invalid = || {
         ConnectError::from(PlatformError::InvalidArgument {
@@ -2954,7 +2938,6 @@ pub(crate) async fn list(
     wallet: WalletId,
     identity: &str,
 ) -> Result<ConnectedApps, ConnectError> {
-    check_enabled(&session.network)?;
     let id = parse_identity(identity)?;
     let _index = wallet_identity_index(session, wallet, id)?;
     let owner = b58(&id);
@@ -3056,7 +3039,6 @@ pub(crate) async fn disconnect_quote(
     identity: &str,
     request: &str,
 ) -> Result<DisconnectQuote, ConnectError> {
-    check_enabled(&session.network)?;
     let id = parse_identity(identity)?;
     let request_hash = parse_request_hash(request)?;
     let _index = wallet_identity_index(session, wallet, id)?;
@@ -3121,7 +3103,6 @@ pub(crate) async fn disconnect(
     request: &str,
     grant: String,
 ) -> Result<DisconnectDone, ConnectError> {
-    check_enabled(&session.network)?;
     let id = parse_identity(identity)?;
     let request_hash = parse_request_hash(request)?;
     let index = wallet_identity_index(session, wallet_id, id)?;
@@ -3758,8 +3739,7 @@ impl DashPay {
     /// app, the wallet's identities that may sign in, each binding with a
     /// group's owner, admins and members as Platform proves them now, and
     /// the default terms. Refused, with nothing read, for another network
-    /// (`connect.network`), on mainnet in this build
-    /// (`connect.mainnet_off`) and for bindings this wallet does not grant
+    /// (`connect.network`) and for bindings this wallet does not grant
     /// (`connect.unsupported`); after the reads for an old protocol
     /// (`connect.protocol`), a wrong owner (`connect.owner`), a missing
     /// contract or group (`connect.invalid`), no identity with a username
@@ -3840,7 +3820,6 @@ impl DashPay {
     /// Lists each app this wallet approved for `identity` that still has
     /// enabled session keys on Platform, combining local approval records
     /// with Platform's proved identity keys and live contract/group scopes.
-    /// Refused on mainnet (`connect.mainnet_off`).
     pub async fn app_connect_list(&self, identity: String) -> Result<ConnectedApps, ConnectError> {
         let wallet_id = self.wallet_id();
         self.on_wallet(move |session, manager, _| async move {
@@ -3859,8 +3838,8 @@ impl DashPay {
     /// one approved app (`request` hex) on `identity`. Verifies every key id
     /// and its public key data against Platform and refuses when a key is
     /// unverified (`connect.failed{unverified_key}`), the live fee exceeds the
-    /// fee bound (`connect.failed{fee_too_high}`), credits are short
-    /// (`connect.credits`), or on mainnet (`connect.mainnet_off`).
+    /// fee bound (`connect.failed{fee_too_high}`), or credits are short
+    /// (`connect.credits`).
     pub async fn app_connect_disconnect_quote(
         &self,
         identity: String,
@@ -3885,7 +3864,7 @@ impl DashPay {
     /// `AppDisconnect` grant bound to `request`). Safe to call twice: refreshes
     /// Platform first under the identity write lock and succeeds without
     /// spending credits or sending an update if the app's keys are already
-    /// disabled. Refused on mainnet (`connect.mainnet_off`).
+    /// disabled.
     pub async fn app_connect_disconnect(
         &self,
         identity: String,

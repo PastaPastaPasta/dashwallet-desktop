@@ -36,13 +36,13 @@ export const connectedAppsKeys = {
   list: (walletId: string, identity: string) => ["dashpay", "connectedApps", walletId, identity] as const,
 };
 
-/** Connected apps for `identity` on a test network; disabled on mainnet or when `identity` is null. */
-export function useConnectedApps(walletId: string, identity: string | null, enabled: boolean) {
+/** Connected apps for `identity`; disabled when `identity` is null. */
+export function useConnectedApps(walletId: string, identity: string | null) {
   const b = useBackend();
   return useQuery({
     queryKey: connectedAppsKeys.list(walletId, identity ?? ""),
     queryFn: () => b.appConnectList(walletId, identity!),
-    enabled: enabled && identity !== null,
+    enabled: identity !== null,
     retry: false,
   });
 }
@@ -86,7 +86,6 @@ export function disconnectErrorText(e: unknown): string {
   if (!isAppError(e)) return t("dashpay.connect.connected.err.generic");
   if (e.code === "platform.restored") return t("dashpay.connect.err.platformRestored");
   if (e.code === "platform.unavailable") return t("dashpay.connect.err.platformUnavailable");
-  if (e.code === "connect.mainnet_off") return t("dashpay.connect.err.mainnetOff");
   if (e.code === "platform.grant_exceeded") return t("dashpay.connect.connected.err.grantExceeded");
   if (e.code === "connect.credits" && e.data?.kind === "credits") {
     const short = BigInt(e.data.needed) - BigInt(e.data.available);

@@ -1479,6 +1479,9 @@ impl NetworkSession {
         // Before the bring-up hears of the wallet, which reads it.
         if origin == Origin::CreatedHere {
             self.mark_created_here(wallet_id).await;
+            if let Err(e) = self.mark_coinjoin_handoffs_tracked(wallet_id).await {
+                tracing::warn!(%wallet_id, error = %e, "could not mark the wallet's CoinJoin inputs as tracked");
+            }
         }
         self.list_on_startup(held, wallet_id, true).await;
         self.load_added_wallet(wallet_id).await;

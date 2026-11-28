@@ -7,7 +7,7 @@ import { toAdvanced } from "./identities";
 // lists approved apps for the current identity (claimed name marked not verified, App ID,
 // return host, key scopes, funding limit, expiry, approval date); Disconnect shows the live
 // Platform credit fee, requires the passphrase, removes the row on success, and keeps it with
-// a plain error on failure; mainnet refuses it.
+// a plain error on failure; mainnet works the same.
 
 async function openConnectedApps(page: Page, scenario: string, theme: Theme = "light") {
   const errors = trackPageErrors(page);
@@ -208,14 +208,24 @@ test("a pending Disconnect can be checked without a new fee", async ({ page }) =
   await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
 });
 
-test("shows the test-networks-only notice on mainnet without listing connected apps", async ({ page }) => {
+test("lists and disconnects connected apps on mainnet", async ({ page }) => {
   const errors = trackPageErrors(page);
-  await page.goto(`${fixtureUrl("dashpay-connected-apps", "light")}&network=mainnet`);
+  await page.goto(fixtureUrl("dashpay-connected-apps", "light", "&network=mainnet"));
   await page.getByTestId("toolbar").waitFor();
   await toAdvanced(page);
   const card = page.getByTestId("connected-apps-card");
-  await expect(card.getByTestId("connected-apps-mainnet-off")).toHaveText("This version can sign in to apps on test networks only.");
-  await expect(card.getByTestId("connected-app-row")).toHaveCount(0);
+  const rows = card.getByTestId("connected-app-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).getByTestId("connected-app-claim")).toHaveText("“Yappr” (name given by the app, not verified)");
+  await expect(rows.nth(0).getByTestId("connected-app-limit")).toContainText("0.05 DASH");
+
+  await rows.nth(0).getByTestId("connected-app-disconnect").click();
+  const sheet = page.getByTestId("disconnect-sheet");
+  await expect(sheet.getByTestId("disconnect-fee")).toContainText("in credits.");
+  await sheet.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
+  await expect(rows).toHaveCount(1);
   expect(errors).toEqual([]);
 });
 

@@ -288,8 +288,7 @@ export function ConnectedAppsCard({
   const t = useT();
   const b = useBackend();
   const client = useQueryClient();
-  const mainnet = network.kind === "mainnet";
-  const query = useConnectedApps(walletId, identity.identity, !mainnet);
+  const query = useConnectedApps(walletId, identity.identity);
   const [model] = useState(
     () =>
       new ConnectedAppsModel(b, walletId, () => {
@@ -304,86 +303,78 @@ export function ConnectedAppsCard({
 
   return (
     <SettingsCard title={t("dashpay.connect.connected.title")} testId="connected-apps-card">
-      {mainnet ? (
-        <p className="field-hint settings-hint" data-testid="connected-apps-mainnet-off">
-          {t("dashpay.connect.err.mainnetOff")}
+      <p className="field-hint settings-hint" data-testid="connected-apps-intro">
+        {username !== null
+          ? t("dashpay.connect.connected.intro", { who: `@${username}` })
+          : t("dashpay.connect.connected.introSelf")}
+      </p>
+      <div className="identities-actions">
+        <DashButton
+          variant="tintedGray"
+          size="small"
+          data-testid="connected-apps-refresh"
+          disabled={query.isFetching || model.disconnecting}
+          onClick={() => void query.refetch()}
+        >
+          {query.isFetching ? t("dashpay.connect.connected.checking") : t("dashpay.connect.connected.refresh")}
+        </DashButton>
+      </div>
+      {model.disconnectedLabel !== null && done !== null && (
+        <p
+          className={needsAttention ? "form-problem" : "form-ok"}
+          role={needsAttention ? "alert" : "status"}
+          data-testid="connected-apps-done"
+        >
+          {done.hasUnresolvedKeys && t("dashpay.connect.connected.disconnectKeysUnresolved", { label: model.disconnectedLabel })}
+          {!done.hasUnresolvedKeys && done.keysRemaining > 0 && (
+            t("dashpay.connect.connected.disconnectedPartial", {
+              disabled: done.keysDisabled.length,
+              total: done.keysDisabled.length + done.keysRemaining,
+            })
+          )}
+          {!partial && t(done.responseMayHaveLanded
+                ? "dashpay.connect.connected.disconnectedResponsePending"
+                : "dashpay.connect.connected.disconnected", { label: model.disconnectedLabel })}
+          {partial && done.responseMayHaveLanded && (
+            <> {t("dashpay.connect.connected.responsePending")}</>
+          )}
         </p>
-      ) : (
-        <>
-          <p className="field-hint settings-hint" data-testid="connected-apps-intro">
-            {username !== null
-              ? t("dashpay.connect.connected.intro", { who: `@${username}` })
-              : t("dashpay.connect.connected.introSelf")}
-          </p>
-          <div className="identities-actions">
-            <DashButton
-              variant="tintedGray"
-              size="small"
-              data-testid="connected-apps-refresh"
-              disabled={query.isFetching || model.disconnecting}
-              onClick={() => void query.refetch()}
-            >
-              {query.isFetching ? t("dashpay.connect.connected.checking") : t("dashpay.connect.connected.refresh")}
-            </DashButton>
-          </div>
-          {model.disconnectedLabel !== null && done !== null && (
-            <p
-              className={needsAttention ? "form-problem" : "form-ok"}
-              role={needsAttention ? "alert" : "status"}
-              data-testid="connected-apps-done"
-            >
-              {done.hasUnresolvedKeys && t("dashpay.connect.connected.disconnectKeysUnresolved", { label: model.disconnectedLabel })}
-              {!done.hasUnresolvedKeys && done.keysRemaining > 0 && (
-                t("dashpay.connect.connected.disconnectedPartial", {
-                  disabled: done.keysDisabled.length,
-                  total: done.keysDisabled.length + done.keysRemaining,
-                })
-              )}
-              {!partial && t(done.responseMayHaveLanded
-                    ? "dashpay.connect.connected.disconnectedResponsePending"
-                    : "dashpay.connect.connected.disconnected", { label: model.disconnectedLabel })}
-              {partial && done.responseMayHaveLanded && (
-                <> {t("dashpay.connect.connected.responsePending")}</>
-              )}
-            </p>
-          )}
-          {query.isPending ? (
-            <p className="placeholder-note" role="status" data-testid="connected-apps-loading">
-              {t("dashpay.connect.connected.loading")}
-            </p>
-          ) : query.isError ? (
-            <div className="identities-empty" data-testid="connected-apps-error">
-              <p className="form-problem" role="alert">
-                {t("dashpay.connect.connected.loadError")}
-              </p>
-              <DashButton variant="tintedGray" size="small" data-testid="connected-apps-retry" onClick={() => void query.refetch()}>
-                {t("dashpay.connect.connected.tryAgain")}
-              </DashButton>
-            </div>
-          ) : query.data.apps.length === 0 ? (
-            <div className="identities-empty" data-testid="connected-apps-empty">
-              <p>{t("dashpay.connect.connected.empty")}</p>
-              <p className="field-hint">{t("dashpay.connect.connected.emptySub")}</p>
-            </div>
-          ) : (
-            <ul className="connected-apps-list" data-testid="connected-apps-list">
-              {query.data.apps.map((app) => (
-                <AppRow
-                  key={app.request}
-                  app={app}
-                  blockTimeMs={query.data.blockTimeMs}
-                  unitName={network.unitName}
-                  locale={b.locale}
-                  busy={model.disconnecting}
-                  onDisconnect={() => void model.openDisconnect(app)}
-                />
-              ))}
-            </ul>
-          )}
-          <DisconnectSheet model={model} username={username} />
-          <GrantSheet grants={model.grants} />
-        </>
       )}
+      {query.isPending ? (
+        <p className="placeholder-note" role="status" data-testid="connected-apps-loading">
+          {t("dashpay.connect.connected.loading")}
+        </p>
+      ) : query.isError ? (
+        <div className="identities-empty" data-testid="connected-apps-error">
+          <p className="form-problem" role="alert">
+            {t("dashpay.connect.connected.loadError")}
+          </p>
+          <DashButton variant="tintedGray" size="small" data-testid="connected-apps-retry" onClick={() => void query.refetch()}>
+            {t("dashpay.connect.connected.tryAgain")}
+          </DashButton>
+        </div>
+      ) : query.data.apps.length === 0 ? (
+        <div className="identities-empty" data-testid="connected-apps-empty">
+          <p>{t("dashpay.connect.connected.empty")}</p>
+          <p className="field-hint">{t("dashpay.connect.connected.emptySub")}</p>
+        </div>
+      ) : (
+        <ul className="connected-apps-list" data-testid="connected-apps-list">
+          {query.data.apps.map((app) => (
+            <AppRow
+              key={app.request}
+              app={app}
+              blockTimeMs={query.data.blockTimeMs}
+              unitName={network.unitName}
+              locale={b.locale}
+              busy={model.disconnecting}
+              onDisconnect={() => void model.openDisconnect(app)}
+            />
+          ))}
+        </ul>
+      )}
+      <DisconnectSheet model={model} username={username} />
+      <GrantSheet grants={model.grants} />
     </SettingsCard>
   );
 }

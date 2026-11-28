@@ -524,7 +524,7 @@ pub(crate) type HeaderSource = Arc<
 
 /// What drops the history's transactions built on a sweep's: the wallet
 /// and what the sweep dropped that can never confirm (`tx_actions`, #739).
-pub(crate) type SweptDead = dyn Fn(WalletId, crate::tx_actions::Dead) + Send + Sync;
+pub(crate) type SweptDead = dyn Fn(WalletId, u64, crate::tx_actions::Dead) + Send + Sync;
 
 /// What checks the history's pending spends of new transactions' outputs
 /// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
@@ -605,6 +605,7 @@ pub(crate) struct SessionHub {
     /// The wallets whose sweep rows a truncation could not update: their
     /// rows are checked against the header chain on their next event.
     sweep_retry_due: Mutex<HashSet<WalletId>>,
+    drop_registrations: Mutex<HashMap<WalletId, u64>>,
     /// Checks a wallet's sweep rows again (`coinjoin` prune); unset in
     /// hub-only tests.
     sweep_retry: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
@@ -749,6 +750,8 @@ pub(crate) struct SessionHub {
     /// Tests: how many sweep events' drops of what is built on them ran.
     #[cfg(test)]
     pub(crate) dead_hooks_done: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) pause_swept_dead: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: new transactions don't start the check for unsigned claims.
     #[cfg(test)]
     pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
@@ -1056,6 +1059,7 @@ impl SessionHub {
             unstored_locks: Mutex::new(HashMap::new()),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
+            drop_registrations: Mutex::new(HashMap::new()),
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
@@ -1123,6 +1127,8 @@ impl SessionHub {
             quit_before_sweep: Default::default(),
             #[cfg(test)]
             dead_hooks_done: Default::default(),
+            #[cfg(test)]
+            pause_swept_dead: Mutex::new(None),
             #[cfg(test)]
             skip_unsigned_check: Default::default(),
             #[cfg(test)]
@@ -1206,6 +1212,21 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    pub(crate) fn reread_loaded_balances(&self) {
+        if let Some(reread) = self.balance_reread.get() {
+            let ids: Vec<_> = self
+                .wallets
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .keys()
+                .copied()
+                .collect();
+            for id in ids {
+                reread(id);
+            }
+        }
     }
 
     /// Sets what refreshes the held reports of the wallets with holds
@@ -1518,7 +1539,15 @@ impl SessionHub {
     /// The children of swept payments queued for wallet `id`'s drop: each
     /// set with the truncations applied when it was queued, its winner, the
     /// swept payments, and their inputs.
-    pub(crate) fn take_dead_children(&self, id: WalletId) -> Vec<(u64, DeadSet)> {
+    pub(crate) fn take_dead_children(
+        &self,
+        id: WalletId,
+        registration: u64,
+    ) -> Vec<(u64, DeadSet)> {
+        let unloaded = lock(&self.unloaded);
+        if self.drop_registration_locked(id, &unloaded) != Some(registration) {
+            return Vec::new();
+        }
         let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *queued)
             .into_iter()
@@ -1533,22 +1562,29 @@ impl SessionHub {
     pub(crate) fn defer_drops(
         &self,
         id: WalletId,
+        registration: u64,
         work: impl IntoIterator<Item = (DropTake, crate::tx_actions::DeadWork)>,
     ) {
         // Under the lock an unload forgets them under: none outlives it.
         let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
-        if unloaded.contains(&id) {
+        if self.drop_registration_locked(id, &unloaded) != Some(registration) {
             return;
         }
-        let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
-        for (take, w) in work {
-            let waiting = |(d, t, waiting): &(WalletId, DropTake, crate::tx_actions::DeadWork)| {
-                (*d, *t) == (id, take) && *waiting == w
-            };
-            if !deferred.iter().any(waiting) {
+        let mut deferred = lock(&self.deferred_drops);
+        for (take, mut w) in work {
+            for (_, _, waiting) in deferred.iter_mut().filter(|(d, ..)| *d == id) {
+                let orphan = |w: &crate::tx_actions::DeadWork| w.2.is_empty() && w.3.is_none();
+                if orphan(waiting) && !orphan(&w) {
+                    waiting.0.retain(|root| !w.0.contains(root));
+                } else {
+                    w.0.retain(|root| !waiting.0.contains(root));
+                }
+            }
+            if !w.0.is_empty() {
                 deferred.push((id, take, w));
             }
         }
+        deferred.retain(|(_, _, work)| !work.0.is_empty());
     }
 
     /// The drops of wallet `id` that waited, each with the take it was
@@ -1556,7 +1592,12 @@ impl SessionHub {
     pub(crate) fn take_deferred_drops(
         &self,
         id: WalletId,
+        registration: u64,
     ) -> Vec<(DropTake, crate::tx_actions::DeadWork)> {
+        let unloaded = lock(&self.unloaded);
+        if self.drop_registration_locked(id, &unloaded) != Some(registration) {
+            return Vec::new();
+        }
         let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *deferred)
             .into_iter()
@@ -1574,9 +1615,15 @@ impl SessionHub {
     /// Keeps `roots` of wallet `id`, beaten payments whose rechecks ran out
     /// while only their proof was missing, with `drop`; a root kept already
     /// is kept once, with the later detection.
-    pub(crate) fn carry_drops(&self, id: WalletId, roots: &[Txid], drop: CarriedDrop) {
-        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
-        if unloaded.contains(&id) {
+    pub(crate) fn carry_drops(
+        &self,
+        id: WalletId,
+        registration: u64,
+        roots: &[Txid],
+        drop: CarriedDrop,
+    ) {
+        let unloaded = lock(&self.unloaded);
+        if self.drop_registration_locked(id, &unloaded) != Some(registration) {
             return;
         }
         let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
@@ -1586,7 +1633,15 @@ impl SessionHub {
     }
 
     /// The beaten payments of wallet `id` kept to recheck, by root.
-    pub(crate) fn take_carried_drops(&self, id: WalletId) -> Vec<(Txid, CarriedDrop)> {
+    pub(crate) fn take_carried_drops(
+        &self,
+        id: WalletId,
+        registration: u64,
+    ) -> Vec<(Txid, CarriedDrop)> {
+        let unloaded = lock(&self.unloaded);
+        if self.drop_registration_locked(id, &unloaded) != Some(registration) {
+            return Vec::new();
+        }
         let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *carried)
             .into_iter()
@@ -1844,8 +1899,22 @@ impl SessionHub {
         self.drain_drops();
     }
 
-    /// Forgets the drops wallet `id` waits with or keeps to recheck.
+    pub(crate) fn drop_registration(&self, id: WalletId) -> Option<u64> {
+        self.drop_registration_locked(id, &lock(&self.unloaded))
+    }
+
+    fn drop_registration_locked(&self, id: WalletId, unloaded: &HashSet<WalletId>) -> Option<u64> {
+        (!unloaded.contains(&id)).then(|| {
+            lock(&self.drop_registrations)
+                .get(&id)
+                .copied()
+                .unwrap_or(0)
+        })
+    }
+
+    /// Invalidates in-flight work and forgets queued drops under the unload lock.
     fn forget_drops(&self, id: &WalletId) {
+        *lock(&self.drop_registrations).entry(*id).or_default() += 1;
         (self
             .deferred_drops
             .lock()
@@ -2515,6 +2584,33 @@ impl SessionHub {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
                 self.check_funded(id, BTreeSet::from([record.txid]));
+                #[cfg(test)]
+                let skip = self
+                    .skip_dead_hook
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let skip = false;
+                if matches!(record.context, TransactionContext::Mempool)
+                    && !skip
+                    && let Some(start) = self.swept_dead.get()
+                    && let Some(registration) = self.drop_registration_locked(id, &unloaded)
+                {
+                    let dead = self.history.read_wallet(&id, |h| {
+                        std::iter::once(record.txid)
+                            .chain(
+                                record
+                                    .transaction
+                                    .input
+                                    .iter()
+                                    .map(|i| i.previous_output.txid),
+                            )
+                            .filter_map(|t| Some((t, h.dead_claim(&t)?)))
+                            .collect::<crate::tx_actions::Dead>()
+                    });
+                    if !dead.is_empty() {
+                        start(id, registration, dead);
+                    }
+                }
                 // An event queued before an Abandon this session took its
                 // transaction carries the balance from before the sweep:
                 // read the manager's instead. One queued while the entry
@@ -2694,6 +2790,9 @@ impl SessionHub {
                         }
                         h.swept.insert(*t);
                     }
+                    for (t, cause) in &dead {
+                        h.drops.entry(*t).or_insert_with(|| crate::history::DropInfo::new(*cause));
+                    }
                     (children, claim)
                 });
                 let queued = !children.is_empty();
@@ -2751,6 +2850,9 @@ impl SessionHub {
                 if queued {
                     self.schedule_reconcile(id);
                 }
+                if !dead.is_empty() {
+                    self.reread_loaded_balances();
+                }
                 // A swept transaction can never confirm, nor can what the
                 // history alone holds built on its outputs (a payment
                 // key-wallet has no record of after a restart, #739).
@@ -2763,8 +2865,9 @@ impl SessionHub {
                 if !dead.is_empty()
                     && !skip
                     && let Some(start) = self.swept_dead.get()
+                    && let Some(registration) = self.drop_registration_locked(id, &unloaded)
                 {
-                    start(id, dead);
+                    start(id, registration, dead);
                 }
             }
             WalletEvent::ChainTruncated {
@@ -2829,8 +2932,8 @@ impl SessionHub {
                 // record's block was evidence already.
                 self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
                 self.schedule_reconcile(id);
-                if !inserted.is_empty() {
-                    self.check_funded(id, inserted.iter().map(|r| r.txid).collect());
+                if !inserted.is_empty() || !updated.is_empty() {
+                    self.check_funded(id, inserted.iter().chain(updated).map(|r| r.txid).collect());
                 }
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
@@ -4047,6 +4150,70 @@ mod tests {
             panic!("history marks: {history:?}");
         };
         assert_eq!(changed, BTreeSet::from([spender.txid()]));
+    }
+
+    #[test]
+    fn a_block_that_updates_funding_rechecks_the_pending_claims() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let funding = tx(1);
+        let mut payment = tx(2);
+        payment.input[0].previous_output = OutPoint::new(funding.txid(), 0);
+        hub.history.with_wallet(W, |h| {
+            h.mark_abandoned(&[(payment.txid(), payment.clone())]);
+            h.txs.get_mut(&payment.txid()).unwrap().abandoned = false;
+        });
+        let checked = Arc::new(Mutex::new(Vec::new()));
+        let reported = Arc::clone(&checked);
+        hub.attach_funded(Box::new(move |id, funded| {
+            reported.lock().unwrap().push((id, funded))
+        }));
+        hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            locked_outpoints: Vec::new(),
+            wallet_id: W.0,
+            height: 110,
+            chain_lock: None,
+            inserted: Vec::new(),
+            updated: vec![in_block(&funding, 110)],
+            matured: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+        assert_eq!(
+            *checked.lock().unwrap(),
+            [(W, BTreeSet::from([funding.txid()]))]
+        );
+    }
+
+    #[test]
+    fn unloading_a_wallet_forgets_its_queued_sweep_children() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let parent = tx(1);
+        let mut child = tx(2);
+        child.input[0].previous_output = OutPoint::new(parent.txid(), 0);
+        hub.history.with_wallet(W, |h| {
+            for t in [parent.clone(), child] {
+                let txid = t.txid();
+                h.mark_abandoned(&[(txid, t)]);
+                h.txs.get_mut(&txid).unwrap().abandoned = false;
+            }
+        });
+        hub.apply_wallet_event(&WalletEvent::TransactionsSwept {
+            wallet_id: W.0,
+            txids: vec![parent.txid()],
+            superseded_by: tx(3).txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+        });
+        assert_eq!(lock(&hub.dead_children).len(), 1);
+        hub.unload_wallet(&W);
+        hub.admit(W);
+        assert!(
+            hub.take_dead_children(W, hub.drop_registration(W).unwrap())
+                .is_empty()
+        );
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance

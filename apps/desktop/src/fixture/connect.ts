@@ -43,7 +43,6 @@ const fail = (code: AppError["code"], message: string, data: AppError["data"] = 
 /** One fixture request per outcome, by its inbox id (32 hex digits, as dw-app's). */
 export const CONNECT_LINKS = {
   ok: "a99c0000000000000000000000000001",
-  mainnetOff: "a99c0000000000000000000000000002",
   sendFailed: "a99c0000000000000000000000000003",
   planChanged: "a99c0000000000000000000000000004",
   stale: "a99c0000000000000000000000000005",
@@ -217,7 +216,6 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
   const sheetOf = (w: World, walletId: string, linkId: string): ConnectSheet => {
     const l = link(w, linkId);
     wallet(w, walletId);
-    if (l.outcome === "mainnetOff") throw refuse(l, fail("connect.mainnet_off", "connect.mainnet_off"));
     if (l.outcome === "stale") throw refuse(l, fail("connect.stale", "connect.stale"));
     if (l.answer !== null) throw fail("connect.answered", "connect.answered");
     const identities = dashpay(w, walletId)
@@ -346,7 +344,6 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
     },
     app_connect_list: ({ walletId, identity }, { world }) => {
       wallet(world, walletId);
-      if (world.launch.network.kind === "mainnet") throw fail("connect.mainnet_off", "connect.mainnet_off");
       if (world.connectedAppsListError) throw fail("platform.unavailable", "platform.unavailable");
       const exists = dashpay(world, walletId).identities.some((i) => i.identity === identity);
       if (!exists) throw fail("identity.not_found", "identity.not_found");
@@ -355,7 +352,6 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
     },
     app_connect_disconnect_quote: ({ walletId, identity, request }, { world }) => {
       wallet(world, walletId);
-      if (world.launch.network.kind === "mainnet") throw fail("connect.mainnet_off", "connect.mainnet_off");
       const who = dashpay(world, walletId).identities.find((i) => i.identity === identity);
       if (!who) throw fail("identity.not_found", "identity.not_found");
       const app = (world.connectedApps ?? []).find((a) => a.identity === identity && a.request === request);
@@ -383,7 +379,6 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
     },
     app_connect_disconnect: ({ walletId, identity, request, grant: id }, { world }) => {
       wallet(world, walletId);
-      if (world.launch.network.kind === "mainnet") throw fail("connect.mainnet_off", "connect.mainnet_off");
       const who = dashpay(world, walletId).identities.find((i) => i.identity === identity);
       if (!who) throw fail("identity.not_found", "identity.not_found");
       const apps = world.connectedApps ?? [];

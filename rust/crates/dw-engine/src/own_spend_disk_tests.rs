@@ -1937,6 +1937,27 @@ fn a_beaten_payment_kept_to_recheck_stays_after_a_fork_below_its_block() {
     t.assert_kept(&session, "a restart");
 }
 
+#[test]
+fn a_kept_payment_is_void_after_truncation_with_its_header_unchanged() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    t.kept_to_recheck(&block);
+    let before = t.session.hub.truncations();
+    t.truncate(TIP);
+    assert!(t.session.hub.truncations() > before);
+    assert_eq!(
+        t.engine.block_on(t.session.hub.header_hash(TIP + 1)),
+        Some(block_hash(&block))
+    );
+    t.session.hub.schedule_reconcile(t.id);
+    eventually("the truncation alone voided the kept payment", || {
+        t.session.hub.carried_drop_roots(t.id).is_empty()
+    });
+    t.settle();
+    assert!(t.session.hub.carried_drop_roots(t.id).is_empty());
+    t.assert_kept(&t.session, "truncated with no header change");
+}
+
 /// #818, Q99 T3: while the other payment is kept to recheck, the wallet
 /// applies a ChainLock at the block's height on a chain whose header
 /// there is another block. Nothing goes, and the kept payment is void.
@@ -2593,6 +2614,65 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_under_a_child_finalized_un
         "a child finalized unheard",
     );
     assert!(!abandoned(&engine, &session, id, payment.txid()));
+}
+
+#[test]
+fn abandoning_a_transfer_finalized_only_in_the_receiving_wallet_is_refused() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let p = send_to(&engine, &session, id, CoinSource::Any, &to, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    let txid = p.txid();
+    let block = super::block_with(vec![p]);
+    let hash = block.block_hash();
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        wm.process_block_for_wallets(&block, hash, TIP + 1, &BTreeSet::from([other.0]))
+            .await;
+        wm.apply_chain_lock(dashcore::ChainLock {
+            block_height: TIP + 1,
+            block_hash: hash,
+            signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+        });
+        wm.update_wallet_synced_height(&other.0, TIP + 1);
+        let core = &wm.get_wallet_info(&other.0).unwrap().core_wallet;
+        let accounts = core.accounts.all_accounts();
+        assert!(accounts.iter().any(|a| a.transaction_is_finalized(&txid)));
+        assert!(
+            accounts
+                .iter()
+                .all(|a| !a.transactions().contains_key(&txid))
+        );
+    });
+    session.hub.history.with_wallet(other, |h| {
+        h.txs.remove(&txid);
+    });
+    assert!(
+        session
+            .hub
+            .history
+            .get(&id, &txid)
+            .unwrap()
+            .context
+            .block_info()
+            .is_none()
+    );
+    start_spv(&engine, &session);
+    let result = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::TxActionRefusal::Confirmed
+            ))
+        ),
+        "{result:?}"
+    );
+    assert!(!abandoned(&engine, &session, id, txid));
 }
 
 /// As above, with the child locked, but its record cannot be read at the
@@ -5841,9 +5921,10 @@ fn a_rescan_restores_the_coin_of_an_abandon_stopped_without_its_rewind_record() 
     });
     assert!(before.is_some(), "the abandon stored no rewind record");
     assert!(
-        after.is_none(),
-        "the rewind record is still stored: {after:?}"
+        after.is_some(),
+        "a commit before the rewind cleared its record"
     );
+    engine.block_on(replay.restore(id, None)).unwrap();
 
     let session = reopen(&engine, session);
     start_spv(&engine, &session);

@@ -1,7 +1,7 @@
 // "Sign in to an app": refusals said by code only (connect.failed's detail from a fixed list), the
 // passphrase every time, and the flow over the fixture backend's IPC: the sheet, the primary key
 // that stays, re-quotes, Deny, Approve to done, a send that failed and its retry, a request that
-// changed on Platform, and mainnet off.
+// changed on Platform.
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -501,8 +501,7 @@ describe("the flow over the fixture", () => {
     expect(t("dashpay.connect.denied")).toBe("You declined this sign-in request. Nothing was added to your identity.");
   });
 
-  it("mainnet off shows no sheet; a refusal shows its code's text", async () => {
-    expect((await open("mainnetOff")).flow.phase).toBe("mainnetOff");
+  it("a refusal shows its code's text", async () => {
     const stale = (await open("stale")).flow;
     expect(stale.phase).toBe("refused");
     expect(connectErrorText(stale.error, "testnet")).toBe("This sign-in request has expired. Ask the app for a new one.");

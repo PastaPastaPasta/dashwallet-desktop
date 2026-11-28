@@ -550,7 +550,7 @@ commands! {
     }
 
     /// Lists each app this wallet approved for `identity` that still has
-    /// enabled session keys on Platform. Refused on mainnet.
+    /// enabled session keys on Platform.
     #[facade("DashPay::app_connect_list")]
     fn app_connect_list(state, wallet_id: String, identity: String) -> ConnectedApps {
         let dashpay = state.dashpay(&wallet_id).await?;
@@ -559,7 +559,7 @@ commands! {
     }
 
     /// What disconnecting `request` on `identity` costs and the
-    /// `appDisconnect` grant to ask for. Refused on mainnet.
+    /// `appDisconnect` grant to ask for.
     #[facade("DashPay::app_connect_disconnect_quote")]
     fn app_connect_disconnect_quote(
         state,
@@ -589,7 +589,7 @@ commands! {
     }
 
     /// Disables the verified AUTHENTICATION session keys of `request` on
-    /// `identity` under `grant` (an `appDisconnect` grant). Refused on mainnet.
+    /// `identity` under `grant` (an `appDisconnect` grant).
     #[facade("DashPay::app_connect_disconnect")]
     fn app_connect_disconnect(
         state,
