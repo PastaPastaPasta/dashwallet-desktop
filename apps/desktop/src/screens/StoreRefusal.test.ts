@@ -147,12 +147,13 @@ describe("the store refusal screen", () => {
     for (const [, refusal] of FIXTURES) sameInBothThemes(() => renderRefusal(refusal));
   });
 
-  it("covers today's screens: the refusal family with the way out to the version before, to support, to Restore earlier data and a damaged store's", () => {
+  it("covers the refusal screens through their way-out keys", () => {
     expect(FIXTURES.map(([, r]) => r.screen.textKey)).toEqual([
       "storeUpgrade.refused.wayOut.previous",
       "storeUpgrade.refused.wayOut.support",
       "storeUpgrade.refused.wayOut.restore",
       "storeUpgrade.refused.wayOut.damaged",
+      "storeUpgrade.refused.wayOut.retired",
     ]);
   });
 
@@ -781,12 +782,13 @@ describe("Set up from recovery phrase after a restore refused for a shielded hol
       expect(buttonAction("storeUpgrade.refused.recover")).toBe("recover");
     }
     expect(render(offer, true, HELD.inFlight)).toContain(heldLine);
-    for (const name of STORE_SCREEN_NAMES.filter((n) => n !== "refusedRestore" && n !== "damaged")) {
+    for (const name of ["refusedPrevious", "refusedSupport"] as const) {
       const html = render(STORE_SCREENS[name](FOLDER), true);
       expect(button(html, recoverButton), name).toBeNull();
       expect(html, name).not.toContain(heldLine);
     }
     expect(render(STORE_SCREENS.damaged(FOLDER), true)).not.toContain(heldLine);
+    expect(render(STORE_SCREENS.retiredBackup(FOLDER), true)).not.toContain(heldLine);
   });
 
   it("is offered by the confirm only after a hold refused the request, and opens the recover confirm", async () => {
@@ -1186,9 +1188,12 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
   const buttonKeys = (html: string) => [...html.matchAll(/data-testid="store-refused-button-([^"]+)"/g)].map((m) => m[1]);
   const CONFIRM_TEXT = "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.";
 
-  it("shows only where the engine's screen carries it: a damaged store", () => {
+  it("shows recovery on the damaged and retired-backup screens when the engine offers it", () => {
     for (const [name, refusal] of FIXTURES) expect(button(renderRefusal(refusal), recoverButton) !== null, name).toBe(refusal.screen.buttons.some((b) => b.key === RECOVER));
-    expect(FIXTURES.filter(([, r]) => r.screen.buttons.some((b) => b.key === RECOVER)).map(([, r]) => r.cause)).toEqual(["SnapshotSourceDamaged"]);
+    expect(FIXTURES.filter(([, r]) => r.screen.buttons.some((b) => b.key === RECOVER)).map(([, r]) => r.screen.textKey)).toEqual([
+      "storeUpgrade.refused.wayOut.damaged",
+      "storeUpgrade.refused.wayOut.retired",
+    ]);
     for (const cause of ["Unexpected", "SchemaHistoryMismatch", "RetiredPoolWithoutAdopter"])
       expect(button(renderRefusal({ ...damaged, cause, screen: { ...damaged.screen, buttons: damaged.screen.buttons.filter((b) => b.key !== RECOVER) } }), recoverButton), cause).toBeNull();
   });

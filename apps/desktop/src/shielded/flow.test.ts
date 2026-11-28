@@ -91,12 +91,12 @@ describe("the shielded flow", () => {
     stop();
   });
 
-  it("a Core Max (Max from the Dash wallet) is sent as {kind: all}, never as an amount with the fee on top", async () => {
+  it("a Core Max (Max from the Dash wallet) is sent with the confirmed coin set, never as an amount with the fee on top", async () => {
     const { flow, api } = setup();
     flow.begin("add");
     flow.next({ kind: "add", duffs: 199_998_956, all: true });
-    await flow.run({ maxDuffs: 200_000_000, maxCredits: "0" });
-    expect(api.shieldFromCore.mock.calls).toEqual([[WALLET_A, { kind: "all" }, "grant-1"]]);
+    await flow.run({ maxDuffs: 200_000_000, maxCredits: "0" }, false, "confirmed-set");
+    expect(api.shieldFromCore.mock.calls).toEqual([[WALLET_A, { kind: "quotedAll", coinSet: "confirmed-set" }, "grant-1"]]);
   });
 
   it("a Core Max's refusals say what Max needs; an amount's keep their own words", () => {
@@ -113,7 +113,7 @@ describe("the shielded flow", () => {
 
   it("a Core Max below the smallest amount says what Max can move, and what it leaves out only when something is", () => {
     const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
-    const below = (leftDuffs: number) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 3_852, leftDuffs, arrivingDuffs: 0, arrivingClears: false });
+    const below = (leftDuffs: number) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 3_852, leftDuffs, arrivingDuffs: 0, arrivingClears: false, arrivingBlock: null, otherArrivingDuffs: 0 });
     expect(text(below(10_000_100), true)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00010001 tDASH. Max doesn't include mixed coins, payments from contacts or coins in other accounts.");
     expect(text(below(0), true)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00010001 tDASH.");
     const typed = appError("shielded.below_minimum", { kind: "number", value: 10_001 });
@@ -122,9 +122,18 @@ describe("the shielded flow", () => {
     expect(shieldedCanChange(below(0))).toBe(true);
   });
 
+  it("distinguishes held, too many and other-account arriving coins", () => {
+    const refusal = (arrivingDuffs: number, arrivingBlock: "held" | "inputCap" | null, otherArrivingDuffs = 0) =>
+      appError("shielded.below_minimum", { kind: "maxMinimum", min: 56_001, duffs: 0, leftDuffs: 0, arrivingDuffs, arrivingClears: false, arrivingBlock, otherArrivingDuffs });
+    const text = (e: unknown) => shieldedErrorText(e, credits, duffs, "add", false, true);
+    expect(text(refusal(200_000, "held"))).toBe("Max can't run: some coins in your Dash wallet are locked. Enter an amount instead.");
+    expect(text(refusal(200_000, "inputCap"))).toBe("Your Dash wallet's coins are still arriving (0.002 tDASH), but Max can't move them as they are, even once they've confirmed.");
+    expect(text(refusal(0, null, 200_000))).toBe("Your Dash wallet's coins are still arriving (0.002 tDASH), but Max can't move them as they are, even once they've confirmed.");
+  });
+
   it("a Core Max of nothing says the coins are arriving (and whether Max can move them once they've confirmed), that Max leaves them all out, or that the wallet has nothing to move, never 0.00000000 or the minimum", () => {
     const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
-    const zero = (leftDuffs: number, arrivingDuffs: number, arrivingClears = arrivingDuffs > 0) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 0, leftDuffs, arrivingDuffs, arrivingClears });
+    const zero = (leftDuffs: number, arrivingDuffs: number, arrivingClears = arrivingDuffs > 0) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 0, leftDuffs, arrivingDuffs, arrivingClears, arrivingBlock: null, otherArrivingDuffs: 0 });
     expect(text(zero(7_000, 200_000), true)).toBe("Your Dash wallet's coins are still arriving (0.002 tDASH). Max can move them once they've confirmed.");
     expect(text(zero(7_000, 5_000, false), true)).toBe("Your Dash wallet's coins are still arriving (0.00005 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.");
     expect(text(zero(200_000, 0), true)).toBe("Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.");
