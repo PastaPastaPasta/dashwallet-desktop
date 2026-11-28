@@ -1,4 +1,4 @@
-# Dash Wallet Desktop
+# DashPay Desktop
 
 A desktop Dash wallet for macOS, Windows and Linux, replacing dash-qt. It is a
 [Tauri 2](https://tauri.app) app (React + TypeScript renderer) over a Rust engine built on

@@ -48,7 +48,7 @@ describe("connect.failed's detail", () => {
 
   it("is said without the error's own text", () => {
     const text = connectErrorText(err("connect.failed", { kind: "connectFailure", failure: "notConfirmed" }), "testnet");
-    expect(text).toBe("Sign-in didn't finish: Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, Dash Wallet checks your identity first.");
+    expect(text).toBe("Sign-in didn't finish: Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, DashPay Desktop checks your identity first.");
     expect(connectErrorText(err("connect.failed"), "testnet")).toBe("Sign-in didn't finish: something went wrong on the way.");
   });
 
@@ -82,7 +82,7 @@ describe("connect.failed's detail", () => {
 describe("refusals", () => {
   it("say each code's own text, never the message", () => {
     expect(connectErrorText(err("connect.stale"), "testnet")).toBe("This sign-in request has expired. Ask the app for a new one.");
-    expect(connectErrorText(err("connect.owner"), "testnet")).toBe("Dash Wallet refused this request: the app asked for keys covering contracts it doesn't own.");
+    expect(connectErrorText(err("connect.owner"), "testnet")).toBe("DashPay Desktop refused this request: the app asked for keys covering contracts it doesn't own.");
     expect(connectErrorText(err("connect.network", { kind: "connectNetwork", requested: "mainnet" }), "testnet")).toBe(
       "This request is for Mainnet, but this wallet uses Testnet.",
     );
@@ -326,7 +326,7 @@ describe("the flow over the fixture", () => {
       "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
     );
     expect(t("dashpay.connect.app.unverified")).toBe(
-      "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+      "DashPay Desktop can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
     );
     await flow.retrySend();
     expect(flow.phase).toBe("done");
@@ -579,7 +579,7 @@ describe("the flow over the fixture", () => {
     const approved = flow.choice();
     await approve(flow);
     expect(flow.phase).toBe("sheet");
-    expect(connectErrorText(flow.quoteError, "testnet")).toContain("Dash Wallet checks your identity first.");
+    expect(connectErrorText(flow.quoteError, "testnet")).toContain("DashPay Desktop checks your identity first.");
     expect(flow.attempted).toEqual(approved);
     flow.setLimit("0.02");
     flow.toggle(flow.sheet!.bindings[1]!);

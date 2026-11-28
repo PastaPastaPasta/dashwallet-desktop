@@ -37,7 +37,7 @@ const DISCARD_LISTED: &str = "discarding the operation: its payment is still lis
 
 /// Discard's refusal when a sent mark may be all that claims the payment's
 /// coins (not this session's held hand-off, not listed).
-const DISCARD_UNCERTAIN: &str = "discarding the operation: its payment may still be on its way; restart Dash Wallet, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again";
+const DISCARD_UNCERTAIN: &str = "discarding the operation: its payment may still be on its way; restart DashPay Desktop, abandon the payment in History, then discard again; if History doesn't list it, run Tools ▸ Repair ▸ Remove unconfirmed transactions, then discard again";
 
 /// `masternodes.collateral_released:<outpoint>`, wallet-scoped: the user
 /// released this collateral, so the follower doesn't lock it again (D9).
@@ -1076,7 +1076,7 @@ impl NetworkSession {
                 Some(e) => {
                     tracing::warn!(%wallet, error = %e, "could not drop a discarded operation's sent marks");
                     EngineError::Storage(
-                        "discarding the operation: its payment's saved copy could not be removed; restart Dash Wallet, then discard it again".into(),
+                        "discarding the operation: its payment's saved copy could not be removed; restart DashPay Desktop, then discard it again".into(),
                     )
                 }
             })?;

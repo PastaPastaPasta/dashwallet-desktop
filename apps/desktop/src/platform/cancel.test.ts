@@ -158,7 +158,7 @@ describe("the move out of a held cancel, or of an item too small to cancel", () 
     const rules = appError("credits.rules_unsupported");
     for (const [rows, id] of [[[cancelOfMove, move], "pc-2"], [[move], "pm-1"], [[payout], "cp-1"]] as const) {
       expect(moveErrorText(refused, credits, rows, id)).toContain("Your earlier payment, move or cancel may still go through, so check Activity");
-      expect(moveErrorText(rules, credits, rows, id)).toContain("Your earlier payment, move or cancel may still go through. Update Dash Wallet");
+      expect(moveErrorText(rules, credits, rows, id)).toContain("Your earlier payment, move or cancel may still go through. Update DashPay Desktop");
     }
   });
 
@@ -229,7 +229,7 @@ describe("the cancel's outcome", () => {
       expect(cancelResult(failed, rows, "cp-1")).toBe("unknown");
     }
     expect(cancelResultText("unknown", "payment", recipient)).toBe(
-      "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
+      "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Before paying again, check whether the recipient was paid.",
     );
     expect(cancelResultText("unknown", "payment", recipient)).not.toContain(`${recipient} was paid`);
     expect(cancelResult(failed, [cancelRow("pm-1", settled), { ...move, ...settled }], "pm-1")).toBe("unknown");
@@ -308,7 +308,7 @@ describe("the cancel flow", () => {
     await flow.confirm();
     expect(flow.step).toBe("refused");
     expect(moveErrorText(flow.error, credits, [held("pm-1", "moveToCore")])).toBe(
-      "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
+      "DashPay Desktop hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
     );
     expect(cancelOf(held("pm-1", "moveToCore"), [held("pm-1", "moveToCore")])).toBe("move");
     flow.close();

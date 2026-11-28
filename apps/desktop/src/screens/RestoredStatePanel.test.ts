@@ -34,18 +34,18 @@ vi.mock("react", async (importOriginal) => {
 
 const COPY = {
   core: "Waiting for the wallet to finish syncing with the Dash network.",
-  platform: "Waiting for Dash Wallet's first check with Dash Platform.",
+  platform: "Waiting for DashPay Desktop's first check with Dash Platform.",
   history: "Waiting for a wallet's history to load.",
   retry: "Try again",
   finish: "Finish without Dash Platform",
-  meaning: "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
+  meaning: "DashPay Desktop reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start DashPay Desktop, and your Platform and Shielded funds stay paused until DashPay Desktop has checked them with Dash Platform.",
   historyFailed: (wallet: string) =>
-    `Dash Wallet couldn't load the history of ${wallet}, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.`,
+    `DashPay Desktop couldn't load the history of ${wallet}, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.`,
   clearFailed:
-    "Dash Wallet finished checking the wallet data it restored, but couldn't save that the check is done, so anything that moves your funds stays paused. The disk may be full, or Dash Wallet may not be able to write to it. Free up some space, then try again. If this keeps happening, report a problem.",
+    "DashPay Desktop finished checking the wallet data it restored, but couldn't save that the check is done, so anything that moves your funds stays paused. The disk may be full, or DashPay Desktop may not be able to write to it. Free up some space, then try again. If this keeps happening, report a problem.",
   report: "Report a problem",
   platformOnly:
-    "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+    "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until DashPay Desktop has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
 };
 const THEMES = ["light", "dark"] as const;
 const STYLESHEET = readFileSync(resolve(import.meta.dirname, "../styles/app.css"), "utf8");
@@ -355,7 +355,7 @@ describe("the panel's actions", () => {
     await actions.finishWithoutPlatform(WAITING_PLATFORM);
     expect(calls).toEqual(["finishWithoutPlatform"]);
     expect(boot).not.toHaveBeenCalled();
-    expect(actions.problem).toBe("Wait for username registration to finish before Dash Wallet can reopen without Dash Platform.");
+    expect(actions.problem).toBe("Wait for username registration to finish before DashPay Desktop can reopen without Dash Platform.");
     expect(actions.running).toBe(false);
     expect(actions.finishing).toBeNull();
     expect(gate(c)).toBe("<i>true</i>");
@@ -368,7 +368,7 @@ describe("the panel's actions", () => {
     const actions = restoredStateActions(api as Backend, c);
     await actions.finishWithoutPlatform(WAITING_PLATFORM);
     expect(calls).toEqual(["finishWithoutPlatform"]);
-    expect(actions.problem).toBe("Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: storage in use");
+    expect(actions.problem).toBe("DashPay Desktop couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: storage in use");
     expect(actions.running).toBe(false);
     expect(actions.finishing).toBeNull();
     expect(stale(c, keys.restored)).toBe(true);
@@ -414,11 +414,11 @@ describe("the panel's actions", () => {
   });
 
   it("any other failure is said in place and the gate reads RESTORED again", async () => {
-    const { api } = fake({ finishWithoutPlatform: () => Promise.reject(new Error("This build of Dash Wallet can't do that yet.")) });
+    const { api } = fake({ finishWithoutPlatform: () => Promise.reject(new Error("This build of DashPay Desktop can't do that yet.")) });
     const c = client();
     const actions = new RestoredStateActions(api, c, vi.fn());
     await actions.finishWithoutPlatform(WAITING_PLATFORM);
-    expect(actions.problem).toBe("This build of Dash Wallet can't do that yet.");
+    expect(actions.problem).toBe("This build of DashPay Desktop can't do that yet.");
     expect(actions.finishing).toBeNull();
     expect(actions.running).toBe(false);
     expect(gate(c)).toBe("<i>true</i>");
@@ -449,18 +449,18 @@ describe("the panel's actions", () => {
     const refusal = (data: object, code = "app.network_busy") => ({ code, message: "refused", data });
     const busyData = (over: object) => ({ kind: "networkBusy", flows: [], mixing: false, broadcast: false, stalled: false, draining: false, ...over });
     const cases: [object, string][] = [
-      [refusal(busyData({ flows: ["registration"] })), "Wait for username registration to finish before Dash Wallet can reopen without Dash Platform."],
-      [refusal(busyData({ flows: ["registration"], mixing: true })), "Wait for username registration to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform."],
-      [refusal(busyData({ broadcast: true })), "Wait for the payment to finish before Dash Wallet can reopen without Dash Platform."],
-      [refusal(busyData({ mixing: true })), "Stop mixing before Dash Wallet can reopen without Dash Platform."],
-      [refusal(busyData({ draining: true })), "Dash Wallet is still finishing a request. Choose Finish without Dash Platform again once it's done."],
+      [refusal(busyData({ flows: ["registration"] })), "Wait for username registration to finish before DashPay Desktop can reopen without Dash Platform."],
+      [refusal(busyData({ flows: ["registration"], mixing: true })), "Wait for username registration to finish, or stop mixing, before DashPay Desktop can reopen without Dash Platform."],
+      [refusal(busyData({ broadcast: true })), "Wait for the payment to finish before DashPay Desktop can reopen without Dash Platform."],
+      [refusal(busyData({ mixing: true })), "Stop mixing before DashPay Desktop can reopen without Dash Platform."],
+      [refusal(busyData({ draining: true })), "DashPay Desktop is still finishing a request. Choose Finish without Dash Platform again once it's done."],
       [refusal({ kind: "networkCloseRefused", reason: "walletOpening" }, "wallet"), "refused"],
       [refusal({ kind: "networkCloseRefused", reason: "shieldedSpendUnresolved" }, "shielded_spend_unresolved"), "refused"],
     ];
     const c = client();
     c.setQueryData(keys.lockStatus, { state: "unlocked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] });
     const stalled = refusal(busyData({ flows: ["registration"], stalled: true }));
-    cases.push([stalled, "Wait for username registration to finish before Dash Wallet can reopen without Dash Platform. Locking the wallet stops username registration."]);
+    cases.push([stalled, "Wait for username registration to finish before DashPay Desktop can reopen without Dash Platform. Locking the wallet stops username registration."]);
     for (const [e, line] of cases) {
       const { api } = fake({ finishWithoutPlatform: () => Promise.reject(e) });
       const actions = new RestoredStateActions(api, c, vi.fn());
@@ -586,7 +586,7 @@ describe("the fixture's restore status", () => {
     const fixture = installFixture({ scenario: "restored-finish-busy" });
     const actions = new RestoredStateActions(backend, new QueryClient(), vi.fn());
     await actions.finishWithoutPlatform(status({ waiting: ["platformPass"] }));
-    expect(actions.problem).toBe("Wait for username registration to finish before Dash Wallet can reopen without Dash Platform.");
+    expect(actions.problem).toBe("Wait for username registration to finish before DashPay Desktop can reopen without Dash Platform.");
     expect(fixture.world.lock.state).toBe("unlocked");
     expect(fixture.world.noPlatform).toBeUndefined();
     expect(isRestored(await backend.activeNetwork())).toBe(true);

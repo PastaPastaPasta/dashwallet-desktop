@@ -36,10 +36,10 @@ async function shoot(page: Page, name: string) {
 }
 
 const REASONS = [
-  { scenario: "shielded-closed-in-use", reason: "in_use", text: "Another program, possibly another copy of Dash Wallet, is using your Shielded data", restart: true, report: false },
-  { scenario: "shielded-closed-failed", reason: "failed", text: "Dash Wallet couldn't move your Shielded data to this version, so it didn't open Shielded. The rest", restart: true, report: true },
-  { scenario: "shielded-closed-damaged", reason: "damaged", text: "Dash Wallet couldn't read your Shielded data from before the upgrade, so it didn't open Shielded and changed nothing in that data.", restart: false, report: true },
-  { scenario: "shielded-closed-no-copy", reason: "no_upgrade_copy", text: "Dash Wallet has no backup of your Shielded data from before the upgrade", restart: false, report: true },
+  { scenario: "shielded-closed-in-use", reason: "in_use", text: "Another program, possibly another copy of DashPay Desktop, is using your Shielded data", restart: true, report: false },
+  { scenario: "shielded-closed-failed", reason: "failed", text: "DashPay Desktop couldn't move your Shielded data to this version, so it didn't open Shielded. The rest", restart: true, report: true },
+  { scenario: "shielded-closed-damaged", reason: "damaged", text: "DashPay Desktop couldn't read your Shielded data from before the upgrade, so it didn't open Shielded and changed nothing in that data.", restart: false, report: true },
+  { scenario: "shielded-closed-no-copy", reason: "no_upgrade_copy", text: "DashPay Desktop has no backup of your Shielded data from before the upgrade", restart: false, report: true },
 ];
 
 for (const theme of THEMES) {

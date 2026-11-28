@@ -73,7 +73,7 @@ test.describe("General", () => {
     await expect(page.locator("html")).not.toHaveAttribute("data-theme", /./);
     // A launch theme wins and says so.
     await settings(page, "general", "funded", "light");
-    await expect(page.getByTestId("settings-display")).toContainText("Light is in use for this session. Your choice below applies the next time Dash Wallet starts normally.");
+    await expect(page.getByTestId("settings-display")).toContainText("Light is in use for this session. Your choice below applies the next time DashPay Desktop starts normally.");
   });
 
   test("QT141_resetOptionsAsksFirst", async ({ page }) => {
@@ -354,7 +354,7 @@ test.describe("Wallets", () => {
     ["inFlight", "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed."],
     [
       "carriedOver",
-      "Dash Wallet can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
+      "DashPay Desktop can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
     ],
   ] as const) {
     test(`a removal refused (${reason}) says why and removes nothing`, async ({ page }) => {
@@ -448,8 +448,8 @@ test.describe("Backups", () => {
     await expect(row).toHaveCount(1);
     await expect(row).toContainText("The latest automatic backup failed");
     const year = new Date(failedAt * 1000).getUTCFullYear();
-    await expect(row).toContainText(new RegExp(`Dash Wallet could not write an automatic backup of Main on [^.]*${year}`));
-    await expect(row).toContainText("and that Dash Wallet can write to it.");
+    await expect(row).toContainText(new RegExp(`DashPay Desktop could not write an automatic backup of Main on [^.]*${year}`));
+    await expect(row).toContainText("and that DashPay Desktop can write to it.");
     expect(await seriousAxeViolations(page)).toEqual([]);
     await row.getByTestId("settings-backup-failed-back-up").click();
     await expect(page.getByTestId("settings-backup-sheet")).toContainText("Back up Main");
@@ -569,11 +569,11 @@ test.describe("Backups", () => {
     await page.getByTestId("settings-import-file").click();
     await page.getByTestId("settings-import-path").fill(FIXTURE_FILES.walletDatTooLarge);
     await page.getByTestId("settings-import-inspect").click();
-    await expect(page.getByTestId("settings-import-error")).toHaveText(/more than 10,000 addresses in a row.*send its funds to an address from Receive in Dash Wallet/);
+    await expect(page.getByTestId("settings-import-error")).toHaveText(/more than 10,000 addresses in a row.*send its funds to an address from Receive in DashPay Desktop/);
     await page.getByTestId("settings-import-path").fill(FIXTURE_FILES.walletDatTwoAccounts);
     await page.getByTestId("settings-import-inspect").click();
     // A file whose only account is not the first: the advice names no destination inside the file.
-    await expect(page.getByTestId("settings-import-error")).toHaveText(/an HD account other than the first one.*an address from Receive in Dash Wallet/);
+    await expect(page.getByTestId("settings-import-error")).toHaveText(/an HD account other than the first one.*an address from Receive in DashPay Desktop/);
     await expect(page.getByTestId("settings-import-error")).not.toContainText("same wallet");
     await expect(page.getByTestId("settings-import-error")).not.toContainText("cannot read this kind of file");
   });

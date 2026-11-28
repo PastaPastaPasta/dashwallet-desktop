@@ -65,7 +65,7 @@ impl InstanceLock {
             Err(InstanceError::Busy) => Err(AppError::app(
                 AppCode::AlreadyRunning,
                 format!(
-                    "another Dash Wallet is already running on {}",
+                    "another DashPay Desktop is already running on {}",
                     root.display()
                 ),
             )),
@@ -102,9 +102,9 @@ pub fn refuse(e: &AppError, release: impl FnOnce(), show: impl FnOnce(RefusalDia
 /// lock that cannot be taken at all (`app.data_dir`) is printed only.
 pub fn refusal_dialog(e: &AppError) -> Option<RefusalDialog> {
     (e.code_str() == AppCode::AlreadyRunning.as_str()).then_some(RefusalDialog {
-        title: "Dash Wallet is still closing",
-        body: "Dash Wallet is still finishing closing from the last time it ran. Try again in a \
-               moment. If this keeps happening, check that no other copy of Dash Wallet is \
+        title: "DashPay Desktop is still closing",
+        body: "DashPay Desktop is still finishing closing from the last time it ran. Try again in \
+               a moment. If this keeps happening, check that no other copy of DashPay Desktop is \
                running.",
         button: "OK",
     })
@@ -200,10 +200,10 @@ mod tests {
         assert_eq!(
             refusal_dialog(&refused),
             Some(RefusalDialog {
-                title: "Dash Wallet is still closing",
-                body: "Dash Wallet is still finishing closing from the last time it ran. Try \
+                title: "DashPay Desktop is still closing",
+                body: "DashPay Desktop is still finishing closing from the last time it ran. Try \
                        again in a moment. If this keeps happening, check that no other copy of \
-                       Dash Wallet is running.",
+                       DashPay Desktop is running.",
                 button: "OK",
             })
         );
@@ -220,7 +220,10 @@ mod tests {
             || steps.borrow_mut().push("release"),
             |d| steps.borrow_mut().push(d.title),
         );
-        assert_eq!(*steps.borrow(), ["release", "Dash Wallet is still closing"]);
+        assert_eq!(
+            *steps.borrow(),
+            ["release", "DashPay Desktop is still closing"]
+        );
 
         steps.borrow_mut().clear();
         let unlockable = AppError::app(AppCode::DataDir, "cannot lock");

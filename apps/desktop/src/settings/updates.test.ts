@@ -181,8 +181,8 @@ describe("available", () => {
     expect(updateFailureText({ code: "app.update_busy", message: "", data: { kind: "updateBusy", reason: "mixing" } })).toMatch(/Stop mixing/);
   });
 
-  it("a busy refusal without a reason says only that Dash Wallet is busy", () => {
-    expect(updateFailureText({ code: "app.update_busy", message: "", data: null })).toBe("Dash Wallet is busy. Try again when it has finished.");
+  it("a busy refusal without a reason says only that DashPay Desktop is busy", () => {
+    expect(updateFailureText({ code: "app.update_busy", message: "", data: null })).toBe("DashPay Desktop is busy. Try again when it has finished.");
   });
 
   it("on macOS and Linux, Install runs while mixing, and only Restart waits", async () => {

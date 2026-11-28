@@ -107,7 +107,7 @@ test("Disconnect failure shows a plain error and keeps the row in the list", asy
   await authorize(page);
 
   await expect(page.getByTestId("disconnect-error")).toContainText(
-    "Dash Platform didn't confirm the change, so the keys may already be disabled. Try again: Dash Wallet checks first, so you don't pay twice.",
+    "Dash Platform didn't confirm the change, so the keys may already be disabled. Try again: DashPay Desktop checks first, so you don't pay twice.",
   );
   await page.getByTestId("disconnect-cancel").click();
   await expect(page.getByTestId("disconnect-sheet")).toHaveCount(0);
@@ -122,7 +122,7 @@ test("Disconnect refuses unverified older grants with a plain error", async ({ p
   });
   await page.getByTestId("connected-app-row").nth(0).getByTestId("connected-app-disconnect").click();
   await expect(page.getByTestId("disconnect-error")).toContainText(
-    "Dash Wallet couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any.",
+    "DashPay Desktop couldn't confirm which keys on Dash Platform belong to this app, so it didn't disable any.",
   );
   await expect(page.getByTestId("disconnect-confirm")).toBeDisabled();
   expect(errors).toEqual([]);

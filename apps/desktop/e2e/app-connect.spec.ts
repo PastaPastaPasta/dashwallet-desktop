@@ -18,7 +18,7 @@ test("the sheet shows the App ID, the app's unverified name and where it returns
   await expect(sheet.getByRole("heading", { name: "Sign in to an app" })).toBeVisible();
   await expect(page.getByTestId("connect-claim")).toHaveText("“Yappr” (name given by the app, not verified)");
   await expect(page.getByTestId("connect-unverified")).toHaveText(
-    "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+    "DashPay Desktop can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
   );
   await expect(page.getByTestId("connect-app-id")).toHaveText(APP_ID);
   await expect(page.getByTestId("connect-returns-to")).toHaveText("Returns you to yappr.example");
@@ -118,7 +118,7 @@ test("on mainnet the sheet signs in like on a test network, with the same warnin
   const sheet = await openConnect(page, "ok", "light", CONNECT_HOST, "&network=mainnet");
   await expect(page.getByTestId("connect-claim")).toHaveText("“Yappr” (name given by the app, not verified)");
   await expect(page.getByTestId("connect-unverified")).toHaveText(
-    "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+    "DashPay Desktop can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
   );
   await expect(page.getByTestId("connect-app-id")).toHaveText(APP_ID);
   const rows = sheet.getByTestId("connect-binding");
@@ -212,7 +212,7 @@ test("keys not confirmed in time leave the sheet open, and approving again finis
   await page.getByTestId("connect-approve").click();
   await authorize(page);
   await expect(page.getByTestId("connect-quote-error")).toHaveText(
-    "Sign-in didn't finish: Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, Dash Wallet checks your identity first.",
+    "Sign-in didn't finish: Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, DashPay Desktop checks your identity first.",
   );
   await expect(page.getByTestId("connect-approve")).toBeEnabled();
   await expect(page.getByTestId("connect-limit")).toBeDisabled();
@@ -288,6 +288,6 @@ test("a request that arrives while locked opens once the wallet is unlocked", as
 test("a request refused because every kept request is open or being approved says so, and the open sheet stays", async ({ page }) => {
   await openConnect(page, "ok");
   await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "rejected", reason: { kind: "connect", reason: "busy" } }]));
-  await expect(page.getByText("Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.")).toBeVisible();
+  await expect(page.getByText("DashPay Desktop already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.")).toBeVisible();
   await expect(page.getByTestId("connect-claim")).toBeVisible();
 });

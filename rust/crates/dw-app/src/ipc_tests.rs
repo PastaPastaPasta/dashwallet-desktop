@@ -2177,7 +2177,7 @@ fn files_go_through_the_dialog_the_user_answers() {
     choose(Some(&doubled));
     let saved = demo.ok(
         "save_file_as",
-        json!({ "purpose": "historyCsv", "suggestedName": "Dash Wallet history 2026-11-03.csv", "data": "YSxi" }),
+        json!({ "purpose": "historyCsv", "suggestedName": "DashPay Desktop history 2026-11-03.csv", "data": "YSxi" }),
     );
     let collapsed = dir.path().join("history.csv");
     assert_eq!(saved, json!(collapsed.to_str().unwrap()));
@@ -2188,7 +2188,7 @@ fn files_go_through_the_dialog_the_user_answers() {
     choose(Some(&doubled));
     let saved = demo.ok(
         "save_file_as",
-        json!({ "purpose": "historyCsv", "suggestedName": "Dash Wallet history 2026-11-03.csv", "data": "eCx5" }),
+        json!({ "purpose": "historyCsv", "suggestedName": "DashPay Desktop history 2026-11-03.csv", "data": "eCx5" }),
     );
     assert_eq!(saved, json!(doubled.to_str().unwrap()));
     assert_eq!(std::fs::read(&collapsed).unwrap(), b"a,b");
@@ -2221,12 +2221,12 @@ fn files_go_through_the_dialog_the_user_answers() {
             (
                 FilePurpose::HistoryCsv,
                 true,
-                Some("Dash Wallet history 2026-11-03.csv")
+                Some("DashPay Desktop history 2026-11-03.csv")
             ),
             (
                 FilePurpose::HistoryCsv,
                 true,
-                Some("Dash Wallet history 2026-11-03.csv")
+                Some("DashPay Desktop history 2026-11-03.csv")
             ),
             (FilePurpose::WalletBackup, true, Some("a.dwbackup")),
         ],

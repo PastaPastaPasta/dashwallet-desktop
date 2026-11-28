@@ -11,7 +11,7 @@ const PAYEE = "dash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 const OFF = "This version can move and send from Platform addresses on test networks only.";
 const HELD = /^[\d.]+ DASH is on your Platform addresses\. It's still yours\. This version can move it to your Dash wallet on test networks only\.$/;
 const EXIT =
-  "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.";
+  "A payment or move you made earlier from your Platform balance hasn't finished, and DashPay Desktop can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.";
 
 async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
   const errors = trackPageErrors(page);

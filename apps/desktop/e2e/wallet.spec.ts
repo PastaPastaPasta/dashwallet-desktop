@@ -818,7 +818,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.",
+      "Abandon this transaction? DashPay Desktop stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
@@ -858,7 +858,7 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.",
+      "Abandon this transaction? DashPay Desktop stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.",
     );
     expect(errors).toEqual([]);
   });
@@ -881,7 +881,7 @@ test.describe("Activity", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
     await expect(page.getByTestId("tx-restored-gate")).toHaveText(
-      "Dash Wallet is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
+      "DashPay Desktop is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
     );
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
@@ -928,7 +928,7 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText(
-      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. DashPay Desktop sends it again until that finishes.",
     );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
@@ -940,7 +940,7 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"5e".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
-    await expect(page.getByTestId("tx-action-note")).toHaveText("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    await expect(page.getByTestId("tx-action-note")).toHaveText("Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again.");
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
   });
@@ -964,7 +964,7 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText(
-      "Dash Wallet can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+      "DashPay Desktop can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
@@ -979,7 +979,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If you sent this payment, check that it can no longer confirm before paying again. Using different coins could pay twice.",
+      "Abandon this transaction? DashPay Desktop stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If you sent this payment, check that it can no longer confirm before paying again. Using different coins could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");

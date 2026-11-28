@@ -259,15 +259,15 @@ describe("the store refusal screen", () => {
   it("joins its lines as the engine does, each in the language", () => {
     const screen: StoreScreen = {
       ...STORE_SCREENS.refusedSupport(FOLDER).screen,
-      text: "An intro: it was written by a newer version of Dash Wallet. Choose Report a problem.",
+      text: "An intro: it was written by a newer version of DashPay Desktop. Choose Report a problem.",
       lines: [
         { key: "storeUpgrade.later.intro", text: "An intro" },
-        { key: "storeUpgrade.refused.detail.tooNew", text: "it was written by a newer version of Dash Wallet." },
+        { key: "storeUpgrade.refused.detail.tooNew", text: "it was written by a newer version of DashPay Desktop." },
         { key: "storeUpgrade.refused.wayOut.support", text: "Choose Report a problem." },
       ],
     };
-    expect(screenText(t, screen, FOLDER, false)).toBe("An intro: it was written by a newer version of Dash Wallet. Choose Report a problem.");
-    expect(screenText(t, screen, FOLDER, true)).toBe("\u2066An intro\u2069: it was written by a newer version of Dash Wallet. Choose Report a problem.");
+    expect(screenText(t, screen, FOLDER, false)).toBe("An intro: it was written by a newer version of DashPay Desktop. Choose Report a problem.");
+    expect(screenText(t, screen, FOLDER, true)).toBe("\u2066An intro\u2069: it was written by a newer version of DashPay Desktop. Choose Report a problem.");
   });
 
   it("shows the engine's text unchanged for no lines, one line, or lines that don't join to it", () => {
@@ -458,7 +458,7 @@ describe("the app while the open is refused or held", () => {
   it("keeps the splash's own error for any other failure", () => {
     const html = renderAppFailed({ code: "storage", message: "disk full", data: null });
     expect(html).toContain('data-testid="splash"');
-    expect(html).toContain("Dash Wallet could not open the wallet: disk full");
+    expect(html).toContain("DashPay Desktop could not open the wallet: disk full");
   });
 });
 
@@ -584,14 +584,14 @@ describe("the restore screens", () => {
       "restarting won't change this. To stop restoring, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
     );
     expect(heldNotStarted("shieldedSpendCarriedOver")).toContain(
-      `Check that Dash Wallet can read and write ${FOLDER} and that no other program is using it, then restart Dash Wallet. If you see this again, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.`,
+      `Check that DashPay Desktop can read and write ${FOLDER} and that no other program is using it, then restart DashPay Desktop. If you see this again, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.`,
     );
-    const next = `To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves ${FOLDER} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.`;
+    const next = `To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and DashPay Desktop leaves ${FOLDER} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.`;
     expect(HELD.inFlight).toBe(
-      `Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data. ${next}`,
+      `Nothing was restored. DashPay Desktop doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. That payment was still in progress, and DashPay Desktop can check it only once it can open your current wallet data. ${next}`,
     );
     expect(HELD.carriedOver).toBe(
-      `Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. ${next}`,
+      `Nothing was restored. DashPay Desktop doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. ${next}`,
     );
   });
 
@@ -934,7 +934,7 @@ describe("the app while a restore stopped the open", () => {
   it("shows a malformed storage_restore as the splash's message, with no retry", () => {
     const html = renderAppFailed({ code: "storage_restore", message: "restore stopped", data: { kind: "restore", state: "later", cause: "x", neededBytes: null, folder: FOLDER } });
     expect(html).toContain('data-testid="splash"');
-    expect(html).toContain("Dash Wallet could not open the wallet: restore stopped");
+    expect(html).toContain("DashPay Desktop could not open the wallet: restore stopped");
     expect(html).not.toContain(escaped(en.app.tryAgain));
   });
 });
@@ -1158,7 +1158,7 @@ describe("the not-private screen", () => {
     const html = renderAppFailed({ code: "storage_not_private", message: "the data folder is not private", data: { kind: "notPrivate", folder: ROOT, reason: "later" } });
     expect(html).toContain('data-testid="splash"');
     expect(html).not.toContain('data-testid="store-not-private"');
-    expect(html).toContain("Dash Wallet could not open the wallet: the data folder is not private");
+    expect(html).toContain("DashPay Desktop could not open the wallet: the data folder is not private");
     expect(html).toContain(escaped(en.app.tryAgain));
   });
 
@@ -1186,7 +1186,7 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
   const recoverButton = `store-refused-button-${RECOVER}`;
   const RC = en.storeUpgrade.recover;
   const buttonKeys = (html: string) => [...html.matchAll(/data-testid="store-refused-button-([^"]+)"/g)].map((m) => m[1]);
-  const CONFIRM_TEXT = "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.";
+  const CONFIRM_TEXT = "DashPay Desktop restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.";
 
   it("shows recovery on the damaged and retired-backup screens when the engine offers it", () => {
     for (const [name, refusal] of FIXTURES) expect(button(renderRefusal(refusal), recoverButton) !== null, name).toBe(refusal.screen.buttons.some((b) => b.key === RECOVER));
@@ -1225,7 +1225,7 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
   });
 
   it("names the refused folder's real path wherever the copy says {folder}, never the placeholder", () => {
-    const other = "/srv/other/Dash Wallet/testnet";
+    const other = "/srv/other/DashPay Desktop/testnet";
     for (const folder of [FOLDER, other]) {
       const html = renderRefusal(STORE_SCREENS.damaged(folder));
       expect(html).toContain(`leaves ${escaped(folder)} as it is and doesn&#x27;t delete anything`);

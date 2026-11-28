@@ -9,7 +9,7 @@ describe("network picker selection", () => {
   it("selects the running network even when the saved choice is another", () => {
     expect(selectedNetwork({ active: testnet })).toBe("testnet");
     expect(nextStartNetwork({ active: testnet, chosen: "mainnet", forcedByFlag: true })).toBe("mainnet");
-    expect(NetworkText.pinned("testnet", "mainnet")).toBe("Testnet is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+    expect(NetworkText.pinned("testnet", "mainnet")).toBe("Testnet is in use for this session. Mainnet will be used the next time DashPay Desktop starts normally.");
   });
 
   it("says nothing different about the next start when the saved choice is the running network", () => {
@@ -24,6 +24,6 @@ describe("network picker selection", () => {
   it("selects no segment for a network the picker does not offer, and names the saved one for the next start", () => {
     expect(selectedNetwork({ active: regtest })).toBeNull();
     expect(nextStartNetwork({ active: regtest, chosen: "mainnet", forcedByFlag: true })).toBe("mainnet");
-    expect(NetworkText.pinned("regtest", "mainnet")).toBe("Regtest is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+    expect(NetworkText.pinned("regtest", "mainnet")).toBe("Regtest is in use for this session. Mainnet will be used the next time DashPay Desktop starts normally.");
   });
 });

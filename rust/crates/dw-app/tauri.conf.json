@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Dash Wallet",
+  "productName": "DashPay Desktop",
   "mainBinaryName": "dash-wallet",
   "version": "1.0.0",
   "identifier": "org.dash.wallet.desktop",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Dash Wallet",
+        "title": "DashPay Desktop",
         "width": 1280,
         "height": 820,
         "minWidth": 920,
@@ -92,11 +92,11 @@
       "dmg"
     ],
     "category": "Finance",
-    "publisher": "Dash Wallet Desktop contributors",
+    "publisher": "DashPay Desktop contributors",
     "homepage": "https://github.com/PastaPastaPasta/dashwallet-desktop",
-    "shortDescription": "Dash Wallet",
+    "shortDescription": "DashPay Desktop",
     "longDescription": "The Dash wallet with DashPay, on the desktop.",
-    "copyright": "Copyright (c) Dash Wallet Desktop contributors. MIT license.",
+    "copyright": "Copyright (c) DashPay Desktop contributors. MIT license.",
     "license": "MIT",
     "icon": [
       "icons/32x32.png",

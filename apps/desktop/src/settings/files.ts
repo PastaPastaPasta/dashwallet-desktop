@@ -25,7 +25,7 @@ export const FilesText = {
   backupUnlocked: "The backup is protected with your wallet passphrase.",
   /** QT-078. */
   psbtFile: "This is a partially signed transaction. Open it in Tools ▸ PSBT.",
-  unknownFile: "Dash Wallet does not recognise this file. It reads Dash Wallet backups, dumpwallet files and wallet.dat files.",
+  unknownFile: "DashPay Desktop does not recognise this file. It reads DashPay Desktop backups, dumpwallet files and wallet.dat files.",
   otherNetwork: (name: string) => `This file is for ${name}, not for the network this window uses.`,
   emptyBackup: "This backup holds no wallet.",
   restored: (n: number) => (n === 1 ? "The wallet was restored." : `${n} wallets were restored.`),
@@ -58,7 +58,7 @@ export const FilesText = {
   keepConfirm: "Delete backups",
   warnings: {
     mnemonicNotCoreCompatible:
-      "Dash Core cannot rebuild this wallet from its recovery phrase. The exported keys still work, but keep this wallet's phrase for Dash Wallet.",
+      "Dash Core cannot rebuild this wallet from its recovery phrase. The exported keys still work, but keep this wallet's phrase for DashPay Desktop.",
     coinJoinAccountNotScannedByLegacyCore: "Dash Core before v20 does not scan the CoinJoin account: mixed coins may not show there.",
   } satisfies Record<CoreExportWarningName, string>,
 };
@@ -173,7 +173,7 @@ export function importPlan(info: WalletFileInfo, network: string): ImportPlan {
             ? FilesText.otherNetwork("a network this version does not know")
             : (other(info.network) ?? (info.walletCount === 0 ? FilesText.emptyBackup : null)),
         passphrase: "Backup passphrase",
-        summary: info.walletCount === 1 ? "A Dash Wallet backup of 1 wallet." : `A Dash Wallet backup of ${info.walletCount} wallets.`,
+        summary: info.walletCount === 1 ? "A DashPay Desktop backup of 1 wallet." : `A DashPay Desktop backup of ${info.walletCount} wallets.`,
       };
     case "dumpWallet":
       return { ...base, refusal: otherFamily(info.network), named: true, summary: "A Dash Core dumpwallet file." };

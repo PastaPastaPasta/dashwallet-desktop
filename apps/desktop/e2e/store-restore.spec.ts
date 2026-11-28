@@ -26,8 +26,8 @@ async function unlockIfLocked(page: Page) {
 const STATES = [
   { name: "refused:missingBackup", title: "The earlier wallet data couldn't be restored", buttons: ["ok"] },
   { name: "noSpace:diskFull", title: "Not enough disk space to restore", buttons: ["ok"] },
-  { name: "notStarted:permissionDenied", title: "Dash Wallet couldn't start restoring your wallet data", buttons: ["restart", "cancel", "report", "quit"] },
-  { name: "incomplete:diskFull", title: "Dash Wallet couldn't finish restoring your wallet data", buttons: ["restart", "report", "quit"] },
+  { name: "notStarted:permissionDenied", title: "DashPay Desktop couldn't start restoring your wallet data", buttons: ["restart", "cancel", "report", "quit"] },
+  { name: "incomplete:diskFull", title: "DashPay Desktop couldn't finish restoring your wallet data", buttons: ["restart", "report", "quit"] },
 ];
 
 test.describe("a restore that stopped the open", () => {
@@ -176,7 +176,7 @@ test.describe("Restore earlier data", () => {
       await page.getByTestId("restore-confirm-confirm").click();
       await unlockIfLocked(page);
       await expect(page.getByTestId("store-refused")).toHaveCount(0);
-      await expect(page.getByTestId("restored-banner-text")).toContainText("Dash Wallet is using your wallet data from before the upgrade");
+      await expect(page.getByTestId("restored-banner-text")).toContainText("DashPay Desktop is using your wallet data from before the upgrade");
       const after = await world(page);
       expect(after.restoreCalls).toEqual(["restoreAvailable", "requestRestore"]);
       expect(after.appExits).toEqual(["restart"]);
@@ -197,9 +197,9 @@ test.describe("the restored banner", () => {
 test.describe("the upgrade notice", () => {
   const NOTICES = {
     snapshotDamaged:
-      "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+      "DashPay Desktop upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
     snapshotOther:
-      "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+      "DashPay Desktop upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
   };
   for (const theme of ["light", "dark"] as const)
     for (const [name, text] of Object.entries(NOTICES))
@@ -237,7 +237,7 @@ test.describe("the upgrade notice", () => {
 test.describe("what RESTORED waits for", () => {
   const WAITS = [
     { scenario: "restored-waiting-core", wait: "coreSync", text: "Waiting for the wallet to finish syncing with the Dash network.", finish: false },
-    { scenario: "restored-waiting-platform", wait: "platformPass", text: "Waiting for Dash Wallet's first check with Dash Platform.", finish: true },
+    { scenario: "restored-waiting-platform", wait: "platformPass", text: "Waiting for DashPay Desktop's first check with Dash Platform.", finish: true },
     { scenario: "restored-waiting-history", wait: "historyLoad", text: "Waiting for a wallet's history to load.", finish: false },
   ];
 
@@ -269,7 +269,7 @@ test.describe("what RESTORED waits for", () => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl("restored-waiting-platform", theme));
       await expect(page.getByTestId("restored-finish-meaning")).toHaveText(
-        "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
+        "DashPay Desktop reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start DashPay Desktop, and your Platform and Shielded funds stay paused until DashPay Desktop has checked them with Dash Platform.",
       );
       await page.getByTestId("restored-finish-without-platform").click();
       await unlockIfLocked(page);
@@ -292,7 +292,7 @@ test.describe("what RESTORED waits for", () => {
       await page.getByTestId("restored-finish-without-platform").click();
       await unlockIfLocked(page);
       await expect(page.getByTestId("restored-state-problem")).toHaveText(
-        "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: testnet did not open without Platform: fixture",
+        "DashPay Desktop couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: testnet did not open without Platform: fixture",
       );
       await expect(page.getByTestId("restored-banner")).toBeVisible();
       await expect(page.getByTestId("restored-waiting-platformPass")).toBeVisible();
@@ -310,9 +310,9 @@ test.describe("what RESTORED waits for", () => {
       await expect(page.getByTestId("restored-state")).toBeVisible();
       await expect(page.getByTestId("restored-banner")).toHaveCount(0);
       await expect(page.getByTestId("restored-platform-only")).toHaveText(
-        "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+        "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until DashPay Desktop has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
       );
-      await expect(page.getByTestId("restored-waiting-platformPass")).toHaveText("Waiting for Dash Wallet's first check with Dash Platform.");
+      await expect(page.getByTestId("restored-waiting-platformPass")).toHaveText("Waiting for DashPay Desktop's first check with Dash Platform.");
       await expect(page.getByTestId("restored-retry")).toBeEnabled();
       await expect(page.getByTestId("restored-report")).toBeEnabled();
       await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
@@ -324,7 +324,7 @@ test.describe("what RESTORED waits for", () => {
     const errors = trackPageErrors(page);
     await page.goto(fixtureUrl("restored-finish-busy", "light"));
     await page.getByTestId("restored-finish-without-platform").click();
-    await expect(page.getByTestId("restored-state-problem")).toHaveText("Wait for username registration to finish before Dash Wallet can reopen without Dash Platform.");
+    await expect(page.getByTestId("restored-state-problem")).toHaveText("Wait for username registration to finish before DashPay Desktop can reopen without Dash Platform.");
     await expect(page.getByTestId("restored-banner")).toBeVisible();
     await expect(page.getByTestId("lock-screen")).toHaveCount(0);
     await expect(page.getByTestId("restored-finish-without-platform")).toBeEnabled();
@@ -336,7 +336,7 @@ test.describe("what RESTORED waits for", () => {
     test(`a history that failed to load names the wallet, with Report a problem only (${theme})`, async ({ page }) => {
       await page.goto(fixtureUrl("restored-status-history-failed", theme));
       await expect(page.getByTestId("restored-history-failed")).toHaveText(
-        "Dash Wallet couldn't load the history of Main, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
+        "DashPay Desktop couldn't load the history of Main, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
       );
       await expect(page.getByTestId("restored-retry")).toHaveCount(0);
       await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);

@@ -8,9 +8,9 @@ export const contacts = {
   unlock: "Unlock",
   unverified: "Unverified",
   /** Beside Accept when the requester's profile is not verified yet (H-09); Accept stays on. */
-  unverifiedAccept: "Dash Wallet can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.",
+  unverifiedAccept: "DashPay Desktop can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.",
   /** Beside Send Contact Request when the user's profile is not verified yet (H-09); Send stays on. */
-  unverifiedSend: "Dash Wallet can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.",
+  unverifiedSend: "DashPay Desktop can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.",
   joinDashPay: "Join DashPay",
   searching: "Searching…",
   searchFailed: "Could not search the Dash network.",

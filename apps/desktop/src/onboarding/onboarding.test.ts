@@ -216,7 +216,7 @@ describe("onboarding view model: create", () => {
     model.confirmWrittenDown();
     await solve(model);
     expect(model.failure).toBe(
-      "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
+      "DashPay Desktop could not read or write its data folder. Check that the disk has free space, then try again or restart DashPay Desktop.",
     );
   });
 
@@ -722,7 +722,7 @@ describe("onboarding view model: restore", () => {
 
 describe("failureText: Close Wallet and the network close (DEC-1046)", () => {
   it("names an unresolved shielded payment, and shows a wallet still opening in the engine's words", () => {
-    expect(failureText(appError("shielded_spend_unresolved"))).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    expect(failureText(appError("shielded_spend_unresolved"))).toBe("DashPay Desktop doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit DashPay Desktop.");
     expect(failureText({ code: "wallet", message: "a wallet is still opening; close the network once it is open", data: null })).toBe("A wallet is still opening; close the network once it is open.");
     // Any other `wallet` failure stays generic: the code is shared.
     expect(failureText({ code: "wallet", message: "disk full", data: null })).toBe("Something went wrong (wallet).");
@@ -730,7 +730,7 @@ describe("failureText: Close Wallet and the network close (DEC-1046)", () => {
 
   it("says a storage failure is the data folder's, and how to get past it", () => {
     expect(failureText(appError("storage"))).toBe(
-      "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
+      "DashPay Desktop could not read or write its data folder. Check that the disk has free space, then try again or restart DashPay Desktop.",
     );
   });
 });

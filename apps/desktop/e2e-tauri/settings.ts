@@ -53,7 +53,7 @@ function run(cmd: string, args: string[]): string {
 /** A menu shortcut through the X server (the menu bar owns it); the keys are always released. */
 function shortcut(keys: string) {
   try {
-    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^Dash Wallet", "windowfocus", "key", "--clearmodifiers", keys]);
+    run("xdotool", ["search", "--sync", "--onlyvisible", "--name", "^DashPay Desktop", "windowfocus", "key", "--clearmodifiers", keys]);
   } finally {
     run("xdotool", ["keyup", keys]);
   }

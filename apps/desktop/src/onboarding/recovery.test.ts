@@ -111,7 +111,7 @@ describe("recovery phrase view model", () => {
     expect(model.step).toBe("confirm");
     expect(w.revoked).toEqual(["grant-1"]);
     expect(model.error).toBe(
-      "Dash Wallet could not read or write its data folder. Check that the disk has free space, then try again or restart Dash Wallet.",
+      "DashPay Desktop could not read or write its data folder. Check that the disk has free space, then try again or restart DashPay Desktop.",
     );
   });
 

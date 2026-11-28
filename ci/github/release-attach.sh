@@ -32,7 +32,7 @@
 # Layout expected in --sigs-dir (mirroring dashpay/dash-detached-sigs):
 #   unsigned.SHA256SUMS                                    # binds sigs to the exact unsigned CI build
 #   win/dash-wallet-<ver>-windows-x64-setup.exe.pem        # osslsigncode detached PEM signature
-#   osx/Dash Wallet.app/manifest.json (+ .cs, CodeResources) # macos-detached-sig.py payload
+#   osx/DashPay Desktop.app/manifest.json (+ .cs, CodeResources) # macos-detached-sig.py payload
 #   updater/latest.json                                    # signed with local stable updater key
 #   SHA256SUMS                                             # final hashes of all 9 release files
 #   SHA256SUMS.asc                                         # detached armored PGP signature over SHA256SUMS
@@ -244,35 +244,35 @@ osslsigncode "${verify_args[@]}"
 
 # 4. macOS .app: extract unsigned .app, attach detached signatures, verify, pack deterministic .app.tar.gz.
 mac_unsigned_tar="$unsigned_dir/dash-wallet-$version-macos-unsigned.tar.gz"
-mac_sigs="$sigs_dir/osx/Dash Wallet.app"
+mac_sigs="$sigs_dir/osx/DashPay Desktop.app"
 [[ -f "$mac_unsigned_tar" ]] || die "missing unsigned macOS app archive $mac_unsigned_tar"
 [[ -f "$mac_sigs/manifest.json" ]] || die "missing macOS detached signatures $mac_sigs/manifest.json"
 
 mkdir -p "$work/mac-unsigned" "$work/mac-signed"
 tar -xzf "$mac_unsigned_tar" -C "$work/mac-unsigned"
-[[ -d "$work/mac-unsigned/Dash Wallet.app" ]] || die "$mac_unsigned_tar did not contain Dash Wallet.app"
+[[ -d "$work/mac-unsigned/DashPay Desktop.app" ]] || die "$mac_unsigned_tar did not contain DashPay Desktop.app"
 
-echo "release-attach: applying detached macOS signatures to Dash Wallet.app"
-python3 "$here/macos-detached-sig.py" apply "$work/mac-unsigned/Dash Wallet.app" "$mac_sigs" "$work/mac-signed/Dash Wallet.app"
-python3 "$here/macos-detached-sig.py" verify-signed "$work/mac-signed/Dash Wallet.app"
+echo "release-attach: applying detached macOS signatures to DashPay Desktop.app"
+python3 "$here/macos-detached-sig.py" apply "$work/mac-unsigned/DashPay Desktop.app" "$mac_sigs" "$work/mac-signed/DashPay Desktop.app"
+python3 "$here/macos-detached-sig.py" verify-signed "$work/mac-signed/DashPay Desktop.app"
 
 # Pin both Apple Developer ID Application cert type (OIDs 1.2.840.113635.100.6.2.6 + .6.1.13) and Team ID.
 apple_req="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"$apple_team_id\""
 if [[ "$(uname -s)" == Darwin ]]; then
   echo "release-attach: verifying macOS codesign (Developer ID, Team ID $apple_team_id), Gatekeeper (spctl), and notarization staple"
-  codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$work/mac-signed/Dash Wallet.app"
-  spctl --assess --type execute -vv "$work/mac-signed/Dash Wallet.app"
-  xcrun stapler validate "$work/mac-signed/Dash Wallet.app"
+  codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$work/mac-signed/DashPay Desktop.app"
+  spctl --assess --type execute -vv "$work/mac-signed/DashPay Desktop.app"
+  xcrun stapler validate "$work/mac-signed/DashPay Desktop.app"
 else
   echo "release-attach: WARNING: skipping macOS codesign/spctl/stapler/.dmg mount verification (--allow-non-darwin)" >&2
 fi
 
 if ((!rc)); then
   mac_app_tar="$feed_out/dash-wallet-$version-macos-universal.app.tar.gz"
-  python3 "$here/macos-detached-sig.py" pack-app "$work/mac-signed/Dash Wallet.app" "$mac_app_tar"
+  python3 "$here/macos-detached-sig.py" pack-app "$work/mac-signed/DashPay Desktop.app" "$mac_app_tar"
 fi
 
-# 5. macOS .dmg: verify signed .dmg Developer ID cert + Team ID, spctl primary-signature, staple, exact top-level layout, and interior Dash Wallet.app.
+# 5. macOS .dmg: verify signed .dmg Developer ID cert + Team ID, spctl primary-signature, staple, exact top-level layout, and interior DashPay Desktop.app.
 dmg_name="dash-wallet-$version-macos-universal.dmg"
 if [[ "$(uname -s)" == Darwin ]]; then
   echo "release-attach: verifying $dmg_name signature (Developer ID, Team ID $apple_team_id), spctl primary-signature, staple, top-level layout, and interior .app"
@@ -282,8 +282,8 @@ if [[ "$(uname -s)" == Darwin ]]; then
   dmg_mnt="$work/dmg-mnt"
   mkdir -p "$dmg_mnt"
   hdiutil attach "$signed_dmg" -mountpoint "$dmg_mnt" -nobrowse -readonly >/dev/null
-  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$dmg_mnt" "$work/mac-signed/Dash Wallet.app"
-  codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$dmg_mnt/Dash Wallet.app"
+  python3 "$here/macos-detached-sig.py" verify-dmg-layout "$dmg_mnt" "$work/mac-signed/DashPay Desktop.app"
+  codesign --verify --deep --strict --verbose=2 -R="$apple_req" "$dmg_mnt/DashPay Desktop.app"
   hdiutil detach "$dmg_mnt" >/dev/null
   dmg_mnt=
 fi

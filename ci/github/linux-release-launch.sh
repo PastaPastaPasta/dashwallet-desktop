@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GitHub Actions (release.yml): launch the built Linux AppImage under Xvfb and a private D-Bus
 # session, wait, screenshot the whole screen, and fail if the process dies first or no window
-# titled "Dash Wallet" ever appears.
+# titled "DashPay Desktop" ever appears.
 #
 #   ci/github/linux-release-launch.sh APPIMAGE OUT_DIR SECONDS [APP ARGS...]
 #
@@ -40,7 +40,7 @@ window=""
 for _ in $(seq "$seconds"); do
   sleep 1
   kill -0 "$pid" 2>/dev/null || break
-  window=$(xwininfo -root -tree | grep -c '"Dash Wallet' || true)
+  window=$(xwininfo -root -tree | grep -c '"DashPay Desktop' || true)
   [[ "$window" -gt 0 ]] && break
   window=""
 done
@@ -54,7 +54,7 @@ if ! kill -0 "$pid" 2>/dev/null; then
   echo "::error::dash-wallet exited early with status $code"
   status=1
 elif [[ -z "$window" ]]; then
-  echo "::error::dash-wallet shows no \"Dash Wallet\" window after ${seconds}s"
+  echo "::error::dash-wallet shows no \"DashPay Desktop\" window after ${seconds}s"
   import -window root "$out/launch-linux.png" || true
   status=1
 else

@@ -100,7 +100,7 @@ sign_args=(
   -pkcs11cert "$pkcs11_cert"
   -key "$pkcs11_key"
   -h sha256
-  -n "Dash Wallet"
+  -n "DashPay Desktop"
   -i "https://github.com/PastaPastaPasta/dashwallet-desktop"
   -ts "$tsa_url"
   -askpass

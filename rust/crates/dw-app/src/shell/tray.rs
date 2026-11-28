@@ -40,7 +40,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         }));
     }
     let mut tray = TrayIconBuilder::with_id("main")
-        .tooltip("Dash Wallet")
+        .tooltip("DashPay Desktop")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {

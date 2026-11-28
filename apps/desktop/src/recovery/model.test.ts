@@ -191,7 +191,7 @@ describe("unfinished transfers card: refused transfers to Shielded (#402)", () =
     expect(C.recoverConfirm.body("0.3 DASH")).toBe("Move the 0.3 DASH left on this transfer to your Platform balance? Platform's fee comes out of this amount.");
     expect([C.recoverConfirm.confirm, C.recoverConfirm.cancel]).toEqual(["Recover", "Cancel"]);
     expect(C.sheet.recoverTooSmall("0.0004 DASH")).toBe("The 0.0004 DASH left on this transfer is less than Platform's fee for moving it, so it can't be recovered.");
-    expect(C.sheet.recoverFailed).toBe("Dash Wallet couldn't recover this value. It's still listed here, and you can try again.");
+    expect(C.sheet.recoverFailed).toBe("DashPay Desktop couldn't recover this value. It's still listed here, and you can try again.");
   });
 });
 
@@ -505,7 +505,7 @@ describe("RecoveryModel recover (#402)", () => {
       expect(model.results.has(lockKey(one))).toBe(false);
       expect(model.state).toEqual({ kind: "done", text });
     }
-    expect(C.sheet.recoverChecking).toBe("Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
+    expect(C.sheet.recoverChecking).toBe("DashPay Desktop can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
     expect(C.sheet.recoverOff).toBe("This version can recover what's left of a refused transfer on test networks only.");
   });
 

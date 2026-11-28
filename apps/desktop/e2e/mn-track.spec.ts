@@ -103,7 +103,7 @@ test("remove an added voting key: it asks first, then it leaves Keys you added a
   await page.getByTestId("mn-key-remove-voting").click();
   const confirm = page.getByTestId("mn-remove-key-sheet");
   await expect(confirm).toContainText("Remove the voting key?");
-  await expect(confirm).toContainText("This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.");
+  await expect(confirm).toContainText("This deletes it from DashPay Desktop on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.");
   // Nothing is deleted before Confirm, and Cancel keeps the key.
   expect(await detaches()).toBe(0);
   await confirm.getByRole("button", { name: "Cancel" }).click();
@@ -139,7 +139,7 @@ test("Stop tracking warns that any added keys go while they can't be read", asyn
   await page.getByTestId("mn-more").click();
   await page.getByTestId("mn-more-untrack").click();
   await expect(page.getByTestId("mn-untrack-keys")).toHaveText(
-    "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+    "Any keys you added for it are deleted from DashPay Desktop on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
   );
   expect(errors).toEqual([]);
 });

@@ -166,7 +166,7 @@ fn write_zip(
         }
     }
     let mut manifest = format!(
-        "Dash Wallet log export\nversion: {version}\nos: {} {}\ndata directory: {}\n\nincluded ({}):\n",
+        "DashPay Desktop log export\nversion: {version}\nos: {} {}\ndata directory: {}\n\nincluded ({}):\n",
         std::env::consts::OS,
         std::env::consts::ARCH,
         data_root.display(),

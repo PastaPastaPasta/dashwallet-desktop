@@ -319,11 +319,11 @@ describe("shielded refusal copy", () => {
   });
 
   it("says why Shielded stays closed, by the engine's reason", () => {
-    expect(text("shielded.store_closed", { kind: "reason", reason: "in_use" })).toMatch(/^Another program, possibly another copy of Dash Wallet, is using your Shielded data/);
-    expect(text("shielded.store_closed", { kind: "reason", reason: "damaged" })).toMatch(/^Dash Wallet couldn't read your Shielded data from before the upgrade/);
-    expect(text("shielded.store_closed", { kind: "reason", reason: "no_upgrade_copy" })).toMatch(/^Dash Wallet has no backup of your Shielded data/);
+    expect(text("shielded.store_closed", { kind: "reason", reason: "in_use" })).toMatch(/^Another program, possibly another copy of DashPay Desktop, is using your Shielded data/);
+    expect(text("shielded.store_closed", { kind: "reason", reason: "damaged" })).toMatch(/^DashPay Desktop couldn't read your Shielded data from before the upgrade/);
+    expect(text("shielded.store_closed", { kind: "reason", reason: "no_upgrade_copy" })).toMatch(/^DashPay Desktop has no backup of your Shielded data/);
     const failed = text("shielded.store_closed", { kind: "reason", reason: "failed" });
-    expect(failed).toMatch(/^Dash Wallet couldn't move your Shielded data to this version, so it didn't open Shielded\. /);
+    expect(failed).toMatch(/^DashPay Desktop couldn't move your Shielded data to this version, so it didn't open Shielded\. /);
     expect(text("shielded.store_closed", { kind: "reason", reason: "later" })).toBe(failed);
     expect(text("shielded.store_closed")).toBe(failed);
   });
@@ -343,7 +343,7 @@ describe("shielded refusal copy", () => {
     await flow.run(GRANT);
     expect([flow.step, shieldedCanChange(flow.error)]).toEqual(["refused", false]);
     const words = shieldedErrorText(flow.error, credits, duffs, flow.kind);
-    expect(words).toBe("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
+    expect(words).toBe("This move may still go through. Until DashPay Desktop knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
     expect(words).not.toMatch(/try(ing)? again/i);
   });
 

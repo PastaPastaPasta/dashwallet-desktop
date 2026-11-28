@@ -187,14 +187,14 @@ pub const ITEMS: &[Item] = &[
     // Help (the app menu on macOS)
     item(
         "help.about",
-        "About Dash Wallet",
+        "About DashPay Desktop",
         None,
         Action::Shell(ShellCommand::About),
     ),
     // Tray
     item(
         "tray.toggle",
-        "Show or Hide Dash Wallet",
+        "Show or Hide DashPay Desktop",
         None,
         Action::ToggleWindow,
     ),
@@ -207,7 +207,7 @@ pub const ITEMS: &[Item] = &[
         None,
         Action::Shell(ShellCommand::Lock),
     ),
-    item("tray.quit", "Quit Dash Wallet", None, Action::Quit),
+    item("tray.quit", "Quit DashPay Desktop", None, Action::Quit),
 ];
 
 /// The row of `id`.
@@ -276,7 +276,7 @@ fn bar(mac: bool) -> Vec<(&'static str, Vec<Entry>)> {
     let mut menus = Vec::new();
     if mac {
         menus.push((
-            "Dash Wallet",
+            "DashPay Desktop",
             vec![
                 Item("help.about"),
                 Separator,

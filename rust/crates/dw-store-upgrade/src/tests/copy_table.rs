@@ -16,17 +16,16 @@ use crate::error::StoreUpgradeError;
 use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
 use crate::restore::{IncompleteCause, RefusalCause};
 
-const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
+const FOLDER: &str = "/home/u/.local/share/DashPay Desktop/regtest";
 
 /// MG's strings, verbatim from the final copy.
-const TITLE: &str = "Dash Wallet can't open this wallet data safely";
-const INTRO: &str = "This version of Dash Wallet can't safely open the wallet data in {folder}";
-const UNCHANGED: &str = "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
-const CHANGED: &str = "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const TITLE: &str = "DashPay Desktop can't open this wallet data safely";
+const INTRO: &str = "This version of DashPay Desktop can't safely open the wallet data in {folder}";
+const UNCHANGED: &str = "DashPay Desktop didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const CHANGED: &str = "DashPay Desktop had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const KEEP: &str = "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const HINT: &str = "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.";
-const EARLIER: &str =
-    "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded.";
+const EARLIER: &str = "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded.";
 const L9: &str = "If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.";
 
 fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
@@ -34,7 +33,7 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
     match cause {
         ForkUnsupported => (
             "forkUnsupported",
-            "it was written by a version of Dash Wallet that this one can't upgrade from.",
+            "it was written by a version of DashPay Desktop that this one can't upgrade from.",
         ),
         ShapeMismatch => (
             "shapeMismatch",
@@ -42,19 +41,19 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
         ),
         RehearsalFailed => (
             "rehearsalFailed",
-            "a trial upgrade on a copy of it failed, so Dash Wallet left the real data as it was.",
+            "a trial upgrade on a copy of it failed, so DashPay Desktop left the real data as it was.",
         ),
         DevBuild => (
             "devBuild",
-            "it was written by a development build of Dash Wallet.",
+            "it was written by a development build of DashPay Desktop.",
         ),
         TooNew => (
             "tooNew",
-            "it was written by a newer version of Dash Wallet.",
+            "it was written by a newer version of DashPay Desktop.",
         ),
         HistoryMismatch => (
             "historyMismatch",
-            "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+            "its upgrade history doesn't match any released version of DashPay Desktop, so this version can't tell what it contains.",
         ),
         ContactsTable => (
             "contactsTable",
@@ -62,7 +61,7 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
         ),
         SelfCheck => (
             "selfCheck",
-            "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+            "a check DashPay Desktop runs on itself before it opens any wallet data didn't pass.",
         ),
         Damaged => (
             "damaged",
@@ -77,12 +76,12 @@ fn way_out(w: WayOut) -> (&'static str, String) {
         WayOut::Previous => (
             "previous",
             format!(
-                "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. {L9}"
+                "Close this version and keep using, or reinstall, the version of DashPay Desktop you used before. {L9}"
             ),
         ),
         WayOut::Newer => (
             "newer",
-            "Install that version of Dash Wallet, or a later one, to open it. Don't open it with an earlier version.".into(),
+            "Install that version of DashPay Desktop, or a later one, to open it. Don't open it with an earlier version.".into(),
         ),
         WayOut::Restore => (
             "restore",
@@ -93,7 +92,7 @@ fn way_out(w: WayOut) -> (&'static str, String) {
         WayOut::Unverified => (
             "unverified",
             format!(
-                "{EARLIER} A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem."
+                "{EARLIER} A backup from before the upgrade exists, but it doesn't check out, so DashPay Desktop won't restore from it. Choose Report a problem."
             ),
         ),
         WayOut::Support => ("support", "Choose Report a problem.".into()),
@@ -104,16 +103,16 @@ fn way_out(w: WayOut) -> (&'static str, String) {
         WayOut::SelfCheckNotMigrated => (
             "selfCheckNotMigrated",
             format!(
-                "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. {L9}"
+                "Quit DashPay Desktop and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of DashPay Desktop, or keep using the version you used before. {L9}"
             ),
         ),
         WayOut::SelfCheck => (
             "selfCheck",
-            "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.".into(),
+            "Quit DashPay Desktop and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of DashPay Desktop. Until then, don't open this wallet data with an earlier version.".into(),
         ),
         WayOut::Damaged => (
             "damaged",
-            "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.".into(),
+            "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. DashPay Desktop leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.".into(),
         ),
     }
 }
@@ -285,7 +284,7 @@ fn previous_carries_the_l9_sentence_verbatim() {
             assert!(
                 !w.line()
                     .text
-                    .contains("version of Dash Wallet you used before")
+                    .contains("version of DashPay Desktop you used before")
             );
         }
     }
@@ -672,7 +671,7 @@ fn a_migrated_file_never_offers_the_earlier_version() {
     assert_eq!(s.way_out, WayOut::Restore, "migrated, backup verified");
     assert!(
         !s.text(FOLDER)
-            .contains("version of Dash Wallet you used before")
+            .contains("version of DashPay Desktop you used before")
     );
 
     let contacts = RefusedScreen::new(
@@ -960,8 +959,8 @@ fn a_part_upgraded_file_never_offers_the_earlier_version() {
 }
 
 /// MG's text for the start that stopped on the machine.
-const RETRY_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
-const RETRY_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";
+const RETRY_TITLE: &str = "DashPay Desktop couldn't finish upgrading your wallet data";
+const RETRY_TEXT: &str = "The disk is full, or DashPay Desktop couldn't write to it. Free up some space, then quit DashPay Desktop and open it again. Until then, don't open this wallet data with an earlier version.";
 
 pub(super) fn assert_retry_copy(s: &ScreenCopy) {
     assert_eq!(
@@ -989,7 +988,7 @@ pub(super) fn assert_retry_copy(s: &ScreenCopy) {
     );
     assert!(
         !s.render(FOLDER)
-            .contains("version of Dash Wallet you used before")
+            .contains("version of DashPay Desktop you used before")
     );
 }
 
@@ -1063,14 +1062,14 @@ fn the_notices_carry_mg_s_final_text() {
         crate::copy::notice_line(UpgradeNotice::SnapshotDamaged),
         crate::copy::Line {
             key: "storeUpgrade.notice.snapshotDamaged",
-            text: "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+            text: "DashPay Desktop upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
         }
     );
     assert_eq!(
         crate::copy::notice_line(UpgradeNotice::SnapshotOther),
         crate::copy::Line {
             key: "storeUpgrade.notice.snapshotOther",
-            text: "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+            text: "DashPay Desktop upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
         }
     );
     assert!(crate::copy::PENDING_MG.is_empty());
@@ -1122,7 +1121,7 @@ pub(super) fn assert_damaged_screen(e: &StoreUpgradeError, state: ProvedState) {
     let text = s.text(FOLDER);
     assert!(!text.contains(L9), "{at}");
     assert!(
-        !text.contains("version of Dash Wallet you used before"),
+        !text.contains("version of DashPay Desktop you used before"),
         "{at}"
     );
     assert!(!text.contains("Restore earlier data"), "{at}");

@@ -25,8 +25,8 @@ vi.mock("react", async (importOriginal) => {
 afterEach(() => ui.set({ theme: null, prefs: DEFAULT_PREFS }));
 
 const W = en.onboarding.welcome;
-const RESTORE_ONLY = "Your earlier wallet data couldn't be read, so Dash Wallet started with a new data folder. Enter a recovery phrase to set up a wallet again.";
-const RESTORE_ONLY_ADD = "Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase. The other ways to add a wallet come back after that.";
+const RESTORE_ONLY = "Your earlier wallet data couldn't be read, so DashPay Desktop started with a new data folder. Enter a recovery phrase to set up a wallet again.";
+const RESTORE_ONLY_ADD = "Until DashPay Desktop has finished its first sync, you can only add a wallet from its recovery phrase. The other ways to add a wallet come back after that.";
 
 const escaped = (text: string) => text.replace(/&/g, "&amp;").replace(/'/g, "&#x27;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -70,7 +70,7 @@ describe("the restore-only Welcome (Q107 C1)", () => {
 
   it("a refused way in says nothing was added and why, in MG's words", () => {
     expect(failureText({ code: "restore_only", message: "x", data: null })).toBe(
-      "Nothing was added. Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.",
+      "Nothing was added. Until DashPay Desktop has finished its first sync, you can only add a wallet from its recovery phrase.",
     );
   });
 

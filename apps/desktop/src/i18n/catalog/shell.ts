@@ -70,7 +70,7 @@ export const shell = {
       unlock: "Unlock to sync",
       unlockFully: "Unlock fully to sync",
       watchOnly: "Not available in a watch-only wallet",
-      platformIncomplete: "Didn't finish. It tries again the next time you start Dash Wallet.",
+      platformIncomplete: "Didn't finish. It tries again the next time you start DashPay Desktop.",
       /** A failed Shielded or Platform-address pass: the next one retries it. */
       shieldedIncomplete: "The last pass failed. It tries again shortly.",
       unread: "Couldn't check this sync. It tries again shortly.",

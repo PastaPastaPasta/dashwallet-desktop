@@ -8,7 +8,7 @@ same word, and they note that word here under the language's section when the ca
 |---|---|---|
 | Dash | yes | The cryptocurrency and its network. Never translated, never inflected. |
 | DASH, mDASH, μDASH, duffs | yes | Units of Dash: 1 DASH = 1,000 mDASH = 1,000,000 μDASH = 100,000,000 duffs. |
-| Dash Wallet | yes | This app's name. |
+| DashPay Desktop | yes | This app's name. |
 | DashPay | yes | Dash's social layer: usernames, contacts and payments to contacts. |
 | CoinJoin | yes | Dash's coin mixing, which makes a wallet's coins harder to trace. |
 | InstantSend | yes | Dash's near-instant, locked confirmation of a payment. |

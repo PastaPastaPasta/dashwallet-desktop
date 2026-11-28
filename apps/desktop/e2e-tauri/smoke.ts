@@ -53,7 +53,7 @@ function refusedLaunch(dataRoot: string, link: string, bus: Record<string, strin
   if (!("DBUS_SESSION_BUS_ADDRESS" in bus)) delete env.DBUS_SESSION_BUS_ADDRESS;
   const r = spawnSync(APP, ["--datadir", dataRoot, link], { encoding: "utf8", env, timeout: 60_000, killSignal: "SIGKILL" });
   const tail = r.error?.message ?? r.stderr.slice(-600);
-  if (r.status !== 1 || !r.stderr.includes("another Dash Wallet is already running"))
+  if (r.status !== 1 || !r.stderr.includes("another DashPay Desktop is already running"))
     throw new Error(`the second launch was not refused at the instance lock (status ${r.status}): ${tail}`);
   if (r.stderr.includes("panicked")) throw new Error(`the second launch panicked: ${tail}`);
   if (!r.stderr.includes("no D-Bus session bus")) throw new Error(`the missing bus was not logged: ${tail}`);

@@ -144,7 +144,7 @@ test.describe("A held move or contact payment from Platform: Cancel", () => {
       await page.getByTestId("source-detail-cancel").click();
       await expect(page.getByTestId("platform-cancel-confirm")).toContainText("Cancel this move?");
       await expect(page.getByTestId("platform-cancel-body")).toHaveText(
-        "Dash Wallet can't tell yet whether this move of 0.40000000 tDASH to your Dash wallet will go through. Cancelling uses the same Platform funds to send to your own Platform address instead, so only one of the two can go through. If the cancel goes through, the amount stays in your Platform balance, minus a fee of about 0.00006500 tDASH.",
+        "DashPay Desktop can't tell yet whether this move of 0.40000000 tDASH to your Dash wallet will go through. Cancelling uses the same Platform funds to send to your own Platform address instead, so only one of the two can go through. If the cancel goes through, the amount stays in your Platform balance, minus a fee of about 0.00006500 tDASH.",
       );
       expect(await seriousAxeViolations(page)).toEqual([]);
       await page.getByTestId("platform-cancel-dismiss").click();
@@ -187,7 +187,7 @@ test.describe("A held move or contact payment from Platform: Cancel", () => {
     await page.getByTestId("platform-cancel-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-cancel-outcome")).toHaveAttribute("data-result", "pending");
-    await expect(page.getByTestId("platform-cancel-outcome")).toContainText("Cancelling. Dash Wallet is waiting for Dash Platform to confirm which one went through.");
+    await expect(page.getByTestId("platform-cancel-outcome")).toContainText("Cancelling. DashPay Desktop is waiting for Dash Platform to confirm which one went through.");
   });
 
   test("a held contact payment's Cancel names the contact, and the cancel pays no one", async ({ page }) => {

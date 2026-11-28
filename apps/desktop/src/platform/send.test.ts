@@ -335,7 +335,7 @@ describe("Pay from Platform", () => {
 
     it("never says a payment went through when its group names no winner", () => {
       const credits = (c: string) => `${c} credits`;
-      const copy = { title: "Settled with another payment or move", text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid." };
+      const copy = { title: "Settled with another payment or move", text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Before paying again, check whether the recipient was paid." };
       expect(settledBy(unsettled, [row("ps-1", { state: "done", mayLand: false, winnerKnown: false })])).toBe("unknown");
       expect(settledBy(unsettled, [row("ps-1", { state: "replaced", mayLand: false, winnerKnown: false })])).toBe("unknown");
       expect(sendOutcomeCopy({ ...OUTCOME, winnerKnown: false }, credits, null, false)).toEqual(copy);

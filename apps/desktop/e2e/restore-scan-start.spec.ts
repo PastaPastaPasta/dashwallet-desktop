@@ -95,7 +95,7 @@ test("a restore from the first block warns that it is slow, and a missing date i
   const errors = await restoreOptions(page);
   const slow = page.getByTestId("restore-first-block-slow");
   await expect(slow).toHaveText(
-    "This can take a long time. If this recovery phrase belongs to a watch-only wallet already in Dash Wallet, sending from that wallet is unavailable until the scan finishes.",
+    "This can take a long time. If this recovery phrase belongs to a watch-only wallet already in DashPay Desktop, sending from that wallet is unavailable until the scan finishes.",
   );
   await page.getByTestId("restore-scan-height").check();
   await page.getByTestId("restore-height").fill("1200");

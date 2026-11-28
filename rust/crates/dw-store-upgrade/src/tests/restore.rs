@@ -1424,7 +1424,7 @@ fn restore_confirm_copy_is_verbatim_and_cancel_has_default_focus() {
     assert_eq!(c.title_key, "storeUpgrade.restore.confirm.title");
     assert_eq!(c.title, "Restore wallet data from before the upgrade?");
     assert!(c.text.starts_with(
-        "Dash Wallet restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. "
+        "DashPay Desktop restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. "
     ));
     assert!(c.text.contains(&format!(
         "kept in the {UPGRADE_BACKUPS_DIR} folder inside {{folder}}. Don't delete it"
@@ -1433,7 +1433,7 @@ fn restore_confirm_copy_is_verbatim_and_cancel_has_default_focus() {
         "An earlier version may offer coins this version is holding back, and a payment that uses them can fail.\n\n"
     ));
     assert!(c.text.ends_with(
-        "\n\nIf Dash Wallet closes before the restore finishes, start this version again before you open an earlier one."
+        "\n\nIf DashPay Desktop closes before the restore finishes, start this version again before you open an earlier one."
     ));
     let [restore, cancel] = &c.buttons[..] else {
         panic!("two buttons")

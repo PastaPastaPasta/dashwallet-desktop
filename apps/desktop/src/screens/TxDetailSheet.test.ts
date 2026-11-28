@@ -50,10 +50,10 @@ describe("transaction detail status", () => {
 });
 
 describe("the abandon confirmation", () => {
-  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.";
-  const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
+  const OUTGOING = "Abandon this transaction? DashPay Desktop stops counting it, but it may still send it again while retries stop. For payments, unspent coins come back after retries stop and the rescan finishes. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. The original payment can still go through. Before paying again, check that it can no longer confirm. Using different coins could pay twice.";
+  const INCOMING = "Abandon this transaction? DashPay Desktop stops counting it. If it's locked or confirmed anyway, it counts again.";
   const UNKNOWN_INPUTS =
-    "Abandon this transaction? Dash Wallet stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If you sent this payment, check that it can no longer confirm before paying again. Using different coins could pay twice.";
+    "Abandon this transaction? DashPay Desktop stops counting it, but it may still send it again while retries stop. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. If the transaction is locked or confirmed anyway, it counts again. If you sent this payment, check that it can no longer confirm before paying again. Using different coins could pay twice.";
 
   it("warns about paying twice when the wallet spent inputs", () => {
     expect(abandonQuestion({ totalDebit: 50_000_226, inputsUnresolved: false })).toBe(OUTGOING);
@@ -83,7 +83,7 @@ describe("a refused abandon", () => {
   const refused = (refusal: string, message: string) => ({ code: "tx_action_refused", message, data: { kind: "txAction", refusal } });
 
   it("gives a rescanFirst refusal's steps from the catalog, not the engine's text", () => {
-    expect(actionProblem(refused("rescanFirst", "engine text"), "abandon")).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    expect(actionProblem(refused("rescanFirst", "engine text"), "abandon")).toBe("Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again.");
   });
 
   it("says an Abandon refused while the wallet catches up after a fork can be tried once it has", () => {
@@ -104,7 +104,7 @@ describe("a refused abandon", () => {
 
   it("says why a payment funding an unfinished Platform transfer can't be abandoned, from the catalog", () => {
     expect(actionProblem(refused("platformFunding", "engine text"), "abandon")).toBe(
-      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. DashPay Desktop sends it again until that finishes.",
     );
   });
 
@@ -112,10 +112,10 @@ describe("a refused abandon", () => {
     const unreadable = { ...refused("recordUnreadable", "engine text"), data: { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A } };
     const savings = summary(WALLET_A, "Savings");
     expect(actionProblem(unreadable, "abandon", [savings, summary("b2".repeat(32), "Spending")])).toBe(
-      "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+      "DashPay Desktop can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     );
     expect(actionProblem(unreadable, "abandon", [savings])).toBe(
-      "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Savings, and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed. You can remove the extra wallet afterwards.",
+      "DashPay Desktop can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Savings, and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed. You can remove the extra wallet afterwards.",
     );
   });
 

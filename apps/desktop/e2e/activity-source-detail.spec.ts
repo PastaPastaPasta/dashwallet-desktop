@@ -80,7 +80,7 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     test(`a group that names no winner says so on every row, its debit on the newest only (${theme})`, async ({ page }) => {
       const errors = await activity(page, "platform-settled-unknown", theme);
       const settled = "Settled with another payment or move";
-      const text = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.";
+      const text = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. DashPay Desktop can't tell which. Check your Platform balance and Dash wallet before moving again.";
       await expect(page.locator('button[data-txid$=":unknown"]')).toHaveCount(4);
       for (const id of ["pm-exit2", "pm-exit1", "pm-move", "pm-old"]) {
         const row = page.locator(`button[data-txid="platform:moveToCore:${id}:unknown"]`);
@@ -158,7 +158,7 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
       await refuse("failed", "released");
       await expect(page.getByTestId("source-detail-status")).toHaveText("Not accepted");
       await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
-      await expect(page.getByTestId("source-detail-refusal")).toHaveText("Dash Platform didn't accept this payment, and it can no longer go through, so Dash Wallet has stopped holding the Shielded funds it used. Any of those funds that another payment hasn't spent are spendable again.");
+      await expect(page.getByTestId("source-detail-refusal")).toHaveText("Dash Platform didn't accept this payment, and it can no longer go through, so DashPay Desktop has stopped holding the Shielded funds it used. Any of those funds that another payment hasn't spent are spendable again.");
       await page.keyboard.press("Escape");
       await expect(page.locator('button[data-txid="shielded:sent:sh-2"]')).toContainText("Not accepted");
       expect(errors).toEqual([]);

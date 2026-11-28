@@ -166,7 +166,7 @@ test.describe("item 8: closing a wallet that cannot close says why", () => {
 
   test("an unresolved shielded payment: the text names it, and the wallet stays open", async ({ page }) => {
     await closeB(page, "unresolved");
-    await expect(page.getByTestId("settings-wallets-error")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    await expect(page.getByTestId("settings-wallets-error")).toHaveText("DashPay Desktop doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit DashPay Desktop.");
     await expect(page.getByTestId(`settings-wallet-${SECOND_WALLET_ID.slice(0, 8)}-state`)).not.toHaveText("Closed");
   });
 

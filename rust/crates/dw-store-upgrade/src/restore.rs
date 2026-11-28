@@ -652,7 +652,7 @@ const MARK_CREATED: &str = "mark-created";
 const ATTEMPT_ID: &str = "ATTEMPT-ID";
 
 /// The text of [`SAFE_TO_DELETE`] (MG, Q93 §2).
-const SAFE_TO_DELETE_TEXT: &str = "This folder is an unfinished copy that Dash Wallet made while \
+const SAFE_TO_DELETE_TEXT: &str = "This folder is an unfinished copy that DashPay Desktop made while \
 trying to restore wallet data, and it couldn't remove it.\nYour wallet files are elsewhere in this \
 data folder, and this attempt didn't change them.\nYou can delete this folder. Don't delete \
 anything else in upgrade-backups: the other folders may hold the only record of recent payments.\n";

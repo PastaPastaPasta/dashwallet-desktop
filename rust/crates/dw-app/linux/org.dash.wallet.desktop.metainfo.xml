@@ -3,10 +3,10 @@
   <id>org.dash.wallet.desktop</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
-  <name>Dash Wallet</name>
+  <name>DashPay Desktop</name>
   <summary>The Dash wallet with DashPay</summary>
   <developer id="org.dash">
-    <name>Dash Wallet Desktop contributors</name>
+    <name>DashPay Desktop contributors</name>
   </developer>
   <description>
     <p>

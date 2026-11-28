@@ -477,7 +477,7 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
  * them unmarked. */
 const refusalMessage = (refusal: TxActionRefusalName) =>
   refusal === "rescanFirst"
-    ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+    ? "[fixture engine] Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again."
     : refusal === "recordUnreadable"
       ? "[fixture engine] A saved transaction of an open wallet can't be read."
       : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;

@@ -240,7 +240,7 @@ describe("sign and send copy", () => {
     const line = (lastError: string) => handoffLine({ ...sent, lastError }, () => "Pay's payment sentence: never used.");
     const cases: [string, string][] = [
       ["send.broadcast_unknown", "The wallet couldn't confirm the registration reached the network: the network didn't answer in time. It may still confirm."],
-      ["send.resend_in_progress", "The wallet couldn't confirm the registration reached the network: a resend was still in progress when Dash Wallet last closed. It may still confirm."],
+      ["send.resend_in_progress", "The wallet couldn't confirm the registration reached the network: a resend was still in progress when DashPay Desktop last closed. It may still confirm."],
       ["send.some_new_code", "The wallet couldn't confirm the registration reached the network: error send.some_new_code. It may still confirm."],
     ];
     for (const [code, text] of cases) {

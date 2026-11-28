@@ -141,7 +141,7 @@ describe("C3–C9: the invitation before a claim", () => {
       username: "bob",
       identity: BOB,
       avatarUrl: null,
-      line: "Dash Wallet checked that @bob is a DashPay username. It cannot check who sent you this link.",
+      line: "DashPay Desktop checked that @bob is a DashPay username. It cannot check who sent you this link.",
     });
     const all = JSON.stringify(m).toLowerCase();
     expect(all).not.toMatch(/verified|trusted/);

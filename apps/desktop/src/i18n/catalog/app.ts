@@ -7,17 +7,17 @@ export const app = {
   walletsFailed: "Could not load the wallets",
   /** The splash when the network cannot be opened. `error` is the engine's message. */
   openFailure: {
-    tooNew: "This wallet file was written by a newer version of Dash Wallet. Open it with that version; nothing was changed. ({error})",
-    failed: "Dash Wallet could not open the wallet: {error}",
+    tooNew: "This wallet file was written by a newer version of DashPay Desktop. Open it with that version; nothing was changed. ({error})",
+    failed: "DashPay Desktop could not open the wallet: {error}",
   },
   /** Instead of the wallet when the session before (a close, a network switch) still holds its data. */
   storageInUse: {
-    title: "Dash Wallet is still closing your wallet data",
-    text: "Dash Wallet hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Try again in a moment, or restart Dash Wallet to finish.",
+    title: "DashPay Desktop is still closing your wallet data",
+    text: "DashPay Desktop hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Try again in a moment, or restart DashPay Desktop to finish.",
     /** When trying again can't help until a restart. */
-    textRestartOnly: "Dash Wallet hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Restart Dash Wallet to finish.",
+    textRestartOnly: "DashPay Desktop hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Restart DashPay Desktop to finish.",
     tryAgain: "Try again",
-    restart: "Restart Dash Wallet",
+    restart: "Restart DashPay Desktop",
   },
   /** File ▸ Open URI… */
   openUri: {
@@ -26,7 +26,7 @@ export const app = {
     open: "Open",
   },
   about: {
-    title: "About Dash Wallet",
+    title: "About DashPay Desktop",
     version: "Version",
     engine: "Engine",
     network: "Network",
@@ -44,13 +44,13 @@ export const app = {
     /** `error` is the engine's message. */
     failed: "Could not open the link: {error}",
     whileWiping: "The link was not opened: close “Delete all wallet data?” first",
-    addressRequest: "Dash Wallet does not hand addresses to other apps",
+    addressRequest: "DashPay Desktop does not hand addresses to other apps",
     dashConnect: "DashConnect links are not supported",
     integration: "Exchange links are not supported",
     paymentRequest: "Payment requests (BIP70) are not supported",
-    notALink: "This is not a link Dash Wallet can open",
+    notALink: "This is not a link DashPay Desktop can open",
     tooLong: "This link is too long to open",
-    notSaved: "This invitation could not be saved. Open the link again once Dash Wallet has started",
+    notSaved: "This invitation could not be saved. Open the link again once DashPay Desktop has started",
     payment: {
       doubleSlash: "This payment link starts with dash:// — Dash links start with dash: alone",
       notDashUri: "This is not a Dash payment link",

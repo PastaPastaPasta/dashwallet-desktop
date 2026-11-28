@@ -41,7 +41,7 @@ test.describe("Shielded funds held for a payment that may still go through", () 
       const sheet = page.getByTestId("shielded-sheet");
       await expect(sheet).toBeVisible();
       await expect(page.getByTestId("shielded-held")).toContainText(
-        "is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+        "is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. DashPay Desktop keeps checking while it's open.",
       );
       await expect(sheet).not.toContainText(/try again/i);
       expect(await seriousAxeViolations(page)).toEqual([]);

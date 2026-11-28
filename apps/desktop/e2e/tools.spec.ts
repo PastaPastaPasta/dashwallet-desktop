@@ -185,7 +185,7 @@ test.describe("Repair", () => {
     await page.getByTestId("repair-drop-unconfirmed").click();
     await page.getByTestId("repair-confirm-ok").click();
     await expect(page.getByTestId("repair-outcome")).toHaveText(
-      "Dash Wallet can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+      "DashPay Desktop can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     );
   });
 
@@ -575,7 +575,7 @@ test.describe("Coin Selection", () => {
     const errors = await open(page, "restore-holds");
     await tools(page, "coinSelection");
     const held = page.getByTestId(`coin-${"4e".repeat(4)}-1`);
-    const line = "Dash Wallet can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.";
+    const line = "DashPay Desktop can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.";
     await expect(held.getByTitle(line, { exact: true })).toHaveText("Pending");
     await expect(held.locator("input[type=checkbox]")).toBeDisabled();
     await expect(held.locator("input[type=checkbox]")).toHaveAccessibleDescription(line);

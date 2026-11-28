@@ -81,7 +81,7 @@ describe("import a wallet file (D21)", () => {
     await model.run("wrong", "");
     expect(model.error).toBe("The passphrase does not open this backup.");
     await model.run(PASS, "");
-    expect(model.error).toBe("A wallet in this backup is already in Dash Wallet.");
+    expect(model.error).toBe("A wallet in this backup is already in DashPay Desktop.");
     const grant = await b.authorize({ kind: "wipe" }, A, { kind: "passphrase", passphrase: PASS });
     await b.removeWallet(A, grant.id);
     await model.run(PASS, "");
@@ -165,7 +165,7 @@ describe("import a wallet file (D21)", () => {
   it("plans a backup of an unknown network as a refusal", () => {
     expect(importPlan({ kind: "dwBackup", network: null, walletCount: 2, createdAt: 0, formatVersion: 9 }, "testnet")).toMatchObject({
       refusal: FilesText.otherNetwork("a network this version does not know"),
-      summary: "A Dash Wallet backup of 2 wallets.",
+      summary: "A DashPay Desktop backup of 2 wallets.",
     });
   });
 });
@@ -283,7 +283,7 @@ describe("export for Dash Core", () => {
 describe("Show Folder's refusals", () => {
   const err = (code: string) => ({ code, message: code, data: null });
   it("says there is no folder yet before the first automatic backup", () => {
-    expect(folderErrorText(err("app.backup_folder_missing"))).toBe("There's no backup folder yet. Dash Wallet creates it with the first automatic backup.");
+    expect(folderErrorText(err("app.backup_folder_missing"))).toBe("There's no backup folder yet. DashPay Desktop creates it with the first automatic backup.");
   });
   it("points to the path's copy button when the folder exists but won't open", () => {
     expect(folderErrorText(err("app.folder_open"))).toBe("The backup folder couldn't be opened. Copy its path and open it in your file manager.");

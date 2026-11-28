@@ -258,7 +258,7 @@ describe("the rows (D4, D5)", () => {
     expect(quorumRow("trusted", true)).toEqual({
       title: "Quorum keys",
       value: "Trusted service only (developer setting)",
-      note: "Dash Wallet's own checks are off. Payments to contacts rely on the Platform service's data without them.",
+      note: "DashPay Desktop's own checks are off. Payments to contacts rely on the Platform service's data without them.",
     });
     // The toggle unread is the default degraded mode, not the developer setting.
     expect(quorumRow("trusted", undefined).value).toBe("Trusted service (degraded mode)");

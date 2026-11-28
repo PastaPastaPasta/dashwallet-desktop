@@ -374,7 +374,7 @@ publish)
         flavour=(--latest=false)
       fi
       w gh release create "$tag" "${attest_files[@]}" --repo "$repo" --verify-tag \
-        ${flavour[@]+"${flavour[@]}"} --title "Dash Wallet Desktop $version" "${notes[@]}"
+        ${flavour[@]+"${flavour[@]}"} --title "DashPay Desktop $version" "${notes[@]}"
     fi
     exit 0
   fi

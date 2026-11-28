@@ -10,7 +10,7 @@ describe("the splash's open failure", () => {
     const f = openFailure({ code: "storage_too_new", message: "fork schema version 2", data: null });
     expect(f.kind).toBe("message");
     if (f.kind !== "message") return;
-    expect(f.text).toContain("written by a newer version of Dash Wallet");
+    expect(f.text).toContain("written by a newer version of DashPay Desktop");
     expect(f.text).not.toContain("backup");
     expect(f.text).toContain("(fork schema version 2)");
     expect(f.retry).toBe(false);
@@ -18,7 +18,7 @@ describe("the splash's open failure", () => {
 
   it("keeps the engine's text and the retry for anything else", () => {
     const f = openFailure({ code: "storage", message: "disk full", data: null });
-    expect(f).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: disk full", retry: true });
+    expect(f).toEqual({ kind: "message", text: "DashPay Desktop could not open the wallet: disk full", retry: true });
   });
 
   it("gives a store refusal its own screen, with the engine's screen", () => {
@@ -42,7 +42,7 @@ describe("the splash's open failure", () => {
   it("does not take a storage_restore without whole data for a restore screen, and offers no retry", () => {
     const whole = restoreFailure("incomplete:other", "/data");
     const broken = [null, { ...whole, kind: "storeRefused" }, { ...whole, state: "partial" }, { ...whole, cause: 3 }, { ...whole, folder: undefined }, { ...whole, neededBytes: "1" }, { ...whole, neededBytes: -1 }];
-    for (const data of broken) expect(openFailure({ code: "storage_restore", message: "stopped", data })).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: stopped", retry: false });
+    for (const data of broken) expect(openFailure({ code: "storage_restore", message: "stopped", data })).toEqual({ kind: "message", text: "DashPay Desktop could not open the wallet: stopped", retry: false });
     const { neededBytes: _, ...withoutBytes } = whole;
     expect(openFailure({ code: "storage_restore", message: "stopped", data: withoutBytes })).toEqual({ kind: "restore", restore: whole });
   });
@@ -50,7 +50,7 @@ describe("the splash's open failure", () => {
   it("gives an upgrade that stopped on the machine its own screen; without whole data, the engine's text and no retry", () => {
     expect(openFailure(storeRetryError("/data"))).toEqual({ kind: "retry", retry: { kind: "retry", folder: "/data" } });
     for (const data of [null, { kind: "retry" }, { kind: "retry", folder: 3 }, { kind: "restore", folder: "/data" }])
-      expect(openFailure({ code: "storage_retry", message: "stopped", data })).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: stopped", retry: false });
+      expect(openFailure({ code: "storage_retry", message: "stopped", data })).toEqual({ kind: "message", text: "DashPay Desktop could not open the wallet: stopped", retry: false });
   });
 
   it("does not take a storage_refused without its screen for a refusal", () => {
@@ -83,7 +83,7 @@ describe("the splash's open failure", () => {
     for (const data of broken)
       expect(openFailure({ code: "storage_not_private", message: "the data folder is not private", data })).toEqual({
         kind: "message",
-        text: "Dash Wallet could not open the wallet: the data folder is not private",
+        text: "DashPay Desktop could not open the wallet: the data folder is not private",
         retry: true,
       });
   });

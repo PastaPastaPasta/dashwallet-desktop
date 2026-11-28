@@ -173,7 +173,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     fixture.world.disconnectOutcome = "feeTooHigh";
     await model.openDisconnect(yappr);
     expect(model.quote).toBeNull();
-    expect(disconnectErrorText(model.quoteError)).toContain("higher than Dash Wallet's limit");
+    expect(disconnectErrorText(model.quoteError)).toContain("higher than DashPay Desktop's limit");
 
     // Low credits refusal at quote time.
     fixture.world.disconnectOutcome = "credits";
@@ -192,7 +192,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     await run;
 
     expect(model.disconnectError).not.toBeNull();
-    expect(disconnectErrorText(model.disconnectError)).toContain("Dash Wallet checks first, so you don't pay twice.");
+    expect(disconnectErrorText(model.disconnectError)).toContain("DashPay Desktop checks first, so you don't pay twice.");
     expect(refreshed()).toBe(1);
     const stillThere = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
     expect(stillThere.apps.map((a) => a.label)).toEqual(["Yappr", "Dash Forum"]);
@@ -256,7 +256,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
       "The Dash Platform fee changed while disconnecting, so review the updated fee and try again.",
     );
     expect(disconnectErrorText({ code: "platform.grant_invalid", message: "", data: null })).toBe(
-      "Dash Wallet couldn't disconnect this app. Try again. Nothing was changed.",
+      "DashPay Desktop couldn't disconnect this app. Try again. Nothing was changed.",
     );
     expect(disconnectErrorText({ code: "connect.failed", message: "", data: { kind: "connectFailure", failure: "disconnectConflict" } })).toContain(
       "identity changed on Dash Platform",

@@ -15,19 +15,19 @@ const RAW = /FeeStrategy|Fee strategy|credits\.|stopped with/;
 const KINDS = [
   {
     kind: "refused",
-    line: "Dash Platform would refuse this transfer as Dash Wallet built it, so nothing was sent and your balance is unchanged. If this keeps happening, update Dash Wallet.",
+    line: "Dash Platform would refuse this transfer as DashPay Desktop built it, so nothing was sent and your balance is unchanged. If this keeps happening, update DashPay Desktop.",
     retry:
-      "Dash Platform would refuse this attempt as Dash Wallet built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update Dash Wallet.",
+      "Dash Platform would refuse this attempt as DashPay Desktop built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update DashPay Desktop.",
     topUp:
-      "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.",
+      "Dash Platform would refuse this move as DashPay Desktop built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update DashPay Desktop.",
   },
   {
     kind: "rulesUnsupported",
-    line: "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them. Nothing was sent, and your balance is unchanged. Update Dash Wallet, then try again.",
+    line: "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them. Nothing was sent, and your balance is unchanged. Update DashPay Desktop, then try again.",
     retry:
-      "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update Dash Wallet, and check Activity before you pay again.",
+      "Dash Platform's rules have changed, and this version of DashPay Desktop can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update DashPay Desktop, and check Activity before you pay again.",
     topUp:
-      "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update Dash Wallet, and check Activity before you try again.",
+      "Dash Platform's rules have changed, and this version of DashPay Desktop can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update DashPay Desktop, and check Activity before you try again.",
   },
 ] as const;
 type Kind = (typeof KINDS)[number]["kind"];

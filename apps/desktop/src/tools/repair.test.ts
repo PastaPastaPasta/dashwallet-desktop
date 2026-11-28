@@ -208,7 +208,7 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
     expect(RepairText.dropUnconfirmedQuestion).toBe(
-      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. Dash Wallet may still resend abandoned transactions while retries stop. The original payments may still confirm. Check that a payment can no longer confirm before paying again, even with different coins.",
+      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. DashPay Desktop may still resend abandoned transactions while retries stop. The original payments may still confirm. Check that a payment can no longer confirm before paying again, even with different coins.",
     );
   });
 
@@ -219,7 +219,7 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     await model.confirm();
     expect(model.state).toEqual({
       kind: "failed",
-      text: "Dash Wallet can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+      text: "DashPay Desktop can't read one of the transaction records in Savings, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Savings and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Savings and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
     });
   });
 
@@ -285,7 +285,7 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     );
     expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The coins for this transfer have already been spent, so there's nothing to send back. If its payment (transaction cd) went through, finish the transfer from Tools ▸ Repair ▸ Finish transfers.");
     expect(stuckFundingText({ kind: "lockAbandoned", txid: "cd" }, true)).toBe(
-      "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
+      "DashPay Desktop abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once DashPay Desktop has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
     );
   });
 

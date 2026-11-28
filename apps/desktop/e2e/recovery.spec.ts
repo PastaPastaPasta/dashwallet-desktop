@@ -108,7 +108,7 @@ test.describe("Unfinished transfers", () => {
     await page.getByTestId("unfinished-recover").click();
     await page.getByTestId("recover-confirm-ok").click();
     await authorize(page);
-    await expect(page.getByTestId("unfinished-note")).toHaveText("Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
+    await expect(page.getByTestId("unfinished-note")).toHaveText("DashPay Desktop can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
     await page.getByTestId("unfinished-recover").click();
     await page.getByTestId("recover-confirm-ok").click();
     await authorize(page);

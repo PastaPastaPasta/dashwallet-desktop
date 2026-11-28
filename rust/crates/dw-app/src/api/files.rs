@@ -269,7 +269,7 @@ mod tests {
     fn a_doubled_extension_is_collapsed() {
         let fix = |p: &str, e: &[&str]| collapse_doubled_extension(PathBuf::from(p), e);
         assert_eq!(fix("/h/w1-history.csv.csv", &["csv"]), PathBuf::from("/h/w1-history.csv"));
-        assert_eq!(fix("/h/Dash Wallet history.CSV.csv", &["csv"]), PathBuf::from("/h/Dash Wallet history.CSV"));
+        assert_eq!(fix("/h/DashPay Desktop history.CSV.csv", &["csv"]), PathBuf::from("/h/DashPay Desktop history.CSV"));
         assert_eq!(fix("/h/a.b.csv.csv", &["csv"]), PathBuf::from("/h/a.b.csv"));
         // Left alone: one extension, a different one, a repeat that is not exact, no stem.
         assert_eq!(fix("/h/a.csv", &["csv"]), PathBuf::from("/h/a.csv"));

@@ -238,14 +238,14 @@ fn the_install_decides_in_a_build_with_the_updater() {
 #[test]
 fn a_mac_app_on_the_disk_image_or_translocated_cannot_replace_itself() {
     for exe in [
-        "/Volumes/Dash Wallet/Dash Wallet.app/Contents/MacOS/dash-wallet",
-        "/private/var/folders/x1/abc/T/AppTranslocation/0A1B2C/d/Dash Wallet.app/Contents/MacOS/dash-wallet",
+        "/Volumes/DashPay Desktop/DashPay Desktop.app/Contents/MacOS/dash-wallet",
+        "/private/var/folders/x1/abc/T/AppTranslocation/0A1B2C/d/DashPay Desktop.app/Contents/MacOS/dash-wallet",
     ] {
         assert!(movable_only(Path::new(exe)), "{exe}");
     }
     for exe in [
-        "/Applications/Dash Wallet.app/Contents/MacOS/dash-wallet",
-        "/Users/me/Applications/Dash Wallet.app/Contents/MacOS/dash-wallet",
+        "/Applications/DashPay Desktop.app/Contents/MacOS/dash-wallet",
+        "/Users/me/Applications/DashPay Desktop.app/Contents/MacOS/dash-wallet",
     ] {
         assert!(!movable_only(Path::new(exe)), "{exe}");
     }

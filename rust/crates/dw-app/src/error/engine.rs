@@ -344,7 +344,7 @@ mod tests {
                 "kind": "storeRefused",
                 "screen": {
                     "titleKey": "storeUpgrade.refused.title",
-                    "title": "Dash Wallet can't open this wallet data safely",
+                    "title": "DashPay Desktop can't open this wallet data safely",
                     "textKey": "storeUpgrade.refused.wayOut.restore",
                     "text": screen.text("/data/regtest"),
                     "lines": [
@@ -369,7 +369,7 @@ mod tests {
         );
         let text = data["screen"]["text"].as_str().unwrap();
         assert!(text.starts_with(
-            "This version of Dash Wallet can't safely open the wallet data in /data/regtest: "
+            "This version of DashPay Desktop can't safely open the wallet data in /data/regtest: "
         ));
         assert!(!text.contains("{folder}"));
         let lines: Vec<&str> = (data["screen"]["lines"].as_array().unwrap().iter())
@@ -651,7 +651,7 @@ mod tests {
         );
         assert_eq!(
             rescan["message"],
-            "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+            "Restart DashPay Desktop, run Rescan from the wallet's birth, then try Abandon again."
         );
         assert_eq!(
             e(TxActionRefusal::InstantLocked)["message"],

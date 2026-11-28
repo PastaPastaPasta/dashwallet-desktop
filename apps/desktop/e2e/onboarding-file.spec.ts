@@ -37,7 +37,7 @@ for (const theme of THEMES)
     await expect(page.getByTestId("restore-file-choose")).toBeFocused();
     await shot(page, "file-path", theme);
     await page.getByTestId("restore-file-choose").click();
-    await expect(page.getByTestId("restore-file-kind")).toHaveText("A Dash Wallet backup of 2 wallets.");
+    await expect(page.getByTestId("restore-file-kind")).toHaveText("A DashPay Desktop backup of 2 wallets.");
     await expect(page.getByTestId("restore-file-chosen")).toContainText("Main and Savings.dwbackup");
     await expect(page.getByTestId("restore-file-passphrase")).toBeFocused();
     await page.getByTestId("restore-file-restore").click();

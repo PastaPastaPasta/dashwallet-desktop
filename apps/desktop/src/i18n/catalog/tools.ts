@@ -65,7 +65,7 @@ export const tools = {
       prereleaseBuild: "This is a pre-release test build - use at your own risk - do not use for mining or merchant applications",
       uncleanShutdown: "The wallet was not shut down cleanly last time. It is checking its data.",
       syncStalled: "Sync has not made progress for a while. Try changing peers.",
-      clockSkew: "Please check that your computer's date and time are correct! If your clock is wrong, Dash Wallet will not work properly.",
+      clockSkew: "Please check that your computer's date and time are correct! If your clock is wrong, DashPay Desktop will not work properly.",
       platformContextUnavailable: "Dash Platform data cannot be verified right now.",
     },
   },
@@ -147,7 +147,7 @@ export const tools = {
       trustedFailed: "Trusted service",
       trustedFailedNote: "Could not read whether SPV checks of quorum keys are off.",
       trustedOnly: "Trusted service only (developer setting)",
-      trustedOnlyNote: "Dash Wallet's own checks are off. Payments to contacts rely on the Platform service's data without them.",
+      trustedOnlyNote: "DashPay Desktop's own checks are off. Payments to contacts rely on the Platform service's data without them.",
       trustedDegraded: "Trusted service (degraded mode)",
       trustedDegradedNote: "Checked against SPV's quorum keys where SPV holds them.",
     },
@@ -174,7 +174,7 @@ export const tools = {
     running: "Running…",
     run: "Run",
     welcome:
-      "Welcome to the Dash Wallet RPC console.\nUse up and down arrows to navigate history, and {clear} to clear screen.\nUse {bigger} and {smaller} to increase or decrease the font size.\nType {help} for an overview of available commands.\nFor more information on using this console, type {helpConsole}.",
+      "Welcome to the DashPay Desktop RPC console.\nUse up and down arrows to navigate history, and {clear} to clear screen.\nUse {bigger} and {smaller} to increase or decrease the font size.\nType {help} for an overview of available commands.\nFor more information on using this console, type {helpConsole}.",
     scamWarning:
       "WARNING: Scammers have been active, telling users to type commands here, stealing their wallet contents. Do not use this console without fully understanding the ramifications of a command.",
     executingWith: 'Executing command using "{wallet}" wallet',
@@ -225,7 +225,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. Dash Wallet may still resend abandoned transactions while retries stop. The original payments may still confirm. Check that a payment can no longer confirm before paying again, even with different coins.",
+    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Coins used to move or consolidate mixed coins stay reserved until the move or a competing spend is locked or confirmed. To retry an abandoned move, choose Resend in Activity. DashPay Desktop may still resend abandoned transactions while retries stop. The original payments may still confirm. Check that a payment can no longer confirm before paying again, even with different coins.",
     dropAction: "Remove",
     removeUnconfirmed: {
       /** Remove unconfirmed refused with `rescan_in_progress`: after a chain fork the wallet catches up for about a block. */
@@ -340,7 +340,7 @@ export const tools = {
     stuckFunding: {
       /** Resolve abandoned the funding's own payment, which never settled: its coins come back after the rescan. */
       abandonedRetryLater:
-        "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
+        "DashPay Desktop abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once DashPay Desktop has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
     },
   },
   addressBook: {

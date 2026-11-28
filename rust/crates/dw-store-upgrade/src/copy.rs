@@ -12,7 +12,7 @@
 //! sha256 e74ef931…0049, wayOut v2) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
-//! never offers the earlier version. "{unchanged}" says Dash Wallet changed
+//! never offers the earlier version. "{unchanged}" says DashPay Desktop changed
 //! nothing only for a file proved unchanged by this start, says it had
 //! started upgrading only for one proved changed, and otherwise only asks to
 //! keep the folder (`storeUpgrade.refused.keep`).
@@ -61,19 +61,19 @@ pub const ISSUES_HINT: Line = line(
 
 const REFUSED_TITLE: Line = line(
     "storeUpgrade.refused.title",
-    "Dash Wallet can't open this wallet data safely",
+    "DashPay Desktop can't open this wallet data safely",
 );
 const REFUSED_INTRO: Line = line(
     "storeUpgrade.refused.intro",
-    "This version of Dash Wallet can't safely open the wallet data in {folder}",
+    "This version of DashPay Desktop can't safely open the wallet data in {folder}",
 );
 const REFUSED_UNCHANGED: Line = line(
     "storeUpgrade.refused.unchanged",
-    "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    "DashPay Desktop didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
 );
 const CHANGED_BY_UPGRADE: Line = line(
     "storeUpgrade.refused.changedByUpgrade",
-    "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    "DashPay Desktop had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
 );
 const REFUSED_KEEP: Line = line(
     "storeUpgrade.refused.keep",
@@ -181,7 +181,7 @@ impl RefusedCause {
         match self {
             Self::ForkUnsupported => line(
                 "storeUpgrade.refused.detail.forkUnsupported",
-                "it was written by a version of Dash Wallet that this one can't upgrade from.",
+                "it was written by a version of DashPay Desktop that this one can't upgrade from.",
             ),
             Self::ShapeMismatch => line(
                 "storeUpgrade.refused.detail.shapeMismatch",
@@ -189,19 +189,19 @@ impl RefusedCause {
             ),
             Self::RehearsalFailed => line(
                 "storeUpgrade.refused.detail.rehearsalFailed",
-                "a trial upgrade on a copy of it failed, so Dash Wallet left the real data as it was.",
+                "a trial upgrade on a copy of it failed, so DashPay Desktop left the real data as it was.",
             ),
             Self::DevBuild => line(
                 "storeUpgrade.refused.detail.devBuild",
-                "it was written by a development build of Dash Wallet.",
+                "it was written by a development build of DashPay Desktop.",
             ),
             Self::TooNew => line(
                 "storeUpgrade.refused.detail.tooNew",
-                "it was written by a newer version of Dash Wallet.",
+                "it was written by a newer version of DashPay Desktop.",
             ),
             Self::HistoryMismatch => line(
                 "storeUpgrade.refused.detail.historyMismatch",
-                "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+                "its upgrade history doesn't match any released version of DashPay Desktop, so this version can't tell what it contains.",
             ),
             Self::ContactsTable => line(
                 "storeUpgrade.refused.detail.contactsTable",
@@ -209,7 +209,7 @@ impl RefusedCause {
             ),
             Self::SelfCheck => line(
                 "storeUpgrade.refused.detail.selfCheck",
-                "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+                "a check DashPay Desktop runs on itself before it opens any wallet data didn't pass.",
             ),
             Self::Damaged => line(
                 "storeUpgrade.refused.detail.damaged",
@@ -256,7 +256,7 @@ pub struct ProvedState {
     pub migrated: Option<bool>,
     pub backup: Option<BackupState>,
     /// `Some(true)`: this start changed nothing and the file is not
-    /// part-upgraded, the only case the screen says Dash Wallet didn't
+    /// part-upgraded, the only case the screen says DashPay Desktop didn't
     /// change anything. `Some(false)`: this start upgraded the files or an
     /// earlier one part-upgraded it. `None`: not proved either way, or a
     /// restore this start put the file back.
@@ -424,19 +424,19 @@ impl WayOut {
         match self {
             Self::Previous => line(
                 "storeUpgrade.refused.wayOut.previous",
-                "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+                "Close this version and keep using, or reinstall, the version of DashPay Desktop you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
             ),
             Self::Newer => line(
                 "storeUpgrade.refused.wayOut.newer",
-                "Install that version of Dash Wallet, or a later one, to open it. Don't open it with an earlier version.",
+                "Install that version of DashPay Desktop, or a later one, to open it. Don't open it with an earlier version.",
             ),
             Self::Restore => line(
                 "storeUpgrade.refused.wayOut.restore",
-                "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
+                "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
             ),
             Self::Unverified => line(
                 "storeUpgrade.refused.wayOut.unverified",
-                "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem.",
+                "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so DashPay Desktop won't restore from it. Choose Report a problem.",
             ),
             Self::Support => line(
                 "storeUpgrade.refused.wayOut.support",
@@ -444,19 +444,19 @@ impl WayOut {
             ),
             Self::SupportMigrated => line(
                 "storeUpgrade.refused.wayOut.supportMigrated",
-                "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Choose Report a problem.",
+                "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. Choose Report a problem.",
             ),
             Self::SelfCheck => line(
                 "storeUpgrade.refused.wayOut.selfCheck",
-                "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
+                "Quit DashPay Desktop and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of DashPay Desktop. Until then, don't open this wallet data with an earlier version.",
             ),
             Self::SelfCheckNotMigrated => line(
                 "storeUpgrade.refused.wayOut.selfCheckNotMigrated",
-                "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+                "Quit DashPay Desktop and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of DashPay Desktop, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
             ),
             Self::Damaged => line(
                 "storeUpgrade.refused.wayOut.damaged",
-                "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+                "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. DashPay Desktop leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
             ),
         }
     }
@@ -535,7 +535,7 @@ impl RefusedScreen {
     pub fn offer_recover_after_wallet_removal(&mut self) {
         self.way_out_line = line(
             "storeUpgrade.refused.wayOut.retired",
-            "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Dash Wallet retired the backup from before the upgrade as part of removing a wallet. Choose Set up from recovery phrase to start again in a new data folder. Add each wallet from its own recovery phrase. Dash Wallet leaves {folder} as it is. Payment holds, in-progress operations, imported keys and other local records stay in that folder. If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+            "Earlier versions of DashPay Desktop can't open it either, because it has already been upgraded. DashPay Desktop retired the backup from before the upgrade as part of removing a wallet. Choose Set up from recovery phrase to start again in a new data folder. Add each wallet from its own recovery phrase. DashPay Desktop leaves {folder} as it is. Payment holds, in-progress operations, imported keys and other local records stay in that folder. If a payment, a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
         );
         self.offer_recover();
     }
@@ -577,11 +577,11 @@ pub fn notice_line(notice: UpgradeNotice) -> Line {
     match notice {
         UpgradeNotice::SnapshotDamaged => line(
             "storeUpgrade.notice.snapshotDamaged",
-            "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+            "DashPay Desktop upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
         ),
         UpgradeNotice::SnapshotOther => line(
             "storeUpgrade.notice.snapshotOther",
-            "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+            "DashPay Desktop upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so DashPay Desktop won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
         ),
     }
 }
@@ -589,8 +589,8 @@ pub fn notice_line(notice: UpgradeNotice) -> Line {
 /// Catalog keys whose text is a best guess until MG writes the final.
 pub const PENDING_MG: &[&str] = &[];
 
-const RETRY_NO_SPACE_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
-const RETRY_NO_SPACE_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";
+const RETRY_NO_SPACE_TITLE: &str = "DashPay Desktop couldn't finish upgrading your wallet data";
+const RETRY_NO_SPACE_TEXT: &str = "The disk is full, or DashPay Desktop couldn't write to it. Free up some space, then quit DashPay Desktop and open it again. Until then, don't open this wallet data with an earlier version.";
 
 /// `storeUpgrade.retry.noSpace.*` for a start that stopped on the machine
 /// (the disk full or not writable, an I/O fault) and is retried at the next
@@ -685,23 +685,23 @@ fn screen(
 pub const PLACEHOLDER: &str = "[MG placeholder] ";
 
 const CONFIRM_TITLE: &str = "Restore wallet data from before the upgrade?";
-const CONFIRM_TEXT: &str = "Dash Wallet restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent. The wallet data recorded since the upgrade is kept in the upgrade-backups folder inside {folder}. Don't delete it: it may hold the only record of a recent payment.
+const CONFIRM_TEXT: &str = "DashPay Desktop restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent. The wallet data recorded since the upgrade is kept in the upgrade-backups folder inside {folder}. Don't delete it: it may hold the only record of a recent payment.
 
-This version of Dash Wallet pauses sending until syncing finishes. An earlier version doesn't. If you open the wallet with one, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.
+This version of DashPay Desktop pauses sending until syncing finishes. An earlier version doesn't. If you open the wallet with one, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.
 
-If Dash Wallet closes before the restore finishes, start this version again before you open an earlier one.";
+If DashPay Desktop closes before the restore finishes, start this version again before you open an earlier one.";
 
 const RESTORE_REFUSED_TITLE: &str = "The earlier wallet data couldn't be restored";
-const RESTORE_REFUSED_TEXT: &str = "Dash Wallet couldn't use the wallet data it saved before the upgrade, so nothing was changed. The wallet is using the same data as before you chose to restore.";
+const RESTORE_REFUSED_TEXT: &str = "DashPay Desktop couldn't use the wallet data it saved before the upgrade, so nothing was changed. The wallet is using the same data as before you chose to restore.";
 
-const INCOMPLETE_TITLE: &str = "Dash Wallet couldn't finish restoring your wallet data";
-const INCOMPLETE_TEXT: &str = "Dash Wallet stopped partway through putting back the wallet data it saved before the upgrade, so it hasn't opened the wallet data in {folder}. The data saved before the upgrade and the data it was replacing are both still in the upgrade-backups folder inside {folder}: don't delete anything there. Make sure the disk has free space and that Dash Wallet can write to {folder}, then restart Dash Wallet to finish. Don't open an earlier version of Dash Wallet until this one has finished. If it still can't finish, choose Report a problem.";
+const INCOMPLETE_TITLE: &str = "DashPay Desktop couldn't finish restoring your wallet data";
+const INCOMPLETE_TEXT: &str = "DashPay Desktop stopped partway through putting back the wallet data it saved before the upgrade, so it hasn't opened the wallet data in {folder}. The data saved before the upgrade and the data it was replacing are both still in the upgrade-backups folder inside {folder}: don't delete anything there. Make sure the disk has free space and that DashPay Desktop can write to {folder}, then restart DashPay Desktop to finish. Don't open an earlier version of DashPay Desktop until this one has finished. If it still can't finish, choose Report a problem.";
 
 const NO_SPACE_TITLE: &str = "Not enough disk space to restore";
-const NO_SPACE_TEXT: &str = "Dash Wallet needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.";
+const NO_SPACE_TEXT: &str = "DashPay Desktop needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.";
 
-const NOT_STARTED_TITLE: &str = "Dash Wallet couldn't start restoring your wallet data";
-const NOT_STARTED_TEXT: &str = "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.";
+const NOT_STARTED_TITLE: &str = "DashPay Desktop couldn't start restoring your wallet data";
+const NOT_STARTED_TEXT: &str = "DashPay Desktop couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that DashPay Desktop can read and write {folder} and that no other program is using it, then restart DashPay Desktop to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.";
 
 /// `storeUpgrade.restore.confirm.*` (MG FINAL with R3 (1) and (ii)): every
 /// path to a restore goes through it.
@@ -828,7 +828,7 @@ pub mod restore_foreign {
     );
     pub const TEXT: Line = super::line(
         "storeUpgrade.restore.foreign.text",
-        "Dash Wallet was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of Dash Wallet or another program may have replaced them.",
+        "DashPay Desktop was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of DashPay Desktop or another program may have replaced them.",
     );
     pub const KEEP: Line = super::line(
         "storeUpgrade.restore.foreign.keep",
