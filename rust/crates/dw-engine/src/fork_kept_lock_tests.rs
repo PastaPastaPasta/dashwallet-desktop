@@ -555,6 +555,57 @@ fn a_restart_loads_the_old_block_record_and_keeps_a_local_payments_sent_mark() {
     assert!(sent_marks(&s.session, s.id).contains(&s.p.txid()));
 }
 
+fn with_stored_payment_copied(s: &Scenario, while_paused: impl FnOnce()) {
+    use std::sync::atomic::Ordering;
+
+    wait_stored(&s.session, s.id, &[s.p.txid()]);
+    let copied = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+    *s.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+    let (session, id) = (Arc::clone(&s.session), s.id);
+    let load = s
+        .session
+        .rt
+        .spawn(async move { session.load_history_for(vec![id]).await });
+    super::own_spend_disk_tests::eventually("the history copy", || {
+        copied.reached.load(Ordering::SeqCst)
+    });
+    while_paused();
+    copied.release.notify_one();
+    s.engine.block_on(load).unwrap().unwrap();
+    s.session.hub.settle_rereads();
+}
+
+#[test]
+fn stale_history_after_a_fork_preserves_the_removed_spend_for_a_late_lock() {
+    let s = scenario();
+    s.mined();
+    with_stored_payment_copied(&s, || {
+        s.fork();
+        assert_eq!(s.row(), None);
+    });
+    assert_eq!(s.row(), None, "the copied row belongs to the removed block");
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
+fn stale_history_after_a_fork_keeps_the_input_held_after_lock_overflow() {
+    let s = scenario();
+    s.overflow_early_locks();
+    s.mined();
+    with_stored_payment_copied(&s, || {
+        s.fork();
+        assert_eq!(
+            s.row().map(|r| (r.0, r.1)),
+            Some((TxStatusKind::Unconfirmed, false))
+        );
+    });
+    s.assert_kept(false, TxActionRefusal::RescanFirst);
+}
+
 #[test]
 fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     use dash_spv::EventHandler;
