@@ -58,7 +58,10 @@ gh api -X POST "repos/$R/environments/release-signing/deployment-branch-policies
 
 Or on github.com: **Settings ▸ Environments ▸ New environment**, name `release-signing`; tick **Required
 reviewers** and add yourself; under **Deployment branches and tags** choose **Selected branches and tags** and add
-the tag rule `v*`. The existing `release` environment stays as it is, with no secrets.
+the tag rule `v*`. The existing `release` environment gets nothing new, and no workflow reads a secret from it.
+It still holds two secrets from the old updater setup, `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: delete them there, and do not move them here
+([`RC-SIGNING.md`](RC-SIGNING.md#the-signers-checklist)).
 
 Check it before any secret goes in:
 
