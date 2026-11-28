@@ -54,9 +54,11 @@ commit against its base:
 | anything else, unknown paths included | `changes`, `lint`, `rust-linux` and `desktop-renderer` |
 
 When every Rust-running file is under `rust/crates/<pkg>/` or `rust/bin/<pkg>/`, `changes` outputs those
-packages as `crates` and `rust-linux` builds and tests only them (`cargo test -p <pkg>…`, doc tests included).
-The selftest, debug-feature and Swift-bindings steps run only when their packages (`dw-app`; `dwcli` or
-`dw-engine`; `dw-ffi` or `uniffi-bindgen`) are among them, and the Tauri bindings check uses `-p dw-app`. Any
+packages as `crates` and `rust-linux` builds and tests only them (`cargo test -p <pkg>…`, doc tests included)
+in place of the workspace commands in the job table below. It still runs the Tauri bindings check (with
+`-p dw-app`) and, unless `dw-protx` is selected, dw-protx's `no_operator_signing` scan (MG-01). The selftest,
+debug-feature (both packages' checks) and Swift-bindings steps run only when their packages (`dw-app`;
+`dwcli` or `dw-engine`; `dw-ffi` or `uniffi-bindgen`) are among them. Any
 other such file (`rust/Cargo.toml`, `Cargo.lock`, `ci/`, `scripts/`, the renderer files Rust tests read, a
 deleted package) runs the whole workspace, as `main`, nightly and a dispatch always do. `lint`'s
 `clippy --workspace --all-targets` still compiles every package; a dependent package's test that fails on
@@ -70,6 +72,7 @@ Renderer files the Rust tests read, and the tests that read them:
 | `apps/desktop/src/api/generated/` | `dw-app` `codegen` (bindings are current) | not renderer-only: runs `rust-linux` |
 | `apps/desktop/src/fixture/vectors/` | `dw-app` `history_vectors_tests`, `governance_vectors_tests`, `error/platform.rs`, `api/social/events.rs`; `dw-engine` `notifications_tests`, `requests_tests` | not renderer-only: runs `rust-linux` |
 | `apps/desktop/src/dashpay/editProfile.ts` | `dw-engine` `platform/avatar_tests.rs` | not renderer-only: runs `rust-linux` |
+| `apps/desktop/src/fixture/handlers.ts` | `dw-app` `api/app.rs` (project URL parity) | not renderer-only: runs `rust-linux` |
 
 A new Rust test that reads a renderer path adds it to `read_by_rust` in the `changes` job and to this table.
 
@@ -80,7 +83,7 @@ name contains a funds word (`send`, `sign`, `psbt`, `coin`, `fee`, `key`, `seed`
 `pay`, `tx` and the others listed there). Such a pull request then runs all four required jobs. **Restore full
 per-PR CI on funds paths before RC (11-30) / 1.0** by setting it to `"true"`.
 When `rust-linux` doesn't run, `changes` runs `windows-paths.py`, as `lint` would. A push, a dispatch, the
-schedule, or any failure of `changes` runs every job. GitHub counts a skipped required job as passed, and
+schedule, or any failure of `changes` runs every job that event runs. GitHub counts a skipped required job as passed, and
 cancelling a run while `changes` is pending skips the four jobs, so `changes` ("What this pull request
 changes") is itself a required check: cancelled or failed, it blocks the merge.
 
