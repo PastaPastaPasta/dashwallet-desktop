@@ -118,6 +118,16 @@ export const pay = {
     /** Shown under Add recipient while the feature is testnet-only. */
     testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
   },
+  recipient: {
+    form: "Payment",
+    placeholder: "Name, username or Dash address",
+    contacts: "Contacts",
+    suggestions: "Recipient suggestions",
+    recent: "Recent contacts",
+    network: "Dash usernames",
+    clear: "Clear recipient",
+    checking: "Checking recipient…",
+  },
   toAddress: {
     form: "Pay to an address",
     linkUsername: "The link names the payee {username}. The name is not verified.",

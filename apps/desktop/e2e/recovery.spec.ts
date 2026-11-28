@@ -64,7 +64,7 @@ test.describe("Unfinished transfers", () => {
 
   test("recovery-recoverable-mainnet: what is left is listed with the test-networks line, and there is no Recover anywhere", async ({ page }) => {
     await open(page, "recovery-recoverable-mainnet");
-    await expect(page.getByTestId("unfinished-text")).toContainText("This version can recover it on test networks only.");
+    await expect(page.getByTestId("unfinished-text")).toContainText("They're still yours. This version can recover them on test networks only.");
     await expect(page.getByTestId("unfinished-recover")).toHaveCount(0);
     await page.getByTestId("unfinished-details").click();
     const rows = page.getByTestId("unfinished-row");

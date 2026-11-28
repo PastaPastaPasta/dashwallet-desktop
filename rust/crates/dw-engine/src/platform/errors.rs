@@ -22,6 +22,8 @@ pub use super::shielded::{ShieldedStoreClosed, ShieldedSyncWait};
 pub enum PlatformError {
     #[error("platform unavailable")]
     Unavailable,
+    #[error("Dash Platform is off in this session")]
+    SessionOff,
     #[error("platform timeout")]
     Timeout,
     #[error("platform proof invalid")]
@@ -105,7 +107,7 @@ pub enum PlatformError {
 impl PlatformError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Unavailable => "platform.unavailable",
+            Self::Unavailable | Self::SessionOff => "platform.unavailable",
             Self::Timeout => "platform.timeout",
             Self::ProofInvalid => "platform.proof_invalid",
             Self::TrustMismatch => "platform.trust_mismatch",
@@ -526,8 +528,6 @@ impl InvitationError {
 pub enum ConnectError {
     #[error("the request is for another network")]
     Network,
-    #[error("app connect is off on mainnet")]
-    MainnetOff,
     #[error("the request asks for what this wallet does not support")]
     Unsupported,
     #[error("the request breaks the protocol's rules")]
@@ -562,7 +562,6 @@ impl ConnectError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Network => "connect.network",
-            Self::MainnetOff => "connect.mainnet_off",
             Self::Unsupported => "connect.unsupported",
             Self::Invalid => "connect.invalid",
             Self::Stale => "connect.stale",
@@ -601,7 +600,7 @@ impl ConnectError {
     pub fn status(&self) -> Option<dw_uri::connect::Status> {
         use dw_uri::connect::Status;
         Some(match self {
-            Self::Unsupported | Self::Protocol | Self::MainnetOff => Status::Unsupported,
+            Self::Unsupported | Self::Protocol => Status::Unsupported,
             Self::Invalid | Self::Owner => Status::Invalid,
             Self::Stale => Status::Stale,
             Self::Failed {

@@ -285,6 +285,12 @@ mod tests {
     use super::super::flows::{CONTACT_REQUEST_CREDITS, DOCUMENT_10K_CREDITS, KEY_UPDATE_CREDITS};
     use super::*;
 
+    #[test]
+    fn contact_request_price_follows_the_dashpay_contract_version() {
+        assert_eq!(cost_table(14).unwrap().contact_request, 139_638_280);
+        assert_eq!(cost_table(15).unwrap().contact_request, 145_293_000);
+    }
+
     fn known_versions() -> impl Iterator<Item = u32> {
         PlatformVersion::first().protocol_version..=PlatformVersion::latest().protocol_version
     }

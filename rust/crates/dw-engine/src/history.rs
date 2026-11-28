@@ -743,10 +743,15 @@ pub(crate) fn unmined_own_spends(
             spenders.entry(i.previous_output).or_default().push((w, we));
         }
     }
-    let beaten = |t: &Txid, e: &TxEntry| {
+    let beaten = |t: &Txid, e: &TxEntry, mined_only: bool| {
         (e.tx.input.iter()).any(|i| {
-            (spenders.get(&i.previous_output))
-                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e, chainlock)))
+            (spenders.get(&i.previous_output)).is_some_and(|v| {
+                v.iter().any(|(w, we)| {
+                    *w != t
+                        && (!mined_only || we.context.block_info().is_some())
+                        && beats(we, e, chainlock)
+                })
+            })
         })
     };
     // A beaten payment's descendants out of a block can never confirm either
@@ -762,17 +767,17 @@ pub(crate) fn unmined_own_spends(
         }
     }
     let mut todo: Vec<Txid> = (txs.iter())
-        .filter(|(t, e)| unmined(e) && beaten(t, e))
+        .filter(|(t, e)| unmined(e) && !instant_locked(e) && beaten(t, e, true))
         .map(|(t, _)| *t)
         .collect();
     let mut dead = HashSet::new();
     while let Some(t) = todo.pop() {
-        if dead.insert(t) && !txs.get(&t).is_some_and(instant_locked) {
+        if dead.insert(t) {
             todo.extend(children.get(&t).into_iter().flatten());
         }
     }
     (candidates.into_iter())
-        .filter(|(t, _, _)| !dead.contains(*t))
+        .filter(|(t, _, e)| !dead.contains(*t) && !beaten(t, e, false))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -1507,6 +1512,8 @@ pub(crate) struct WalletHistory {
     /// The transactions this app dropped as ones that can never confirm,
     /// from their `dropped:` marks and as each drop runs.
     pub drops: HashMap<Txid, DropInfo>,
+    /// Claims proved invalid whose drop has yet to commit.
+    pub(crate) checking_claims: BTreeSet<Txid>,
     /// The own inputs of dropped transactions listed from their abandoned
     /// marks alone, as their `dropped:` marks keep them: what their rows
     /// show, which nothing spends or releases.
@@ -1627,6 +1634,21 @@ struct ForkRemovedSpend {
 }
 
 impl WalletHistory {
+    pub(crate) fn invalid_mark(&self, txid: &Txid) -> Option<DropCause> {
+        let cause = self.drops.get(txid)?.cause;
+        matches!(cause, DropCause::InvalidClaim | DropCause::InvalidSource).then_some(cause)
+    }
+
+    /// A claim or descendant dropped as invalid that has not since settled.
+    pub(crate) fn dead_claim(&self, txid: &Txid) -> Option<DropCause> {
+        let cause = self.invalid_mark(txid)?;
+        (!self
+            .txs
+            .get(txid)
+            .is_some_and(|e| e.context.block_info().is_some() || self.knows_instant_lock(txid, e)))
+        .then_some(cause)
+    }
+
     pub(crate) fn knows_instant_lock(&self, txid: &Txid, entry: &TxEntry) -> bool {
         instant_locked(entry) || (!entry.abandoned && self.session_locks.contains(txid))
     }
@@ -2317,6 +2339,14 @@ impl HistoryStore {
     pub fn read_all<R>(&self, f: impl FnOnce(&[&HashMap<Txid, TxEntry>]) -> R) -> R {
         let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
         f(&map.values().map(|h| &h.txs).collect::<Vec<_>>())
+    }
+
+    pub(crate) fn read_wallets<R>(
+        &self,
+        f: impl FnOnce(&HashMap<WalletId, WalletHistory>) -> R,
+    ) -> R {
+        let map = self.wallets.read().unwrap_or_else(|p| p.into_inner());
+        f(&map)
     }
 
     /// A copy of one wallet's entries (empty when unknown).
@@ -4455,6 +4485,44 @@ mod tests {
         let mut claims = unmined_own_spends(&txs, &sent, None);
         claims.sort();
         assert_eq!(claims, vec![(coin(23), l)], "only the locked child claims");
+    }
+
+    #[test]
+    fn unmined_own_spends_keep_a_childs_claim_when_its_parents_restored_rival_lost() {
+        let a = OutPoint::new(Txid::from_byte_array([20; 32]), 0);
+        let d = OutPoint::new(Txid::from_byte_array([21; 32]), 0);
+        let b = OutPoint::new(Txid::from_byte_array([22; 32]), 0);
+        let spend = |n, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n, &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let parent = spend(1, &[a], TransactionContext::Mempool);
+        let p = parent.tx.txid();
+        let mut rival = spend(2, &[a, b], TransactionContext::Mempool);
+        rival.instant_locked = true;
+        let winner = spend(3, &[b], in_block(10, 0));
+        let child = spend(4, &[OutPoint::new(p, 0), d], TransactionContext::Mempool);
+        let c = child.tx.txid();
+        let txs = [parent, rival, winner, child]
+            .into_iter()
+            .map(|e| (e.tx.txid(), e))
+            .collect();
+        let sent = crate::tx_actions::Sent::from([(
+            c,
+            crate::tx_actions::SentMark {
+                inputs: Default::default(),
+                coins: BTreeSet::from([d]),
+                tx: None,
+                kept: false,
+            },
+        )]);
+
+        assert_eq!(unmined_own_spends(&txs, &sent, Some(10)), [(d, c)]);
     }
 
     /// #170 case 3: a payment out of a block that key-wallet holds no record

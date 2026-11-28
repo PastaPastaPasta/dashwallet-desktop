@@ -179,6 +179,7 @@ pub(super) struct CoinFacts {
     pub reserved: Vec<OutPoint>,
     /// The unspent, non-excluded reserved coins, in outpoint order.
     pub held: Vec<(Utxo, Option<DerivationPath>)>,
+    excluded: crate::withhold::Exclusions,
     pub pending: HashSet<OutPoint>,
     /// The session's own transactions, in lookup order.
     pub own: Vec<Txid>,
@@ -375,12 +376,11 @@ impl NetworkSession {
     ) -> Result<CoinFacts, MasternodesError> {
         let reserved = reserved_of(row);
         let w = self.wallet(&wallet).await?;
-        let mut held: Vec<(Utxo, Option<DerivationPath>)> = {
+        let (mut held, excluded) = {
             let state = crate::wallet_read::info_of(&w).await?;
-            self.hub.observe_coins(wallet, &state.core_wallet);
+            let excluded = self.hub.recovery_exclusions(wallet, &state.core_wallet);
             self.hub.check_fork_spend(wallet)?;
-            let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
-            read_coins(&state.core_wallet)
+            let held: Vec<_> = read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
                 .filter(|c| {
@@ -391,7 +391,8 @@ impl NetworkSession {
                         own_address_info(&state.core_wallet, &c.utxo.address).map(|i| i.path);
                     (c.utxo, path)
                 })
-                .collect()
+                .collect();
+            (held, excluded)
         };
         held.sort_by_key(|(u, _)| u.outpoint);
         let log = abandon_log(row)?;
@@ -404,6 +405,7 @@ impl NetworkSession {
         Ok(CoinFacts {
             reserved,
             held,
+            excluded,
             pending: self.spends.snapshot(&wallet),
             own: own_txids(row, chain, self.network.core_network()),
             latest,
@@ -811,7 +813,7 @@ impl NetworkSession {
             false => None,
         };
         if let Some(charge) = charge
-            && self.abandon_replay_passes(wallet, row)
+            && self.abandon_replay_passes(wallet, row, &facts.excluded)
         {
             match ctx.spv_running {
                 true => r.actions.push(RecoveryAction::ResendAbandon { charge }),
@@ -912,11 +914,21 @@ impl NetworkSession {
 
     /// Whether `resend_shared_abandon`'s inputs check passes on the saved
     /// spend.
-    fn abandon_replay_passes(&self, wallet: WalletId, row: &SharedSessionRow) -> bool {
+    fn abandon_replay_passes(
+        &self,
+        wallet: WalletId,
+        row: &SharedSessionRow,
+        excluded: &crate::withhold::Exclusions,
+    ) -> bool {
         row.abandon_tx
             .as_deref()
             .and_then(|b| dashcore::consensus::deserialize::<dashcore::Transaction>(b).ok())
-            .is_some_and(|tx| self.check_resend_inputs(wallet, &tx).is_ok())
+            .is_some_and(|tx| {
+                tx.input
+                    .iter()
+                    .all(|i| !excluded.contains_key(&i.previous_output))
+                    && self.check_resend_inputs(wallet, &tx).is_ok()
+            })
     }
 
     /// What a discard of `row` makes available from its reservation.
@@ -931,7 +943,7 @@ impl NetworkSession {
         }
         let w = self.wallet(&wallet).await?;
         let state = crate::wallet_read::info_of(&w).await?;
-        let excluded = self.hub.excluded_coins(wallet, &state.core_wallet);
+        let excluded = self.hub.recovery_exclusions(wallet, &state.core_wallet);
         Ok(read_coins(&state.core_wallet)
             .coins
             .iter()

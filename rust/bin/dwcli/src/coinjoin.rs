@@ -43,8 +43,7 @@ pub enum CoinJoinCommand {
         /// Done once the fully mixed balance reaches this many duffs.
         #[arg(long)]
         until_fully_mixed: Option<u64>,
-        /// Done as soon as an open session holds coins (its collateral or
-        /// entry inputs reserved), to test that stopping releases them.
+        /// Stop as soon as an open session reserves coins.
         #[arg(long)]
         until_session_entry: bool,
         /// Unlock an encrypted vault for mixing only (QT-112).
@@ -81,6 +80,9 @@ pub enum CoinJoinCommand {
     #[command(name = "move-mixed")]
     MoveMixed {
         wallet: String,
+        /// Return only coins held from mixing to a fresh Core address.
+        #[arg(long)]
+        held: bool,
         #[arg(long)]
         plan_only: bool,
         #[arg(long)]
@@ -303,13 +305,10 @@ pub fn run(
             engine.block_on(session.stop_mixing(id)).map_err(e)?;
             let s = session.coinjoin_status(id).map_err(e)?;
             println!("stopped {}", status_line(&s));
-            // Stopping releases every session's coins at once; inputs of a
-            // session that already succeeded stay reserved until the wallet
-            // sees the mixing transaction spend them.
             let released_by = Instant::now() + Duration::from_secs(30);
             let (max_rounds, reserved) = loop {
                 let facts = coin_facts(engine, session, id)?;
-                if facts.1 == 0 || Instant::now() >= released_by {
+                if !session.mixing_busy() || Instant::now() >= released_by {
                     break facts;
                 }
                 std::thread::sleep(Duration::from_millis(500));
@@ -390,6 +389,7 @@ pub fn run(
         }
         CoinJoinCommand::MoveMixed {
             wallet,
+            held,
             plan_only,
             sync_height,
             yes,
@@ -399,7 +399,15 @@ pub fn run(
                 wait_for_height(engine, session, id, h, Duration::from_secs(300))?;
             }
             let plan = engine
-                .block_on(session.mixed_coins_sweep_plan(id, SweepDestination::Wallet))
+                .block_on(async {
+                    if held {
+                        session.return_from_mixing_plan(id).await
+                    } else {
+                        session
+                            .mixed_coins_sweep_plan(id, SweepDestination::Wallet)
+                            .await
+                    }
+                })
                 .map_err(e)?;
             println!(
                 "plan total={} chunks={} fully_mixed={} not_fully_mixed={} unconfirmed={}",
@@ -416,6 +424,11 @@ pub fn run(
                 );
             }
             if !plan_only {
+                if held && sync_height.is_none() {
+                    return Err(
+                        "a sync height is required before returning held mixing coins".into(),
+                    );
+                }
                 confirm_combine(yes, &mut std::io::stdout())?;
                 let grant = session
                     .vault()
@@ -428,12 +441,22 @@ pub fn run(
                     )
                     .map_err(|e| e.to_string())?;
                 let r = engine
-                    .block_on(session.move_mixed_coins(
-                        id,
-                        SweepDestination::Wallet,
-                        plan.quote_id.clone(),
-                        grant.id,
-                    ))
+                    .block_on(async {
+                        if held {
+                            session
+                                .return_from_mixing(id, plan.quote_id, grant.id)
+                                .await
+                        } else {
+                            session
+                                .move_mixed_coins(
+                                    id,
+                                    SweepDestination::Wallet,
+                                    plan.quote_id,
+                                    grant.id,
+                                )
+                                .await
+                        }
+                    })
                     .map_err(e)?;
                 print_sweep(&r);
             }

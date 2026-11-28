@@ -283,7 +283,6 @@ test.describe("Pay's confirm sheet warns about fees", () => {
   async function review(page: Page, amount: string, subtract = false) {
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.getByTestId("pay-amount").fill(amount);
     if (subtract) await page.getByTestId("pay-subtract-fee").check();
@@ -387,14 +386,13 @@ test.describe("disabled reasons are visible and described", () => {
     await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card-why")).toHaveCount(0);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").waitFor();
+    await page.getByTestId("pay-address").waitFor();
     await expect(page.getByTestId("shielded-send")).toHaveCount(0);
   });
 
   test("Pay keeps the fee line while it re-estimates, and does not ask for what is entered", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill(PAYEE);
     await page.evaluate(`window.__dwFixture.hold("draft_estimate")`);
     await page.getByTestId("pay-amount").fill("0.5");
@@ -417,7 +415,6 @@ test.describe("disabled reasons are visible and described", () => {
     await page.goto(fixtureUrl("empty", "light"));
     await page.getByTestId("toolbar").waitFor();
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     expect(await reasonOf(page, "pay-continue")).toBe("Enter an address and an amount first.");
   });
 });

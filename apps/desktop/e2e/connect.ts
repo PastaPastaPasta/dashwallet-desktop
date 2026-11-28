@@ -15,9 +15,9 @@ export async function deliverConnect(page: Page, outcome: ConnectOutcome, return
   await page.evaluate((r) => window.__dwFixture!.deliverLinks([r]), { kind: "appConnect", linkId: CONNECT_LINKS[outcome], returnsTo } as const);
 }
 
-/** Opens `dashpay-registered` and the sign-in sheet of `outcome`, once it has read the request. */
-export async function openConnect(page: Page, outcome: ConnectOutcome, theme: Theme = "light", returnsTo: string | null = CONNECT_HOST) {
-  await page.goto(fixtureUrl("dashpay-registered", theme));
+/** Opens `dashpay-registered` (with `extra` URL parameters) and the sign-in sheet of `outcome`, once it has read the request. */
+export async function openConnect(page: Page, outcome: ConnectOutcome, theme: Theme = "light", returnsTo: string | null = CONNECT_HOST, extra = "") {
+  await page.goto(fixtureUrl("dashpay-registered", theme, extra));
   await page.getByTestId("hero").waitFor();
   await deliverConnect(page, outcome, returnsTo);
   const sheet = page.getByTestId("connect-sheet");

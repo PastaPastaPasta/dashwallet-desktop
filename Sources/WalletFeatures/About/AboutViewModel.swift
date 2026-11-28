@@ -34,7 +34,7 @@ public final class AboutViewModel {
     /// "Version <client version>"; `nil` until loaded.
     public var versionText: String? { information.map { L10n.HomeM2.version($0.clientVersion) } }
     public var networkName: String? { network.map(L10n.Settings.networkName) }
-    public var dataDirectory: URL? { information?.dataDirectory ?? network.map(host.dataDirectory(for:)) }
+    public private(set) var dataDirectory: URL?
     public var licenseText: String { L10n.HomeM2.license }
 
     /// `--help` as a two-column table (QT-153).
@@ -68,10 +68,19 @@ public final class AboutViewModel {
         network = await host.activeNetwork
         do {
             information = try await nodeInformation.information()
+            dataDirectory = information?.dataDirectory
             errorMessage = nil
         } catch {
             information = nil
             errorMessage = ErrorText.m2(error.code)
+            dataDirectory = nil
+            if let network {
+                do {
+                    dataDirectory = try host.dataDirectory(for: network)
+                } catch {
+                    errorMessage = ErrorText.m2(error.code)
+                }
+            }
         }
     }
 

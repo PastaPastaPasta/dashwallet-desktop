@@ -35,8 +35,8 @@ use crate::{DashNetwork, NetworkSession, WalletId};
 /// network did before it (`payout_source`).
 pub(crate) const FEATURE: &str = "shielded_contact_payment";
 
-/// Whether a contact payment from the Shielded balance runs on `network`:
-/// not on mainnet; testnet, devnet and regtest pay.
+/// The contact payout's mainnet feature gate. The separate Shielded spend
+/// build gate also refuses payouts outside testnet.
 pub(crate) fn enabled_on(network: &DashNetwork) -> bool {
     *network != DashNetwork::Mainnet
 }
@@ -141,6 +141,8 @@ pub(crate) async fn pay_gated(
     // have been sent, so a repeated call cannot pay the contact again.
     let flow_lease = session.lease_for(&wallet, &call.grant).is_some();
     let armed = pool::arm(session, wallet, lib, quoting, &call.grant, flow).await?;
+    #[cfg(test)]
+    crate::coins::pause_at(&session.platform.payments.hold_shielded_lease).await;
     let crypto = match armed.lease.contact_crypto() {
         Ok(crypto) => Some(crypto),
         Err(_) => session.background_crypto(wallet).await,
