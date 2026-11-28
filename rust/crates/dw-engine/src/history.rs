@@ -2245,6 +2245,20 @@ impl HistoryStore {
             .remove(wallet);
     }
 
+    /// [`Self::remove_wallet`], handing `retire` the history under the
+    /// same lock first.
+    pub(crate) fn remove_wallet_with(
+        &self,
+        wallet: &WalletId,
+        retire: impl FnOnce(&WalletHistory),
+    ) {
+        let mut wallets = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(h) = wallets.get(wallet) {
+            retire(h);
+        }
+        wallets.remove(wallet);
+    }
+
     /// Txids of the wallet's transactions whose status can still change with
     /// a new block: unconfirmed or fewer than [`RECOMMENDED_CONFIRMATIONS`],
     /// and coinbase outputs that have not matured.

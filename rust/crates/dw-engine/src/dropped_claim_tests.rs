@@ -888,6 +888,57 @@ fn another_wallet_cannot_select_change_from_a_dropped_claim() {
     });
 }
 
+/// A proves the claim invalid and is closed: B's output of the claim stays
+/// out of B's balance, Max, coin control and Send.
+#[test]
+fn closing_the_wallet_that_proved_a_claim_invalid_keeps_the_recipients_output_out() {
+    use super::own_spend_disk_tests::{Accept, fresh_address, prepare, second_wallet};
+
+    let (_dir, engine, session, id) = engine_wallet();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other);
+    let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+    claim.output[0].value -= CHANGE;
+    claim.output.push(TxOut {
+        value: CHANGE,
+        script_pubkey: to.script_pubkey(),
+    });
+    let output = OutPoint::new(claim.txid(), 2);
+    mempool(&engine, &session, id, &claim);
+    assert!(spendable(&engine, &session, other, output));
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the claim was marked dropped", || {
+        dropped_records(&session, id).contains(&claim.txid())
+    });
+    super::own_spend_disk_tests::eventually("the recipient excludes the invalid output", || {
+        balances(&session, other).total == 0
+    });
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    mined(
+        &engine,
+        &session,
+        other,
+        BIRTH + 1,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
+    assert_eq!(balances(&session, other).total, 0, "balance");
+    assert!(!spendable(&engine, &session, other, output), "coin control");
+    let fee = crate::send::FeeMode::PerKb(1_000);
+    let max = engine.block_on(session.max_spendable(other, CoinSource::Any, fee));
+    assert!(!max.as_ref().is_ok_and(|m| *m > 0), "Max: {max:?}");
+    let (_, prepared) = prepare(
+        &engine,
+        &session,
+        other,
+        CoinSource::Any,
+        CHANGE / 2,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert!(prepared.is_err(), "Send");
+}
+
 /// S is dropped, nothing it made counts, and b, scanned again where the
 /// drop released it, counts once and is offered.
 fn assert_payment_dropped_with_b(
