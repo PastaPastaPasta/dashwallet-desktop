@@ -49,6 +49,7 @@ export const transfer = {
   /** As `maxAllArriving`, but even once they've confirmed the coins wouldn't clear this route's smallest amount and the
    * fee. */
   maxArrivingTooSmall: "Your Dash wallet's coins are still arriving ({arriving}), but even once they've confirmed, that's less than the smallest amount this transfer can move.",
+  maxArrivingCantMove: "Your Dash wallet's coins are still arriving ({arriving}), but Max can't move them as they are, even once they've confirmed.",
   /** Max from the Dash wallet can move nothing, nothing is arriving, and every coin is one Max leaves out. */
   maxNothing: "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.",
   /** Max from the Dash wallet can move nothing, and nothing is arriving or left out. */
