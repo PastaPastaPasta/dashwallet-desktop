@@ -25,7 +25,7 @@ export function SettingsPage({ network }: { network: NetworkInfo }) {
         {tab === "general" && <GeneralTab />}
         {tab === "security" && <SecurityTab />}
         {tab === "wallets" && <WalletsTab />}
-        {tab === "coinjoin" && <CoinJoinTab />}
+        {tab === "coinjoin" && <CoinJoinTab network={network} />}
         {tab === "backups" && <BackupsTab />}
         {tab === "advanced" && <AdvancedTab network={network} />}
         {tab === "about" && <AboutTab />}

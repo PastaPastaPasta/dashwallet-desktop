@@ -16,6 +16,14 @@ pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::DirBuilder::new().create(path)
 }
 
+#[cfg(any(windows, test))]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+
+#[cfg(any(windows, test))]
+fn is_reparse_point(file_attributes: u32) -> bool {
+    file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
 pub(crate) fn check_private_dir(path: &Path) -> io::Result<()> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -27,6 +35,11 @@ pub(crate) fn check_private_dir(path: &Path) -> io::Result<()> {
     let safe = safe && {
         use std::os::unix::fs::MetadataExt;
         meta.uid() == rustix::process::geteuid().as_raw() && meta.mode() & 0o022 == 0
+    };
+    #[cfg(windows)]
+    let safe = safe && {
+        use std::os::windows::fs::MetadataExt;
+        !is_reparse_point(meta.file_attributes())
     };
     if !safe {
         return Err(io::Error::new(
@@ -45,6 +58,10 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn fsync_dir(path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Err(e) = fault("fsx.fsync_dir") {
+        return Err(io::Error::other(e.to_string()));
+    }
     #[cfg(unix)]
     {
         fs::File::open(path)?.sync_all()
@@ -205,5 +222,12 @@ mod tests {
         assert_eq!(utc_stamp(t), "20261125T005000Z");
         let leap = UNIX_EPOCH + Duration::from_secs(951_782_400);
         assert_eq!(utc_stamp(leap), "20000229T000000Z");
+    }
+
+    #[test]
+    fn reparse_point_flag_detects_windows_reparse_directories() {
+        assert!(!is_reparse_point(0x0010));
+        assert!(is_reparse_point(FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(is_reparse_point(0x0010 | FILE_ATTRIBUTE_REPARSE_POINT));
     }
 }

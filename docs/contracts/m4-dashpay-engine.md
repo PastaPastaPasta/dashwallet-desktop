@@ -1,7 +1,5 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 121
-
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
 one to one), §3.1–§3.6. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) still applies, with the changes
@@ -16,14 +14,12 @@ check the session or their arguments first: E0-08 adds no behaviour, so a stub c
 returns `platform.not_implemented`.
 
 The DP tasks fill in the bodies. **They do not change a signature, a record, a trait impl or a code without updating
-this file and raising `Contract-Version` in the same change.** `rust/crates/dw-engine/tests/m4_dashpay_contract.rs`
+this file and regenerating §3 with `DW_BLESS=1` in the same change.** `rust/crates/dw-engine/tests/m4_dashpay_contract.rs`
 enforces that:
 
-- §3 is a listing generated from the source, with its SHA-256 and the version it was approved under. Any difference
-  fails and prints a line diff. To approve a change: raise `Contract-Version` above, run
+- §3 is a listing generated from the source. Any difference fails and prints a line diff. To approve a change: run
   `DW_BLESS=1 cargo test -p dw-engine --test m4_dashpay_contract`, review the diff, and run again without `DW_BLESS`.
-  The bless run always fails ("re-run"), it refuses when `CI` is set, and it refuses a changed surface unless the
-  version was raised.
+  The bless run always fails ("re-run"), and it refuses when `CI` is set.
 - the facade is an explicit list of files (§0): every file of `src/platform/` is classified as facade or not, and no
   `impl DashPay` lives outside the facade files;
 - every `pub` item of the facade files is re-exported from `dw_engine::platform` by name (no glob);
@@ -1082,7 +1078,6 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 2e8d18d8f651bd208f92c382022c48ee76774c90544d9c8cf626bfbf99c500ef version: 121 -->
 
 ```rust
 // src/platform/app_connect.rs

@@ -189,6 +189,10 @@ pub struct CoinJoinBalances {
     /// minimum, mixed or not (collaterals, change, a consolidated output):
     /// what "Move mixed coins" can take, so what it is offered for.
     pub coinjoin_account: u64,
+    /// Confirmed, unlocked CoinJoin-account coins above the sweep minimum
+    /// held by a coordinator hand-off (`Legacy`, `FinalInputs`, `Collateral`):
+    /// what "Return to Core" (`return_from_mixing`) can recover.
+    pub held_from_mixing: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1167,6 +1171,19 @@ fn compute_balances(
         })
         .map(|c| c.value())
         .sum();
+    let held_from_mixing = (view.coins.iter())
+        .filter(|c| {
+            c.coin.coinjoin_account
+                && c.coin.coinjoin_handoff.is_some()
+                && !c.coin.user_locked
+                && c.coin.utxo.is_confirmed
+                && c.value() > dw_coinjoin::recovery::SWEEP_MIN_COIN
+                && c.path
+                    .as_ref()
+                    .is_some_and(|p| is_coinjoin_path(p, network))
+        })
+        .map(|c| c.value())
+        .sum();
     (
         CoinJoinBalances {
             anonymizable,
@@ -1175,6 +1192,7 @@ fn compute_balances(
             fully_mixed,
             mixable_unfinished,
             coinjoin_account,
+            held_from_mixing,
         },
         average,
     )
@@ -3284,6 +3302,9 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.refuse_while_mixing(wallet_id)?;
+            if target == SweepTarget::ReturnToCore {
+                this.refuse_while_restored()?;
+            }
             let picked = {
                 let fence = this.coin_fence(wallet_id).await?;
                 this.sweep_coins(wallet_id, &fence, target, false).await?
@@ -3616,6 +3637,8 @@ impl NetworkSession {
             let mut fees: Vec<u64> = Vec::with_capacity(picked.chunks.len());
             // A consolidation's reserved CoinJoin address, per signed chunk.
             let mut addresses: Vec<Address> = Vec::new();
+            // Return to Core receive addresses already picked in this sweep.
+            let mut return_addresses: HashSet<Address> = HashSet::new();
             let mut sign_failure = None;
             let release_all = |signed: &[(Transaction, u64)]| {
                 for (unsent, _) in signed {
@@ -3625,11 +3648,20 @@ impl NetworkSession {
             };
             for chunk in &picked.chunks {
                 let dest = match target {
-                    SweepTarget::Bip44 | SweepTarget::ReturnToCore => wallet
+                    SweepTarget::Bip44 => wallet
                         .core()
                         .next_receive_address_for_account(0)
                         .await
                         .map_err(EngineError::from),
+                    SweepTarget::ReturnToCore => {
+                        let addr = this
+                            .return_receive_address(wallet_id, &return_addresses)
+                            .await;
+                        if let Ok(ref a) = addr {
+                            return_addresses.insert(a.clone());
+                        }
+                        addr
+                    }
                     SweepTarget::CoinJoin => this
                         .reserve_coinjoin_addresses(wallet_id, 1, false)
                         .await
