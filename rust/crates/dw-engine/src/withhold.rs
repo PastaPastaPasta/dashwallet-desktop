@@ -235,6 +235,7 @@ impl SessionHub {
                     || histories.get(id).is_some_and(|h| {
                         !h.rescan_holds.is_empty()
                             || !h.fork_kept_locks.is_empty()
+                            || !h.fork_kept_ancestor_inputs.is_empty()
                             || !h.uncertain_fork_spends.is_empty()
                             || (h.txs.iter()).any(|(t, e)| {
                                 withholding_candidate(e) && spends_known_coin(h, t, e)
@@ -353,8 +354,13 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// again, ends the hold: key-wallet then spends them itself. So does a
 /// winner's block that spends them (key-wallet no longer holds them), an
 /// abandon the ChainLock exception lets through, and the end of the session.
+/// Also includes restored inputs from removed ancestors and from spends
+/// whose lock may have been evicted.
 fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
-    if h.fork_kept_locks.is_empty() && h.uncertain_fork_spends.is_empty() {
+    if h.fork_kept_locks.is_empty()
+        && h.fork_kept_ancestor_inputs.is_empty()
+        && h.uncertain_fork_spends.is_empty()
+    {
         return BTreeSet::new();
     }
     let accounts = core.accounts.all_accounts();
@@ -373,6 +379,7 @@ fn fork_kept_inputs(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<Out
         .filter_map(|t| h.txs.get(t))
         .filter(|e| e.context.block_info().is_none() && !e.is_abandoned())
         .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .chain(h.fork_kept_ancestor_inputs.values().flatten().copied())
         .chain(h.uncertain_fork_spends.values().flatten().copied())
         .filter(unspent)
         .collect()

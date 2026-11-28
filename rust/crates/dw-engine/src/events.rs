@@ -792,6 +792,8 @@ pub(crate) struct SessionHub {
     /// its sweep.
     #[cfg(test)]
     pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) pause_shared_abandon_sign: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next dropped payment's release of key-wallet's
     /// reservation, before it runs.
     #[cfg(test)]
@@ -1129,6 +1131,8 @@ impl SessionHub {
             last_abandon_hold: Mutex::new(None),
             #[cfg(test)]
             pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            pause_shared_abandon_sign: Mutex::new(None),
             #[cfg(test)]
             pause_release: Mutex::new(None),
             #[cfg(test)]
@@ -2339,7 +2343,9 @@ impl SessionHub {
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         self.note_held_fork(id, height);
-        let changed = self.history.truncate(id, found.removed, found.unconfirmed);
+        let changed = self
+            .history
+            .truncate(id, height, found.removed, found.unconfirmed);
         self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.

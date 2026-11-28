@@ -383,7 +383,27 @@ impl NetworkSession {
         let result = async {
             let (charge, signer) = charge_fee(&lease, fee)?;
             let inputs = to_sign(&tx, &coins)?;
-            sign_p2pkh_inputs(&signer, &mut tx, &inputs, SIGHASH_ALL).await?;
+            #[cfg(test)]
+            let pause = self.hub.pause_shared_abandon_sign.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.mark_reached();
+                pause.release.notified().await;
+            }
+            {
+                let state = crate::wallet_read::info_of(&w).await?;
+                let core = &state.core_wallet;
+                let excluded = self.hub.excluded_coins(wallet, core);
+                let available = crate::coins::read_coins(core);
+                if tx.input.iter().any(|input| {
+                    let coin = &input.previous_output;
+                    excluded.contains_key(coin)
+                        || !available.coins.iter().any(|c| c.utxo.outpoint == *coin)
+                }) {
+                    return Err(stage_refusal(out_stage(role_of(&row.role))));
+                }
+                sign_p2pkh_inputs(&signer, &mut tx, &inputs, SIGHASH_ALL).await?;
+            }
             let txid = tx.txid().to_string();
             let (w_id, id) = (wallet.to_string(), row.id.clone());
             let outpoints: Vec<OutPoint> = coins.iter().map(|(u, _)| u.outpoint).collect();
