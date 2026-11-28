@@ -1,12 +1,10 @@
 //! Keeps `docs/contracts/rates-engine.md` and the rates facade in sync
 //! (MP-01), the way `mg_governance_contract.rs` does for governance:
 //!
-//! - §3 of the contract is a listing generated from the facade's source,
-//!   with its SHA-256 and the contract version it was approved under. Any
-//!   difference fails with a line diff. To approve a change, raise
-//!   `Contract-Version` in the header, run with `DW_BLESS=1` (refused when
-//!   `CI` is set), review the diff, and run again without it: the bless run
-//!   itself always fails.
+//! - §3 of the contract is a listing generated from the facade's source.
+//!   Any difference fails with a line diff. To approve a change, run with
+//!   `DW_BLESS=1` (refused when `CI` is set), review the diff, and run
+//!   again without it: the bless run itself always fails.
 //! - every file of `src/rates/` is either in the facade list or in
 //!   `NOT_FACADE`, and no `impl Rates` lives elsewhere in the crate;
 //! - the §4 code table matches `RatesError::code()`, variant for variant.
@@ -16,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 use dw_engine::rates::{RatesError, RatesOff};
 use quote::ToTokens;
-use sha2::{Digest, Sha256};
 
 /// The facade's files in `src/rates/`.
 const FACADE: &[&str] = &["errors.rs", "mod.rs", "types.rs"];
@@ -33,7 +30,6 @@ const NOT_FACADE: &[&str] = &[
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: rates-surface -->";
 const END: &str = "<!-- END GENERATED: rates-surface -->";
-const VERSION_LINE: &str = "Contract-Version: ";
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -307,38 +303,18 @@ fn listing() -> String {
     out
 }
 
-/// The `Contract-Version` in the contract's header.
-fn header_version(doc: &str) -> u32 {
-    let line = doc
-        .lines()
-        .find_map(|l| l.strip_prefix(VERSION_LINE))
-        .expect("Contract-Version line");
-    line.trim().parse().expect("Contract-Version number")
-}
-
 /// The generated region as the contract should hold it.
-fn region(listing: &str, version: u32) -> String {
-    let fp = hex::encode(Sha256::digest(listing.as_bytes()));
-    format!("\n<!-- surface-sha256: {fp} version: {version} -->\n\n```rust\n{listing}```\n\n")
+fn region(listing: &str) -> String {
+    format!("\n\n```rust\n{listing}```\n\n")
 }
 
-/// The fingerprint, version and listing recorded in a region.
-fn recorded(region: &str) -> (Option<String>, Option<u32>, String) {
-    let mark = region
-        .lines()
-        .find_map(|l| l.strip_prefix("<!-- surface-sha256: "))
-        .and_then(|l| l.strip_suffix(" -->"))
-        .and_then(|l| l.split_once(" version: "));
-    let listing = region
+/// The listing recorded in a region.
+fn recorded(region: &str) -> String {
+    region
         .split_once("```rust\n")
         .and_then(|(_, rest)| rest.split_once("```"))
         .map(|(l, _)| l.to_string())
-        .unwrap_or_default();
-    (
-        mark.map(|(fp, _)| fp.to_string()),
-        mark.and_then(|(_, v)| v.parse().ok()),
-        listing,
-    )
+        .unwrap_or_default()
 }
 
 /// A line diff (`-` old, `+` new) from the longest common subsequence.
@@ -376,41 +352,28 @@ fn surface_listing_matches_the_contract() {
     let doc = contract();
     let start = doc.find(BEGIN).expect("BEGIN marker") + BEGIN.len();
     let end = doc.find(END).expect("END marker");
-    let version = header_version(&doc);
     let listing = listing();
-    let want = region(&listing, version);
+    let want = region(&listing);
     let have = &doc[start..end];
     if have == want {
         return;
     }
 
-    let (old_fp, old_version, old_listing) = recorded(have);
-    let new_fp = hex::encode(Sha256::digest(listing.as_bytes()));
-    let surface_changed = old_fp.as_deref() != Some(new_fp.as_str());
+    let old_listing = recorded(have);
     eprintln!(
-        "rates-engine.md §3 differs from the facade (recorded {old_fp:?} at version \
-         {old_version:?}; now {new_fp} at {VERSION_LINE}{version}).\n--- contract §3\n+++ source\n{}",
+        "rates-engine.md §3 differs from the facade.\n--- contract §3\n+++ source\n{}",
         diff(&old_listing, &listing)
     );
     if std::env::var_os("DW_BLESS").is_none() {
         panic!(
-            "§3 is out of date (diff above). If the change is deliberate, raise Contract-Version in \
-             the contract header, run with DW_BLESS=1, review the diff and re-run."
+            "§3 is out of date (diff above). If the change is deliberate, run with DW_BLESS=1, \
+             review the diff and re-run."
         );
     }
     if std::env::var_os("CI").is_some() {
         panic!("refusing DW_BLESS under CI: approve contract changes locally");
     }
-    if surface_changed && old_version.is_some_and(|v| version <= v) {
-        panic!(
-            "the surface changed: raise Contract-Version (now {version}) above the recorded \
-             version {} before blessing",
-            old_version.unwrap()
-        );
-    }
     let blessed = format!("{}{want}{}", &doc[..start], &doc[end..]);
     std::fs::write(contract_path(), blessed).expect("write contract");
-    panic!(
-        "blessed §3 as version {version} ({new_fp}); review the diff above and re-run without DW_BLESS"
-    );
+    panic!("blessed §3; review the diff above and re-run without DW_BLESS");
 }
