@@ -183,6 +183,8 @@ test("a temporary Platform error when refreshing after a group mismatch keeps Tr
   await expect(page.getByTestId("connect-quote-error")).toHaveText("Dash Platform is unavailable for this request. Make sure Dash Platform is on and connected, then try again.");
   await expect(page.getByTestId("connect-quote-retry")).toBeVisible();
   await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await expect(page.getByTestId("connect-limit")).toBeDisabled();
+  await expect(page.getByTestId("connect-binding").nth(1).getByTestId("connect-binding-check")).toBeDisabled();
 
   await page.getByTestId("connect-quote-retry").click();
   await quoted(page);

@@ -299,9 +299,10 @@ export class ConnectFlow extends Model {
     }
   }
 
-  /** The choice may still change: the sheet is open and no approval of it is outstanding. */
+  /** The choice may still change: the sheet is open, no approval of it is outstanding, and it needs
+   * no read of the request first (Try again's). */
   get editable(): boolean {
-    return this.phase === "sheet" && !this.busy && this.attempted === null;
+    return this.phase === "sheet" && !this.busy && this.attempted === null && !this.#refresh;
   }
 
   /** The limit as typed is within the sheet's maximum. */

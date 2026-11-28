@@ -513,6 +513,32 @@ describe("the flow over the fixture", () => {
     expect(flow.phase).toBe("done");
   });
 
+  it("an edit after a refresh that failed temporarily doesn't quote the stale sheet: only Try again's read turns Approve on", async () => {
+    const { flow, backend, link } = await open("ok");
+    const realSheet = backend.appConnectSheet.bind(backend);
+    const quote = vi.spyOn(backend, "appConnectQuote").mockRejectedValueOnce(err("connect.plan_changed"));
+    const sheet = vi.spyOn(backend, "appConnectSheet").mockRejectedValueOnce(err("platform.timeout")).mockImplementation(realSheet);
+    const approved = vi.spyOn(backend, "appConnectApprove");
+    await flow.approve();
+    await vi.waitFor(() => expect(sheet).toHaveBeenCalledTimes(1));
+    await settle();
+    expect([flow.phase, flow.quote, flow.editable]).toEqual(["sheet", null, false]);
+
+    flow.toggle(flow.sheet!.bindings[1]!);
+    flow.setLimit("0.02");
+    flow.setIdentity(flow.identity!);
+    await settle();
+    await settle();
+    expect([quote.mock.calls.length, flow.quote, flow.quoting, flow.limit, flow.quoteError]).toEqual([1, null, false, "0.05", err("platform.timeout")]);
+
+    await flow.approve();
+    await settle();
+    expect([sheet.mock.calls.length, approved.mock.calls.length, link().started]).toEqual([2, 0, false]);
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    await approve(flow);
+    expect([flow.phase, sheet.mock.calls.length]).toEqual(["done", 2]);
+  });
+
   it("a quote still running when a refresh fails temporarily doesn't answer on the sheet it no longer matches", async () => {
     const { flow, backend } = await open("ok");
     const realQuote = backend.appConnectQuote.bind(backend);
