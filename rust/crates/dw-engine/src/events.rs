@@ -2274,7 +2274,9 @@ impl SessionHub {
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
         self.note_held_fork(id, height);
-        let changed = self.history.truncate(id, found.removed, found.unconfirmed);
+        let changed = self
+            .history
+            .truncate(id, height, found.removed, found.unconfirmed);
         self.rebuild_restore_holds_after_truncation(id);
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
