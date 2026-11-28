@@ -578,7 +578,7 @@ export class ShieldedFlow extends Model {
 
   /** Confirm: the quote's grant, then the call (one at a time). `confirmUnrecorded`: the user
    * confirmed going on while the wallet holds a spend whose record was lost (DEC-1057). */
-  async run(grant: GrantRequest, confirmUnrecorded = false): Promise<void> {
+  async run(grant: GrantRequest, confirmUnrecorded = false, coinSet?: string): Promise<void> {
     const request = this.request;
     if (this.running || request === null) return;
     let ran = false;
@@ -594,7 +594,7 @@ export class ShieldedFlow extends Model {
         this.step = "running";
         if (moveStages(request.kind).length) this.progressId = crypto.getRandomValues(new Uint32Array(1))[0];
         this.changed();
-        return this.call(request, g.id, confirmUnrecorded);
+        return this.call(request, g.id, confirmUnrecorded, coinSet);
       });
       if (got) {
         this.result = got.value;
@@ -622,10 +622,10 @@ export class ShieldedFlow extends Model {
     this.api.platformAddressesSync(this.walletId).then(shieldedSettled, () => undefined);
   }
 
-  private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
+  private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean, coinSet?: string): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
-        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, fundAmount(r), grant, this.progressId) };
+        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, fundAmount(r, coinSet), grant, this.progressId) };
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":

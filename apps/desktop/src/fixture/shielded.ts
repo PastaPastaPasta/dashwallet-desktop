@@ -219,6 +219,7 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   const w = wallet(world, walletId);
   const main = w.coins.filter((u) => u.coinjoinRounds === null && !u.coinjoinDenominated && !w.otherAccounts?.includes(`${u.outpoint.txid}:${u.outpoint.vout}`));
   const final = main.filter((u) => u.confirmations > 0 || u.instantLocked);
+  const coinSet = final.map((u) => `${u.outpoint.txid}:${u.outpoint.vout}`).sort().join(",");
   if (final.some((u) => u.userLocked || u.reserved)) raise(`${domain}.coins_locked`, "coins locked");
   if (final.length > SHIELD_LOCK_INPUTS) raise(`${domain}.too_many_inputs`, "too many inputs", { kind: "number", value: final.length });
   const totalDuffs = final.reduce((n, u) => n + u.amount, 0);
@@ -229,11 +230,13 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   const arriving = main.filter((u) => !final.includes(u) && u.excluded === null);
   const arrivingDuffs = arriving.reduce((n, u) => n + u.amount, 0);
   if (duffs < floor) {
-    const all = [...final, ...arriving];
-    const arrivingClears = arriving.length > 0 && !all.some((u) => u.userLocked || u.reserved) && all.length <= SHIELD_LOCK_INPUTS && totalDuffs + arrivingDuffs - drainFee(all.length) >= floor;
-    raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs, arrivingDuffs, arrivingClears });
+    const inputs = final.length + arriving.length;
+    const arrivingBlock = arriving.some((u) => u.userLocked || u.reserved) ? "held" : inputs > SHIELD_LOCK_INPUTS ? "inputCap" : null;
+    const arrivingClears = arriving.length > 0 && arrivingBlock === null && totalDuffs + arrivingDuffs - drainFee(inputs) >= floor;
+    const otherArrivingDuffs = w.coins.filter((u) => !main.includes(u) && u.confirmations === 0 && !u.instantLocked && u.excluded === null).reduce((n, u) => n + u.amount, 0);
+    raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs, arrivingDuffs, arrivingClears, arrivingBlock, otherArrivingDuffs });
   }
-  return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
+  return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs, coinSet } };
 }
 
 /** A shield's quote of `amount`: an amount with the fee on top, or a Core Max. */
@@ -457,13 +460,13 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   shield_from_core: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): ShieldOutcome => {
     refuseSpendsOff(ctx, walletId, "shield_from_core");
     const q = shieldQuoteOf(ctx, walletId, amount);
+    if (q.max && (amount.kind !== "quotedAll" || amount.coinSet !== q.max.coinSet)) raise(SHIELDED_CODES.coinsChanged, "the coins changed since the quote");
     const duffs = q.duffs;
     const s = ctx.world.pending.shielded!;
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "duffs", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
-    // A Core Max's grant is its quote's coins' sum: coins read again to another sum are not the quote's.
-    if (amount.kind === "all" && g.grant.purpose.maxDuffs !== q.totalDuffs) raise(SHIELDED_CODES.coinsChanged, "the coins changed since the quote");
+    if (q.max && g.grant.purpose.maxDuffs !== q.totalDuffs) raise(SHIELDED_CODES.coinsChanged, "the coins changed since the quote");
     useGrant(ctx.world, grant);
     // The engine's funding gate: a shield's asset lock waits while Core sync is not caught up.
     if (ctx.world.sync.running && !ctx.world.sync.caughtUp) raise(SHIELDED_CODES.notSynced, "Core sync is not caught up", { kind: "reason", reason: "core" });
