@@ -56,7 +56,8 @@ struct Token {
 
 impl Token {
     fn new(access: Zeroizing<String>, expires_in: u64, explicit: bool) -> Self {
-        let lifetime = Duration::from_secs(expires_in.clamp(60, 86_400) - 15);
+        // Never outlives the lifetime PiggyCards gave, less a margin.
+        let lifetime = Duration::from_secs(expires_in.min(86_400).saturating_sub(15));
         Self {
             access,
             expires: tokio::time::Instant::now() + lifetime,

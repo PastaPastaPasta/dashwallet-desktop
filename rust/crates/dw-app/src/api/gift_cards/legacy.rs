@@ -194,7 +194,11 @@ pub(super) async fn migrate(
             .as_ref()
             .filter(|a| orders.iter().any(|o| o.account == a.key()));
         if let Some(account) = account {
-            changes.push(Change::Account(account));
+            // An account the wallet already holds keeps its current
+            // password (a restore may have brought a newer one).
+            if book.account(&account.key()).is_none() {
+                changes.push(Change::Account(account));
+            }
             if book.active.is_none() {
                 changes.push(Change::Active(Some(account.key())));
             }

@@ -91,6 +91,7 @@ impl Context<'_> {
     }
 
     async fn activate(&self, account: Account) -> Result<GiftAccount, AppError> {
+        password(&account)?;
         self.store
             .write(&[
                 Change::Account(&account),
@@ -105,16 +106,15 @@ impl Context<'_> {
     }
 
     async fn login(&self, account: &Account, explicit: bool) -> Result<Zeroizing<String>, AppError> {
-        let password = account
-            .password
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| fail("Verify your PiggyCards email before signing in."))?;
-        let (access, expires_in) = self.piggy.login(&account.user_id, password).await?;
-        let token = Token::new(access, expires_in, explicit);
+        let token = self.fetch_token(account, explicit).await?;
         let access = token.access.clone();
         self.cards.keep_token(self.store.wallet(), account.key(), token);
         Ok(access)
+    }
+
+    async fn fetch_token(&self, account: &Account, explicit: bool) -> Result<Token, AppError> {
+        let (access, expires_in) = self.piggy.login(&account.user_id, password(account)?).await?;
+        Ok(Token::new(access, expires_in, explicit))
     }
 
     /// Signs in to the active account, or to `account` (one of this
@@ -127,10 +127,11 @@ impl Context<'_> {
         let account = book
             .account(&key)
             .ok_or_else(|| fail("Set up a PiggyCards account first."))?;
-        self.login(account, true).await?;
+        let token = self.fetch_token(account, true).await?;
         self.store
-            .write(&[Change::Pending(None), Change::Active(Some(key))])
+            .write(&[Change::Pending(None), Change::Active(Some(key.clone()))])
             .await?;
+        self.cards.keep_token(self.store.wallet(), key, token);
         Ok(GiftAccount::SignedIn {
             email: account.signup.email.clone(),
         })
@@ -164,4 +165,13 @@ impl Context<'_> {
             None => self.login(account, false).await,
         }
     }
+}
+
+fn password(account: &Account) -> Result<&str, AppError> {
+    account
+        .password
+        .as_deref()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| fail("Verify your PiggyCards email before signing in."))
 }
