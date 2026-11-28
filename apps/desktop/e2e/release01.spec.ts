@@ -711,7 +711,6 @@ test.describe("Export CSV", () => {
     await expect(alert).toBeVisible();
 
     await page.getByTestId("sidebar-pay").click();
-    await page.getByTestId("pay-tabs-address").click();
     await page.getByTestId("pay-address").fill("yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
     await page.getByTestId("pay-amount").fill("0.5");
     await page.getByTestId("pay-fee-line").waitFor();
