@@ -3249,6 +3249,9 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.refuse_while_mixing(wallet_id)?;
+            if target == SweepTarget::ReturnToCore {
+                this.refuse_while_restored()?;
+            }
             let picked = {
                 let fence = this.coin_fence(wallet_id).await?;
                 this.sweep_coins(wallet_id, &fence, target, false).await?
@@ -3557,6 +3560,8 @@ impl NetworkSession {
             let mut fees: Vec<u64> = Vec::with_capacity(picked.chunks.len());
             // A consolidation's reserved CoinJoin address, per signed chunk.
             let mut addresses: Vec<Address> = Vec::new();
+            // Return to Core receive addresses already picked in this sweep.
+            let mut return_addresses: HashSet<Address> = HashSet::new();
             let mut sign_failure = None;
             let release_all = |signed: &[(Transaction, u64)]| {
                 for (unsent, _) in signed {
@@ -3572,15 +3577,13 @@ impl NetworkSession {
                         .await
                         .map_err(EngineError::from),
                     SweepTarget::ReturnToCore => {
-                        this.issue_address(wallet_id, None).await.and_then(|info| {
-                            info.address
-                                .parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>()
-                                .map_err(|e| EngineError::Internal(format!("issued address: {e}")))?
-                                .require_network(this.network.core_network())
-                                .map_err(|e| {
-                                    EngineError::Internal(format!("issued address network: {e}"))
-                                })
-                        })
+                        let addr = this
+                            .return_receive_address(wallet_id, &return_addresses)
+                            .await;
+                        if let Ok(ref a) = addr {
+                            return_addresses.insert(a.clone());
+                        }
+                        addr
                     }
                     SweepTarget::CoinJoin => this
                         .reserve_coinjoin_addresses(wallet_id, 1, false)

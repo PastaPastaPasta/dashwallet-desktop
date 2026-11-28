@@ -10,6 +10,7 @@ import { IpcBackend } from "../api/tauri";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { installFixture } from "../fixture/index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "../fixture/scenarios";
+import { t } from "../i18n";
 import { appError } from "../onboarding/testWorld";
 import type { MixedCoinsSweepPlan } from "../api/generated/MixedCoinsSweepPlan";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
@@ -676,5 +677,9 @@ describe("ReturnToCoreFlow", () => {
     expect(returnResultText(rf.result!, (n) => `${n}`).kind).toBe("unknown");
     await rf.resend();
     expect(rf.resent).toBe("unknown");
+  });
+
+  it("explains a gap_limit refusal with the receive gap-limit way out", () => {
+    expect(returnRefusalText({ error: appError("gap_limit"), planFailed: false })).toBe(t("receive.dash.gapLimit"));
   });
 });

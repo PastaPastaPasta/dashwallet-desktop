@@ -653,6 +653,7 @@ export function returnResultText(r: MixedCoinsSweepResult, amount: (duffs: numbe
 export function returnRefusalText(flow: Pick<ReturnToCoreFlow, "error" | "planFailed">): string {
   if (hasCode(flow.error, "coinjoin.nothing_to_move")) return RETURN_COPY.nothing;
   if (hasCode(flow.error, "coinjoin.mixing_active")) return RETURN_COPY.mixing.text;
+  if (hasCode(flow.error, "gap_limit")) return t("receive.dash.gapLimit");
   return refusalText(flow);
 }
 
