@@ -4765,6 +4765,48 @@ fn disconnect_disables_present_verified_keys_when_predicted_reapproval_key_never
     assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 }
 
+/// #1068: an approval that ends `NotConfirmed` leaves its nonce unreserved, so
+/// a credit transfer signed after it could be reported landed on the
+/// approval's nonce. Until that is fixed, mainnet address sends stay off: on
+/// mainnet the transfer and its quote are refused before anything is read or
+/// signed.
+#[test]
+fn mainnet_transfer_after_an_unconfirmed_approval_stays_off_until_1068() {
+    use crate::platform::errors::CreditsError;
+    use crate::platform::platform_moves::{ADDRESS_SENDS_ON_MAINNET, PLATFORM_ADDRESS_SENDS};
+
+    const {
+        assert!(
+            !ADDRESS_SENDS_ON_MAINNET,
+            "mainnet address sends must stay off until #1068 reserves an unconfirmed App Connect approval's nonce"
+        )
+    };
+    let f = Fixture::on(true);
+    let me = b58(&id(ME));
+    let main = link(request(), NetworkSel::Mainnet);
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&main, &choice);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.approve(&main, &choice, &grant).unwrap_err(),
+        ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed
+        }
+    );
+    let off = |r: Result<(), CreditsError>| match r {
+        Err(CreditsError::Platform(PlatformError::FeatureOff { feature }))
+            if feature == PLATFORM_ADDRESS_SENDS => {}
+        other => panic!("a mainnet transfer must stay off until #1068 is fixed, got {other:?}"),
+    };
+    let amount = 100_000_000;
+    off(f.transfer_quote(&me, amount).map(drop));
+    let transfer = f.withdraw_grant(amount);
+    off(f
+        .transfer_to_platform(&me, "dash1notreached", amount, &transfer)
+        .map(drop));
+    assert!(f.net.transfers_sent.lock().unwrap().is_empty());
+}
+
 #[test]
 fn e1_transfer_timeout_blocks_disconnect_from_stealing_nonce_and_never_falsely_reports_landed() {
     use crate::platform::errors::CreditsError;

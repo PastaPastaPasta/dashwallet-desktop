@@ -4315,7 +4315,15 @@ fn top_up_open(network: Network) -> Result<(), PlatformError> {
 pub(crate) const PLATFORM_ADDRESS_SENDS: &str = "platform_address_sends";
 
 /// Whether [`PLATFORM_ADDRESS_SENDS`] is on for mainnet in this build.
-const ADDRESS_SENDS_ON_MAINNET: bool = false;
+///
+/// Keep it off until #1068 is fixed. An App Connect approval that ends
+/// `NotConfirmed` keeps no reservation of the nonce it signed at, so a credit
+/// transfer from the same identity can sign at that nonce and be reported
+/// landed when the approval took it (`withdrawal::executed`). This flag is
+/// what keeps that transfer off on mainnet; the App Connect test
+/// `mainnet_transfer_after_an_unconfirmed_approval_stays_off_until_1068`
+/// fails if it is turned on.
+pub(crate) const ADDRESS_SENDS_ON_MAINNET: bool = false;
 
 /// Refused on mainnet while [`PLATFORM_ADDRESS_SENDS`] is off, before
 /// anything is read, written or redeemed. What settles, finishes or exits
