@@ -2165,12 +2165,17 @@ fn forked_ancestor_inputs(
 
 /// The fork-removed own spends `inputs` descend from, with their inputs,
 /// by the loaded wallet that removed each. A verified lock naming `inputs`
-/// proves them, so their restored coins stay held for the session.
+/// proves them, so their restored coins stay held for the session. The
+/// walk follows any known transaction not in a ChainLocked block, as
+/// another wallet may not have heard the fork yet.
 fn fork_removed_ancestors(
     wallets: &HashMap<WalletId, WalletHistory>,
     skip: &HashSet<WalletId>,
     inputs: &[OutPoint],
 ) -> Vec<(WalletId, Txid, Vec<OutPoint>)> {
+    if wallets.values().all(|h| h.fork_removed_spends.is_empty()) {
+        return Vec::new();
+    }
     let mut parents: Vec<_> = inputs.iter().map(|o| o.txid).collect();
     let mut walked = HashSet::new();
     let mut held = Vec::new();
@@ -2188,8 +2193,7 @@ fn fork_removed_ancestors(
             } else if let Some(kept) = h.fork_kept_ancestor_inputs.get(&parent) {
                 kept.clone()
             } else if let Some(entry) = h.txs.get(&parent)
-                && entry.context.block_info().is_none()
-                && !entry.is_abandoned()
+                && !matches!(entry.context, TransactionContext::InChainLockedBlock(_))
             {
                 (entry.tx.input.iter()).map(|i| i.previous_output).collect()
             } else {
