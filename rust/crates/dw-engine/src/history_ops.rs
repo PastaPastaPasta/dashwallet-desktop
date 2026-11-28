@@ -809,7 +809,12 @@ impl NetworkSession {
                 h.put_back_unread = put_back.is_none();
                 h.put_back = put_back.unwrap_or_default();
                 h.lock_parents = lock_parents;
-                for r in records.iter().chain(&in_memory) {
+                for r in &records {
+                    if !h.awaiting_after_fork(&r.txid) {
+                        h.upsert_with_locks(r, None, locks);
+                    }
+                }
+                for r in &in_memory {
                     h.upsert_with_locks(r, None, locks);
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
@@ -946,6 +951,7 @@ impl NetworkSession {
                     .map(|c| (c.block_height, c.block_hash));
                 candidates =
                     crate::history::settled_candidates(&h.txs, sent, stored, own.map(|c| c.0));
+                candidates.retain(|(t, _)| !h.awaiting_after_fork(t));
                 h.claim_marks = Some(sent.clone());
                 choice
             })

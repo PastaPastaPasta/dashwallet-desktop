@@ -79,7 +79,7 @@ impl Scenario {
     fn lock(&self) -> InstantLock {
         InstantLock {
             txid: self.p.txid(),
-            inputs: vec![self.a],
+            inputs: self.p.input.iter().map(|i| i.previous_output).collect(),
             ..InstantLock::default()
         }
     }
@@ -904,6 +904,77 @@ fn a_restart_loads_the_old_block_record_and_keeps_a_local_payments_sent_mark() {
     assert!(sent_marks(&s.session, s.id).contains(&s.p.txid()));
 }
 
+fn with_stored_payment_copied(s: &Scenario, while_paused: impl FnOnce()) {
+    use std::sync::atomic::Ordering;
+
+    wait_stored(&s.session, s.id, &[s.p.txid()]);
+    let copied = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+    *s.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+    let (session, id) = (Arc::clone(&s.session), s.id);
+    let load = s
+        .session
+        .rt
+        .spawn(async move { session.load_history_for(vec![id]).await });
+    super::own_spend_disk_tests::eventually("the history copy", || {
+        copied.reached.load(Ordering::SeqCst)
+    });
+    while_paused();
+    copied.release.notify_one();
+    s.engine.block_on(load).unwrap().unwrap();
+    s.session.hub.settle_rereads();
+}
+
+#[test]
+fn stale_history_after_a_fork_preserves_the_removed_spend_for_a_late_lock() {
+    let s = scenario();
+    s.mined();
+    with_stored_payment_copied(&s, || {
+        s.fork();
+        assert_eq!(s.row(), None);
+    });
+    assert_eq!(s.row(), None, "the copied row belongs to the removed block");
+
+    s.hear_lock();
+    s.session.hub.settle_rereads();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
+fn stale_history_after_a_fork_keeps_a_local_payments_sent_mark() {
+    let mut s = scenario();
+    s.p = send(
+        &s.engine,
+        &s.session,
+        s.id,
+        CoinSource::Outpoints(vec![s.a]),
+        PAID_OUT,
+        false,
+    );
+    s.mined();
+    with_stored_payment_copied(&s, || {
+        s.fork();
+        assert_eq!(s.row(), None);
+    });
+    assert_eq!(s.row(), None, "the copied row belongs to the removed block");
+    assert!(sent_marks(&s.session, s.id).contains(&s.p.txid()));
+}
+
+#[test]
+fn stale_history_after_a_fork_keeps_the_input_held_after_lock_overflow() {
+    let s = scenario();
+    s.overflow_early_locks();
+    s.mined();
+    with_stored_payment_copied(&s, || {
+        s.fork();
+        assert_eq!(
+            s.row().map(|r| (r.0, r.1)),
+            Some((TxStatusKind::Unconfirmed, false))
+        );
+    });
+    s.assert_kept(false, TxActionRefusal::RescanFirst);
+}
+
 #[test]
 fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     use dash_spv::EventHandler;
@@ -941,4 +1012,64 @@ fn only_a_verified_lock_relevant_to_the_wallet_is_kept() {
     s.hear_lock();
     let kept = hub.history.read_wallet(&s.id, |h| h.session_locks.clone());
     assert_eq!(kept, [s.p.txid()].into_iter().collect());
+}
+
+#[test]
+fn a_stored_row_read_before_the_fork_cannot_replace_the_kept_payment() {
+    use std::sync::atomic::Ordering;
+    let s = scenario();
+    s.hear_lock();
+    s.mined();
+    wait_stored(&s.session, s.id, &[s.p.txid()]);
+    let copied = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+    *s.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+    let (session, id) = (Arc::clone(&s.session), s.id);
+    let load = s
+        .session
+        .rt
+        .spawn(async move { session.load_history_for(vec![id]).await });
+    super::own_spend_disk_tests::eventually("the history copy", || {
+        copied.reached.load(Ordering::SeqCst)
+    });
+    s.fork();
+    assert_eq!(
+        s.row().map(|r| (r.0, r.1)),
+        Some((TxStatusKind::Unconfirmed, true))
+    );
+    copied.release.notify_one();
+    s.engine.block_on(load).unwrap().unwrap();
+    s.session.hub.settle_rereads();
+    s.assert_kept(true, TxActionRefusal::InstantLocked);
+}
+
+#[test]
+fn an_evicted_lock_holds_a_second_input_funded_after_the_fork() {
+    let (mut s, first) = before_funding();
+    let second = funding(9, &[fresh_address(&s.engine, &s.session, s.id)], COIN);
+    let b = OutPoint::new(second.txid(), 0);
+    s.p.input.push(dashcore::TxIn {
+        previous_output: b,
+        ..Default::default()
+    });
+    s.hear_lock();
+    s.overflow_early_locks();
+    s.fund(first);
+    s.mined();
+    s.fork();
+    s.fund(second);
+    assert!(
+        coins(&s.engine, &s.session, s.id)
+            .iter()
+            .any(|(o, _)| *o == b)
+    );
+    let (available, inputs) = s.max();
+    assert_eq!(
+        (
+            balances(&s.session, s.id).confirmed,
+            available,
+            inputs.contains(&b)
+        ),
+        (11 * COIN, 11 * COIN, false)
+    );
 }

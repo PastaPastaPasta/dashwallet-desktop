@@ -1656,24 +1656,23 @@ impl WalletHistory {
             .is_some_and(|out| out.contains_key(&o.vout))
     }
 
-    fn owned_inputs_of(&self, txid: &Txid, entry: &TxEntry) -> Vec<OutPoint> {
-        entry
-            .tx
-            .input
-            .iter()
-            .enumerate()
-            .filter_map(|(n, input)| {
-                let coin = input.previous_output;
-                (entry.own_inputs.contains_key(&(n as u32))
-                    || self.owns_output(&coin)
-                    || self.claimed.contains_key(&coin)
-                    || self
-                        .marked
-                        .get(txid)
-                        .is_some_and(|marked| marked.contains(&coin)))
-                .then_some(coin)
-            })
-            .collect()
+    fn spends_wallet_coin(&self, txid: &Txid, entry: &TxEntry) -> bool {
+        entry.tx.input.iter().enumerate().any(|(n, input)| {
+            let coin = input.previous_output;
+            entry.own_inputs.contains_key(&(n as u32))
+                || self.owns_output(&coin)
+                || self.claimed.contains_key(&coin)
+                || self
+                    .marked
+                    .get(txid)
+                    .is_some_and(|marked| marked.contains(&coin))
+        })
+    }
+
+    pub(crate) fn awaiting_after_fork(&self, txid: &Txid) -> bool {
+        self.fork_kept_locks.contains(txid)
+            || self.uncertain_fork_spends.contains_key(txid)
+            || self.fork_removed_spends.contains_key(txid)
     }
 
     pub(crate) fn remember_if_buffered(&mut self, txid: &Txid, locks: &EarlyInstantLocks) {
@@ -1970,14 +1969,12 @@ impl WalletHistory {
             if lock_overflow
                 && !self.session_locks.contains(txid)
                 && let Some(entry) = self.txs.get(txid)
+                && self.spends_wallet_coin(txid, entry)
             {
-                let own_inputs = self.owned_inputs_of(txid, entry);
-                if !own_inputs.is_empty() {
-                    self.uncertain_fork_spends
-                        .entry(*txid)
-                        .or_default()
-                        .extend(own_inputs);
-                }
+                self.uncertain_fork_spends
+                    .entry(*txid)
+                    .or_default()
+                    .extend(entry.tx.input.iter().map(|input| input.previous_output));
             }
             if self.session_locks.contains(txid)
                 && let Some(entry) = self.txs.get_mut(txid)
@@ -2000,7 +1997,7 @@ impl WalletHistory {
             self.hidden_registrations.remove(txid);
             let own_outputs = self.own_outputs.remove(txid);
             if let Some(entry) = self.txs.remove(txid) {
-                if !self.owned_inputs_of(txid, &entry).is_empty() {
+                if self.spends_wallet_coin(txid, &entry) {
                     self.fork_removed_spends.insert(
                         *txid,
                         ForkRemovedSpend {
