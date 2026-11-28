@@ -1748,14 +1748,13 @@ impl WalletHistory {
         }
         let outputs = self.own_outputs.entry(record.txid).or_default();
         for o in &record.output_details {
-            if matches!(o.role, OutputRole::Received | OutputRole::Change) {
-                if outputs
+            if matches!(o.role, OutputRole::Received | OutputRole::Change)
+                && outputs
                     .insert(o.index, (o.value, matches!(o.role, OutputRole::Change)))
                     .is_none()
-                {
-                    self.fork_restores
-                        .note_output(OutPoint::new(record.txid, o.index));
-                }
+            {
+                self.fork_restores
+                    .note_output(OutPoint::new(record.txid, o.index));
             }
         }
         self.name_registration_collateral(record);
