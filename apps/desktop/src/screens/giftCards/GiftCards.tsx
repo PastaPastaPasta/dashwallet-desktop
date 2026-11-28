@@ -52,6 +52,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [another, setAnother] = useState(false);
+  const [terms, setTerms] = useState(false);
   const working = useRef(false);
 
   async function run(action: () => Promise<GiftAccount>) {
@@ -125,7 +126,7 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
           e.preventDefault();
           const fields = new FormData(e.currentTarget);
           const read = (name: string) => fields.get(name)?.toString() ?? "";
-          void run(() => b.giftCardSignup(walletId, { firstName: read("firstName"), lastName: read("lastName"), email: read("email"), state: read("state") }));
+          void run(() => b.giftCardSignup(walletId, { firstName: read("firstName"), lastName: read("lastName"), email: read("email"), state: read("state") }, terms));
         }}>
           <h2>{t("giftCards.provider")}</h2>
           {(stored.data ?? []).filter((a) => !a.active).length > 0 && (
@@ -156,7 +157,16 @@ function PiggyCards({ wallet, network }: { wallet: WalletSummary; network: Netwo
               </select>}
             </FormField>
           </div>
-          <DashButton type="submit" variant="filledBlue" disabled={busy}>{t("giftCards.sendCode")}</DashButton>
+          <div className="gift-terms">
+            <DashButton variant="tintedGray" disabled={busy} onClick={() => {
+              void b.giftCardOpenTerms().catch((e: unknown) => setError(problem(e, t("giftCards.providerError"))));
+            }}>{t("giftCards.readTerms")}</DashButton>
+            <label>
+              <input type="checkbox" checked={terms} onChange={(e) => setTerms(e.currentTarget.checked)} />
+              {t("giftCards.acceptTerms")}
+            </label>
+          </div>
+          <DashButton type="submit" variant="filledBlue" disabled={busy || !terms}>{t("giftCards.sendCode")}</DashButton>
         </form>
       )}
     </>

@@ -47,7 +47,14 @@ impl Context<'_> {
             .collect())
     }
 
-    pub async fn signup(&self, info: GiftSignup) -> Result<GiftAccount, AppError> {
+    pub async fn signup(
+        &self,
+        info: GiftSignup,
+        terms_accepted: bool,
+    ) -> Result<GiftAccount, AppError> {
+        if !terms_accepted {
+            return Err(fail("Accept the PiggyCards terms and conditions first."));
+        }
         let info = info.checked()?;
         let book = self.store.read().await?;
         if book.active.as_deref().is_some_and(|key| self.signed_in(key)) {

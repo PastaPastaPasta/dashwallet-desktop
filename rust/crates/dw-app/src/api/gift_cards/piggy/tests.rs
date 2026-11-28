@@ -184,7 +184,7 @@ fn otp_sign_in_catalog_invoice_and_claim_follow_the_provider_contract() {
     tauri::async_runtime::block_on(async {
         let ctx = context(&cards, &piggy, &session, wallet);
         assert!(matches!(
-            ctx.signup(profile("fixture@example.invalid")).await.unwrap(),
+            ctx.signup(profile("fixture@example.invalid"), true).await.unwrap(),
             GiftAccount::CodeSent { .. }
         ));
         assert!(matches!(
@@ -283,7 +283,7 @@ fn another_account_keeps_the_earlier_account_and_its_orders() {
             .await
             .unwrap();
         assert!(matches!(
-            ctx.signup(profile("second@example.invalid")).await.unwrap(),
+            ctx.signup(profile("second@example.invalid"), true).await.unwrap(),
             GiftAccount::CodeSent { .. }
         ));
         let second = Account {
@@ -542,6 +542,51 @@ async fn reopened_order_cannot_relay_when_the_provider_has_cancelled_it() {
             .await
             .is_err()
     );
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn the_products_the_mobile_wallets_exclude_are_never_offered() {
+    let (piggy, server) = mock_piggy(vec![get(
+        "GET /dash/v1/giftcards/US?brandId=174 HTTP/1.1",
+        r#"{"code":200,"message":"OK","data":[
+            {"id":1,"name":"Xbox Live $25","currency":"USD","price_type":"fixed","min_denomination":0,"max_denomination":0,"denomination":"25","quantity":5},
+            {"id":2,"name":"Xbox Game Pass Ultimate","currency":"USD","price_type":"fixed","min_denomination":0,"max_denomination":0,"denomination":"25","quantity":5},
+            {"id":3,"name":"Microsoft Store","currency":"USD","price_type":"fixed","min_denomination":0,"max_denomination":0,"denomination":"25","quantity":5}
+        ]}"#,
+    )]);
+    let products = piggy.products("174", "fixture-token").await.unwrap();
+    let ids: Vec<_> = products.iter().map(|p| p.id).collect();
+    assert_eq!(ids, [3]);
+    assert!(!super::excluded("175", "Xbox Live $25"));
+    server.join().unwrap();
+}
+
+#[test]
+fn purchases_are_refused_where_the_system_time_zone_is_in_an_excluded_region() {
+    use crate::api::gift_cards::check_region;
+    assert!(check_region("Europe/Moscow").is_err());
+    assert!(check_region("Asia/Vladivostok").is_err());
+    assert!(check_region("America/Havana").is_err());
+    assert!(check_region("America/New_York").is_ok());
+    assert!(check_region("").is_ok());
+}
+
+#[test]
+fn signup_needs_the_provider_terms_accepted_before_any_request() {
+    let (_demo, session, wallet) = wallet_session();
+    let (piggy, server) = mock_piggy(Vec::new());
+    let cards = GiftCards::default();
+    tauri::async_runtime::block_on(async {
+        let ctx = context(&cards, &piggy, &session, wallet);
+        let refused = ctx
+            .signup(profile("fixture@example.invalid"), false)
+            .await
+            .err()
+            .unwrap();
+        assert!(refused.message.contains("terms"), "{}", refused.message);
+        assert!(matches!(ctx.account_status().await.unwrap(), GiftAccount::SignedOut));
+    });
     server.join().unwrap();
 }
 

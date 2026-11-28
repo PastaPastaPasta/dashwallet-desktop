@@ -101,6 +101,16 @@ pub(super) fn parse_dollar_cents(value: &str) -> Option<u32> {
     (1..=250_000).contains(&cents).then_some(cents)
 }
 
+/// Products the mobile wallets never sell, by brand and a fragment of the
+/// product name (iOS `PiggyCardsCache.disabledGiftCards`).
+const EXCLUDED_PRODUCTS: &[(&str, &str)] = &[("174", "Xbox Live"), ("174", "Xbox Game Pass")];
+
+pub(super) fn excluded(brand: &str, name: &str) -> bool {
+    EXCLUDED_PRODUCTS
+        .iter()
+        .any(|(b, fragment)| *b == brand && name.contains(fragment))
+}
+
 impl Product {
     fn available(self) -> Option<GiftCardProduct> {
         if self.currency != "USD" || self.quantity == 0 {
@@ -287,6 +297,7 @@ impl Piggy {
             .result()?
             .into_iter()
             .filter_map(Product::available)
+            .filter(|p| !excluded(brand, &p.name))
             .collect())
     }
 

@@ -427,7 +427,8 @@ export interface Backend {
   draftPrepare(draft: number, grantId: string): Promise<PreparedTxHandle>;
   giftCardAccount(walletId: string): Promise<GiftAccount>;
   giftCardAccounts(walletId: string): Promise<GiftStoredAccount[]>;
-  giftCardSignup(walletId: string, info: GiftSignup): Promise<GiftAccount>;
+  giftCardSignup(walletId: string, info: GiftSignup, termsAccepted: boolean): Promise<GiftAccount>;
+  giftCardOpenTerms(): Promise<null>;
   giftCardVerifyEmail(walletId: string, code: string): Promise<GiftAccount>;
   giftCardSignIn(walletId: string, account: string | null): Promise<GiftAccount>;
   giftCardSignOut(walletId: string): Promise<GiftAccount>;

@@ -166,6 +166,7 @@ export class IpcBackend implements Backend {
   giftCardAccount = cmd.giftCardAccount;
   giftCardAccounts = cmd.giftCardAccounts;
   giftCardSignup = cmd.giftCardSignup;
+  giftCardOpenTerms = cmd.giftCardOpenTerms;
   giftCardVerifyEmail = cmd.giftCardVerifyEmail;
   giftCardSignIn = cmd.giftCardSignIn;
   giftCardSignOut = cmd.giftCardSignOut;

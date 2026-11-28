@@ -15,6 +15,8 @@ async function quote(page: Page, theme: Theme, value = "25.00") {
   await page.getByLabel("Last name").fill("Buyer");
   await page.getByLabel("US state").selectOption("CA");
   await page.getByLabel("Email", { exact: true }).fill("fixture@example.invalid");
+  await expect(page.getByRole("button", { name: "Send email code" })).toBeDisabled();
+  await page.getByLabel("I accept the PiggyCards terms and conditions").check();
   await page.getByRole("button", { name: "Send email code" }).click();
   await page.getByLabel("Email code", { exact: true }).fill("123456");
   await page.getByRole("button", { name: "Verify email" }).click();

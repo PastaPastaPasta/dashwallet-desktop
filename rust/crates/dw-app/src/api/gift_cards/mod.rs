@@ -26,6 +26,8 @@ use store::{Change, Order, WalletStore};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 const INVOICE_WINDOW_SECS: u64 = 120;
+const TERMS_URL: &str =
+    "https://piggy.cards/index.php?route=information/information&information_id=5";
 const US_STATES: &str = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY";
 
 pub(crate) struct GiftCards {
@@ -359,11 +361,30 @@ fn check_active(state: &AppState, session: &Arc<NetworkSession>) -> Result<(), A
     Ok(())
 }
 
+/// The system time zones of the regions the mobile wallets exclude from
+/// PiggyCards (iOS `GeoRestrictionService`: Russia and Cuba).
+const RESTRICTED_ZONES: &[&str] = &[
+    "Europe/Moscow", "Europe/Kaliningrad", "Europe/Samara", "Europe/Volgograd",
+    "Europe/Saratov", "Europe/Ulyanovsk", "Europe/Astrakhan", "Europe/Kirov",
+    "Asia/Yekaterinburg", "Asia/Omsk", "Asia/Novosibirsk", "Asia/Barnaul", "Asia/Tomsk",
+    "Asia/Novokuznetsk", "Asia/Krasnoyarsk", "Asia/Irkutsk", "Asia/Chita", "Asia/Yakutsk",
+    "Asia/Khandyga", "Asia/Vladivostok", "Asia/Ust-Nera", "Asia/Magadan", "Asia/Sakhalin",
+    "Asia/Srednekolymsk", "Asia/Kamchatka", "Asia/Anadyr", "W-SU", "America/Havana", "Cuba",
+];
+
+fn check_region(zone: &str) -> Result<(), AppError> {
+    if RESTRICTED_ZONES.contains(&zone) {
+        return Err(fail("PiggyCards gift cards are not available in your region."));
+    }
+    Ok(())
+}
+
 async fn active(state: &AppState) -> Result<(Arc<NetworkSession>, u64), AppError> {
     let (session, epoch) = state.session_and_epoch().await?;
     if !matches!(session.network(), DashNetwork::Mainnet) {
         return Err(fail("PiggyCards purchases are available on mainnet only."));
     }
+    check_region(&iana_time_zone::get_timezone().unwrap_or_default())?;
     check_active(state, &session)?;
     Ok((session, epoch))
 }
@@ -547,11 +568,21 @@ commands! {
         ctx.stored_accounts().await
     }
 
-    /// Creates a PiggyCards account and starts email verification if required.
+    /// Creates a PiggyCards account and starts email verification if
+    /// required, once the buyer accepted PiggyCards' terms and conditions.
     #[facade("NetworkSession::vault", "Vault::status", "NetworkSession::write_gift_card_rows", "Vault::seal_wallet_data")]
-    fn gift_card_signup(state, wallet_id: String, info: GiftSignup) -> GiftAccount {
+    fn gift_card_signup(state, wallet_id: String, info: GiftSignup, terms_accepted: bool) -> GiftAccount {
         let ctx = Context::open(&state, &wallet_id).await?;
-        ctx.signup(info).await
+        ctx.signup(info, terms_accepted).await
+    }
+
+    /// Opens PiggyCards' terms and conditions in the browser.
+    #[facade("NetworkSession::vault", "Vault::status")]
+    fn gift_card_open_terms(state) -> () {
+        active(&state).await?;
+        let open_failed = || fail("Could not open the PiggyCards terms and conditions.");
+        tauri::async_runtime::spawn_blocking(|| open::that_detached(TERMS_URL))
+            .await.map_err(|_| open_failed())?.map_err(|_| open_failed())
     }
 
     /// Verifies the email code, saves the generated password, and signs in.

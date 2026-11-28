@@ -51,6 +51,8 @@ dirs = "7"
 # `open_tx_in_explorer`: the system browser, from Rust only. The renderer has
 # no opener or shell grant, and the command builds the only URL it may open.
 open = "5"
+# Gift cards: the system time zone, for the regions PiggyCards excludes.
+iana-time-zone = "0.1.65"
 # Canonical data roots without Windows' `\\?\` prefix.
 dunce = "1"
 dashcore = { workspace = true }

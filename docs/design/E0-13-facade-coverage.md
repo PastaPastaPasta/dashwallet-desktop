@@ -374,7 +374,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `NetworkSession::upgrade_notice` | dw-engine/src/session.rs | `open_network` |
 | `NetworkSession::username_in_requests` | dw-engine/src/receive.rs | `username_in_requests` |
 | `NetworkSession::utxos` | dw-engine/src/coins.rs | `utxos` |
-| `NetworkSession::vault` | dw-engine/src/keys.rs | `gift_card_account`, `gift_card_accounts`, `gift_card_brands`, `gift_card_broadcast`, `gift_card_create_order`, `gift_card_details`, `gift_card_draft`, `gift_card_open_claim`, `gift_card_orders`, `gift_card_products`, `gift_card_sign_in`, `gift_card_sign_out`, `gift_card_signup`, `gift_card_verify_email`, `lock_status`, `quick_unlock_policy`, `revoke_grant` |
+| `NetworkSession::vault` | dw-engine/src/keys.rs | `gift_card_account`, `gift_card_accounts`, `gift_card_brands`, `gift_card_broadcast`, `gift_card_create_order`, `gift_card_details`, `gift_card_draft`, `gift_card_open_claim`, `gift_card_open_terms`, `gift_card_orders`, `gift_card_products`, `gift_card_sign_in`, `gift_card_sign_out`, `gift_card_signup`, `gift_card_verify_email`, `lock_status`, `quick_unlock_policy`, `revoke_grant` |
 | `NetworkSession::vault_op` | dw-engine/src/keys.rs | `authorize`, `authorize_platform_send`, `authorize_set`, `create_vault`, `enroll_quick_unlock`, `remove_quick_unlock`, `reveal_mnemonic`, `selftest_unlock`, `set_quick_unlock_spend_limit`, `unlock`, `unlock_for`, `unlock_mixing_only` |
 | `NetworkSession::wallet_info` | dw-engine/src/wallets.rs | `wallet_info` |
 | `NetworkSession::wallet_infos` | dw-engine/src/wallets.rs | `list_wallets` |
@@ -478,7 +478,7 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `Vault::signing_window_remaining` | dw-vault/src/vault.rs | excluded (vault): internal: `quick_unlock_policy` reports the duff still left in the window |
 | `Vault::stash_link` | dw-vault/src/vault/links.rs | excluded (vault): internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3) |
 | `Vault::stashed_links` | dw-vault/src/vault/links.rs | excluded (vault): internal: reached through `NetworkSession::stashed_links` (`stashed_links`) |
-| `Vault::status` | dw-vault/src/vault.rs | `gift_card_account`, `gift_card_accounts`, `gift_card_brands`, `gift_card_broadcast`, `gift_card_create_order`, `gift_card_details`, `gift_card_draft`, `gift_card_open_claim`, `gift_card_orders`, `gift_card_products`, `gift_card_sign_in`, `gift_card_sign_out`, `gift_card_signup`, `gift_card_verify_email`, `lock_status` |
+| `Vault::status` | dw-vault/src/vault.rs | `gift_card_account`, `gift_card_accounts`, `gift_card_brands`, `gift_card_broadcast`, `gift_card_create_order`, `gift_card_details`, `gift_card_draft`, `gift_card_open_claim`, `gift_card_open_terms`, `gift_card_orders`, `gift_card_products`, `gift_card_sign_in`, `gift_card_sign_out`, `gift_card_signup`, `gift_card_verify_email`, `lock_status` |
 | `Vault::store_masternode_key` | dw-vault/src/vault/masternode.rs | excluded (vault): internal: reached through `Masternodes::attach_key`, which checks the key first (MG-03 D8, MG-01 D7) |
 | `Vault::store_wallet_secret` | dw-vault/src/vault.rs | excluded (vault): internal: `importWallet` and the backup restore store seeds, never the host directly |
 | `Vault::take_stashed_link` | dw-vault/src/vault/links.rs | excluded (vault): internal: reached through `NetworkSession::take_stashed_link` (`open_stashed_link`), which passes only the kinds it hands back |

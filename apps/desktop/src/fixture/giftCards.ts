@@ -49,7 +49,11 @@ export function giftCardsHandlers(send: Handlers): Handlers {
   return {
     gift_card_account: ({ walletId }, { world }) => walletOf(world, walletId).account,
     gift_card_accounts: ({ walletId }, { world }) => walletOf(world, walletId).accounts,
-    gift_card_signup: ({ walletId, info }, { world }) => (walletOf(world, walletId).account = { kind: "codeSent", email: info.email }),
+    gift_card_signup: ({ walletId, info, termsAccepted }, { world }) => {
+      if (!termsAccepted) throw fail("Accept the PiggyCards terms and conditions first.");
+      return (walletOf(world, walletId).account = { kind: "codeSent", email: info.email });
+    },
+    gift_card_open_terms: () => null,
     gift_card_verify_email: ({ walletId, code }, { world }) => {
       const wallet = walletOf(world, walletId);
       if (wallet.account.kind !== "codeSent" || code !== "123456") throw fail("Check the email code.");

@@ -12,6 +12,8 @@ export const giftCards = {
   state: "US state",
   chooseState: "Select a state",
   sendCode: "Send email code",
+  readTerms: "PiggyCards terms and conditions",
+  acceptTerms: "I accept the PiggyCards terms and conditions",
   codeSent: "Enter the code sent to {email}.",
   emailCode: "Email code",
   verify: "Verify email",

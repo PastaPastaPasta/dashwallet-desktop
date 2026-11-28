@@ -3671,10 +3671,18 @@ export function giftCardAccounts(walletId: string): Promise<Array<GiftStoredAcco
 }
 
 /**
- * Creates a PiggyCards account and starts email verification if required.
+ * Creates a PiggyCards account and starts email verification if
+ * required, once the buyer accepted PiggyCards' terms and conditions.
  */
-export function giftCardSignup(walletId: string, info: GiftSignup): Promise<GiftAccount> {
-  return invoke<GiftAccount>("gift_card_signup", { walletId, info });
+export function giftCardSignup(walletId: string, info: GiftSignup, termsAccepted: boolean): Promise<GiftAccount> {
+  return invoke<GiftAccount>("gift_card_signup", { walletId, info, termsAccepted });
+}
+
+/**
+ * Opens PiggyCards' terms and conditions in the browser.
+ */
+export function giftCardOpenTerms(): Promise<null> {
+  return invoke<null>("gift_card_open_terms");
 }
 
 /**
@@ -4283,7 +4291,8 @@ export type CommandArgs = {
   refresh_rates: {  };
   gift_card_account: { walletId: string };
   gift_card_accounts: { walletId: string };
-  gift_card_signup: { walletId: string; info: GiftSignup };
+  gift_card_signup: { walletId: string; info: GiftSignup; termsAccepted: boolean };
+  gift_card_open_terms: {  };
   gift_card_verify_email: { walletId: string; code: string };
   gift_card_sign_in: { walletId: string; account: string | null };
   gift_card_sign_out: { walletId: string };
@@ -4716,6 +4725,7 @@ export type CommandResults = {
   gift_card_account: GiftAccount;
   gift_card_accounts: Array<GiftStoredAccount>;
   gift_card_signup: GiftAccount;
+  gift_card_open_terms: null;
   gift_card_verify_email: GiftAccount;
   gift_card_sign_in: GiftAccount;
   gift_card_sign_out: GiftAccount;
@@ -5150,6 +5160,7 @@ export const COMMANDS: Record<CommandName, string> = {
   gift_card_account: "gift_cards",
   gift_card_accounts: "gift_cards",
   gift_card_signup: "gift_cards",
+  gift_card_open_terms: "gift_cards",
   gift_card_verify_email: "gift_cards",
   gift_card_sign_in: "gift_cards",
   gift_card_sign_out: "gift_cards",
