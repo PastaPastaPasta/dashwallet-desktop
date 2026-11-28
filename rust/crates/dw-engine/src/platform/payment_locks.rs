@@ -67,6 +67,8 @@ pub(crate) struct PaymentLocks {
     /// Tests: holds the hook's `st_hash` write before it lands.
     #[cfg(test)]
     pub(crate) hold_st_hash: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) hold_shielded_lease: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: the hook's dispatch record fails.
     #[cfg(test)]
     pub(crate) fail_dispatch_record: std::sync::atomic::AtomicBool,

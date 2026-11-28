@@ -141,6 +141,8 @@ pub(crate) async fn pay_gated(
     // have been sent, so a repeated call cannot pay the contact again.
     let flow_lease = session.lease_for(&wallet, &call.grant).is_some();
     let armed = pool::arm(session, wallet, lib, quoting, &call.grant, flow).await?;
+    #[cfg(test)]
+    crate::coins::pause_at(&session.platform.payments.hold_shielded_lease).await;
     let crypto = match armed.lease.contact_crypto() {
         Ok(crypto) => Some(crypto),
         Err(_) => session.background_crypto(wallet).await,
