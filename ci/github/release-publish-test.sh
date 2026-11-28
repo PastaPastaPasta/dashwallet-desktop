@@ -2024,11 +2024,11 @@ PY
     '[[ $fw_rc -ne 0 && ! -e "$fw/not-tip/out/dist" && ! -e "$fw/not-tip/sigs/win" ]] && grep -q "is not the tip of branch v0.1.0-rc.1" "$fw/not-tip.out" && grep -q "which is at $fw_good" "$fw/not-tip.out"'
   fw_run no-branch "$fw_good" -
   check "fetch-windows-signature: refuses a commit when the repository has no branch named after the tag" \
-    '[[ $fw_rc -ne 0 && ! -e "$fw/no-branch/out/dist" && ! -e "$fw/no-branch/sigs/win" ]] && grep -q "which is at no such branch" "$fw/no-branch.out"'
+    '[[ $fw_rc -ne 0 && ! -e "$fw/no-branch/out/dist" && ! -e "$fw/no-branch/sigs/win" ]] && grep -q "could not fetch branch v0.1.0-rc.1" "$fw/no-branch.out"'
   fw_git branch --quiet -f x/refs/heads/v0.1.0-rc.1 "$fw_good"
   fw_run suffix "$fw_good" -
   check "fetch-windows-signature: a branch whose name only ends in refs/heads/<tag> is not the tag's branch" \
-    '[[ $fw_rc -ne 0 && ! -e "$fw/suffix/out/dist" && ! -e "$fw/suffix/sigs/win" ]] && grep -q "which is at no such branch" "$fw/suffix.out"'
+    '[[ $fw_rc -ne 0 && ! -e "$fw/suffix/out/dist" && ! -e "$fw/suffix/sigs/win" ]] && grep -q "could not fetch branch v0.1.0-rc.1" "$fw/suffix.out"'
   fw_git branch --quiet -D x/refs/heads/v0.1.0-rc.1
   fw_run tagfile "$fw_tagfile"
   check "fetch-windows-signature: refuses a commit whose entry for the tag is not a directory, and does not fall back to its root" \

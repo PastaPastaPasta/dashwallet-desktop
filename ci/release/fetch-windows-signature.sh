@@ -4,7 +4,8 @@
 # installer. It runs in a job that later holds keys, and the repository is public and not this one, so:
 #   - the commit is named by its full hash, and it must be the tip of that repository's branch named after
 #     the tag, where the runbook pushes it. GitHub also serves commits of a repository's forks through its
-#     URL, so the hash alone would not say whose commit it is;
+#     URL, so the hash alone would not say whose commit it is. The branch is fetched once and what that
+#     fetch returned is compared with the hash, so there is no moment between a lookup and a fetch;
 #   - nothing is checked out: the two files are read as blobs, and only as small regular files (no link, no
 #     submodule), from <tag>/ in that commit or, when it has no <tag> entry, from its root;
 #   - the signature must have been made over this run's unsigned build (unsigned.SHA256SUMS, byte for byte).
@@ -64,14 +65,13 @@ trap 'rm -rf "$work"' EXIT
 repo() { git -C "$work/repo" "$@"; }
 git init --quiet "$work/repo"
 
-# ls-remote matches a pattern against the end of a ref's name, so the name is compared in full here.
-tip=$(repo ls-remote -- "$repo_url" "refs/heads/$tag" | awk -v ref="refs/heads/$tag" '$2 == ref { print $1 }') ||
-  die "could not list the branches of $repo_url"
+# One fetch, of the branch by its full ref name: what it returns is that branch's tip.
+repo fetch --quiet --depth 1 -- "$repo_url" "refs/heads/$tag:refs/remotes/signature/$tag" ||
+  die "could not fetch branch $tag from $repo_url; push the signature to that branch"
+tip=$(repo rev-parse --verify --quiet "refs/remotes/signature/$tag^{commit}") ||
+  die "branch $tag of $repo_url is not at a commit"
 [[ "$tip" == "$commit" ]] ||
-  die "$commit is not the tip of branch $tag in $repo_url (which is at ${tip:-no such branch}); push the signature there and pass that commit"
-repo fetch --quiet --depth 1 -- "$repo_url" "$commit" || die "could not fetch $commit from $repo_url"
-[[ "$(repo rev-parse FETCH_HEAD)" == "$commit" && "$(repo cat-file -t "$commit")" == commit ]] ||
-  die "$repo_url did not return $commit as a commit"
+  die "$commit is not the tip of branch $tag in $repo_url (which is at $tip); push the signature there and pass that commit"
 
 prefix=
 tag_entry=$(repo ls-tree "$commit" -- "$tag" | awk '{ print $2 }')
