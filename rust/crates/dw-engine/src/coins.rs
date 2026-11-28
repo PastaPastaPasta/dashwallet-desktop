@@ -1235,8 +1235,12 @@ impl NetworkSession {
                 || restore_outputs.contains(&o.txid)
                 || restore_inputs.contains(&o);
             let spend_reserved = reserved.contains(&o) || other_spend_reserved;
-            let handoff = handoffs.remove(&o);
-            coin.lock_input = !spend_reserved && handoff.is_none() && lock_held;
+            // Keep the asset-lock input hold even when an upgraded wallet
+            // also classifies the same denomination as a legacy CoinJoin
+            // handoff. Repair's self-spend is the only path exempted from
+            // this hold, as it was before handoff records existed.
+            let handoff = handoffs.get(&o).cloned();
+            coin.lock_input = !spend_reserved && lock_held;
             coin.mixing_held = !other_spend_reserved
                 && !lock_held
                 && handoff.is_none()

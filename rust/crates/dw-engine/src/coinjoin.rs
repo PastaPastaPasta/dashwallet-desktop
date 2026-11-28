@@ -2170,10 +2170,12 @@ impl NetworkSession {
                 Ok(txid)
             }
             Err(e @ platform_wallet::PlatformWalletError::TransactionBroadcast(_)) => {
-                self.write_sweep_outs(wallet_id, &[&tx], false, false)
-                    .await?;
+                let cleanup = self.write_sweep_outs(wallet_id, &[&tx], false, false).await;
                 self.spends.release(&wallet_id, owner);
                 self.release_coinjoin_addresses(wallet_id, &reserved).await;
+                if let Err(cleanup) = cleanup {
+                    tracing::warn!(%wallet_id, error = %cleanup, "rejected CoinJoin funding row was not cleaned up");
+                }
                 Err(CoinJoinFailure::BroadcastRejected(e.to_string()).into())
             }
             Err(e) => {

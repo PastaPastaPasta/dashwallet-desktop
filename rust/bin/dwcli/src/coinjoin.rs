@@ -424,6 +424,11 @@ pub fn run(
                 );
             }
             if !plan_only {
+                if held && sync_height.is_none() {
+                    return Err(
+                        "a sync height is required before returning held mixing coins".into(),
+                    );
+                }
                 confirm_combine(yes, &mut std::io::stdout())?;
                 let grant = session
                     .vault()

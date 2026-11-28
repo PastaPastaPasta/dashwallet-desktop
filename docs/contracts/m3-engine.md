@@ -1,6 +1,6 @@
 # M3 engine contract (`dw-ffi`)
 
-Contract-Version: 1
+Contract-Version: 2
 
 Status: **contract**, 2026-10-07. Milestone M3 "CoinJoin and the iOS Masternode Keys tool" (DESIGN-opus §5.1).
 Code: `rust/crates/dw-ffi/src/api/{coinjoin,network_stats,masternode_keys}.rs`, the engine modules
@@ -123,8 +123,8 @@ Status of every call: **works** unless marked otherwise. "In-memory read" calls 
   "unavailable": the host offers "Unlock wallet for mixing only" and, if declined, shows "Wallet is locked and user
   declined to unlock. Disabling CoinJoin.".
 - `balances { anonymizable, denominated, normalized_anonymized, fully_mixed }`: Core's names
-  (`GetAnonymizableBalance`, …); `fully_mixed` is the panel's "CoinJoin Balance" and the CoinJoin page's
-  spendable. The M1 `WalletBalances.coinjoin` becomes this value (§5). `denominated` and `fully_mixed` count
+  (`GetAnonymizableBalance`, …); `fully_mixed` is the panel's "CoinJoin Balance" and mixing progress, not a
+  spendable balance. The M1 `WalletBalances.coinjoin` becomes this value (§5). `denominated` and `fully_mixed` count
   denominations on BIP44 receive and change addresses too, where dash-qt mixes. `mixable_unfinished` counts only
   the CoinJoin account's denominations that are not fully mixed: what mixing in this wallet can still finish.
 - `progress { overall_percent, denominated_percent, partially_mixed_percent, mixed_percent, average_rounds }` with
