@@ -2045,12 +2045,7 @@ impl EarlyInstantLocks {
     fn hold_restorations(&self, history: &mut WalletHistory, restored: &[OutPoint]) -> bool {
         let before = history.restored_fork_inputs.len();
         for coin in restored {
-            let mut matched = self
-                .spends
-                .get(coin)
-                .into_iter()
-                .flatten()
-                .filter(|t| history.session_locks.contains(*t));
+            let mut matched = self.spends.get(coin).into_iter().flatten();
             let covered = matched.clone().any(|t| history.fork_kept_locks.contains(t));
             if !covered && (self.overflow || matched.next().is_some()) {
                 history.restored_fork_inputs.insert(*coin);
@@ -2248,19 +2243,12 @@ impl HistoryStore {
             }
             ForkRestorations::Detected(unspent) => {
                 history.detected_fork_coins.extend(unspent);
-                history.restored_fork_inputs.extend(
-                    locks
-                        .spends
-                        .iter()
-                        .filter(|(coin, spenders)| {
-                            history.detected_fork_coins.contains(*coin)
-                                && spenders.iter().any(|txid| {
-                                    history.session_locks.contains(txid)
-                                        && !history.txs.contains_key(txid)
-                                })
-                        })
-                        .map(|(coin, _)| *coin),
-                );
+                history
+                    .restored_fork_inputs
+                    .extend(unspent.iter().filter(|coin| {
+                        (locks.spends.get(*coin).into_iter().flatten())
+                            .any(|txid| !history.txs.contains_key(txid))
+                    }));
             }
         }
         changed
@@ -2435,7 +2423,7 @@ impl HistoryStore {
                 && entry.is_none()
             {
                 for coin in inputs {
-                    if h.detected_fork_coins.contains(coin) && h.owns_output(coin) {
+                    if h.detected_fork_coins.contains(coin) {
                         held |= h.restored_fork_inputs.insert(*coin);
                     }
                 }
