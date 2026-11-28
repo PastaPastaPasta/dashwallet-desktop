@@ -74,6 +74,14 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
   // A link verifies once per link and wallet (D13). A new intent starts afresh on Search, with a
   // network row's hit shown at once (its full hit from the cached search when there).
   const searchHits = useNetworkSearch(ctx.walletId, identity ?? "", intent?.hit && identity ? networkPrefix(intent.query) : null);
+  // Search's text lives here so a tab switch keeps it. A search hit's card is for the text it was
+  // picked under: other text drops it, so Send never goes to a hit the list no longer shows.
+  const [text, setText] = useState(intent?.query ?? "");
+  const pickedFor = useRef<string | null>(null);
+  const pickHit = (hit: HitFields, under: string) => {
+    pickedFor.current = networkPrefix(under);
+    model.pick(hit);
+  };
   const seen = useRef<AddContactIntent | ContactPrefill | null>(null);
   useEffect(() => {
     const current = link ?? intent;
@@ -84,10 +92,16 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       return;
     }
     setTab("search");
+    const query = intent?.query ?? "";
+    setText(query);
     const h = intent?.hit;
     if (!h) return model.clear();
-    model.pick(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true, readSeq: 0 });
+    pickHit(searchHits.data?.find((x) => x.identity === h.identity) ?? { ...h, displayName: null, relation: "stranger", unverified: true, readSeq: 0 }, query);
   }, [model, link, intent, searchHits.data]);
+  const typed = networkPrefix(text);
+  useEffect(() => {
+    if (model.candidate?.source === "search" && typed !== pickedFor.current) model.clear();
+  }, [model, typed]);
   // Leaving stops a screen capture still waiting.
   useEffect(() => () => model.cancelScreen(), [model]);
 
@@ -127,7 +141,7 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       </header>
       {identity === null ? result : (
         <Tabs label={t("contacts.addContact.tabsLabel")} tabs={ADD_TABS} current={tab} onSelect={setTab} testId="add-contact-tabs">
-          {tab === "search" && <SearchTab ctx={ctx} identity={identity} query={intent?.query ?? ""} onPick={(h) => model.pick(h)} result={result} />}
+          {tab === "search" && <SearchTab ctx={ctx} identity={identity} intent={intent} text={text} onText={setText} onPick={(h) => pickHit(h, text)} result={result} />}
           {tab === "scan" && <ScanTab model={model} result={result} />}
           {tab === "myQr" && (
             <div className="add-contact-my-qr">
@@ -286,16 +300,29 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 }
 
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
-function SearchTab({ ctx, identity, query, onPick, result }: { ctx: AddContext; identity: string; query: string; onPick: (hit: HitFields) => void; result: ReactNode }) {
+function SearchTab({
+  ctx,
+  identity,
+  intent,
+  text,
+  onText,
+  onPick,
+  result,
+}: {
+  ctx: AddContext;
+  identity: string;
+  intent: AddContactIntent | null;
+  text: string;
+  onText: (text: string) => void;
+  onPick: (hit: HitFields) => void;
+  result: ReactNode;
+}) {
   const t = useT();
-  const [text, setText] = useState(query);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const tabs = document.activeElement?.closest('[role="tablist"]');
     if (!tabs || !input.current?.closest(".add-contact")?.contains(tabs)) focusInView(input.current);
-  }, [query]);
-  // Another intent's search text (Show more on another search).
-  useEffect(() => setText(query), [query]);
+  }, [intent]);
   const typed = networkPrefix(text);
   const debounced = useDebounced(typed, NETWORK_DEBOUNCE_MS);
   const prefix = typed === debounced ? debounced : null;
@@ -358,7 +385,7 @@ function SearchTab({ ctx, identity, query, onPick, result }: { ctx: AddContext; 
     <div className="add-contact-search">
       <label className="search-field" data-testid="add-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
-        <input ref={input} type="search" value={text} placeholder={t("contacts.addContact.searchField")} aria-label={t("contacts.addContact.searchField")} onChange={(e) => setText(e.target.value)} />
+        <input ref={input} type="search" value={text} placeholder={t("contacts.addContact.searchField")} aria-label={t("contacts.addContact.searchField")} onChange={(e) => onText(e.target.value)} />
       </label>
       <div className={typed !== null || result ? "add-contact-search-results has-space" : "add-contact-search-results"}>{results()}</div>
       {result}

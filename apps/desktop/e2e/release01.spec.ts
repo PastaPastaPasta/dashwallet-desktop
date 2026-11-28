@@ -684,9 +684,19 @@ test.describe("Export CSV", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     await page.evaluate(() => (window.__dwFixture!.world.tools.files.saveDir = null));
+    // Every toast or alert the export shows, however briefly.
+    await page.evaluate(() => {
+      const said: string[] = [];
+      (window as unknown as { __toastsSaid: string[] }).__toastsSaid = said;
+      new MutationObserver((records) => {
+        for (const r of records) for (const n of r.addedNodes) said.push(n.textContent ?? "");
+      }).observe(document.querySelector(".toast-stack")!, { childList: true, subtree: true, characterData: true });
+    });
     await page.getByTestId("tx-export-csv").click();
     await expect(page.getByTestId("tx-export-csv")).toBeEnabled();
-    await expect(page.locator(".toast-host")).toBeEmpty();
+    await expect.poll(() => world(page, (w) => w.tools.files.dialogs.length)).toBe(1);
+    expect(await page.evaluate(() => (window as unknown as { __toastsSaid: string[] }).__toastsSaid)).toEqual([]);
+    await expect(page.locator(".toast-stack")).toHaveText("");
     expect(await world(page, (w) => w.tools.files.dialogs.length)).toBe(1);
     expect(await world(page, (w) => w.tools.files.saved.length)).toBe(0);
   });

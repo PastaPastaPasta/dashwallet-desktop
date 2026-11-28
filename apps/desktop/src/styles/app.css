@@ -3045,15 +3045,39 @@ input[type="radio"]:disabled {
 
 /* ------------------------------------------------------------------ toast (C21) */
 
-.toast-host {
+.toast-stack {
   position: fixed;
   bottom: calc(var(--dw-layout-status-bar-height) + var(--dw-space-xxl));
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   pointer-events: none;
 }
 
-.toast {
+.toast-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-block-end: var(--dw-space-sm);
+  pointer-events: auto;
+}
+
+.toast-alert-dismiss {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--dw-type-callout-medium-weight);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.toast,
+.toast-alert {
   max-inline-size: calc(100vw - 2 * var(--dw-space-l));
   overflow-wrap: anywhere;
   padding: var(--dw-space-sm) var(--dw-space-l);

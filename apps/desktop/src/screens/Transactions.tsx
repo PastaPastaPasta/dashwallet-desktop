@@ -17,7 +17,7 @@ import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
 import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, sourceGap, type ListSource } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
-import { showToast } from "../components/toast";
+import { clearAlert, showAlert, showToast } from "../components/toast";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
 import { filterExtra, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
@@ -152,12 +152,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // Export CSV (QT-093): the records the filters select, all pages.
   const [exporting, setExporting] = useState(false);
   const exportCsv = async () => {
+    const key = `history-export:${walletId}`;
     setExporting(true);
+    clearAlert(key);
     try {
       const path = await exportHistory(backend, walletId, filter, shown.unit, backend.now());
       if (path !== null) showToast(`Exported to ${path}.`);
     } catch (e) {
-      showToast(`The history could not be exported. ${fileErrorText(e)}`);
+      showAlert(`The history could not be exported. ${fileErrorText(e)}`, key);
     } finally {
       setExporting(false);
     }

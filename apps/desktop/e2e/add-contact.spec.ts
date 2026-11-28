@@ -138,24 +138,44 @@ test("IOS-073 the eligibility pre-check says why no request can go, with the one
   await expect(add(page)).toHaveCount(0);
 });
 
-test("refining search keeps the selected contact action in place", async ({ page }) => {
+test("a changed search drops the picked hit: Send is gone during and after the new lookup", async ({ page }) => {
   await openAdd(page);
   await field(page).fill("ma");
   await expect(page.getByTestId("add-contact-hit")).toHaveCount(5);
   await hit(page, "Mallory").click();
   const send = page.getByTestId("add-contact-send");
   await expect(send).toBeVisible();
+  const tabs = page.getByTestId("add-contact-tabs");
   await fontsReady(page);
-  const before = await send.boundingBox();
+  const before = await Promise.all([tabs.boundingBox(), field(page).boundingBox()]);
 
   const release = await page.evaluateHandle(() => window.__dwFixture!.hold("search_users"));
-  await field(page).fill("mal");
+  await field(page).fill("mar");
   await expect(page.getByTestId("add-contact-hit")).toHaveCount(0);
-  expect(await send.boundingBox()).toEqual(before);
+  await expect(card(page)).toHaveCount(0);
+  await expect(send).toHaveCount(0);
   await release.evaluate((resume) => resume());
-  await expect(page.getByTestId("add-contact-hit")).toHaveCount(1);
-  await expect(hit(page, "Mallory")).toBeVisible();
-  expect(await send.boundingBox()).toEqual(before);
+  await expect(hit(page, "Marta")).toBeVisible();
+  await expect(hit(page, "Mallory")).toHaveCount(0);
+  await expect(card(page)).toHaveCount(0);
+  await expect(send).toHaveCount(0);
+  expect(await Promise.all([tabs.boundingBox(), field(page).boundingBox()])).toEqual(before);
+
+  // The same text again does not bring the dropped hit back; a new pick does.
+  await field(page).fill("ma");
+  await expect(page.getByTestId("add-contact-hit")).toHaveCount(5);
+  await expect(card(page)).toHaveCount(0);
+  await hit(page, "Mallory").click();
+  await expect(send).toBeVisible();
+});
+
+test("a picked hit stays across a tab switch while the search text is unchanged", async ({ page }) => {
+  await openAdd(page);
+  await pick(page, "mal", "Mallory");
+  await tab(page, "scan").click();
+  await tab(page, "search").click();
+  await expect(field(page)).toHaveValue("mal");
+  await expect(page.getByTestId("add-contact-send")).toBeVisible();
 });
 
 test("IOS-073 without DashPay keys the card offers Enable, not Send", async ({ page }) => {

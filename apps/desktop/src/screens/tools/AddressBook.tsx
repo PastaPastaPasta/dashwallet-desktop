@@ -18,7 +18,7 @@ import { addressBookEmpty, type AddressBookStep } from "../../components/emptySt
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { QrCode, QrPlaceholder } from "../../components/qr";
 import { Sheet } from "../../components/sheet";
-import { showToast } from "../../components/toast";
+import { clearAlert, showAlert, showToast } from "../../components/toast";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { AddressBookModel, AddressBookText } from "../../tools/addressBook";
@@ -233,11 +233,13 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
   useEffect(() => void model.load(), [model]);
 
   const exportCsv = async () => {
+    const key = `address-book-export:${walletId}`;
+    clearAlert(key);
     try {
       const path = await saveText(b, "csv", model.exportFileName, model.exportCsv());
       if (path !== null) showToast(t("tools.addressBook.exported", { path }));
     } catch (e) {
-      showToast(t("tools.addressBook.exportFailed", { error: fileErrorText(e) }));
+      showAlert(t("tools.addressBook.exportFailed", { error: fileErrorText(e) }), key);
     }
   };
 

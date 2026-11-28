@@ -139,7 +139,7 @@ test("D7 Hide keeps an alias being typed, and a refused Hide shows the saved val
   await row(page, "Bob Builder").click();
   await page.getByTestId("contact-hide").check();
   await authorize(page);
-  await expect(page.locator(".toast-host")).toHaveText("Not enough credits. Top up your credits and try again.");
+  await expect(page.getByTestId("toast-alert-text")).toHaveText("Not enough credits. Top up your credits and try again.");
   await expect(page.getByTestId("contact-hide")).not.toBeChecked();
 });
 
@@ -195,11 +195,25 @@ test("IOS-072 D10 without DashPay keys the banner offers Enable with its fee, an
   expect(errors).toEqual([]);
 });
 
-test("D4 a refused accept says why in the pane", async ({ page }) => {
+test("D4 a refused accept stays in an alert until dismissed; a toast shows under it, not over it", async ({ page }) => {
   await openContacts(page, "dashpay-low-credits");
   await row(page, "heidi").click();
   await page.getByTestId("contact-accept").click();
   await authorize(page);
-  await expect(page.locator(".toast-host")).toHaveText("Not enough credits. Top up your credits and try again.");
+  const alert = page.getByTestId("toast-alert");
+  const why = "Not enough credits. Top up your credits and try again.";
+  await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+  await expect(page.locator(".toast-alert-host")).toHaveAttribute("role", "alert");
   await expect(names(page, "requests")).toHaveText(["heidi", "Grace Hopper"]);
+
+  await page.getByRole("button", { name: "Copy identity" }).click();
+  await expect(page.locator(".toast")).toHaveText("Copied");
+  await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+  // Past the toast's 3 s the alert is still up.
+  await page.waitForTimeout(3_500);
+  await expect(page.locator(".toast")).toHaveCount(0);
+  await expect(page.getByTestId("toast-alert-text")).toHaveText(why);
+
+  await page.getByTestId("toast-alert-dismiss").click();
+  await expect(alert).toHaveCount(0);
 });
