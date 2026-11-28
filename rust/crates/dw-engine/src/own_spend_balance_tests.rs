@@ -3611,6 +3611,21 @@ pub(super) fn reconciles_done(engine: &Engine, session: &NetworkSession) {
     }
 }
 
+/// Waits for every deferred-drop drain a close or removal started (#1216).
+/// The drain takes the waiting drops out, then puts back any another wallet
+/// still holds up; reading them in between sees an empty set.
+fn drains_done(engine: &Engine, session: &NetworkSession) {
+    loop {
+        let started = std::mem::take(&mut *session.hub.drains.lock().unwrap());
+        if started.is_empty() {
+            return;
+        }
+        for drain in started {
+            engine.block_on(drain).unwrap();
+        }
+    }
+}
+
 /// Whether the history shows `txid`, not abandoned.
 pub(super) fn live_in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned())
@@ -5518,11 +5533,16 @@ fn a_drop_waiting_for_another_wallet_goes_when_that_wallet_is_closed_or_removed(
         } else {
             engine.block_on(session.unload_wallet(other)).unwrap();
         }
+        // The close's drain takes the waiting drop out and, while a third
+        // wallet is still unread, puts it back. The set is empty in between
+        // (#1216).
+        drains_done(&engine, &session);
         if let Some(third) = third {
             reconciled(&engine, &session, id);
             assert!(live_in_history(&session, id, p.txid()));
             assert!(session.hub.deferred_drop_wallets().contains(&id));
             engine.block_on(session.unload_wallet(third)).unwrap();
+            drains_done(&engine, &session);
         }
         eventually(&format!("{case}: the drop goes"), || {
             !live_in_history(&session, id, p.txid())

@@ -672,6 +672,11 @@ pub(crate) struct SessionHub {
     /// Tests: the reconciles started, to wait for.
     #[cfg(test)]
     pub(crate) reconciles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Tests: the deferred-drop drains a wallet close or removal started,
+    /// to wait for. The drain takes the waiting drops out and may put them
+    /// back; a read in between sees none (#1216).
+    #[cfg(test)]
+    pub(crate) drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Tests: the claim choices a lock started again, to wait for.
     #[cfg(test)]
     pub(crate) lock_reruns: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -1080,6 +1085,8 @@ impl SessionHub {
             sweep_checks: Mutex::new(Vec::new()),
             #[cfg(test)]
             reconciles: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            drains: Mutex::new(Vec::new()),
             #[cfg(test)]
             lock_reruns: Mutex::new(Vec::new()),
             replay: OnceLock::new(),

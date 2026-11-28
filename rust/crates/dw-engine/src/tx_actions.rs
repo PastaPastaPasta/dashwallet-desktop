@@ -2838,6 +2838,12 @@ impl NetworkSession {
             // mempool spends), or one the history holds and this abandon
             // leaves (it loads every stored record; key-wallet holds none
             // for a payment hydrated at load).
+            let chainlock = self.chainlock_height(&info.core_wallet);
+            let finalized: Vec<OutPoint> = info.finalized_spends.iter().copied().collect();
+            // A ChainLocked block's spend outlives the note key-wallet prunes
+            // and the record it drops. Releasing the wallet's own payment
+            // must not give that coin back (#268, #400).
+            let durable = self.chainlocked_block_spends(wallet, chainlock).await?;
             let mut still_spent: HashSet<OutPoint> = (info.core_wallet.accounts.all_accounts())
                 .into_iter()
                 .flat_map(|a| a.transactions().iter())
@@ -2851,6 +2857,8 @@ impl NetworkSession {
                 still_spent
                     .extend(left.flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)));
             });
+            still_spent.extend(durable.keys().copied());
+            still_spent.extend(finalized);
             // Read before key-wallet abandons anything (which leaves its
             // observed spends as they are), so the coins' holds go with the
             // marks.
@@ -3204,6 +3212,73 @@ impl NetworkSession {
         (proven.map(|_| chainlock.0), Some(chainlock.0))
     }
 
+    /// Block spends of `wallet` a ChainLock covers, including ones the
+    /// history holds and the store does not yet.
+    ///
+    /// Key-wallet drops the in-memory note at the ChainLock and, with
+    /// finalized records off, the spender's record. The store's row is what
+    /// a later release and the next load honour, so a coin a final block
+    /// spent is not offered again (#268, #400). A row already stored is
+    /// left as it is.
+    async fn chainlocked_block_spends(
+        &self,
+        wallet: WalletId,
+        chainlock: Option<u32>,
+    ) -> Result<BTreeMap<OutPoint, platform_wallet::changeset::BlockSpend>, EngineError> {
+        use platform_wallet::changeset::BlockSpend;
+
+        let wanted: Vec<BlockSpend> = match chainlock {
+            None => Vec::new(),
+            Some(cl) => self.hub.history.read(&wallet, |txs| {
+                let created: HashSet<Txid> = txs.keys().copied().collect();
+                let mut wanted = Vec::new();
+                for (txid, e) in txs {
+                    if e.is_abandoned() || !crate::history::chain_locked(&e.context, Some(cl)) {
+                        continue;
+                    }
+                    let Some(block) = e.context.block_info() else {
+                        continue;
+                    };
+                    for input in &e.tx.input {
+                        let outpoint = input.previous_output;
+                        if !created.contains(&outpoint.txid) || outpoint.txid == *txid {
+                            continue;
+                        }
+                        wanted.push(BlockSpend {
+                            outpoint,
+                            height: block.height(),
+                            block_hash: block.block_hash(),
+                            spender_txid: *txid,
+                        });
+                    }
+                }
+                wanted
+            }),
+        };
+        let persister = Arc::clone(&self.live()?.persister);
+        let wallet_id = wallet.0;
+        tokio::task::spawn_blocking(move || {
+            let storage = |e: &dyn std::fmt::Display| {
+                EngineError::Storage(format!("reading block spends: {e}"))
+            };
+            persister.flush(wallet_id).map_err(|e| storage(&e))?;
+            let mut stored = persister
+                .block_spent_outpoints(&wallet_id)
+                .map_err(|e| storage(&e))?;
+            for spend in wanted {
+                if stored.contains_key(&spend.outpoint) {
+                    continue;
+                }
+                persister
+                    .record_found_block_spend(&wallet_id, spend)
+                    .map_err(|e| EngineError::Storage(format!("recording a block spend: {e}")))?;
+                stored.insert(spend.outpoint, spend);
+            }
+            Ok(stored)
+        })
+        .await?
+    }
+
     /// Drops what can never confirm and key-wallet's conflict handling
     /// left (#170 cases 3 and 4), one drop at a time: the children of the
     /// payments a sweep took, which its event queued with its winner; the
@@ -3415,15 +3490,21 @@ impl NetworkSession {
         let weak = Arc::downgrade(self);
         let rt = self.rt.clone();
         self.hub.attach_drain_drops(Box::new(move || {
-            let weak = weak.clone();
-            rt.spawn(async move {
-                let Some(session) = weak.upgrade() else {
+            let task = weak.clone();
+            let started = rt.spawn(async move {
+                let Some(session) = task.upgrade() else {
                     return;
                 };
                 if let (Ok(_op), Ok(manager)) = (session.try_enter(), session.manager()) {
                     session.drain_deferred_drops(&manager).await;
                 }
             });
+            #[cfg(test)]
+            if let Some(session) = weak.upgrade() {
+                (session.hub.drains.lock().unwrap()).push(started);
+            }
+            #[cfg(not(test))]
+            drop(started);
         }));
     }
 
@@ -4107,21 +4188,11 @@ impl NetworkSession {
                 return Ok(BTreeSet::new());
             }
         }
-        let durable_spends = if unrechecked && !links.is_empty() {
-            let persister = Arc::clone(&self.live()?.persister);
-            tokio::task::spawn_blocking(move || {
-                let storage = |e: &dyn std::fmt::Display| {
-                    EngineError::Storage(format!("reading a swept payment's spends: {e}"))
-                };
-                persister.flush(wallet.0).map_err(|e| storage(&e))?;
-                persister
-                    .block_spent_outpoints(&wallet.0)
-                    .map_err(|e| storage(&e))
-            })
-            .await??
-        } else {
-            BTreeMap::new()
-        };
+        // A ChainLock prunes key-wallet's note of the spend and may drop the
+        // spender's record. The stored row, written here when the history
+        // still has the block, is what keeps the coin spent (#268, #400).
+        let chainlock_now = self.chainlock_height(&info.core_wallet);
+        let durable_spends = self.chainlocked_block_spends(wallet, chainlock_now).await?;
         let (plan, winner, forgotten) = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
             let core = &info.core_wallet;
@@ -4144,6 +4215,12 @@ impl NetworkSession {
                 .into_iter()
                 .map(|(outpoint, spend)| (outpoint, spend.height))
                 .collect::<BTreeMap<_, _>>();
+            // Same session, before that row is written: the ChainLock already
+            // dropped the record and the note.
+            let at_lock = chainlock.unwrap_or(0);
+            for outpoint in &info.finalized_spends {
+                forgotten.entry(*outpoint).or_insert(at_lock);
+            }
             let (roots, winner) = match recheck {
                 None => (roots, winner),
                 Some(r) => {
