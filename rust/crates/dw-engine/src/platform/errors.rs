@@ -22,6 +22,8 @@ pub use super::shielded::{ShieldedStoreClosed, ShieldedSyncWait};
 pub enum PlatformError {
     #[error("platform unavailable")]
     Unavailable,
+    #[error("Dash Platform is off in this session")]
+    SessionOff,
     #[error("platform timeout")]
     Timeout,
     #[error("platform proof invalid")]
@@ -105,7 +107,7 @@ pub enum PlatformError {
 impl PlatformError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Unavailable => "platform.unavailable",
+            Self::Unavailable | Self::SessionOff => "platform.unavailable",
             Self::Timeout => "platform.timeout",
             Self::ProofInvalid => "platform.proof_invalid",
             Self::TrustMismatch => "platform.trust_mismatch",

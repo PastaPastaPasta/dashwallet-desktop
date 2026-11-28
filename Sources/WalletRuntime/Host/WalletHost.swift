@@ -73,8 +73,8 @@ public actor WalletHost: WalletHosting {
         try await serviceCall { () async throws(DashKitError) in _ = try await engine.close(current) }
     }
 
-    public nonisolated func dataDirectory(for network: DashNetwork) -> URL {
-        engine.directory(for: network.kit)
+    public nonisolated func dataDirectory(for network: DashNetwork) throws(ServiceError) -> URL {
+        try serviceCall { () throws(DashKitError) in try engine.directory(for: network.kit) }
     }
 
     /// Closes the network and shuts the engine down. Runs on this actor, so
