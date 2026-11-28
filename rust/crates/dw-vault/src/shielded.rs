@@ -4,12 +4,12 @@
 //! platform-wallet derives them with ZIP-32 from the seed
 //! (`OrchardKeySet::from_seed`, `m_orchard/32'/coin'/account'`, coin 5 on
 //! mainnet and 1 elsewhere), as iOS and Android do through the FFI; the
-//! wallet uses account 0 only. Two scopes reach them, and nothing else of
+//! wallet spends from account 0. Two scopes reach them, and nothing else of
 //! the wallet ([`SignerScope::allows`] refuses them every BIP32 key):
 //!
 //! - [`SignerScope::ShieldedView`], grant-less like the DashPay crypto
-//!   signer, so only while the full key needs no prompt: the account's full
-//!   viewing key, which the library persists and binds to scan the pool.
+//!   signer, so only while the full key needs no prompt: full viewing keys
+//!   for account 0 and identity tip accounts, persisted for pool scans.
 //!   The spend authority derived beside it is dropped in the vault.
 //! - [`SignerScope::ShieldedSpend`], from a `PlatformOp` grant with credits:
 //!   the account's whole key set, spend authority included, because the

@@ -21,12 +21,31 @@ async function open(page: Page, scenario: string, theme: "light" | "dark" = "lig
 }
 
 for (const theme of THEMES) {
+  test(`username voting ${theme}: own active contests come first and have a marker`, async ({ page }) => {
+    const errors = await open(page, "names-owned", theme);
+    const titles = page.getByTestId("names-list").locator(".mg-row-title");
+    const labels = ["mara", "dash-pay", "c0ra", "a11ce"];
+    await expect(titles).toHaveText(labels);
+    await expect(page.getByTestId("name-row-mara")).toHaveAttribute("aria-current", "true");
+    for (const label of ["mara", "dash-pay"]) {
+      await expect(page.getByTestId(`name-row-${label}`).getByText("Your username", { exact: true })).toBeVisible();
+    }
+    await expect(page.getByTestId("names-list").getByText("Your username", { exact: true })).toHaveCount(2);
+    await expect(page.getByTestId("name-row-c0ra")).toContainText("Voting ended");
+    await page.getByTestId("names-sort").selectOption("name");
+    await expect(titles).toHaveText(["dash-pay", "mara", "a11ce", "c0ra"]);
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   test(`username voting ${theme}: rows, tally, voters and search; 0 serious axe issues`, async ({ page }) => {
     const errors = await open(page, "names", theme);
     await expect(page.getByTestId("name-row-a11ce")).toHaveAttribute("aria-current", "true");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("2 contenders");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("You: 2 of 3 voted");
     await expect(page.getByTestId("name-row-a11ce")).toContainText("18 votes");
+    await expect(page.getByTestId("names-list").getByText("Your username", { exact: true })).toHaveCount(0);
     await expect(page.getByTestId("name-pane-lead")).toHaveText("Alice (8ZtW…R97P) leads with 9 of 18 votes");
     await expect(page.getByTestId("name-tally").locator("li")).toHaveCount(4);
     await expect(page.getByTestId("name-pane-masternodes")).toContainText("Votes Lock · No votes left");

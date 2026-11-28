@@ -398,11 +398,6 @@ impl Engine {
             )));
         }
         let dir = self.network_dir(network)?;
-        if let Some(session) = sessions.get(network).cloned()
-            && let Some(hold) = session.restore_hold().await
-        {
-            return Err(EngineError::ShieldedSpendHeld(hold));
-        }
         let requested = self
             .handle
             .spawn_blocking(move || crate::store_upgrade::request_restore(&dir))

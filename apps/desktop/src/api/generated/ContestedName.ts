@@ -9,4 +9,8 @@ export type ContestedName = {
 /**
  * The normalized label (`a-hj-km-np-z01-`).
  */
-label: string, endsAt: number, contenders: Array<NameContender>, lockVotes: number | null, abstainVotes: number | null, contendersComplete: boolean, };
+label: string, endsAt: number,
+/**
+ * An identity of the queried wallet requested this username.
+ */
+own: boolean, contenders: Array<NameContender>, lockVotes: number | null, abstainVotes: number | null, contendersComplete: boolean, };

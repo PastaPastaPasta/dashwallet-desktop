@@ -178,7 +178,6 @@ async function main() {
     await wd.press(tid("sidebar-home"));
     await waitText(tid("hero-amount"), /^1500\.000\s?mtDASH$/, "1500.000 mtDASH on Home");
     await wd.press(tid("sidebar-pay"));
-    await wd.press(tid("pay-tabs-address"));
     if (!(await checked("pay-subtract-fee"))) throw new Error("Pay does not start with Subtract fee");
     await waitText(`${tid("pay-address-form")}`, /Amount \(mtDASH\)/, "the amount field in mtDASH");
     step("General: Dark, mDASH with 3 digits (Home 1500.000 mtDASH), Pay starts with Subtract fee; ui_settings agrees");

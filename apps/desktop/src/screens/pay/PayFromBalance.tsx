@@ -2,7 +2,7 @@
 // (C-funding D-C5, fromBalance.ts). The amount typed is what leaves the balance; the confirm says
 // about what the contact receives and the fee (P13). No Max, no "subtract fee", no coin control.
 
-import { useEffect, useId, useState, type Ref } from "react";
+import { useEffect, useId, useState, useSyncExternalStore, type Ref } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
 import type { PlatformActivity } from "../../api/generated/PlatformActivity";
@@ -14,7 +14,6 @@ import { Sheet } from "../../components/sheet";
 import type { Display as Shown } from "../../format/display";
 import { FiatSecondary, FiatToggle } from "../../fiat/entry";
 import { useT } from "../../i18n";
-import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { FormField, type usePayAmount } from "./form";
 import { contactPayFor, fromErrorText, outcomeText, sourceLabel, totalText, type ContactPayFlow, type FromRow, type PaySource } from "./fromBalance";
@@ -82,6 +81,9 @@ function useMaskedAmounts(shown: Shown) {
 
 /** A payment from a balance in the contact form: its quote while the amount is settled, what holds
  * Review back, and the sheet once Review opened it. */
+const emptySubscribe = () => () => {};
+const emptyVersion = () => 0;
+
 export function useBalancePay({
   walletId,
   identity,
@@ -92,10 +94,11 @@ export function useBalancePay({
   shown,
   blocked,
   basis,
+  recipientRevision,
 }: {
   walletId: string;
-  identity: string;
-  contact: string;
+  identity: string | null;
+  contact: string | null;
   source: PaySource;
   duffs: number | null | undefined;
   settled: boolean;
@@ -105,19 +108,21 @@ export function useBalancePay({
   /** What the quote depends on besides the amount (the balance, each read of Platform activity): a
    * change reads a new quote for the form. An open confirmation keeps the quote it showed. */
   basis: string;
+  recipientRevision: string;
 }) {
   const b = useBackend();
   const client = useQueryClient();
   const { credit } = useMaskedAmounts(shown);
-  const flow = useModel(contactPayFor(b, walletId, identity, contact));
+  const flow = identity !== null && contact !== null ? contactPayFor(b, walletId, identity, contact) : null;
+  useSyncExternalStore(flow?.subscribe ?? emptySubscribe, flow?.version ?? emptyVersion);
   const [confirmed, setConfirmed] = useState<ContactPayQuoteInfo | null>(null);
   const [retrying, setRetrying] = useState(false);
-  const active = source !== "core";
+  const active = flow !== null && source !== "core";
   const credits = active && blocked === null && settled && typeof duffs === "number" && duffs > 0 ? String(BigInt(duffs) * CREDITS_PER_DUFF) : null;
-  const open = confirmed !== null || flow.step !== "confirm" || flow.running;
+  const open = confirmed !== null || (flow !== null && (flow.step !== "confirm" || flow.running));
   const quote = useQuery({
-    queryKey: ["contactPayQuote", walletId, identity, contact, source, credits, basis] as const,
-    queryFn: () => b.contactPayQuote(walletId, identity, contact, credits!, source),
+    queryKey: ["contactPayQuote", walletId, identity, contact, source, credits, basis, recipientRevision] as const,
+    queryFn: () => b.contactPayQuote(walletId, identity!, contact!, credits!, source),
     enabled: credits !== null && !open,
     retry: false,
   });
@@ -126,7 +131,7 @@ export function useBalancePay({
   const q = quote.data && quote.data.credits === credits && quote.data.source === source ? quote.data : null;
   const close = () => {
     setConfirmed(null);
-    flow.reset();
+    flow?.reset();
     void client.invalidateQueries({ queryKey: ["contactPayQuote", walletId, identity, contact] });
   };
   const retry = async () => {
@@ -137,7 +142,7 @@ export function useBalancePay({
       const result = await quote.refetch();
       if (result.isSuccess) {
         setConfirmed(result.data);
-        flow.reset();
+        flow?.reset();
       } else if (!contactsUpdatingNotice(result.error, true)) close();
     } finally {
       setRetrying(false);
@@ -149,7 +154,7 @@ export function useBalancePay({
     confirmed,
     problem,
     incomplete: credits === null && blocked === null,
-    ready: q !== null && !quote.isFetching && problem === null,
+    ready: q !== null && !quote.isFetching && problem === null && !open,
     fee: q ? creditsToDuffs(q.feeCredits) : null,
     review: () => {
       if (q) setConfirmed(q);

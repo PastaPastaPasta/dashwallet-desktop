@@ -58,7 +58,7 @@ import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { FIXTURE_DATA_DIR, isClosed, restoreOnly, settingsHandlers } from "./settings";
-import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
+import { offersEarlierRestore, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
@@ -806,6 +806,7 @@ export const HANDLERS: Handlers = {
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
+    world.restoreRefusedNetwork = undefined;
     // A data folder others can change is refused before anything below it is read or written.
     if (world.openNotPrivate) throw storeNotPrivateError(world.openNotPrivate);
     // A pending restore runs before the stores are checked, and any failure of it stops the open.
@@ -814,7 +815,12 @@ export const HANDLERS: Handlers = {
       if (restore.state === "refused" || restore.state === "noSpace") world.openRestore = undefined;
       throw storeRestoreError(restore);
     }
-    if (world.openRefusal) throw storeRefusedError(world.openRefusal);
+    if (world.openRefusal) {
+      if (offersEarlierRestore(world.openRefusal)) {
+        world.restoreRefusedNetwork = world.launch.network.dirName;
+      }
+      throw storeRefusedError(world.openRefusal);
+    }
     if (world.openRetry) throw storeRetryError(`${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`);
     // Row 74: the network a failed switch left did not reopen; at this pin the store stays held until a
     // restart (`storageInUse=retry` is the build where trying again frees it).
